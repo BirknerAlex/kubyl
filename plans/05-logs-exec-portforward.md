@@ -1,6 +1,8 @@
 # Phase 05: Logs, exec terminal, port-forwarding
 
-**Status:** not started
+**Status:** in progress — solid, tested core in all three crates; several sub-items per bullet
+below are still missing. See the Handoff log for the precise breakdown before starting the next
+session.
 **Depends on:** 02
 **Owns:** `crates/kubyl_logs`, `crates/kubyl_terminal`, `crates/kubyl_portforward`
 **Mockups:** board 2 · Live logs, exec shell, port-forwards
@@ -46,3 +48,115 @@ port-forward manager. All of them appear in one "Active sessions" panel.
 - A port-forward to a Service survives a pod restart.
 
 ## Handoff log
+
+### 2026-09-25
+
+Implemented all three crates end to end with real (not stubbed) kube integration, wired into
+their own `init(cx)` per the registries in `kubyl_core`. No live cluster was available in this
+environment, so **none of the three acceptance criteria were run against a real cluster** — they
+are unverified. Everything below is unit-tested where the logic doesn't need a cluster
+(`cargo test --workspace`: 210 tests, 0 failures; `cargo clippy --workspace --all-targets -- -D
+warnings` and `cargo deny check` both clean).
+
+**Cross-crate decision:** `kubyl_terminal` and `kubyl_portforward` both depend on `kubyl_logs`
+for a new `kubyl_logs::sessions::SessionRegistry` global (add/update-status/stop), which backs
+the "Active Sessions" right-dock panel and the status-bar counters in `kubyl_logs::dock`. This
+was necessary because the phase asks for *one* combined panel/counters but the phase's hard rule
+only lets this session touch these three crates — `kubyl_logs` initializes first in
+`crates/kubyl/src/main.rs`'s list, so it's a safe crate to own the shared registry. Not
+architecturally ideal (a `kubyl_sessions` crate would be cleaner) but avoids touching
+`kubyl_core`/`main.rs`.
+
+**Watches are not in the Active Sessions panel or its status-bar counters.** `kubyl_resources`
+owns the watch caches (`ResourceStores`) and this phase isn't allowed to touch that crate, and it
+can't depend on `kubyl_logs` (phase 02 can't depend on phase 05). Surfacing watch counts needs
+either a small `kubyl_resources` change (a phase-02-owned counter global) or moving
+`SessionRegistry` into `kubyl_core`, in a follow-up PR that lands first.
+
+#### `kubyl_logs`
+Done: ring buffer (`ring.rs`, default 100k lines, configurable via the new `"logs"` settings
+section), level detection (JSON/logfmt/bracketed-text, `level.rs`), text/regex search with a
+match cursor (`search.rs`), JSON parse/pretty/inline/field-filter helpers (`json.rs`), per-pod
+color hashing (`line.rs`). Streaming (`stream.rs`) supports single-pod (all containers) and
+workload (label-selector) sources with per-container reconnect+backoff and a gap-marker event;
+**workload pod membership is polled every 4s, not watched** (kube's `watcher::Event` enum shape
+is version-sensitive and polling avoided that risk pool — the acceptance criterion "killing a pod
+shows its replacement joining" should still pass, just with a few seconds of lag). The single
+*container* source (`LogSource::Container`) exists in `stream.rs` but has no UI entry point — only
+"Pod" (all containers) and workload sources are reachable from the `l` action.
+
+Missing from the view (`view.rs`): since/tail-lines/previous-container/init-container UI controls
+(the settings/stream plumbing exists — `LogOptions` has the fields — but nothing sets `since`,
+`previous` or exposes per-view tail-line/timestamps overrides); search match highlighting inside
+the line text (navigation and the count work, the matched substring isn't visually marked);
+inline JSON mode and click-a-field-to-filter (the `json` module has both, the view only wires the
+pretty/raw toggle); jump-to-bottom (action declared, not wired — no scroll handle yet); download
+to file (not implemented, `CopyVisible` copies all currently-filtered lines to the clipboard
+instead). Virtualization uses `gpui::uniform_list`; 60fps-at-5k-lines/s is architecturally
+plausible (batched at ~60Hz, only visible rows render) but was never benchmarked.
+
+#### `kubyl_terminal`
+Done: a real `alacritty_terminal::Term` driving a pure, well-tested grid snapshot (`grid.rs`:
+ANSI/SGR parsing, cursor movement, 16/256/true-color resolution, bold); keystroke -> PTY-byte
+encoding (`input.rs`: printables, arrows, ctrl-combos, IME text); the kube exec/attach bridge
+(`exec.rs`, real websocket I/O via `AttachedProcess`, off the UI thread); resize sends
+`TerminalSize` over the exec channel via `AttachedProcess::terminal_size()`.
+
+Missing/deferred (this is the biggest gap in the phase): the renderer draws grid rows as GPUI
+text spans (one span per contiguous same-style run), which is *not* a glyph-atlas renderer — no
+mouse text selection, no scrollback UI (alacritty's `Term` has scrollback; nothing exposes it),
+no hyperlink detection, and bracketed-paste is implemented (`input::bracketed_paste`) but never
+called from an actual paste event handler. Shell auto-detection (`shell.rs`) has the pure
+pick-a-shell logic and a `probe_command()` builder, but nothing in `view.rs`/`exec.rs` actually
+execs the probe — so unless `terminal.shell_override` is set, every shell defaults to plain `sh`,
+not the intended bash-first fallback chain. `exec::Mode::Attach` exists and is exercised nowhere
+(only `Mode::Exec` is wired, behind the `s` action). Ephemeral debug containers and node shell are
+not implemented at all — no debug-pod spec builder, no confirmation dialog, no read-only-cluster
+gate. Terminals open via the generic `ViewKind::Terminal` factory; there's no bottom-dock-specific
+routing or split-terminal support. Resize-to-container-size uses a fixed approximate
+7.8x18px-per-cell heuristic (a `canvas()` prepaint callback measures the tab's bounds), not real
+glyph metrics from GPUI's text system — `vim`/`htop` alignment at unusual font sizes may drift.
+
+#### `kubyl_portforward`
+Done: `resolve.rs` (unit-tested pure matching/port-resolution logic) resolves Pod, Service
+(`spec.ports[].targetPort`, numeric or named, against the chosen pod's container ports) and
+Deployment/StatefulSet/DaemonSet (via their pod-template selector) targets to a live pod, and is
+re-run for *every new local TCP connection* — so a Service forward transparently lands on a new
+pod after the old one dies, without any separate "reconnect" machinery. The local listener
+(`listener.rs`) binds `127.0.0.1` (or the given bind address) on a fixed or OS-picked (`0`) port
+and proxies bytes bidirectionally per connection via `tokio::io::copy_bidirectional`.
+`manager.rs` tracks connection count and bytes sent/received per forward and reports them as the
+session's status string in the shared Active Sessions panel (so "list, connection count, bytes,
+stop" all work there); `shift-f` on a Pod/Service/Deployment/StatefulSet/DaemonSet starts a
+forward with hard-coded default ports (8080 for Pod/workload, 80 for Service) and an
+auto-assigned local port — **there's no target/port picker dialog yet**, which is the main
+missing piece for real usability.
+
+Missing: `favorites.rs` (the persisted-favorites data model, `state.json` key
+`"port_forwards"`) is fully unit-tested but **not wired into `init(cx)` at all** — nothing saves
+a forward as a favorite, nothing loads or auto-starts them on cluster connect. "Reconnect state"
+isn't tracked (a broken forward's connections just error out; the listener itself never retries
+with backoff the way `kubyl_kube::ConnectionManager` does for cluster connections). "Open in
+browser" is a single global action (`Port Forward: Open Last in Browser`, `secondary-alt-o`) that
+opens the most recently started forward's URL — not a per-row button, and it doesn't special-case
+HTTP vs. non-HTTP ports.
+
+#### Mockup deviations
+Board 2 wasn't reproduced pixel-for-pixel: the log view's toolbar/level-chip row is a plain
+`h_flex` row rather than the mockup's styled chip group, and the terminal view has no chrome
+(tab bar aside) beyond a bare status label in the corner — screenshotting wasn't attempted (no
+running cluster to point it at, and the harness needs `cargo run --features screenshot`, which
+this session didn't invoke; see `AGENTS.md` for the exact invocation the next session should
+try).
+
+#### For the next session
+1. Wire `favorites.rs` into an actual "save as favorite" / auto-start-on-connect flow.
+2. Add a target/port picker dialog for port-forwards instead of the hard-coded defaults.
+3. Probe shells for real in `kubyl_terminal` (use `shell::probe_command` via a quick `exec`
+   before the interactive one) and wire `exec::Mode::Attach`, ephemeral debug containers and node
+   shell.
+4. Decide where watch counts should live (`kubyl_core` vs. a small `kubyl_resources` addition)
+   and surface them in `kubyl_logs::dock`.
+5. Verify against `script/dev-cluster.sh`: 3-replica deployment log interleaving, pod-kill
+   rejoin, `vim`/`htop` in an exec shell, and a Service forward surviving a pod restart — none of
+   this was exercised live in this session.
