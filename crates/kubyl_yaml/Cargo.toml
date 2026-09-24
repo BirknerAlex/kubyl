@@ -1,0 +1,43 @@
+[package]
+name = "kubyl_yaml"
+description = "YAML editor, schema validation, diff and apply."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+base64.workspace = true
+futures.workspace = true
+gpui.workspace = true
+gpui-component = { workspace = true, features = ["tree-sitter-yaml"] }
+granit-parser.workspace = true
+jiff.workspace = true
+k8s-openapi.workspace = true
+kube.workspace = true
+kubyl_core.workspace = true
+kubyl_explorer.workspace = true
+kubyl_kube.workspace = true
+kubyl_palette.workspace = true
+kubyl_resources.workspace = true
+kubyl_settings.workspace = true
+kubyl_ui.workspace = true
+lsp-types.workspace = true
+regex.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde-saphyr.workspace = true
+serde_json.workspace = true
+similar.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+tempfile.workspace = true

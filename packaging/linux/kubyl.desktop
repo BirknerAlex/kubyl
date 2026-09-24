@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Kubyl
+GenericName=Kubernetes Client
+Comment=Native Kubernetes desktop client
+Exec=kubyl %U
+Icon=kubyl
+Terminal=false
+Categories=Development;Utility;
+StartupWMClass=kubyl

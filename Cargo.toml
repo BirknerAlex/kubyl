@@ -1,0 +1,112 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+default-members = ["crates/kubyl"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/BirknerAlex/kubyl"
+authors = ["Alexander Birkner <alexander.birkner@g-portal.com>"]
+publish = false
+
+[workspace.dependencies]
+# Internal crates
+kubyl_charts = { path = "crates/kubyl_charts" }
+kubyl_core = { path = "crates/kubyl_core" }
+kubyl_explorer = { path = "crates/kubyl_explorer" }
+kubyl_files = { path = "crates/kubyl_files" }
+kubyl_keymap = { path = "crates/kubyl_keymap" }
+kubyl_kube = { path = "crates/kubyl_kube" }
+kubyl_logs = { path = "crates/kubyl_logs" }
+kubyl_metrics = { path = "crates/kubyl_metrics" }
+kubyl_operators = { path = "crates/kubyl_operators" }
+kubyl_overview = { path = "crates/kubyl_overview" }
+kubyl_palette = { path = "crates/kubyl_palette" }
+kubyl_portforward = { path = "crates/kubyl_portforward" }
+kubyl_resources = { path = "crates/kubyl_resources" }
+kubyl_settings = { path = "crates/kubyl_settings" }
+kubyl_terminal = { path = "crates/kubyl_terminal" }
+kubyl_ui = { path = "crates/kubyl_ui" }
+kubyl_updates = { path = "crates/kubyl_updates" }
+kubyl_yaml = { path = "crates/kubyl_yaml" }
+
+# GPUI. `gpui-pre-*` are crates.io snapshots of zed-industries/zed (0.3.6 = zed@bcf6582),
+# the exact snapshot gpui-component 0.6.6 is built against. Bump all of these together, in their own PR.
+gpui = { package = "gpui-pre", version = "=0.3.6" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.6", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
+gpui-base = "=0.6.6"
+gpui-component = "=0.6.6"
+
+# Kubernetes
+kube = { version = "4.2.0", default-features = false, features = ["client", "config", "runtime", "ws", "oauth", "oidc", "gzip", "rustls-tls", "ring", "http-proxy", "socks5"] }
+k8s-openapi = { version = "0.28.0", features = ["latest"] }
+http = "1.5.0"
+http-body-util = "0.1.5"
+jiff = "0.2.37"
+tower = { version = "0.5.3", features = ["buffer", "filter"] }
+
+# Auth: OS keychain and OIDC (openidconnect brings its own reqwest, re-exported as `openidconnect::reqwest`).
+keyring = "4.2.0"
+openidconnect = { version = "4.0.1", default-features = false, features = ["reqwest", "rustls-tls"] }
+secrecy = "0.10.3"
+
+# Assets
+gpui-kit-assets = "=0.6.6"
+
+# macOS integration (already in the tree through GPUI)
+objc2 = "0.6.4"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSImage", "NSResponder"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSData"] }
+
+# General
+anyhow = "1.0.104"
+base64 = "0.22.1"
+dirs = "7.0.0"
+futures = "0.3.34"
+granit-parser = "1.3.0"
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+lsp-types = "0.97.0" # the version gpui-component uses for editor hover/completion types
+notify = "8.2.0"
+nucleo-matcher = "0.3.1"
+open = "5.4.4"
+parking_lot = "0.12.5"
+regex = "1.13.1"
+rust-embed = { version = "8.12.0", features = ["include-exclude"] }
+schemars = "1.2.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+serde-saphyr = "1.3.0"
+similar = "3.2.0"
+smallvec = "1.15.2" # kube 4.2 (serde-saphyr 0.0.29) needs < 1.16
+tempfile = "3.27.0"
+thiserror = "2.0.21"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "net", "io-util", "fs"] }
+tracing = "0.1.44"
+url = "2.5.8"
+winresource = "0.1.31"
+tracing-appender = "0.2.5"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+
+[profile.dev]
+debug = "limited"
+split-debuginfo = "unpacked"
+
+# GPUI and its layout/text stack are slow unoptimized; keep them fast in dev builds.
+[profile.dev.package]
+gpui-pre = { opt-level = 3 }
+gpui-pre-platform = { opt-level = 3 }
+taffy = { opt-level = 3 }
+resvg = { opt-level = 3 }
+rustybuzz = { opt-level = 3 }
+ttf-parser = { opt-level = 3 }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

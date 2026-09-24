@@ -1,0 +1,25 @@
+// k9s-compatible additions, layered on top of default.json (`"keymap": { "preset": "k9s" }`).
+// k9s keys that Kubyl binds everywhere already: `:` command, `/` filter, `j`/`k`, `g g`, `G`,
+// `ctrl-f`/`ctrl-b`, `space` mark, `ctrl-d` delete, `ctrl-k` kill, `d` describe, `y` copy.
+// `ctrl-d` stays delete (as in k9s), so half-page down is `ctrl-f` like k9s's page down.
+[
+  {
+    "context": "ResourceList",
+    "bindings": {
+      "?": ["palette::Open", { "mode": "actions" }],
+      "0": "palette::ShowAllNamespaces",
+      "[": "pane::GoBack",
+      "]": "pane::GoForward",
+      "-": "pane::GoBack",
+      "escape": "pane::GoBack",
+      "ctrl-u": "resource_list::SelectPageUp"
+    }
+  },
+  {
+    "context": "ExplorerTree",
+    "bindings": {
+      ":": ["palette::Open", { "mode": "resources" }],
+      "?": ["palette::Open", { "mode": "actions" }]
+    }
+  }
+]

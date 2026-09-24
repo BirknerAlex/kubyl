@@ -1,0 +1,29 @@
+// Kubyl's default keymap (Zed-like). `secondary` is cmd on macOS and ctrl elsewhere.
+// Crates register more defaults in code (list actions such as `l`, `d`, `ctrl-d`); this file
+// holds the app-wide navigation keys. Override or unbind (`null`) any of them in settings.json:
+//   "keymap": { "preset": "k9s", "bindings": [{ "context": "ResourceList", "bindings": { "x": "resource::Delete" } }] }
+[
+  {
+    "bindings": {
+      "secondary-k": "kubyl::ToggleCommandPalette",
+      "secondary-shift-p": ["palette::Open", { "mode": "actions" }],
+      "secondary-p": "palette::GoToObject"
+    }
+  },
+  {
+    "context": "Pane",
+    "bindings": {
+      "secondary-[": "pane::GoBack",
+      "secondary-]": "pane::GoForward",
+      "alt-left": "pane::GoBack",
+      "alt-right": "pane::GoForward"
+    }
+  },
+  {
+    "context": "ResourceList",
+    "bindings": {
+      ":": ["palette::Open", { "mode": "resources" }],
+      "shift-o": "palette::GoToReference"
+    }
+  }
+]

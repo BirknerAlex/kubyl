@@ -1,0 +1,373 @@
+name: Release
+
+# Manual only: merges to main never cut a release. Trigger from the Actions tab.
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump
+        type: choice
+        options: [auto, patch, minor, major]
+        default: auto
+      dry_run:
+        description: Compute the version and changelog, build nothing, publish nothing
+        type: boolean
+        default: false
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: short
+  RUST_TOOLCHAIN: "1.98"
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    name: Compute version and changelog
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+      tag: ${{ steps.bump.outputs.tag }}
+      proceed: ${{ steps.bump.outputs.proceed }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: git-cliff,cargo-edit
+
+      - name: Determine next version
+        id: bump
+        run: |
+          set -euo pipefail
+          CURRENT_TAG="$(git tag --sort=-v:refname -l 'v[0-9]*' | head -n1)"
+          CURRENT_CARGO_VERSION="$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)"/\1/')"
+
+          if [ -z "$CURRENT_TAG" ]; then
+            # First ever release: use whatever version is already in Cargo.toml.
+            NEXT_VERSION="$CURRENT_CARGO_VERSION"
+          elif [ "${{ inputs.bump }}" = "auto" ]; then
+            NEXT_VERSION="$(git-cliff --bumped-version --tag-pattern 'v[0-9]*' | sed 's/^v//')"
+            if [ "v$NEXT_VERSION" = "$CURRENT_TAG" ]; then
+              echo "::error::No conventional commits since $CURRENT_TAG warrant a version bump. Use a manual bump input or add feat/fix commits."
+              exit 1
+            fi
+          else
+            cargo set-version --bump "${{ inputs.bump }}"
+            NEXT_VERSION="$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)"/\1/')"
+            git checkout -- Cargo.toml Cargo.lock
+          fi
+
+          echo "version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate changelog
+        run: |
+          set -euo pipefail
+          git-cliff --tag "${{ steps.bump.outputs.tag }}" --unreleased --strip header \
+            -o RELEASE_NOTES.md
+          if [ ! -s RELEASE_NOTES.md ]; then
+            echo "_No conventional-commit changes recorded for this release._" > RELEASE_NOTES.md
+          fi
+          {
+            echo "## v${{ steps.bump.outputs.version }}"
+            echo
+            cat RELEASE_NOTES.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Write full CHANGELOG.md
+        if: steps.bump.outputs.proceed == 'true'
+        run: git-cliff --tag "${{ steps.bump.outputs.tag }}" -o CHANGELOG.md
+
+      - name: Bump Cargo.toml and commit
+        if: steps.bump.outputs.proceed == 'true'
+        run: |
+          set -euo pipefail
+          cargo set-version "${{ steps.bump.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock CHANGELOG.md
+          git commit -m "chore(release): ${{ steps.bump.outputs.tag }}"
+          git tag "${{ steps.bump.outputs.tag }}"
+          # `git tag` (no -a) makes a lightweight tag, and `--follow-tags` only pushes
+          # annotated ones — push the tag explicitly instead of relying on that.
+          git push origin HEAD:main
+          git push origin "${{ steps.bump.outputs.tag }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: RELEASE_NOTES.md
+          retention-days: 1
+
+  build-macos:
+    name: Build macOS (universal, notarized)
+    needs: version
+    if: needs.version.outputs.proceed == 'true'
+    runs-on: macos-14
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.version.outputs.tag }}
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-macos
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-bundle
+
+      - name: Build both architectures
+        run: |
+          cargo build --release --locked -p kubyl --target aarch64-apple-darwin
+          cargo build --release --locked -p kubyl --target x86_64-apple-darwin
+
+      - name: Bundle .app and merge into a universal binary
+        run: |
+          set -euo pipefail
+          cargo bundle --release -p kubyl --target aarch64-apple-darwin
+          APP="target/aarch64-apple-darwin/release/bundle/osx/Kubyl.app"
+          lipo -create -output "$APP/Contents/MacOS/kubyl" \
+            target/aarch64-apple-darwin/release/kubyl \
+            target/x86_64-apple-darwin/release/kubyl
+          echo "APP=$APP" >> "$GITHUB_ENV"
+
+      - name: Import signing certificate
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PW="$(uuidgen)"
+          echo "$MACOS_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PW" build.keychain
+          security set-keychain-settings -lut 21600 build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PW" build.keychain
+          security import "$RUNNER_TEMP/cert.p12" -k build.keychain \
+            -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PW" build.keychain
+
+      - name: Codesign
+        run: |
+          set -euo pipefail
+          codesign --deep --force --options runtime --timestamp \
+            --entitlements packaging/macos/entitlements.plist \
+            --sign "Developer ID Application" "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+      - name: Create DMG
+        run: |
+          set -euo pipefail
+          DMG_ROOT="$RUNNER_TEMP/dmg-root"
+          mkdir -p "$DMG_ROOT"
+          cp -R "$APP" "$DMG_ROOT/"
+          ln -s /Applications "$DMG_ROOT/Applications"
+          DMG="kubyl-$VERSION-macos-universal.dmg"
+          hdiutil create -volname Kubyl -srcfolder "$DMG_ROOT" -ov -format UDZO "$DMG"
+          codesign --sign "Developer ID Application" --timestamp "$DMG"
+          echo "DMG=$DMG" >> "$GITHUB_ENV"
+
+      - name: Notarize
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          echo "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/apple_api_key.p8"
+          xcrun notarytool submit "$DMG" \
+            --key "$RUNNER_TEMP/apple_api_key.p8" \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER" \
+            --wait
+          xcrun stapler staple "$DMG"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kubyl-macos-universal
+          path: kubyl-*.dmg
+          retention-days: 7
+
+  build-windows:
+    name: Build Windows (${{ matrix.arch }})
+    needs: version
+    if: needs.version.outputs.proceed == 'true'
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            arch: x86_64
+          - target: aarch64-pc-windows-msvc
+            arch: aarch64
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.version.outputs.tag }}
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-windows-${{ matrix.arch }}
+
+      - name: Build
+        run: cargo build --release --locked -p kubyl --target ${{ matrix.target }}
+
+      - name: Zip
+        run: |
+          Compress-Archive -Path target/${{ matrix.target }}/release/kubyl.exe,LICENSE-MIT,LICENSE-APACHE `
+            -DestinationPath kubyl-$env:VERSION-windows-${{ matrix.arch }}.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kubyl-windows-${{ matrix.arch }}
+          path: kubyl-*.zip
+          retention-days: 7
+
+  build-linux:
+    name: Build and package Linux (${{ matrix.arch }})
+    needs: version
+    if: needs.version.outputs.proceed == 'true'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            arch: amd64
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            arch: arm64
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.version.outputs.tag }}
+
+      - name: Install Linux dependencies (Wayland, X11, xkb, fontconfig, Vulkan)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config clang \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libx11-dev libx11-xcb-dev libxcb1-dev libxi-dev libxrandr-dev \
+            libfontconfig1-dev libfreetype-dev \
+            libvulkan-dev libasound2-dev libzstd-dev libssl-dev
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-linux-${{ matrix.arch }}
+
+      - name: Build
+        run: cargo build --release --locked -p kubyl --target ${{ matrix.target }}
+
+      - name: Raw binary tarball
+        run: |
+          set -euo pipefail
+          STAGE="$(mktemp -d)/kubyl-$VERSION-linux-${{ matrix.arch }}"
+          mkdir -p "$STAGE"
+          cp target/${{ matrix.target }}/release/kubyl "$STAGE/"
+          cp LICENSE-MIT LICENSE-APACHE "$STAGE/"
+          tar -C "$(dirname "$STAGE")" -czf "kubyl-$VERSION-linux-${{ matrix.arch }}.tar.gz" \
+            "$(basename "$STAGE")"
+
+      - name: Install nfpm
+        run: |
+          set -euo pipefail
+          NFPM_ARCH="$([ '${{ matrix.arch }}' = amd64 ] && echo x86_64 || echo arm64)"
+          curl -sSL "https://github.com/goreleaser/nfpm/releases/download/v2.47.0/nfpm_2.47.0_Linux_${NFPM_ARCH}.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin nfpm
+
+      - name: Build .deb and .rpm
+        env:
+          VERSION: ${{ env.VERSION }}
+          ARCH: ${{ matrix.arch }}
+          BIN_PATH: target/${{ matrix.target }}/release/kubyl
+        run: |
+          set -euo pipefail
+          for pkg in deb rpm; do
+            nfpm package --config nfpm.yaml --packager "$pkg" --target .
+          done
+
+      # Arch Linux is x86_64-only upstream (ARM users are on the separate Arch Linux ARM
+      # distro), so this package only makes sense for the amd64 leg of the matrix.
+      - name: Build Arch package
+        if: matrix.arch == 'amd64'
+        env:
+          VERSION: ${{ env.VERSION }}
+          ARCH: ${{ matrix.arch }}
+          BIN_PATH: target/${{ matrix.target }}/release/kubyl
+        run: nfpm package --config nfpm.yaml --packager archlinux --target .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kubyl-linux-${{ matrix.arch }}
+          path: |
+            kubyl-*.tar.gz
+            *.deb
+            *.rpm
+            *.pkg.tar.zst
+          retention-days: 7
+
+  release:
+    name: Publish GitHub Release
+    needs: [version, build-macos, build-windows, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          mv RELEASE_NOTES.md ..
+          sha256sum -- * > SHA256SUMS
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ needs.version.outputs.tag }}" dist/* \
+            --repo "${{ github.repository }}" \
+            --title "Kubyl ${{ needs.version.outputs.tag }}" \
+            --notes-file RELEASE_NOTES.md

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- GPUI's Metal/wgpu shader pipeline generates and executes code at runtime, which the
+         default hardened runtime blocks. These mirror Zed's own entitlements for the same
+         GPUI stack. Not sandboxed: Developer ID apps distributed outside the Mac App Store
+         don't need App Sandbox, and Kubyl needs unrestricted filesystem/network/keychain
+         access for kubeconfigs and cluster connections. -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>

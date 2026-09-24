@@ -1,0 +1,1780 @@
+//! The details of one object: the right dock panel (follows the list selection) and the
+//! Details / Describe tabs.
+//!
+//! Summary: status pills, owner chain, containers (pods), usage, labels, annotations,
+//! conditions, related objects (selector → pods, Service → Endpoints, PVC → PV, Ingress →
+//! Services/Secrets), kind-specific sections (Deployment rollout history, Node capacity and
+//! taints) and recent events. Describe: `kubectl describe`-like text with events.
+//!
+//! Related stores (events, pods, owners…) are acquired only after the selection has been
+//! stable for [`SETTLE`], so scrolling through thousands of rows doesn't start watches.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use gpui::{
+    AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable, FontWeight,
+    IntoElement, Render, SharedString, Subscription, Task, Window, div, prelude::*,
+};
+use kubyl_core::actions::OpenView;
+use kubyl_core::{
+    ClusterId, DockPanel, DockPosition, Gvr, ResourceRef, TabHandle, TabView, Tone, ViewKind,
+    ViewRequest,
+};
+use kubyl_kube::ConnectionManager;
+use kubyl_resources::columns::{
+    event_message, event_time, job_status, node_roles, node_status, pod_status, status_tone,
+};
+use kubyl_resources::format::{
+    array_at, format_bytes, format_cpu, human_duration, int_at, map_pairs, object_age,
+    parse_quantity, seconds_since, str_at, timestamp,
+};
+use kubyl_resources::{
+    ResourceSelection, ResourceStore, ResourceStores, StoreHandle, StoreKey, object_key,
+};
+use kubyl_ui::{
+    ActiveColors, Chip, Colors, Icon, IconButton, IconName, StatusDot, StatusPill, fonts, h_flex,
+    tone_color, u, v_flex,
+};
+use serde_json::Value;
+
+use crate::catalog;
+
+/// How long the selection must stay put before related objects are loaded.
+const SETTLE: Duration = Duration::from_millis(250);
+
+/// What the details show.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Target {
+    pub cluster: ClusterId,
+    pub gvr: Gvr,
+    pub kind: String,
+    pub namespace: Option<String>,
+    pub name: String,
+}
+
+impl Target {
+    fn from_ref(target: &ResourceRef, kind: String) -> Option<Self> {
+        Some(Self {
+            cluster: target.cluster.clone(),
+            gvr: target.gvr.clone(),
+            kind,
+            namespace: target.namespace.clone(),
+            name: target.name.clone()?,
+        })
+    }
+
+    fn key(&self) -> kubyl_resources::ObjectKey {
+        object_key(self.namespace.as_deref(), &self.name)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    Summary,
+    Describe,
+}
+
+/// Stores for related objects, acquired once the selection settles.
+#[derive(Default)]
+struct Related {
+    events: Option<StoreHandle>,
+    pods: Option<StoreHandle>,
+    replica_sets: Option<StoreHandle>,
+    endpoints: Option<StoreHandle>,
+    volume: Option<StoreHandle>,
+    /// Stores of owners, one per level of the chain.
+    owners: Vec<StoreHandle>,
+    _observers: Vec<Subscription>,
+}
+
+/// The shared details renderer.
+pub struct DetailsContent {
+    target: Option<Target>,
+    mode: Mode,
+    object: Option<Arc<Value>>,
+    /// The object no longer exists.
+    gone: bool,
+    source: Option<Entity<ResourceStore>>,
+    own: Option<StoreHandle>,
+    related: Related,
+    settle: Option<Task<()>>,
+    _source_observer: Option<Subscription>,
+}
+
+impl DetailsContent {
+    fn new(mode: Mode) -> Self {
+        Self {
+            target: None,
+            mode,
+            object: None,
+            gone: false,
+            source: None,
+            own: None,
+            related: Related::default(),
+            settle: None,
+            _source_observer: None,
+        }
+    }
+
+    /// Shows `target`. `object`/`store` come from the list when available; otherwise the view
+    /// watches the object itself.
+    fn set_target(
+        &mut self,
+        target: Option<Target>,
+        object: Option<Arc<Value>>,
+        store: Option<Entity<ResourceStore>>,
+        cx: &mut Context<Self>,
+    ) {
+        if target == self.target && store == self.source {
+            if object.is_some() {
+                self.object = object;
+            }
+            return;
+        }
+        let same_object = target == self.target;
+        self.target = target.clone();
+        self.object = object;
+        self.gone = false;
+        if !same_object {
+            self.related = Related::default();
+        }
+        self.own = None;
+        self._source_observer = None;
+        self.source = store.clone();
+        let Some(target) = target else {
+            self.settle = None;
+            cx.notify();
+            return;
+        };
+        let store = match store {
+            Some(store) => store,
+            None => {
+                let key = StoreKey::new(
+                    target.cluster.clone(),
+                    target.gvr.clone(),
+                    target.namespace.clone(),
+                )
+                .fields(format!("metadata.name={}", target.name));
+                let handle = ResourceStores::acquire(cx, key);
+                let entity = handle.entity().clone();
+                self.own = Some(handle);
+                entity
+            }
+        };
+        self.source = Some(store.clone());
+        self._source_observer = Some(cx.observe(&store, |this, store, cx| {
+            let Some(target) = &this.target else {
+                return;
+            };
+            let store = store.read(cx);
+            match store.get(&target.key()) {
+                Some(object) => {
+                    this.object = Some(object.clone());
+                    this.gone = false;
+                }
+                None if store.status().is_ready() => this.gone = true,
+                None => {}
+            }
+            cx.notify();
+        }));
+        if self.object.is_none() {
+            self.object = store.read(cx).get(&target.key()).cloned();
+        }
+        if !same_object {
+            self.settle = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(SETTLE).await;
+                this.update(cx, |this, cx| this.load_related(cx)).ok();
+            }));
+        }
+        cx.notify();
+    }
+
+    fn set_mode(&mut self, mode: Mode, cx: &mut Context<Self>) {
+        self.mode = mode;
+        cx.notify();
+    }
+
+    fn observe_store(&mut self, handle: &StoreHandle, cx: &mut Context<Self>) {
+        self.related
+            ._observers
+            .push(cx.observe(handle.entity(), |_, _, cx| cx.notify()));
+    }
+
+    fn acquire(&mut self, key: StoreKey, cx: &mut Context<Self>) -> StoreHandle {
+        let handle = ResourceStores::acquire(cx, key);
+        self.observe_store(&handle, cx);
+        handle
+    }
+
+    /// Acquires the stores for related objects of the current target.
+    fn load_related(&mut self, cx: &mut Context<Self>) {
+        let (Some(target), Some(object)) = (self.target.clone(), self.object.clone()) else {
+            return;
+        };
+        let cluster = target.cluster.clone();
+        let ns = target.namespace.clone();
+        let core = |resource: &str| Gvr::new("", "v1", resource);
+
+        // Events about the object.
+        let events = match &ns {
+            Some(ns) => StoreKey::new(cluster.clone(), core("events"), Some(ns.clone())).fields(
+                format!("involvedObject.uid={}", str_at(&object, "/metadata/uid")),
+            ),
+            None => StoreKey::new(cluster.clone(), core("events"), None).fields(format!(
+                "involvedObject.kind={},involvedObject.name={}",
+                target.kind, target.name
+            )),
+        };
+        self.related.events = Some(self.acquire(events, cx));
+
+        // Pods selected by the object.
+        if selector_of(&target.kind, &object).is_some()
+            && let Some(ns) = &ns
+        {
+            let pods = StoreKey::new(cluster.clone(), core("pods"), Some(ns.clone()));
+            self.related.pods = Some(self.acquire(pods, cx));
+        }
+        match target.kind.as_str() {
+            "Deployment" => {
+                let key = StoreKey::new(
+                    cluster.clone(),
+                    Gvr::new("apps", "v1", "replicasets"),
+                    ns.clone(),
+                );
+                self.related.replica_sets = Some(self.acquire(key, cx));
+            }
+            "Service" => {
+                let key = StoreKey::new(cluster.clone(), core("endpoints"), ns.clone())
+                    .fields(format!("metadata.name={}", target.name));
+                self.related.endpoints = Some(self.acquire(key, cx));
+            }
+            "PersistentVolumeClaim" => {
+                let volume = str_at(&object, "/spec/volumeName");
+                if !volume.is_empty() {
+                    let key = StoreKey::new(cluster.clone(), core("persistentvolumes"), None)
+                        .fields(format!("metadata.name={volume}"));
+                    self.related.volume = Some(self.acquire(key, cx));
+                }
+            }
+            _ => {}
+        }
+        self.load_owner_level(0, cx);
+        cx.notify();
+    }
+
+    /// Watches the owner at `level` of the chain (metadata only) to find the next owner.
+    fn load_owner_level(&mut self, level: usize, cx: &mut Context<Self>) {
+        if level >= 3 {
+            return;
+        }
+        let chain = self.owner_chain(cx);
+        let Some(owner) = chain.get(level) else {
+            return;
+        };
+        let Some(gvr) = owner.gvr.clone() else {
+            return;
+        };
+        let Some(target) = &self.target else {
+            return;
+        };
+        let key = StoreKey::new(target.cluster.clone(), gvr, target.namespace.clone()).metadata();
+        let handle = ResourceStores::acquire(cx, key);
+        self.related
+            ._observers
+            .push(cx.observe(handle.entity(), move |this, _, cx| {
+                if this.related.owners.len() == level + 1 {
+                    this.load_owner_level(level + 1, cx);
+                }
+                cx.notify();
+            }));
+        self.related.owners.push(handle);
+    }
+
+    /// The owner chain from the direct owner upwards: `[ReplicaSet x, Deployment y]`.
+    fn owner_chain(&self, cx: &App) -> Vec<Owner> {
+        let Some(object) = &self.object else {
+            return Vec::new();
+        };
+        let Some(target) = &self.target else {
+            return Vec::new();
+        };
+        let discovery =
+            ConnectionManager::try_global(cx).and_then(|m| m.read(cx).discovery(&target.cluster));
+        let mut chain = Vec::new();
+        let mut current = object.clone();
+        for level in 0..3 {
+            let Some(reference) = array_at(&current, "/metadata/ownerReferences")
+                .iter()
+                .find(|o| o["controller"].as_bool() == Some(true))
+                .or_else(|| array_at(&current, "/metadata/ownerReferences").first())
+                .cloned()
+            else {
+                break;
+            };
+            let kind = str_at(&reference, "/kind").to_string();
+            let name = str_at(&reference, "/name").to_string();
+            let (group, version) = match str_at(&reference, "/apiVersion").split_once('/') {
+                Some((g, v)) => (g.to_string(), v.to_string()),
+                None => (String::new(), str_at(&reference, "/apiVersion").to_string()),
+            };
+            let gvr = discovery.as_ref().and_then(|d| {
+                d.by_gvk(&kubyl_core::Gvk::new(
+                    group.clone(),
+                    version.clone(),
+                    kind.clone(),
+                ))
+                .map(|r| r.gvr.clone())
+            });
+            chain.push(Owner {
+                kind,
+                name: name.clone(),
+                gvr: gvr.clone(),
+            });
+            let next = self.related.owners.get(level).and_then(|store| {
+                store
+                    .read(cx)
+                    .get(&object_key(target.namespace.as_deref(), &name))
+                    .cloned()
+            });
+            match next {
+                Some(next) => current = next,
+                None => break,
+            }
+        }
+        chain
+    }
+
+    fn title(&self) -> SharedString {
+        match &self.target {
+            Some(target) => format!("{} details", target.kind).into(),
+            None => "Details".into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct Owner {
+    kind: String,
+    name: String,
+    gvr: Option<Gvr>,
+}
+
+/// The label selector of workloads and Services (`matchLabels` only for Services).
+fn selector_of(kind: &str, object: &Value) -> Option<Vec<(String, String)>> {
+    let map = match kind {
+        "Service" => object.pointer("/spec/selector"),
+        "Deployment" | "StatefulSet" | "DaemonSet" | "ReplicaSet" | "Job" => {
+            object.pointer("/spec/selector/matchLabels")
+        }
+        _ => None,
+    }?;
+    let pairs: Vec<(String, String)> = map
+        .as_object()?
+        .iter()
+        .map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_string()))
+        .collect();
+    (!pairs.is_empty()).then_some(pairs)
+}
+
+fn matches_selector(object: &Value, selector: &[(String, String)]) -> bool {
+    let labels = &object["metadata"]["labels"];
+    selector
+        .iter()
+        .all(|(k, v)| labels[k.as_str()].as_str() == Some(v.as_str()))
+}
+
+fn open_details(target: ResourceRef, window: &mut Window, cx: &mut App) {
+    window.dispatch_action(
+        Box::new(OpenView(ViewRequest::for_resource(
+            ViewKind::Details,
+            target,
+        ))),
+        cx,
+    );
+}
+
+// ----- Rendering -----
+
+fn section(title: impl Into<SharedString>, colors: &Colors) -> gpui::Div {
+    let title: SharedString = title.into();
+    v_flex()
+        .px(u(14.0))
+        .py(u(12.0))
+        .gap(u(8.0))
+        .border_b_1()
+        .border_color(colors.border_variant)
+        .child(
+            div()
+                .text_size(u(11.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(colors.text_dim)
+                .child(title.to_uppercase()),
+        )
+}
+
+fn kv(rows: Vec<(&'static str, String)>, colors: &Colors) -> impl IntoElement {
+    v_flex()
+        .gap(u(5.0))
+        .text_size(u(12.0))
+        .children(rows.into_iter().map(|(k, v)| {
+            h_flex()
+                .gap(u(8.0))
+                .child(
+                    div()
+                        .flex_none()
+                        .w(u(104.0))
+                        .text_color(colors.text_dim)
+                        .child(k),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(colors.text)
+                        .child(v),
+                )
+        }))
+}
+
+fn chips(items: Vec<String>, mono: bool) -> impl IntoElement {
+    h_flex()
+        .flex_wrap()
+        .gap(u(4.0))
+        .children(items.into_iter().map(move |item| {
+            let chip = Chip::new(item);
+            if mono { chip.mono() } else { chip }
+        }))
+}
+
+fn link(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    target: ResourceRef,
+    colors: &Colors,
+) -> impl IntoElement {
+    let id: SharedString = id.into();
+    div()
+        .id(id)
+        .cursor_pointer()
+        .text_color(colors.accent)
+        .hover(|s| s.underline())
+        .child(label.into())
+        .on_click(move |_, window, cx| open_details(target.clone(), window, cx))
+}
+
+fn container_state(status: Option<&Value>, now: jiff::Timestamp) -> (String, Tone) {
+    let Some(status) = status else {
+        return ("waiting".into(), Tone::Warning);
+    };
+    if let Some(running) = status.pointer("/state/running") {
+        let since = timestamp(str_at(running, "/startedAt"))
+            .map(|t| format!(" · {}", human_duration(seconds_since(t, now))))
+            .unwrap_or_default();
+        let tone = if status["ready"].as_bool() == Some(true) {
+            Tone::Good
+        } else {
+            Tone::Warning
+        };
+        return (format!("running{since}"), tone);
+    }
+    if let Some(waiting) = status.pointer("/state/waiting") {
+        let reason = str_at(waiting, "/reason");
+        return (reason.to_string(), status_tone(reason));
+    }
+    if let Some(terminated) = status.pointer("/state/terminated") {
+        let reason = str_at(terminated, "/reason");
+        let tone = if terminated["exitCode"].as_i64() == Some(0) {
+            Tone::Muted
+        } else {
+            Tone::Bad
+        };
+        return (format!("terminated · {reason}"), tone);
+    }
+    ("unknown".into(), Tone::Neutral)
+}
+
+impl DetailsContent {
+    fn render_summary(
+        &mut self,
+        object: &Value,
+        target: &Target,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let colors = cx.colors().clone();
+        let now = jiff::Timestamp::now();
+        let mut out: Vec<AnyElement> = Vec::new();
+
+        // Header: name and status pills.
+        let mut pills = h_flex().flex_wrap().gap(u(6.0));
+        match target.kind.as_str() {
+            "Pod" => {
+                let status = pod_status(object);
+                let tone = status.tone();
+                pills = pills.child(StatusPill::new(status.reason.clone(), tone));
+                if let Some(qos) = object.pointer("/status/qosClass").and_then(Value::as_str) {
+                    pills = pills.child(Chip::new(qos.to_string()));
+                }
+                if let Some(ip) = object.pointer("/status/podIP").and_then(Value::as_str) {
+                    pills = pills.child(Chip::new(ip.to_string()));
+                }
+            }
+            "Node" => {
+                let status = node_status(object);
+                let tone = if status.starts_with("Ready") {
+                    Tone::Good
+                } else {
+                    Tone::Bad
+                };
+                pills = pills.child(StatusPill::new(status, tone));
+                for role in node_roles(object) {
+                    pills = pills.child(Chip::new(role));
+                }
+            }
+            "Job" => {
+                let status = job_status(object);
+                pills = pills.child(StatusPill::new(status, status_tone(status)));
+            }
+            "Deployment" | "StatefulSet" | "ReplicaSet" => {
+                let ready = int_at(object, "/status/readyReplicas");
+                let desired = int_at(object, "/spec/replicas");
+                let tone = if ready >= desired {
+                    Tone::Good
+                } else {
+                    Tone::Warning
+                };
+                pills = pills.child(StatusPill::new(format!("{ready}/{desired} ready"), tone));
+            }
+            _ => {
+                if let Some(phase) = object.pointer("/status/phase").and_then(Value::as_str) {
+                    pills = pills.child(StatusPill::new(phase.to_string(), status_tone(phase)));
+                }
+            }
+        }
+        pills = pills.child(Chip::new(format!("age {}", object_age(object, now))));
+        out.push(
+            v_flex()
+                .px(u(14.0))
+                .py(u(12.0))
+                .gap(u(6.0))
+                .border_b_1()
+                .border_color(colors.border_variant)
+                .child(
+                    div()
+                        .font_family(fonts::MONO)
+                        .text_size(u(12.5))
+                        .text_color(if self.gone {
+                            colors.text_dim
+                        } else {
+                            colors.text
+                        })
+                        .child(target.name.clone()),
+                )
+                .when(self.gone, |this| {
+                    this.child(
+                        div()
+                            .text_size(u(12.0))
+                            .text_color(colors.red)
+                            .child("Deleted"),
+                    )
+                })
+                .when_some(target.namespace.clone(), |this, ns| {
+                    this.child(
+                        div()
+                            .text_size(u(11.5))
+                            .text_color(colors.text_dim)
+                            .child(format!("namespace {ns}")),
+                    )
+                })
+                .child(pills)
+                .into_any_element(),
+        );
+
+        // Owner chain.
+        let chain = self.owner_chain(cx);
+        if !chain.is_empty() {
+            let mut row = h_flex().flex_wrap().gap(u(6.0)).text_size(u(12.0));
+            for (ix, owner) in chain.iter().rev().enumerate() {
+                if ix > 0 {
+                    row = row.child(div().text_color(colors.text_faint).child("›"));
+                }
+                match &owner.gvr {
+                    Some(gvr) => {
+                        let reference = ResourceRef::object(
+                            target.cluster.clone(),
+                            gvr.clone(),
+                            target.namespace.clone(),
+                            owner.name.clone(),
+                        );
+                        row = row.child(
+                            h_flex()
+                                .gap(u(4.0))
+                                .child(div().text_color(colors.text_dim).child(owner.kind.clone()))
+                                .child(div().font_family(fonts::MONO).text_size(u(11.5)).child(
+                                    link(
+                                        SharedString::from(format!("owner-{ix}")),
+                                        owner.name.clone(),
+                                        reference,
+                                        &colors,
+                                    ),
+                                )),
+                        );
+                    }
+                    None => {
+                        row = row.child(format!("{} {}", owner.kind, owner.name));
+                    }
+                }
+            }
+            row = row
+                .child(div().text_color(colors.text_faint).child("›"))
+                .child(
+                    div()
+                        .text_color(colors.text_muted)
+                        .child(target.kind.clone()),
+                );
+            out.push(
+                section("Owner chain", &colors)
+                    .child(row)
+                    .into_any_element(),
+            );
+        }
+
+        match target.kind.as_str() {
+            "Pod" => out.extend(self.render_pod(object, target, &colors, cx)),
+            "Deployment" => out.extend(self.render_deployment(object, target, &colors, cx)),
+            "Node" => out.extend(self.render_node(object, &colors)),
+            "Service" => out.extend(self.render_service(object, target, &colors, cx)),
+            "PersistentVolumeClaim" => out.extend(self.render_pvc(object, target, &colors, cx)),
+            "Ingress" => out.extend(self.render_ingress(object, target, &colors)),
+            _ => {}
+        }
+
+        // Pods selected by workloads (not Deployments: their pods show via ReplicaSets too).
+        if let (Some(selector), Some(pods), Some(ns)) = (
+            selector_of(&target.kind, object),
+            self.related.pods.as_ref(),
+            target.namespace.clone(),
+        ) {
+            let store = pods.read(cx);
+            let mut matching: Vec<&Arc<Value>> = store
+                .objects()
+                .values()
+                .filter(|p| matches_selector(p, &selector))
+                .collect();
+            matching.sort_by(|a, b| str_at(a, "/metadata/name").cmp(str_at(b, "/metadata/name")));
+            let mut list = v_flex().gap(u(4.0)).text_size(u(12.0));
+            for (ix, pod) in matching.iter().take(12).enumerate() {
+                let status = pod_status(pod);
+                let name = str_at(pod, "/metadata/name").to_string();
+                let reference = ResourceRef::object(
+                    target.cluster.clone(),
+                    Gvr::new("", "v1", "pods"),
+                    Some(ns.clone()),
+                    name.clone(),
+                );
+                list = list.child(
+                    h_flex()
+                        .gap(u(8.0))
+                        .child(StatusDot::new(tone_color(status.tone(), &colors)))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .font_family(fonts::MONO)
+                                .text_size(u(11.5))
+                                .child(link(
+                                    SharedString::from(format!("pod-{ix}")),
+                                    name,
+                                    reference,
+                                    &colors,
+                                )),
+                        )
+                        .child(
+                            div()
+                                .text_color(tone_color(status.tone(), &colors))
+                                .child(status.reason),
+                        ),
+                );
+            }
+            if matching.len() > 12 {
+                list = list.child(
+                    div()
+                        .text_color(colors.text_dim)
+                        .child(format!("… {} more", matching.len() - 12)),
+                );
+            }
+            if matching.is_empty() {
+                list = list.child(
+                    div()
+                        .text_color(colors.text_dim)
+                        .child("No pods match the selector."),
+                );
+            }
+            out.push(
+                section(format!("Pods · {}", matching.len()), &colors)
+                    .child(list)
+                    .into_any_element(),
+            );
+        }
+
+        // Labels, annotations, conditions.
+        let labels = map_pairs(object.pointer("/metadata/labels"));
+        if !labels.is_empty() {
+            out.push(
+                section("Labels", &colors)
+                    .child(chips(labels, true))
+                    .into_any_element(),
+            );
+        }
+        let annotations: Vec<String> = map_pairs(object.pointer("/metadata/annotations"))
+            .into_iter()
+            .filter(|a| !a.starts_with("kubectl.kubernetes.io/last-applied-configuration"))
+            .map(|a| {
+                if a.chars().count() > 60 {
+                    format!("{}…", a.chars().take(60).collect::<String>())
+                } else {
+                    a
+                }
+            })
+            .collect();
+        if !annotations.is_empty() {
+            out.push(
+                section(format!("Annotations · {}", annotations.len()), &colors)
+                    .child(chips(annotations.into_iter().take(8).collect(), true))
+                    .into_any_element(),
+            );
+        }
+        let conditions = array_at(object, "/status/conditions");
+        if !conditions.is_empty() {
+            let mut grid = h_flex().flex_wrap().gap(u(4.0)).text_size(u(12.0));
+            for condition in conditions {
+                let ok = str_at(condition, "/status") == "True";
+                let kind = str_at(condition, "/type").to_string();
+                // Node pressure conditions are healthy when False.
+                let healthy = if target.kind == "Node" && kind != "Ready" {
+                    !ok
+                } else {
+                    ok
+                };
+                grid = grid.child(
+                    h_flex()
+                        .w(u(150.0))
+                        .gap(u(6.0))
+                        .child(
+                            Icon::new(if healthy {
+                                IconName::CircleCheck
+                            } else {
+                                IconName::CircleX
+                            })
+                            .size(12.0)
+                            .color(if healthy {
+                                colors.green
+                            } else {
+                                colors.red
+                            }),
+                        )
+                        .child(div().truncate().child(kind)),
+                );
+            }
+            out.push(
+                section("Conditions", &colors)
+                    .child(grid)
+                    .into_any_element(),
+            );
+        }
+
+        // Recent events.
+        if let Some(events) = &self.related.events {
+            let store = events.read(cx);
+            let mut events: Vec<&Arc<Value>> = store.objects().values().collect();
+            events.sort_by_key(|e| std::cmp::Reverse(event_time(e)));
+            if !events.is_empty() {
+                let mut list = v_flex().gap(u(6.0)).text_size(u(12.0));
+                for event in events.iter().take(6) {
+                    let warning = str_at(event, "/type") == "Warning";
+                    let age = event_time(event)
+                        .map(|t| human_duration(seconds_since(t, now)))
+                        .unwrap_or_default();
+                    list = list.child(
+                        v_flex()
+                            .child(
+                                h_flex()
+                                    .gap(u(6.0))
+                                    .child(StatusDot::new(if warning {
+                                        colors.yellow
+                                    } else {
+                                        colors.text_dim
+                                    }))
+                                    .child(
+                                        div()
+                                            .text_color(if warning {
+                                                colors.yellow
+                                            } else {
+                                                colors.text
+                                            })
+                                            .child(str_at(event, "/reason").to_string()),
+                                    )
+                                    .child(div().flex_1())
+                                    .child(
+                                        div()
+                                            .text_color(colors.text_dim)
+                                            .font_family(fonts::MONO)
+                                            .text_size(u(11.0))
+                                            .child(age),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .pl(u(13.0))
+                                    .text_color(colors.text_muted)
+                                    .child(event_message(event).to_string()),
+                            ),
+                    );
+                }
+                out.push(section("Events", &colors).child(list).into_any_element());
+            }
+        }
+        out
+    }
+
+    fn render_pod(&self, pod: &Value, _: &Target, colors: &Colors, cx: &App) -> Vec<AnyElement> {
+        let now = jiff::Timestamp::now();
+        let mut out = Vec::new();
+        let statuses = array_at(pod, "/status/containerStatuses");
+        let mut list = v_flex().gap(u(8.0));
+        for container in array_at(pod, "/spec/containers") {
+            let name = str_at(container, "/name");
+            let status = statuses.iter().find(|s| str_at(s, "/name") == name);
+            let (state, tone) = container_state(status, now);
+            let color = tone_color(tone, colors);
+            let ports: Vec<String> = array_at(container, "/ports")
+                .iter()
+                .map(|p| {
+                    let protocol = match str_at(p, "/protocol") {
+                        "" => "TCP",
+                        p => p,
+                    };
+                    match str_at(p, "/name") {
+                        "" => format!(":{}/{protocol}", int_at(p, "/containerPort")),
+                        n => format!(":{}/{protocol} {n}", int_at(p, "/containerPort")),
+                    }
+                })
+                .collect();
+            let resources: Vec<String> = ["requests", "limits"]
+                .iter()
+                .filter_map(|kind| {
+                    let cpu = str_at(container, &format!("/resources/{kind}/cpu"));
+                    let memory = str_at(container, &format!("/resources/{kind}/memory"));
+                    (!cpu.is_empty() || !memory.is_empty()).then(|| {
+                        format!(
+                            "{} {}",
+                            &kind[..3],
+                            [cpu, memory]
+                                .iter()
+                                .filter(|v| !v.is_empty())
+                                .cloned()
+                                .collect::<Vec<_>>()
+                                .join(" / ")
+                        )
+                    })
+                })
+                .collect();
+            let probes: Vec<&str> = [
+                ("livenessProbe", "liveness"),
+                ("readinessProbe", "readiness"),
+                ("startupProbe", "startup"),
+            ]
+            .iter()
+            .filter(|(key, _)| container.get(*key).is_some())
+            .map(|(_, label)| *label)
+            .collect();
+            let restarts = status
+                .map(|s| int_at(s, "/restartCount"))
+                .unwrap_or_default();
+            list = list.child(
+                h_flex()
+                    .items_start()
+                    .gap(u(8.0))
+                    .child(
+                        div()
+                            .pt(u(2.0))
+                            .child(Icon::new(IconName::Box).color(color)),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                h_flex()
+                                    .justify_between()
+                                    .child(
+                                        div()
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .child(name.to_string()),
+                                    )
+                                    .child(div().text_size(u(12.0)).text_color(color).child(state)),
+                            )
+                            .child(
+                                div()
+                                    .truncate()
+                                    .font_family(fonts::MONO)
+                                    .text_size(u(11.0))
+                                    .text_color(colors.text_dim)
+                                    .child(str_at(container, "/image").to_string()),
+                            )
+                            .when(!ports.is_empty(), |this| {
+                                this.child(
+                                    div()
+                                        .text_size(u(11.5))
+                                        .text_color(colors.text_dim)
+                                        .child(ports.join(" · ")),
+                                )
+                            })
+                            .when(
+                                !resources.is_empty() || !probes.is_empty() || restarts > 0,
+                                |this| {
+                                    let mut parts = resources.clone();
+                                    if !probes.is_empty() {
+                                        parts.push(format!("probes: {}", probes.join(", ")));
+                                    }
+                                    if restarts > 0 {
+                                        parts.push(format!("{restarts} restarts"));
+                                    }
+                                    this.child(
+                                        div()
+                                            .text_size(u(11.5))
+                                            .text_color(colors.text_dim)
+                                            .child(parts.join(" · ")),
+                                    )
+                                },
+                            ),
+                    ),
+            );
+        }
+        out.push(section("Containers", colors).child(list).into_any_element());
+
+        // Usage (phase 07 provides the data).
+        let target = self.target.as_ref();
+        let usage = target.and_then(|t| {
+            let provider = kubyl_resources::metrics::Metrics::provider(cx)?;
+            provider.pod_usage(
+                &t.cluster,
+                t.namespace.as_deref().unwrap_or_default(),
+                &t.name,
+                cx,
+            )
+        });
+        let limit = |resource: &str, kind: &str| {
+            kubyl_resources::metrics::pod_resource(pod, kind, resource)
+        };
+        let body = match usage {
+            Some(usage) => kv(
+                vec![
+                    (
+                        "CPU",
+                        format!(
+                            "{}{}{}",
+                            format_cpu(usage.cpu),
+                            limit("cpu", "requests")
+                                .map(|r| format!(" / req {}", format_cpu(r)))
+                                .unwrap_or_default(),
+                            limit("cpu", "limits")
+                                .map(|l| format!(" · lim {}", format_cpu(l)))
+                                .unwrap_or_default()
+                        ),
+                    ),
+                    (
+                        "Memory",
+                        format!(
+                            "{}{}",
+                            format_bytes(usage.memory),
+                            limit("memory", "limits")
+                                .map(|l| format!(" / lim {}", format_bytes(l)))
+                                .unwrap_or_default()
+                        ),
+                    ),
+                ],
+                colors,
+            )
+            .into_any_element(),
+            None => div()
+                .text_size(u(12.0))
+                .text_color(colors.text_dim)
+                .child("No metrics source yet (metrics-server or Prometheus, phase 07).")
+                .into_any_element(),
+        };
+        out.push(section("Usage", colors).child(body).into_any_element());
+        out
+    }
+
+    fn render_deployment(
+        &self,
+        d: &Value,
+        target: &Target,
+        colors: &Colors,
+        cx: &App,
+    ) -> Vec<AnyElement> {
+        let strategy = match str_at(d, "/spec/strategy/type") {
+            "" => "RollingUpdate",
+            s => s,
+        };
+        let mut rows = vec![
+            (
+                "Replicas",
+                format!(
+                    "{} desired · {} updated · {} available",
+                    int_at(d, "/spec/replicas"),
+                    int_at(d, "/status/updatedReplicas"),
+                    int_at(d, "/status/availableReplicas")
+                ),
+            ),
+            ("Strategy", strategy.to_string()),
+        ];
+        if strategy == "RollingUpdate" {
+            let value = |p: &str| {
+                d.pointer(p)
+                    .map(|v| v.as_str().map(String::from).unwrap_or(v.to_string()))
+                    .unwrap_or_else(|| "25%".into())
+            };
+            rows.push((
+                "Surge / unavail.",
+                format!(
+                    "{} / {}",
+                    value("/spec/strategy/rollingUpdate/maxSurge"),
+                    value("/spec/strategy/rollingUpdate/maxUnavailable")
+                ),
+            ));
+        }
+        if d.pointer("/spec/paused").and_then(Value::as_bool) == Some(true) {
+            rows.push(("Rollout", "paused".into()));
+        }
+        let mut out = vec![
+            section("Deployment", colors)
+                .child(kv(rows, colors))
+                .into_any_element(),
+        ];
+        if let Some(store) = &self.related.replica_sets {
+            let uid = str_at(d, "/metadata/uid");
+            let current = str_at(
+                d,
+                "/metadata/annotations/deployment.kubernetes.io~1revision",
+            );
+            let mut revisions: Vec<&Arc<Value>> = store
+                .read(cx)
+                .objects()
+                .values()
+                .filter(|rs| {
+                    array_at(rs, "/metadata/ownerReferences")
+                        .iter()
+                        .any(|o| str_at(o, "/uid") == uid)
+                })
+                .collect();
+            let revision = |rs: &Value| -> i64 {
+                str_at(
+                    rs,
+                    "/metadata/annotations/deployment.kubernetes.io~1revision",
+                )
+                .parse()
+                .unwrap_or_default()
+            };
+            revisions.sort_by_key(|rs| std::cmp::Reverse(revision(rs)));
+            let mut list = v_flex().gap(u(4.0)).text_size(u(12.0));
+            for (ix, rs) in revisions.iter().take(8).enumerate() {
+                let number = revision(rs);
+                let is_current = number.to_string() == current;
+                let images: Vec<&str> = array_at(rs, "/spec/template/spec/containers")
+                    .iter()
+                    .map(|c| str_at(c, "/image"))
+                    .collect();
+                let name = str_at(rs, "/metadata/name").to_string();
+                let reference = ResourceRef::object(
+                    target.cluster.clone(),
+                    Gvr::new("apps", "v1", "replicasets"),
+                    target.namespace.clone(),
+                    name.clone(),
+                );
+                list = list.child(
+                    h_flex()
+                        .gap(u(8.0))
+                        .child(
+                            div()
+                                .w(u(34.0))
+                                .font_family(fonts::MONO)
+                                .text_color(if is_current {
+                                    colors.green
+                                } else {
+                                    colors.text_dim
+                                })
+                                .child(format!("#{number}")),
+                        )
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .child(div().font_family(fonts::MONO).text_size(u(11.5)).child(
+                                    link(
+                                        SharedString::from(format!("rs-{ix}")),
+                                        name,
+                                        reference,
+                                        colors,
+                                    ),
+                                ))
+                                .child(
+                                    div()
+                                        .truncate()
+                                        .font_family(fonts::MONO)
+                                        .text_size(u(11.0))
+                                        .text_color(colors.text_dim)
+                                        .child(images.join(", ")),
+                                ),
+                        )
+                        .child(div().text_color(colors.text_dim).child(format!(
+                            "{}/{}",
+                            int_at(rs, "/status/readyReplicas"),
+                            int_at(rs, "/spec/replicas")
+                        ))),
+                );
+            }
+            if !revisions.is_empty() {
+                out.push(
+                    section("Rollout history", colors)
+                        .child(list)
+                        .into_any_element(),
+                );
+            }
+        }
+        out
+    }
+
+    fn render_node(&self, node: &Value, colors: &Colors) -> Vec<AnyElement> {
+        let quantity = |pointer: &str, cpu: bool| {
+            let raw = str_at(node, pointer);
+            match parse_quantity(raw) {
+                Some(value) if cpu => format_cpu(value),
+                Some(value) => format_bytes(value),
+                None => raw.to_string(),
+            }
+        };
+        let info = |key: &str| str_at(node, &format!("/status/nodeInfo/{key}")).to_string();
+        let rows = vec![
+            (
+                "CPU",
+                format!(
+                    "{} allocatable of {}",
+                    quantity("/status/allocatable/cpu", true),
+                    quantity("/status/capacity/cpu", true)
+                ),
+            ),
+            (
+                "Memory",
+                format!(
+                    "{} allocatable of {}",
+                    quantity("/status/allocatable/memory", false),
+                    quantity("/status/capacity/memory", false)
+                ),
+            ),
+            (
+                "Pods",
+                format!("{} allocatable", str_at(node, "/status/allocatable/pods")),
+            ),
+            ("Kubelet", info("kubeletVersion")),
+            ("OS", info("osImage")),
+            ("Runtime", info("containerRuntimeVersion")),
+        ];
+        let mut out = vec![
+            section("Capacity", colors)
+                .child(kv(rows, colors))
+                .into_any_element(),
+        ];
+        let taints: Vec<String> = array_at(node, "/spec/taints")
+            .iter()
+            .map(|t| match t["value"].as_str() {
+                Some(v) => format!("{}={v}:{}", str_at(t, "/key"), str_at(t, "/effect")),
+                None => format!("{}:{}", str_at(t, "/key"), str_at(t, "/effect")),
+            })
+            .collect();
+        if !taints.is_empty() {
+            out.push(
+                section("Taints", colors)
+                    .child(chips(taints, true))
+                    .into_any_element(),
+            );
+        }
+        let addresses: Vec<(&'static str, String)> = array_at(node, "/status/addresses")
+            .iter()
+            .map(|a| match str_at(a, "/type") {
+                "InternalIP" => ("Internal IP", str_at(a, "/address").to_string()),
+                "ExternalIP" => ("External IP", str_at(a, "/address").to_string()),
+                "Hostname" => ("Hostname", str_at(a, "/address").to_string()),
+                _ => ("Address", str_at(a, "/address").to_string()),
+            })
+            .collect();
+        if !addresses.is_empty() {
+            out.push(
+                section("Addresses", colors)
+                    .child(kv(addresses, colors))
+                    .into_any_element(),
+            );
+        }
+        out
+    }
+
+    fn render_service(
+        &self,
+        svc: &Value,
+        _: &Target,
+        colors: &Colors,
+        cx: &App,
+    ) -> Vec<AnyElement> {
+        let ports: Vec<String> = array_at(svc, "/spec/ports")
+            .iter()
+            .map(|p| {
+                format!(
+                    "{}{} → {}",
+                    int_at(p, "/port"),
+                    match str_at(p, "/protocol") {
+                        "" => "/TCP".into(),
+                        p => format!("/{p}"),
+                    },
+                    p["targetPort"]
+                        .as_str()
+                        .map(String::from)
+                        .unwrap_or_else(|| p["targetPort"].to_string())
+                )
+            })
+            .collect();
+        let rows = vec![
+            ("Type", str_at(svc, "/spec/type").to_string()),
+            ("Cluster IP", str_at(svc, "/spec/clusterIP").to_string()),
+            ("Ports", ports.join(", ")),
+        ];
+        let mut out = vec![
+            section("Service", colors)
+                .child(kv(rows, colors))
+                .into_any_element(),
+        ];
+        if let Some(store) = &self.related.endpoints {
+            let addresses: Vec<String> = store
+                .read(cx)
+                .objects()
+                .values()
+                .flat_map(|e| array_at(e, "/subsets").to_vec())
+                .flat_map(|s| {
+                    let ports: Vec<i64> = array_at(&s, "/ports")
+                        .iter()
+                        .map(|p| int_at(p, "/port"))
+                        .collect();
+                    array_at(&s, "/addresses")
+                        .iter()
+                        .flat_map(|a| {
+                            ports
+                                .iter()
+                                .map(move |p| format!("{}:{p}", str_at(a, "/ip")))
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            let body = if addresses.is_empty() {
+                div()
+                    .text_size(u(12.0))
+                    .text_color(colors.yellow)
+                    .child("No ready endpoints.")
+                    .into_any_element()
+            } else {
+                chips(addresses, true).into_any_element()
+            };
+            out.push(section("Endpoints", colors).child(body).into_any_element());
+        }
+        out
+    }
+
+    fn render_pvc(
+        &self,
+        pvc: &Value,
+        target: &Target,
+        colors: &Colors,
+        cx: &App,
+    ) -> Vec<AnyElement> {
+        let volume = str_at(pvc, "/spec/volumeName").to_string();
+        let mut rows = vec![
+            ("Status", str_at(pvc, "/status/phase").to_string()),
+            (
+                "Capacity",
+                str_at(pvc, "/status/capacity/storage").to_string(),
+            ),
+            (
+                "Storage class",
+                str_at(pvc, "/spec/storageClassName").to_string(),
+            ),
+        ];
+        if let Some(pv) = self
+            .related
+            .volume
+            .as_ref()
+            .and_then(|s| s.read(cx).get(&volume).cloned())
+        {
+            rows.push((
+                "Reclaim policy",
+                str_at(&pv, "/spec/persistentVolumeReclaimPolicy").to_string(),
+            ));
+        }
+        let mut body = v_flex().gap(u(6.0)).child(kv(rows, colors));
+        if !volume.is_empty() {
+            let reference = ResourceRef::object(
+                target.cluster.clone(),
+                Gvr::new("", "v1", "persistentvolumes"),
+                None,
+                volume.clone(),
+            );
+            body = body.child(
+                h_flex()
+                    .gap(u(8.0))
+                    .text_size(u(12.0))
+                    .child(
+                        div()
+                            .w(u(104.0))
+                            .text_color(colors.text_dim)
+                            .child("Volume"),
+                    )
+                    .child(
+                        div()
+                            .font_family(fonts::MONO)
+                            .text_size(u(11.5))
+                            .child(link("pv", volume, reference, colors)),
+                    ),
+            );
+        }
+        vec![section("Claim", colors).child(body).into_any_element()]
+    }
+
+    fn render_ingress(&self, ing: &Value, target: &Target, colors: &Colors) -> Vec<AnyElement> {
+        let mut services: Vec<String> = array_at(ing, "/spec/rules")
+            .iter()
+            .flat_map(|r| array_at(r, "/http/paths").to_vec())
+            .filter_map(|p| {
+                p.pointer("/backend/service/name")
+                    .and_then(Value::as_str)
+                    .map(String::from)
+            })
+            .chain(
+                ing.pointer("/spec/defaultBackend/service/name")
+                    .and_then(Value::as_str)
+                    .map(String::from),
+            )
+            .collect();
+        services.sort();
+        services.dedup();
+        let secrets: Vec<String> = array_at(ing, "/spec/tls")
+            .iter()
+            .filter_map(|t| t["secretName"].as_str().map(String::from))
+            .collect();
+        let mut list = v_flex().gap(u(4.0)).text_size(u(12.0));
+        for (ix, service) in services.into_iter().enumerate() {
+            let reference = ResourceRef::object(
+                target.cluster.clone(),
+                Gvr::new("", "v1", "services"),
+                target.namespace.clone(),
+                service.clone(),
+            );
+            list = list.child(
+                h_flex()
+                    .gap(u(6.0))
+                    .child(
+                        div()
+                            .w(u(60.0))
+                            .text_color(colors.text_dim)
+                            .child("Service"),
+                    )
+                    .child(link(
+                        SharedString::from(format!("svc-{ix}")),
+                        service,
+                        reference,
+                        colors,
+                    )),
+            );
+        }
+        for (ix, secret) in secrets.into_iter().enumerate() {
+            let reference = ResourceRef::object(
+                target.cluster.clone(),
+                Gvr::new("", "v1", "secrets"),
+                target.namespace.clone(),
+                secret.clone(),
+            );
+            list = list.child(
+                h_flex()
+                    .gap(u(6.0))
+                    .child(div().w(u(60.0)).text_color(colors.text_dim).child("TLS"))
+                    .child(link(
+                        SharedString::from(format!("secret-{ix}")),
+                        secret,
+                        reference,
+                        colors,
+                    )),
+            );
+        }
+        vec![section("Backends", colors).child(list).into_any_element()]
+    }
+
+    fn render_describe(&self, object: &Value, target: &Target, cx: &App) -> AnyElement {
+        let colors = cx.colors();
+        let events: Vec<Value> = self
+            .related
+            .events
+            .as_ref()
+            .map(|s| {
+                s.read(cx)
+                    .objects()
+                    .values()
+                    .map(|e| (**e).clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let text = kubyl_resources::describe::describe(
+            &target.kind,
+            object,
+            &events,
+            jiff::Timestamp::now(),
+        );
+        v_flex()
+            .p(u(12.0))
+            .font_family(fonts::MONO)
+            .text_size(u(12.0))
+            .text_color(colors.text)
+            .children(text.lines().map(|line| {
+                div()
+                    .whitespace_nowrap()
+                    .min_h(u(17.0))
+                    .child(line.to_string())
+            }))
+            .into_any_element()
+    }
+}
+
+impl Render for DetailsContent {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = cx.colors().clone();
+        let (Some(target), Some(object)) = (self.target.clone(), self.object.clone()) else {
+            let message = if self.target.is_some() {
+                "Loading…"
+            } else {
+                "Select a resource to see its details."
+            };
+            return v_flex()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .text_color(colors.text_dim)
+                .child(message)
+                .into_any_element();
+        };
+        let body: Vec<AnyElement> = match self.mode {
+            Mode::Summary => self.render_summary(&object, &target, cx),
+            Mode::Describe => vec![self.render_describe(&object, &target, cx)],
+        };
+        let tab = |id: &'static str, label: &'static str, mode: Mode, current: Mode| {
+            let active = mode == current;
+            div()
+                .id(id)
+                .px(u(8.0))
+                .py(u(2.0))
+                .rounded(u(4.0))
+                .cursor_pointer()
+                .when(active, |this| {
+                    this.bg(colors.selection).text_color(colors.text)
+                })
+                .when(!active, |this| this.text_color(colors.text_dim))
+                .child(label)
+        };
+        let mode = self.mode;
+        v_flex()
+            .size_full()
+            .text_size(u(13.0))
+            .text_color(colors.text)
+            .child(
+                h_flex()
+                    .flex_none()
+                    .px(u(10.0))
+                    .py(u(6.0))
+                    .gap(u(4.0))
+                    .text_size(u(12.0))
+                    .border_b_1()
+                    .border_color(colors.border_variant)
+                    .child(
+                        tab("summary", "Summary", Mode::Summary, mode).on_click(
+                            cx.listener(|this, _, _, cx| this.set_mode(Mode::Summary, cx)),
+                        ),
+                    )
+                    .child(
+                        tab("describe", "Describe", Mode::Describe, mode).on_click(
+                            cx.listener(|this, _, _, cx| this.set_mode(Mode::Describe, cx)),
+                        ),
+                    ),
+            )
+            .child(
+                div()
+                    .id("details-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .when(mode == Mode::Describe, |this| this.overflow_x_scroll())
+                    .child(v_flex().children(body)),
+            )
+            .into_any_element()
+    }
+}
+
+// ----- Dock panel -----
+
+/// The right-dock panel: follows [`ResourceSelection`] unless pinned.
+pub struct DetailsPanel {
+    content: Entity<DetailsContent>,
+    pinned: bool,
+    focus: FocusHandle,
+    _subscriptions: Vec<Subscription>,
+}
+
+impl DetailsPanel {
+    fn new(cx: &mut Context<Self>) -> Self {
+        let content = cx.new(|_| DetailsContent::new(Mode::Summary));
+        let subscriptions = vec![
+            cx.observe_global::<ResourceSelection>(|this, cx| this.selection_changed(cx)),
+            cx.observe(&content, |_, _, cx| cx.notify()),
+        ];
+        let mut this = Self {
+            content,
+            pinned: false,
+            focus: cx.focus_handle(),
+            _subscriptions: subscriptions,
+        };
+        this.selection_changed(cx);
+        this
+    }
+
+    fn selection_changed(&mut self, cx: &mut Context<Self>) {
+        if self.pinned {
+            return;
+        }
+        let selection = ResourceSelection::global(cx).clone();
+        let primary = selection.primary().cloned();
+        self.content.update(cx, |content, cx| match primary {
+            Some(selected) => {
+                let target = Target::from_ref(&selected.target, selected.kind.clone());
+                content.set_target(target, selected.object.clone(), selected.store.clone(), cx);
+            }
+            None => content.set_target(None, None, None, cx),
+        });
+    }
+}
+
+impl Focusable for DetailsPanel {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+impl TabView for DetailsPanel {
+    fn tab_title(&self, cx: &App) -> SharedString {
+        self.content.read(cx).title()
+    }
+
+    fn tab_icon(&self, _: &App) -> Option<SharedString> {
+        Some(IconName::Info.path())
+    }
+}
+
+impl Render for DetailsPanel {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = cx.colors().clone();
+        let has_target = self.content.read(cx).target.is_some();
+        v_flex()
+            .track_focus(&self.focus)
+            .size_full()
+            .relative()
+            .child(self.content.clone())
+            .when(has_target, |this| {
+                this.child(
+                    div().absolute().top(u(3.0)).right(u(8.0)).child(
+                        IconButton::new(
+                            "pin-details",
+                            if self.pinned {
+                                IconName::StarFilled
+                            } else {
+                                IconName::Star
+                            },
+                        )
+                        .icon_size(13.0)
+                        .toggled(self.pinned)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.pinned = !this.pinned;
+                            if !this.pinned {
+                                this.selection_changed(cx);
+                            }
+                            cx.notify();
+                        })),
+                    ),
+                )
+            })
+            .text_color(colors.text)
+    }
+}
+
+pub struct DetailsDock;
+
+impl DockPanel for DetailsDock {
+    fn id(&self) -> &'static str {
+        "details"
+    }
+
+    fn position(&self) -> DockPosition {
+        DockPosition::Right
+    }
+
+    fn build(&self, _: &mut Window, cx: &mut App) -> Box<dyn TabHandle> {
+        Box::new(cx.new(DetailsPanel::new))
+    }
+}
+
+// ----- Details / Describe tabs -----
+
+/// A tab showing one object (`ViewKind::Details`, or `describe` for the Describe mode).
+pub struct DetailsView {
+    target: ResourceRef,
+    content: Entity<DetailsContent>,
+    mode: Mode,
+    focus: FocusHandle,
+    _subscription: Subscription,
+}
+
+pub fn describe_view_kind() -> ViewKind {
+    ViewKind::Custom("describe".into())
+}
+
+impl DetailsView {
+    pub fn new(target: ResourceRef, mode: Mode, cx: &mut Context<Self>) -> Self {
+        let kind = ConnectionManager::try_global(cx)
+            .and_then(|m| m.read(cx).discovery(&target.cluster))
+            .and_then(|d| {
+                kubyl_resources::store::find_resource(&d.resources, &target.gvr)
+                    .map(|r| r.gvk.kind.clone())
+            })
+            .unwrap_or_else(|| kind_guess(&target.gvr.resource));
+        let content = cx.new(|cx| {
+            let mut content = DetailsContent::new(mode);
+            content.set_target(Target::from_ref(&target, kind), None, None, cx);
+            content
+        });
+        let subscription = cx.observe(&content, |_, _, cx| cx.notify());
+        Self {
+            target,
+            content,
+            mode,
+            focus: cx.focus_handle(),
+            _subscription: subscription,
+        }
+    }
+}
+
+/// `pods` → `Pod`, for tabs opened before discovery finished.
+fn kind_guess(resource: &str) -> String {
+    let singular = resource
+        .strip_suffix("ies")
+        .map(|s| format!("{s}y"))
+        .or_else(|| resource.strip_suffix("sses").map(|s| format!("{s}ss")))
+        .or_else(|| resource.strip_suffix('s').map(String::from))
+        .unwrap_or_else(|| resource.to_string());
+    let mut chars = singular.chars();
+    chars
+        .next()
+        .map(|c| c.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
+}
+
+impl Focusable for DetailsView {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+impl TabView for DetailsView {
+    fn tab_title(&self, _: &App) -> SharedString {
+        let name = self.target.name.clone().unwrap_or_default();
+        match self.mode {
+            Mode::Summary => name.into(),
+            Mode::Describe => format!("{name} · describe").into(),
+        }
+    }
+
+    fn tab_icon(&self, _: &App) -> Option<SharedString> {
+        Some(catalog::icon_for(&self.target.gvr.group, &self.target.gvr.resource).path())
+    }
+
+    fn view_request(&self, _: &App) -> Option<ViewRequest> {
+        let kind = match self.mode {
+            Mode::Summary => ViewKind::Details,
+            Mode::Describe => describe_view_kind(),
+        };
+        Some(ViewRequest::for_resource(kind, self.target.clone()))
+    }
+}
+
+impl Render for DetailsView {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = cx.colors().clone();
+        v_flex()
+            .track_focus(&self.focus)
+            .size_full()
+            .bg(colors.background)
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .max_w(u(980.0))
+                    .child(self.content.clone()),
+            )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn guesses_kinds() {
+        assert_eq!(kind_guess("pods"), "Pod");
+        assert_eq!(kind_guess("ingresses"), "Ingress");
+        assert_eq!(kind_guess("networkpolicies"), "Networkpolicy");
+        assert_eq!(kind_guess("storageclasses"), "Storageclass");
+    }
+
+    #[test]
+    fn selectors_match_pods() {
+        let deployment = json!({"spec": {"selector": {"matchLabels": {"app": "web"}}}});
+        let selector = selector_of("Deployment", &deployment).unwrap();
+        assert!(matches_selector(
+            &json!({"metadata": {"labels": {"app": "web", "x": "y"}}}),
+            &selector
+        ));
+        assert!(!matches_selector(
+            &json!({"metadata": {"labels": {"app": "api"}}}),
+            &selector
+        ));
+        assert!(selector_of("ConfigMap", &deployment).is_none());
+        let service = json!({"spec": {"selector": {"app": "web"}}});
+        assert_eq!(selector_of("Service", &service).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn container_states() {
+        let now = jiff::Timestamp::now();
+        let waiting = json!({"state": {"waiting": {"reason": "CrashLoopBackOff"}}});
+        assert_eq!(
+            container_state(Some(&waiting), now),
+            ("CrashLoopBackOff".into(), Tone::Bad)
+        );
+        let done = json!({"state": {"terminated": {"reason": "Completed", "exitCode": 0}}});
+        assert_eq!(container_state(Some(&done), now).1, Tone::Muted);
+    }
+}

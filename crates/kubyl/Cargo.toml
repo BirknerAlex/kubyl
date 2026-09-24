@@ -1,0 +1,83 @@
+[package]
+name = "kubyl"
+description = "Native Kubernetes desktop client."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+default-run = "kubyl"
+build = "build.rs"
+
+[lints]
+workspace = true
+
+[features]
+# Dev tool: `KUBYL_SCREENSHOT=out.png cargo run -p kubyl --features screenshot` renders the
+# first settled frame of the window to a PNG and quits. Optional `KUBYL_SCREENSHOT_ACTIONS`
+# (comma-separated steps: split, bottom, zoom, light, about, toast, palette=<query>,
+# action=<name>, keys=<keystrokes>, wait=<ms>) changes the
+# layout first.
+screenshot = ["gpui/test-support", "gpui_platform/test-support"]
+
+[[bin]]
+name = "kubyl"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+gpui.workspace = true
+gpui_platform.workspace = true
+gpui-component.workspace = true
+dirs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-appender.workspace = true
+tracing-subscriber.workspace = true
+
+kubyl_charts.workspace = true
+kubyl_core.workspace = true
+kubyl_explorer.workspace = true
+kubyl_files.workspace = true
+kubyl_keymap.workspace = true
+kubyl_kube.workspace = true
+kubyl_logs.workspace = true
+kubyl_metrics.workspace = true
+kubyl_operators.workspace = true
+kubyl_overview.workspace = true
+kubyl_palette.workspace = true
+kubyl_portforward.workspace = true
+kubyl_resources.workspace = true
+kubyl_settings.workspace = true
+kubyl_terminal.workspace = true
+kubyl_ui.workspace = true
+kubyl_updates.workspace = true
+kubyl_yaml.workspace = true
+
+image.workspace = true
+
+[build-dependencies]
+winresource.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2.workspace = true
+objc2-app-kit.workspace = true
+objc2-foundation.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+tempfile.workspace = true
+
+# Used by `cargo bundle` (phase 10 owns packaging).
+[package.metadata.bundle]
+name = "Kubyl"
+identifier = "io.github.birkneralex.Kubyl"
+icon = ["../../assets/logo/kubyl.icns", "../../assets/logo/png/app-icon-*.png"]
+category = "public.app-category.developer-tools"
+short_description = "Native Kubernetes desktop client"
+
+# .deb/.rpm/.pkg.tar.zst packaging metadata lives in `nfpm.yaml` (root of the repo), built by
+# `.github/workflows/release.yml`.

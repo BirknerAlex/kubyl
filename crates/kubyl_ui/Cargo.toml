@@ -1,0 +1,30 @@
+[package]
+name = "kubyl_ui"
+description = "Theme tokens, fonts, icons and Zed-like UI components."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+gpui.workspace = true
+gpui-component.workspace = true
+gpui-kit-assets.workspace = true
+kubyl_core.workspace = true
+kubyl_settings.workspace = true
+rust-embed.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+smallvec.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }

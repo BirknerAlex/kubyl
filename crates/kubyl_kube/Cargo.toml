@@ -1,0 +1,47 @@
+[package]
+name = "kubyl_kube"
+description = "Kubeconfig sources, auth, connection manager and discovery."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+base64.workspace = true
+dirs.workspace = true
+futures.workspace = true
+gpui.workspace = true
+gpui-component.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+jiff.workspace = true
+k8s-openapi.workspace = true
+keyring.workspace = true
+kube.workspace = true
+kubyl_core.workspace = true
+kubyl_settings.workspace = true
+kubyl_ui.workspace = true
+notify.workspace = true
+open.workspace = true
+openidconnect.workspace = true
+parking_lot.workspace = true
+schemars.workspace = true
+secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tower.workspace = true
+tracing.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+tempfile.workspace = true
