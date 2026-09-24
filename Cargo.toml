@@ -61,6 +61,9 @@ objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSImage", "NSResponder"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSData"] }
 
+# Terminal backend (Apache-2.0, same approach as Zed without Zed's GPL view code).
+alacritty_terminal = "0.26.0"
+
 # General
 anyhow = "1.0.104"
 base64 = "0.22.1"
