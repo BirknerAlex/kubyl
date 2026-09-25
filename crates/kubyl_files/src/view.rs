@@ -57,6 +57,8 @@ const EDIT_LIMIT: u64 = 5 * 1024 * 1024;
 const IMAGE_LIMIT: u64 = 20 * 1024 * 1024;
 /// Drags out of the window carry at most this much (staged when the drag starts).
 const DRAG_OUT_LIMIT: u64 = 32 * 1024 * 1024;
+/// Below this width (the details dock) the panes stack and the chrome gets compact.
+const NARROW_WIDTH: f32 = 760.0;
 /// GPUI hands drags to the OS on macOS and Wayland.
 const DRAG_OUT: bool = cfg!(any(target_os = "macos", target_os = "linux"));
 
@@ -384,6 +386,8 @@ pub struct FilesView {
     pod: PaneState,
     active: Side,
     swapped: bool,
+    /// Measured each frame: the view is narrower than [`NARROW_WIDTH`].
+    narrow: bool,
     show_hidden: bool,
     history_tab: bool,
     overlay: Option<Overlay>,
@@ -449,6 +453,7 @@ impl FilesView {
             pod: PaneState::new(cx),
             active: Side::Pod,
             swapped: false,
+            narrow: false,
             show_hidden: settings.show_hidden,
             history_tab: false,
             overlay: None,
@@ -2147,24 +2152,42 @@ impl FilesView {
                                 .child(format!("{selected} selected")),
                         )
                     })
-                    .child(
-                        kubyl_ui::Button::new("files-new-folder")
-                            .ghost()
-                            .icon(IconName::Plus)
-                            .label("New folder")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.new_folder(Side::Pod, window, cx)
-                            })),
-                    )
-                    .child(
-                        kubyl_ui::Button::new("files-download")
-                            .ghost()
-                            .icon(IconName::Download)
-                            .label("Download")
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.download_dialog(window, cx)),
-                            ),
-                    )
+                    .when(!self.narrow, |this| {
+                        this.child(
+                            kubyl_ui::Button::new("files-new-folder")
+                                .ghost()
+                                .icon(IconName::Plus)
+                                .label("New folder")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.new_folder(Side::Pod, window, cx)
+                                })),
+                        )
+                        .child(
+                            kubyl_ui::Button::new("files-download")
+                                .ghost()
+                                .icon(IconName::Download)
+                                .label("Download")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.download_dialog(window, cx)
+                                })),
+                        )
+                    })
+                    .when(self.narrow, |this| {
+                        this.child(
+                            IconButton::new("files-new-folder", IconName::Plus)
+                                .icon_size(13.0)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.new_folder(Side::Pod, window, cx)
+                                })),
+                        )
+                        .child(
+                            IconButton::new("files-download", IconName::Download)
+                                .icon_size(13.0)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.download_dialog(window, cx)
+                                })),
+                        )
+                    })
                     .into_any_element()
             }
         }
@@ -2190,11 +2213,12 @@ impl FilesView {
             .bg(colors.subheader_background)
             .child(cell("NAME", None))
             .child(cell("SIZE", Some(78.0)))
-            .when(side == Side::Pod, |this| {
+            // Narrow: names get the room.
+            .when(side == Side::Pod && !self.narrow, |this| {
                 this.child(cell("MODE", Some(96.0)))
                     .child(cell("OWNER · MODIFIED", Some(118.0)))
             })
-            .when(side == Side::Local, |this| {
+            .when(side == Side::Local && !self.narrow, |this| {
                 this.child(cell("MODIFIED", Some(104.0)))
             })
             .into_any_element()
@@ -2316,6 +2340,7 @@ impl FilesView {
             };
             element = element.child(mono(size, 78.0));
             element = match side {
+                _ if self.narrow => element,
                 Side::Pod => element.child(mono(e.mode_string(), 96.0)).child(mono(
                     format!(
                         "{} · {}",
@@ -2479,10 +2504,19 @@ impl FilesView {
                 .key_context(PANE_CONTEXT)
                 .track_focus(&focus)
                 .relative()
-                .flex_grow(1.0)
-                .flex_basis(gpui::relative(flex / 2.25))
-                .min_w_0()
-                .h_full()
+                .when(!self.narrow, |this| {
+                    this.flex_grow(1.0)
+                        .flex_basis(gpui::relative(flex / 2.25))
+                        .min_w_0()
+                        .h_full()
+                })
+                // Narrow (the details dock): the panes stack, half the height each.
+                .when(self.narrow, |this| {
+                    this.flex_1()
+                        .flex_basis(gpui::relative(0.))
+                        .min_h_0()
+                        .w_full()
+                })
                 .on_action(cx.listener(move |this, _: &CursorUp, _, cx| {
                     this.move_cursor(side, -1, false, cx)
                 }))
@@ -2661,9 +2695,13 @@ impl FilesView {
                     ),
             );
         }
+        let first = (side == Side::Local) != self.swapped;
         container
-            .when(side == Side::Local, |this| {
+            .when(first && !self.narrow, |this| {
                 this.border_r_1().border_color(colors.border)
+            })
+            .when(first && self.narrow, |this| {
+                this.border_b_1().border_color(colors.border)
             })
             .into_any_element()
     }
@@ -2720,8 +2758,10 @@ impl FilesView {
         };
         h_flex()
             .flex_none()
-            .h(u(kubyl_ui::sizes::TOOLBAR))
+            .flex_wrap()
+            .min_h(u(kubyl_ui::sizes::TOOLBAR))
             .px(u(12.0))
+            .py(u(4.0))
             .gap(u(8.0))
             .border_b_1()
             .border_color(colors.border)
@@ -2751,25 +2791,51 @@ impl FilesView {
                     }))
                     .child(Chip::new("Show hidden").selected(self.show_hidden)),
             )
-            .child(
-                kubyl_ui::Button::new("files-upload")
-                    .icon(IconName::Upload)
-                    .label("Upload…")
-                    .on_click(cx.listener(|this, _, window, cx| this.upload_dialog(window, cx))),
-            )
-            .child(
-                kubyl_ui::Button::new("files-swap")
-                    .icon(IconName::Columns)
-                    .label("Swap panes")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.swapped = !this.swapped;
-                        cx.notify();
-                    })),
-            )
+            .when(!self.narrow, |this| {
+                this.child(
+                    kubyl_ui::Button::new("files-upload")
+                        .icon(IconName::Upload)
+                        .label("Upload…")
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.upload_dialog(window, cx)),
+                        ),
+                )
+                .child(
+                    kubyl_ui::Button::new("files-swap")
+                        .icon(IconName::Columns)
+                        .label("Swap panes")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.swapped = !this.swapped;
+                            cx.notify();
+                        })),
+                )
+            })
+            .when(self.narrow, |this| {
+                this.child(
+                    IconButton::new("files-upload", IconName::Upload)
+                        .icon_size(13.0)
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.upload_dialog(window, cx)),
+                        ),
+                )
+                .child(
+                    IconButton::new("files-swap", IconName::Rows)
+                        .icon_size(13.0)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.swapped = !this.swapped;
+                            cx.notify();
+                        })),
+                )
+            })
             .into_any_element()
     }
 
-    fn transfer_row(transfer: &Transfer, colors: &Colors, cx: &Context<Self>) -> AnyElement {
+    fn transfer_row(
+        transfer: &Transfer,
+        narrow: bool,
+        colors: &Colors,
+        cx: &Context<Self>,
+    ) -> AnyElement {
         let job = &transfer.job;
         let id = transfer.id;
         let pod = short_pod(&job.target.pod);
@@ -2843,26 +2909,28 @@ impl FilesView {
             )
             .child(
                 div()
-                    .flex_none()
-                    .w(u(340.0))
+                    .when(!narrow, |this| this.flex_none().w(u(340.0)))
+                    .when(narrow, |this| this.flex_1().min_w_0())
                     .truncate()
                     .font_family(fonts::MONO)
                     .text_size(u(12.0))
                     .child(name),
             )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_size(u(12.0))
-                    .text_color(colors.text_dim)
-                    .child(detail),
-            )
+            .when(!narrow, |this| {
+                this.child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(u(12.0))
+                        .text_color(colors.text_dim)
+                        .child(detail),
+                )
+            })
             .child(
                 div()
                     .flex_none()
-                    .w(u(180.0))
+                    .w(u(if narrow { 60.0 } else { 180.0 }))
                     .when_some(percent, |this, pct| {
                         this.child(ProgressBar::new(pct).color(color))
                     }),
@@ -2871,7 +2939,7 @@ impl FilesView {
                 div()
                     .id(("transfer-state", id as usize))
                     .flex_none()
-                    .w(u(200.0))
+                    .w(u(if narrow { 110.0 } else { 200.0 }))
                     .truncate()
                     .text_align(gpui::TextAlign::Right)
                     .text_size(u(12.0))
@@ -2925,7 +2993,7 @@ impl FilesView {
         };
         let rows: Vec<AnyElement> = shown
             .into_iter()
-            .map(|t| Self::transfer_row(t, &colors, cx))
+            .map(|t| Self::transfer_row(t, self.narrow, &colors, cx))
             .collect();
         let tab = |id: &'static str, label: &'static str, icon: IconName, on: bool| {
             h_flex()
@@ -2947,7 +3015,7 @@ impl FilesView {
         };
         v_flex()
             .flex_none()
-            .h(u(210.0))
+            .h(u(if self.narrow { 150.0 } else { 210.0 }))
             .border_t_1()
             .border_color(colors.border)
             .child(
@@ -2985,13 +3053,15 @@ impl FilesView {
                         })),
                     )
                     .child(div().flex_1())
-                    .child(
-                        div()
-                            .px(u(12.0))
-                            .text_size(u(12.0))
-                            .text_color(colors.text_dim)
-                            .child("tar over exec · resumable chunks · sha256 verified"),
-                    )
+                    .when(!self.narrow, |this| {
+                        this.child(
+                            div()
+                                .px(u(12.0))
+                                .text_size(u(12.0))
+                                .text_color(colors.text_dim)
+                                .child("tar over exec · resumable chunks · sha256 verified"),
+                        )
+                    })
                     .when(self.history_tab, |this| {
                         this.child(
                             kubyl_ui::Button::new("files-clear-history")
@@ -3332,16 +3402,42 @@ impl Render for FilesView {
             }))
             .child(toolbar)
             .child(
-                h_flex()
+                div()
+                    .flex()
+                    .when(self.narrow, |this| this.flex_col())
                     .flex_1()
                     .min_h_0()
-                    .items_start()
                     .child(first)
                     .child(second),
             )
             .child(queue)
-            .child(hints)
+            .when(!self.narrow, |this| this.child(hints))
             .children(overlay)
+            // Measures the width for the narrow layout (applied from the next frame).
+            .child(
+                canvas(
+                    {
+                        let view = cx.weak_entity();
+                        move |bounds, window, cx| {
+                            let narrow =
+                                bounds.size.width < u(NARROW_WIDTH).to_pixels(window.rem_size());
+                            let view = view.clone();
+                            cx.defer(move |cx| {
+                                view.update(cx, |this, cx| {
+                                    if this.narrow != narrow {
+                                        this.narrow = narrow;
+                                        cx.notify();
+                                    }
+                                })
+                                .ok();
+                            });
+                        }
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
     }
 }
 

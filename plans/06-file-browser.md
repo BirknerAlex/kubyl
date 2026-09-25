@@ -111,3 +111,9 @@ mounts `checkout-config` (ConfigMap, `/app/config/flags`), `checkout-db` (Secret
 a separate tab). Upload/download progress for folders counts bytes against `du`/local sizes, so
 percentages of tar streams are approximate. The queue lives in the browser, not the bottom dock.
 
+### 2026-09-25 (later): Files in the details pane
+
+The browser is also a "Files" sub-tab of pod details (dock and tab). Below 760 px wide (the
+dock) it switches to a narrow layout, measured each frame: the panes stack, only name and size
+columns, icon buttons, a smaller queue, no hints bar.
+
