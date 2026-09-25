@@ -14,7 +14,7 @@ use kubyl_ui::{ActiveColors, Button, Icon, IconButton, IconName, fonts, h_flex, 
 
 use crate::ConnectionManager;
 use crate::auth::oidc::SignInMethod;
-use crate::auth::{AuthError, OidcParams, SignInEvent, store};
+use crate::auth::{AuthError, AuthMethod, OidcParams, SignInEvent, store};
 
 enum Phase {
     Starting,
@@ -42,9 +42,21 @@ pub struct SignInView {
     events: Option<Task<()>>,
 }
 
-/// Opens the sign-in modal for an OIDC context in `window`.
+/// Opens the sign-in modal for an OIDC or OpenShift context in `window`.
 pub fn open_sign_in(cluster: ClusterId, window: &mut Window, cx: &mut App) {
     let manager = ConnectionManager::global(cx);
+    let openshift = manager
+        .read(cx)
+        .context(&cluster)
+        .is_some_and(|c| c.auth == AuthMethod::OpenShift);
+    if openshift {
+        match manager.read(cx).openshift_auth(&cluster) {
+            Some(auth) => super::openshift_sign_in::open(cluster, auth, window, cx),
+            // Not tried yet: connect; the modal opens if the token is rejected.
+            None => manager.update(cx, |m, cx| m.connect_interactive(&cluster, cx)),
+        }
+        return;
+    }
     let Some(auth) = manager.read(cx).oidc_auth(&cluster) else {
         NotificationCenter::push(cx, Notification::error("This context doesn't use OIDC."));
         return;
@@ -404,7 +416,7 @@ impl Render for SignInView {
     }
 }
 
-fn status_box(
+pub(super) fn status_box(
     colors: &kubyl_ui::Colors,
     icon: gpui::AnyElement,
     title: String,

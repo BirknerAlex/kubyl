@@ -32,6 +32,7 @@ notify.workspace = true
 open.workspace = true
 openidconnect.workspace = true
 parking_lot.workspace = true
+rustls-native-certs.workspace = true
 schemars.workspace = true
 secrecy.workspace = true
 serde.workspace = true

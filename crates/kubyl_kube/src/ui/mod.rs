@@ -1,8 +1,9 @@
-//! Kubyl's cluster UI: the Clusters & kubeconfigs view, the cluster switcher, the OIDC sign-in
-//! and exec prompt modals, and a status bar item.
+//! Kubyl's cluster UI: the Clusters & kubeconfigs view, the cluster switcher, the OIDC and
+//! OpenShift sign-in and exec prompt modals, and a status bar item.
 
 mod clusters_view;
 mod exec_prompt;
+mod openshift_sign_in;
 mod paste;
 mod sign_in;
 mod status_item;

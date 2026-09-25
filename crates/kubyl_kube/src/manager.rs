@@ -743,6 +743,25 @@ impl ConnectionManager {
                 }
                 other => other,
             };
+            // A rejected OpenShift token: try the next one (Kubyl's sign-in, then the
+            // kubeconfig's), then ask for a sign-in.
+            let probe = match &built.credentials {
+                Some(CredentialSource::OpenShift(auth)) => {
+                    let mut probe = probe;
+                    for _ in 0..2 {
+                        if !matches!(probe, Err(ConnectError::Auth { .. })) {
+                            break;
+                        }
+                        probe = if auth.invalidate().await {
+                            client::probe(&built.client).await
+                        } else {
+                            Err(ConnectError::SignInRequired)
+                        };
+                    }
+                    probe
+                }
+                _ => probe,
+            };
             let expires_at = match &built.credentials {
                 Some(source) => source.expires_at().await,
                 None => built.rebuild_at,
@@ -850,7 +869,7 @@ impl ConnectionManager {
     }
 
     fn fail(&mut self, id: &ClusterId, generation: u64, err: ConnectError, cx: &mut Context<Self>) {
-        let is_oidc = self.context(id).is_some_and(|c| c.auth.is_oidc());
+        let sign_in = self.context(id).is_some_and(|c| c.auth.supports_sign_in());
         let name = self.display_name(id);
         let Some(cluster) = self
             .clusters
@@ -870,7 +889,7 @@ impl ConnectionManager {
             ConnectError::Auth { message, detail } => ConnectionState::AuthRequired {
                 message: message.clone(),
                 detail: detail.clone(),
-                sign_in: is_oidc,
+                sign_in,
             },
             ConnectError::Forbidden(message) => ConnectionState::Forbidden(message.clone()),
             ConnectError::Unreachable(message) | ConnectError::Config(message) => {
@@ -1031,7 +1050,7 @@ impl ConnectionManager {
                 true
             }
             Err(err) => {
-                let is_oidc = self.context(id).is_some_and(|c| c.auth.is_oidc());
+                let sign_in = self.context(id).is_some_and(|c| c.auth.supports_sign_in());
                 let name = self.display_name(id);
                 let cluster = self.clusters.get_mut(id).expect("checked above");
                 cluster.failures += 1;
@@ -1045,7 +1064,7 @@ impl ConnectionManager {
                     ConnectError::Auth { message, detail } => ConnectionState::AuthRequired {
                         message: message.clone(),
                         detail: detail.clone(),
-                        sign_in: is_oidc,
+                        sign_in,
                     },
                     ConnectError::Forbidden(message) => ConnectionState::Forbidden(message.clone()),
                     ConnectError::Unreachable(message) | ConnectError::Config(message) => {
@@ -1299,7 +1318,7 @@ impl ConnectionManager {
         cx.background_executor().spawn(task)
     }
 
-    /// The credentials Kubyl manages for a context (exec or OIDC), for the sign-in modal.
+    /// The credentials Kubyl manages for a context (exec, OIDC, OpenShift), for the sign-in modal.
     pub fn credentials(&self, id: &ClusterId) -> Option<CredentialSource> {
         if let Some(source) = self.clusters.get(id)?.client.as_ref()?.credentials.clone() {
             return Some(source);
@@ -1330,7 +1349,16 @@ impl ConnectionManager {
         client::oidc_auth(info, config).map(Arc::new)
     }
 
-    /// Connects on the user's behalf: an OIDC context that needs a sign-in opens the modal.
+    /// The OpenShift OAuth credentials of a context, once a connect attempt built them.
+    pub fn openshift_auth(&self, id: &ClusterId) -> Option<Arc<crate::auth::OpenShiftAuth>> {
+        if let Some(CredentialSource::OpenShift(auth)) = self.credentials(id) {
+            return Some(auth);
+        }
+        let info = self.context(id)?;
+        crate::auth::OpenShiftAuth::find(info.server.as_deref()?, info.user.as_deref()?)
+    }
+
+    /// Connects on the user's behalf: a context that needs a sign-in opens the modal.
     pub fn connect_interactive(&mut self, id: &ClusterId, cx: &mut Context<Self>) {
         self.interactive.insert(id.clone());
         self.connect(id, cx);

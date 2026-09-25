@@ -4556,6 +4556,7 @@ dependencies = [
  "open",
  "openidconnect",
  "parking_lot",
+ "rustls-native-certs",
  "schemars 1.2.2",
  "secrecy",
  "serde",

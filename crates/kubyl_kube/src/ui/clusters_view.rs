@@ -617,7 +617,9 @@ fn render_connection(
     };
     rows.push(("Auth", text(auth)));
     let token = match (&info.auth, cluster.and_then(|c| c.credential_expires_at)) {
-        (AuthMethod::Exec(_) | AuthMethod::Oidc(_), Some(at)) => Some(expiry_label(at)),
+        (AuthMethod::Exec(_) | AuthMethod::Oidc(_) | AuthMethod::OpenShift, Some(at)) => {
+            Some(expiry_label(at))
+        }
         (AuthMethod::Exec(_), None) if state.is_connected() => Some("cached · no expiry".into()),
         (AuthMethod::Oidc(_), None) => Some(format!("stored in {}", store::store_name())),
         _ => None,

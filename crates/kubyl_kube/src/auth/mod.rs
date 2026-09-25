@@ -1,16 +1,17 @@
 //! Authentication.
 //!
 //! Static credentials (client certificates, bearer tokens, token files, basic auth) are handled
-//! by kube itself. Exec plugins and OIDC are handled here, because Kubyl needs more than kube
-//! offers for them: exec output is captured (stderr shows up in the UI), credentials are cached
-//! until they expire, OIDC signs in through the browser, and refresh tokens live in the OS
-//! keychain. For those contexts the kube client gets no credentials from the kubeconfig;
+//! by kube itself. Exec plugins, OIDC and OpenShift OAuth are handled here, because Kubyl needs
+//! more than kube offers for them: exec output is captured (stderr shows up in the UI),
+//! credentials are cached until they expire, OIDC and OpenShift sign in through the browser, and
+//! tokens live in the OS keychain. For those contexts the kube client gets no credentials from the kubeconfig;
 //! [`AuthLayer`] adds the `Authorization` header to every request instead.
 //!
 //! Tokens are wrapped in [`SecretString`] everywhere so they can't end up in logs by accident.
 
 pub mod exec;
 pub mod oidc;
+pub mod openshift;
 pub mod shell_env;
 pub mod store;
 
@@ -26,6 +27,7 @@ use tower::filter::AsyncPredicate;
 
 pub use exec::ExecAuth;
 pub use oidc::{OidcAuth, OidcParams, SignInEvent};
+pub use openshift::OpenShiftAuth;
 
 /// How a context authenticates, as detected from its kubeconfig user.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -38,6 +40,9 @@ pub enum AuthMethod {
     Exec(ExecSummary),
     /// `auth-provider: oidc`, or a kubelogin (`kubectl oidc-login get-token`) exec config.
     Oidc(OidcParams),
+    /// An OpenShift OAuth token from `oc login` (`sha256~…`). It expires and can't be refreshed;
+    /// Kubyl signs in again through the cluster's OAuth server.
+    OpenShift,
     /// A legacy auth provider other than OIDC (`gcp`, `azure`).
     Provider(String),
 }
@@ -99,7 +104,10 @@ impl AuthMethod {
         if user.client_certificate.is_some() || user.client_certificate_data.is_some() {
             return AuthMethod::ClientCertificate;
         }
-        if user.token.is_some() {
+        if let Some(token) = &user.token {
+            if openshift::is_openshift_token(token.expose_secret()) {
+                return AuthMethod::OpenShift;
+            }
             return AuthMethod::Token;
         }
         if user.token_file.is_some() {
@@ -113,6 +121,11 @@ impl AuthMethod {
 
     pub fn is_oidc(&self) -> bool {
         matches!(self, AuthMethod::Oidc(_))
+    }
+
+    /// Whether Kubyl can sign in interactively when the credentials are missing or rejected.
+    pub fn supports_sign_in(&self) -> bool {
+        matches!(self, AuthMethod::Oidc(_) | AuthMethod::OpenShift)
     }
 
     /// Short description for tables: `exec · aws eks get-token`, `OIDC · sso.example.com`.
@@ -134,6 +147,7 @@ impl AuthMethod {
                 label
             }
             AuthMethod::Oidc(params) => format!("OIDC · {}", params.issuer_host()),
+            AuthMethod::OpenShift => "OpenShift OAuth".into(),
             AuthMethod::Provider(name) => format!("auth provider · {name}"),
         }
     }
@@ -166,7 +180,7 @@ pub(crate) fn flag_values(args: &[String], flag: &str) -> Vec<String> {
 /// Why a request couldn't get credentials.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum AuthError {
-    /// The user has to sign in (OIDC without a valid refresh token).
+    /// The user has to sign in (OIDC without a valid refresh token, a rejected OpenShift token).
     #[error("sign-in required")]
     SignInRequired,
     /// An exec plugin failed. `stderr` is the plugin's error output (trimmed).
@@ -198,6 +212,7 @@ impl AuthError {
 pub enum CredentialSource {
     Exec(Arc<ExecAuth>),
     Oidc(Arc<OidcAuth>),
+    OpenShift(Arc<OpenShiftAuth>),
 }
 
 impl CredentialSource {
@@ -211,6 +226,7 @@ impl CredentialSource {
                 )),
             },
             CredentialSource::Oidc(oidc) => oidc.token().await,
+            CredentialSource::OpenShift(openshift) => openshift.token().await,
         }
     }
 
@@ -219,6 +235,7 @@ impl CredentialSource {
         match self {
             CredentialSource::Exec(exec) => exec.expires_at().await,
             CredentialSource::Oidc(oidc) => oidc.expires_at().await,
+            CredentialSource::OpenShift(openshift) => openshift.expires_at(),
         }
     }
 }
@@ -234,7 +251,7 @@ pub enum BearerToken {
     Static(SecretString),
     /// `tokenFile`, read on every use (it rotates).
     File(PathBuf),
-    /// An exec plugin or OIDC, refreshed as needed.
+    /// An exec plugin, OIDC or OpenShift OAuth, refreshed as needed.
     Managed(CredentialSource),
 }
 
@@ -333,6 +350,9 @@ mod tests {
     #[test]
     fn detects_static_methods() {
         assert_eq!(AuthMethod::detect(&user("token: abc")), AuthMethod::Token);
+        let openshift = AuthMethod::detect(&user("token: sha256~abc"));
+        assert_eq!(openshift, AuthMethod::OpenShift);
+        assert!(openshift.supports_sign_in());
         assert_eq!(
             AuthMethod::detect(&user("tokenFile: /t")),
             AuthMethod::TokenFile

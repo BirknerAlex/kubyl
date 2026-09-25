@@ -52,6 +52,8 @@ tower = { version = "0.5.3", features = ["buffer", "filter"] }
 keyring = "4.2.0"
 openidconnect = { version = "4.0.1", default-features = false, features = ["reqwest", "rustls-tls"] }
 secrecy = "0.10.3"
+# The OS trust store for HTTP clients outside kube (OpenShift's OAuth server).
+rustls-native-certs = "0.8.4"
 
 # Assets
 gpui-kit-assets = "=0.6.6"

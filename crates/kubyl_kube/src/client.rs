@@ -11,8 +11,10 @@ use tower::buffer::BufferLayer;
 use tower::filter::AsyncFilterLayer;
 
 use crate::auth::oidc::OidcSecrets;
+use crate::auth::openshift::OpenShiftParams;
 use crate::auth::{
-    AuthError, AuthLayer, AuthMethod, BearerToken, CredentialSource, ExecAuth, OidcAuth, exec,
+    AuthError, AuthLayer, AuthMethod, BearerToken, CredentialSource, ExecAuth, OidcAuth,
+    OpenShiftAuth, exec,
 };
 use crate::kubeconfig::ContextInfo;
 
@@ -125,6 +127,9 @@ pub async fn build(
         .await
         .map_err(|err| ConnectError::Config(error_chain(&err)))?;
     config.connect_timeout = Some(CONNECT_TIMEOUT);
+    if config.proxy_url.is_none() {
+        config.proxy_url = env_proxy(&config.cluster_url);
+    }
 
     let mut credentials = None;
     let mut rebuild_at = None;
@@ -136,6 +141,23 @@ pub async fn build(
                 secrets,
             ))));
             strip_managed_auth(&mut config.auth_info);
+        }
+        AuthMethod::OpenShift => {
+            // The kubeconfig token is only the first one to try; see `auth::openshift`.
+            let token = config.auth_info.token.take();
+            credentials = Some(CredentialSource::OpenShift(OpenShiftAuth::shared(
+                OpenShiftParams {
+                    server: info
+                        .server
+                        .clone()
+                        .unwrap_or_else(|| config.cluster_url.to_string()),
+                    user: info.user.clone().unwrap_or_default(),
+                    roots: config.root_cert.clone().unwrap_or_default(),
+                    insecure: config.accept_invalid_certs,
+                    proxy: config.proxy_url.as_ref().map(|u| u.to_string()),
+                },
+                token,
+            )));
         }
         AuthMethod::Exec(_) => {
             let exec_config = config
@@ -177,9 +199,6 @@ pub async fn build(
         _ => None,
     };
 
-    if config.proxy_url.is_none() {
-        config.proxy_url = env_proxy(&config.cluster_url);
-    }
     let proxy = config
         .proxy_url
         .as_ref()
