@@ -91,7 +91,10 @@ async fn oom_kills_show_up_within_two_seconds() {
     assert!(lag < 3.0, "row appeared {lag:.2}s after the kill");
     assert!(row.warning && row.derived);
     assert_eq!(row.reason.as_ref(), "OOMKilled");
-    assert_eq!(row.message.as_ref(), "Container hog was OOM-killed (memory limit 48Mi).");
+    assert_eq!(
+        row.message.as_ref(),
+        "Container hog was OOM-killed (memory limit 48Mi)."
+    );
 }
 
 /// Both Event APIs parse into rows with objects, and repeats fold.
@@ -120,8 +123,14 @@ async fn events_parse_from_both_apis() {
             .map(|e| event_row(&serde_json::to_value(e).unwrap()))
             .collect();
         assert!(!rows.is_empty(), "{group_name}: no events in {NS}");
-        assert!(rows.iter().all(|r| !r.kind.is_empty() && !r.name.is_empty()));
-        assert!(rows.iter().all(|r| r.last.is_some()), "{group_name}: missing times");
+        assert!(
+            rows.iter()
+                .all(|r| !r.kind.is_empty() && !r.name.is_empty())
+        );
+        assert!(
+            rows.iter().all(|r| r.last.is_some()),
+            "{group_name}: missing times"
+        );
         let total: u64 = rows.iter().map(|r| r.count).sum();
         let grouped = group(rows.clone(), true);
         assert!(grouped.len() <= rows.len());
