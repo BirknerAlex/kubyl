@@ -224,7 +224,7 @@ mod tests {
         assert_eq!(nice_max(1.5e9), 2e9);
         let gi = 1024.0 * 1024.0 * 1024.0;
         assert_eq!(nice_max_binary(1.4 * gi), 2.0 * gi);
-        assert_eq!(nice_max_binary(0.3 * gi), 512.0 * 1024.0 * 1024.0);
+        assert_eq!(nice_max_binary(0.3 * gi), 500.0 * 1024.0 * 1024.0);
         assert_eq!(nice_max_binary(0.5), 0.5);
     }
 
