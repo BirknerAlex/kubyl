@@ -674,7 +674,8 @@ impl ArgoCd {
         })
     }
 
-    /// Signs out: forgets the token, stops the forward; Kubernetes mode stays.
+    /// Signs out: ends the session on the server (the token is revoked, so a web view's copy
+    /// of it stops working too), forgets the token, stops the forward; Kubernetes mode stays.
     pub fn sign_out(&mut self, cluster: &ClusterId, forget_install: bool, cx: &mut Context<Self>) {
         let session = self.clusters.get_mut(cluster).and_then(|c| c.api.take());
         if let Some(session) = &session
@@ -693,7 +694,21 @@ impl ArgoCd {
             .detach();
         }
         if let Some(session) = session {
-            stop_forward(session.forward, cx);
+            match session.api.filter(|_| session.state.is_connected()) {
+                Some(api) => {
+                    // The forward carries the logout, then stops.
+                    let logout = spawn_kube(cx, async move { api.logout().await });
+                    let forward = session.forward;
+                    cx.spawn(async move |_, cx| {
+                        if let Err(err) = logout.await {
+                            tracing::info!("Argo CD logout failed: {err}");
+                        }
+                        cx.update(|cx| stop_forward(forward, cx));
+                    })
+                    .detach();
+                }
+                None => stop_forward(session.forward, cx),
+            }
         }
         if forget_install {
             settings::forget(cluster, cx);

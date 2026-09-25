@@ -382,6 +382,18 @@ async fn api_mode_signs_in_through_the_proxy_and_a_forward() {
     println!("tree: {} nodes, {} pods", tree.nodes.len(), pods.len());
     assert!(!pods.is_empty());
     assert!(pods.iter().all(|p| !p.parent_refs.is_empty()));
+
+    // Signing out revokes the token on the server: copies of it (a web view's cookie) stop
+    // working through either transport.
+    forward.logout().await.unwrap();
+    assert_eq!(
+        proxy.user_info().await,
+        Err(kubyl_argocd::api::ApiError::Unauthorized)
+    );
+    assert_eq!(
+        forward.user_info().await,
+        Err(kubyl_argocd::api::ApiError::Unauthorized)
+    );
 }
 
 #[tokio::test]

@@ -40,15 +40,20 @@ fn script(arg: &str) {
 struct SsoMode;
 
 impl SsoMode {
+    /// The guard exists before the script runs: a half-applied `--sso` is undone too.
     fn on() -> Self {
+        let guard = Self;
         script("--sso");
-        Self
+        guard
     }
 }
 
 impl Drop for SsoMode {
     fn drop(&mut self) {
-        script("--no-sso");
+        // No panic while unwinding from a failed test (that would abort).
+        if std::panic::catch_unwind(|| script("--no-sso")).is_err() {
+            eprintln!("argocd-dev.sh --no-sso failed: run it by hand to restore the dev install");
+        }
     }
 }
 

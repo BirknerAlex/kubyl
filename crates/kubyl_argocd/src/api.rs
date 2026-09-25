@@ -167,7 +167,11 @@ impl Transport {
                         .body(bytes);
                 }
                 if let Some(token) = token {
-                    request = request.bearer_auth(token.expose_secret());
+                    // The cookie too: argocd-server's logout reads the token only from it.
+                    request = request.bearer_auth(token.expose_secret()).header(
+                        http::header::COOKIE,
+                        format!("argocd.token={}", token.expose_secret()),
+                    );
                 }
                 let response = request
                     .send()
@@ -393,6 +397,21 @@ impl ArgoApi {
         let value = self.call(Method::GET, path, None).await?;
         serde_json::from_value(value)
             .map_err(|e| ApiError::Server(format!("unexpected answer: {e}")))
+    }
+
+    /// Ends the session on the server: argocd-server's web logout revokes the token for the
+    /// rest of its lifetime, so copies of it (a web view's cookie) stop working too. It answers
+    /// with a redirect, which isn't followed.
+    pub async fn logout(&self) -> Result<(), ApiError> {
+        let (status, body) = self
+            .transport
+            .send(Method::GET, "/auth/logout", None, self.token.as_ref())
+            .await?;
+        if status.is_client_error() || status.is_server_error() {
+            let proxied = matches!(self.transport, Transport::Proxy { .. });
+            return Err(error_for(status, &body, proxied));
+        }
+        Ok(())
     }
 
     /// The server's version, without credentials (to check the transport).
