@@ -19,7 +19,7 @@ pub struct KubeSettings {
     /// Load every file listed in `$KUBECONFIG`.
     pub load_kubeconfig_env: bool,
     /// Extra kubeconfig files or folders (every file in a folder is loaded). `~` is expanded.
-    /// The files are only read, never modified.
+    /// Only the kubeconfig editor writes them, after the user turns on editing for a file.
     pub kubeconfigs: Vec<String>,
     /// Per-context overrides, keyed by the cluster id (`<context>@<kubeconfig path>`).
     pub contexts: BTreeMap<String, ContextSettings>,

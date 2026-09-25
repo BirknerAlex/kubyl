@@ -372,48 +372,85 @@ fn merge_contexts(
             }
             taken.insert(name.clone());
 
-            let cluster = cluster_of(config, &context.cluster);
-            let user = user_of(config, context.user.as_deref());
-            let mut error = None;
-            if cluster.is_none() {
-                error = Some(format!("cluster \"{}\" not found", context.cluster));
-            } else if context.user.is_some() && user.is_none() {
-                error = Some(format!(
-                    "user \"{}\" not found",
-                    context.user.as_deref().unwrap_or_default()
-                ));
-            }
-            let ca = match cluster {
-                Some(c) if c.certificate_authority_data.is_some() => CaSource::Inline,
-                Some(c) => match &c.certificate_authority {
-                    Some(path) => CaSource::File(PathBuf::from(path)),
-                    None => CaSource::System,
-                },
-                None => CaSource::System,
-            };
-            contexts.push(ContextInfo {
-                id: ContextInfo::make_id(&named.name, file),
+            contexts.push(build_info(
+                config,
+                &named.name,
+                context,
                 name,
-                context: named.name.clone(),
-                file: file.clone(),
-                source: spec.kind,
-                source_path: spec.path.clone(),
-                cluster: context.cluster.clone(),
-                user: context.user.clone(),
-                server: cluster.and_then(|c| c.server.clone()),
-                namespace: context.namespace.clone(),
-                auth: user.map(AuthMethod::detect).unwrap_or(AuthMethod::None),
-                insecure_skip_tls_verify: cluster
-                    .and_then(|c| c.insecure_skip_tls_verify)
-                    .unwrap_or(false),
-                proxy_url: cluster.and_then(|c| c.proxy_url.clone()),
-                tls_server_name: cluster.and_then(|c| c.tls_server_name.clone()),
-                ca,
-                error,
-            });
+                file,
+                spec.kind,
+                &spec.path,
+            ));
         }
     }
     contexts
+}
+
+/// The [`ContextInfo`] of one context of a parsed kubeconfig that isn't loaded as a source:
+/// the kubeconfig editor tests unsaved edits with it. `file` names the kubeconfig (it doesn't
+/// have to exist); the context's merged name is its own name.
+pub fn context_info(config: &Kubeconfig, context: &str, file: &Path) -> Option<ContextInfo> {
+    let named = config.contexts.iter().find(|c| c.name == context)?;
+    let body = named.context.as_ref()?;
+    Some(build_info(
+        config,
+        &named.name,
+        body,
+        named.name.clone(),
+        file,
+        SourceKind::User,
+        file,
+    ))
+}
+
+fn build_info(
+    config: &Kubeconfig,
+    context_name: &str,
+    context: &kube::config::Context,
+    name: String,
+    file: &Path,
+    source: SourceKind,
+    source_path: &Path,
+) -> ContextInfo {
+    let cluster = cluster_of(config, &context.cluster);
+    let user = user_of(config, context.user.as_deref());
+    let mut error = None;
+    if cluster.is_none() {
+        error = Some(format!("cluster \"{}\" not found", context.cluster));
+    } else if context.user.is_some() && user.is_none() {
+        error = Some(format!(
+            "user \"{}\" not found",
+            context.user.as_deref().unwrap_or_default()
+        ));
+    }
+    let ca = match cluster {
+        Some(c) if c.certificate_authority_data.is_some() => CaSource::Inline,
+        Some(c) => match &c.certificate_authority {
+            Some(path) => CaSource::File(PathBuf::from(path)),
+            None => CaSource::System,
+        },
+        None => CaSource::System,
+    };
+    ContextInfo {
+        id: ContextInfo::make_id(context_name, file),
+        name,
+        context: context_name.to_string(),
+        file: file.to_path_buf(),
+        source,
+        source_path: source_path.to_path_buf(),
+        cluster: context.cluster.clone(),
+        user: context.user.clone(),
+        server: cluster.and_then(|c| c.server.clone()),
+        namespace: context.namespace.clone(),
+        auth: user.map(AuthMethod::detect).unwrap_or(AuthMethod::None),
+        insecure_skip_tls_verify: cluster
+            .and_then(|c| c.insecure_skip_tls_verify)
+            .unwrap_or(false),
+        proxy_url: cluster.and_then(|c| c.proxy_url.clone()),
+        tls_server_name: cluster.and_then(|c| c.tls_server_name.clone()),
+        ca,
+        error,
+    }
 }
 
 /// Validates pasted kubeconfig YAML and returns its context names.
@@ -644,6 +681,18 @@ users:
         assert_eq!(specs[0].files.len(), 2);
         assert_eq!(specs[0].label(), "$KUBECONFIG");
         assert_eq!(specs[1].kind, SourceKind::Default);
+    }
+
+    #[test]
+    fn describes_contexts_of_unloaded_kubeconfigs() {
+        let config = Kubeconfig::from_yaml(OTHER).unwrap();
+        let info = context_info(&config, "prod", Path::new("/tmp/new.yaml")).unwrap();
+        assert!(info.auth.is_oidc());
+        assert!(info.insecure_skip_tls_verify);
+        assert_eq!(info.id.as_str(), "prod@/tmp/new.yaml");
+        let broken = context_info(&config, "broken", Path::new("/tmp/new.yaml")).unwrap();
+        assert!(broken.error.is_some());
+        assert!(context_info(&config, "nope", Path::new("/x")).is_none());
     }
 
     #[test]
