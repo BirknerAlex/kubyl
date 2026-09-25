@@ -105,7 +105,7 @@ pub fn mode_button(
 ) -> gpui::AnyElement {
     let chip = widgets::mode_chip(state);
     let tooltip: SharedString = match state {
-        ApiState::Off => "Reads and patches the Application objects with your Kubernetes access. Sign in to Argo CD for diffs, rendered manifests and the full resource tree.".into(),
+        ApiState::Off => "Reads and patches the Application objects with your Kubernetes access. Sign in to Argo CD for desired-vs-live diffs and the full resource tree.".into(),
         ApiState::Connecting => "Connecting to argocd-server…".into(),
         ApiState::SignInRequired(reason) => reason
             .clone()

@@ -1069,6 +1069,7 @@ impl Render for RollbackDialog {
                 )
         });
         let options = h_flex()
+            .items_start()
             .gap(u(18.0))
             .child(widgets::checkbox(
                 "rollback-prune",
