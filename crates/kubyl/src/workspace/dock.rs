@@ -12,6 +12,8 @@ use crate::views::PlaceholderView;
 pub struct Dock {
     position: DockPosition,
     panels: Vec<Box<dyn TabHandle>>,
+    /// [`kubyl_core::DockPanel::id`] of each entry in `panels` (`None` for the placeholder).
+    ids: Vec<Option<&'static str>>,
     active: usize,
     focus: FocusHandle,
     close_action: Box<dyn Action>,
@@ -39,10 +41,13 @@ impl Dock {
             .iter()
             .map(|panel| panel.build(window, cx))
             .collect();
+        let mut ids: Vec<Option<&'static str>> =
+            registered.iter().map(|panel| Some(panel.id())).collect();
         if panels.is_empty() {
             panels.push(Box::new(
                 cx.new(|cx| PlaceholderView::for_dock(position, cx)),
             ));
+            ids.push(None);
         }
         for panel in &panels {
             let this = cx.entity().downgrade();
@@ -58,10 +63,29 @@ impl Dock {
         Self {
             position,
             panels,
+            ids,
             active: 0,
             focus: cx.focus_handle(),
             close_action,
         }
+    }
+
+    /// Makes the panel with `id` the active tab. Returns `false` when this dock doesn't hold it.
+    pub fn activate_panel(&mut self, id: &str, cx: &mut Context<Self>) -> bool {
+        let Some(index) = self.ids.iter().position(|i| *i == Some(id)) else {
+            return false;
+        };
+        self.active = index;
+        cx.notify();
+        true
+    }
+
+    /// Focus handle of the active panel.
+    pub fn active_focus_handle(&self, cx: &App) -> FocusHandle {
+        self.panels
+            .get(self.active)
+            .map(|panel| panel.focus_handle(cx))
+            .unwrap_or_else(|| self.focus.clone())
     }
 
     fn close_button(&self) -> IconButton {

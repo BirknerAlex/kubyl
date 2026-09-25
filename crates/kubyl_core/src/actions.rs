@@ -32,3 +32,9 @@ actions!(
 #[derive(Clone, PartialEq, Debug, Deserialize, Action)]
 #[action(namespace = kubyl, no_json)]
 pub struct OpenView(pub ViewRequest);
+
+/// Shows the dock that holds the panel with this [`DockPanel::id`](crate::DockPanel::id),
+/// makes the panel the dock's active tab and focuses it.
+#[derive(Clone, PartialEq, Debug, Deserialize, Action)]
+#[action(namespace = kubyl, no_json)]
+pub struct ActivateDockPanel(pub String);
