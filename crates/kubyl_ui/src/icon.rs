@@ -48,6 +48,7 @@ icons! {
     Download => "download",
     Ellipsis => "ellipsis",
     Eye => "eye",
+    EyeOff => "eye-off",
     File => "file",
     FilePlus => "file-plus",
     Folder => "folder",
