@@ -236,13 +236,17 @@ fn main() {
                 }];
                 let mut argo = view(&parent, argo_store, format!("{base}/echo"), 3, session);
                 let first = title(&mut argo).await;
+                if first != "echo:argocd.token=t0ken" {
+                    // What the store holds, and whether a second request carries it.
+                    println!("session cookie store: {:?}", argo.native.cookie_summaries());
+                    argo.native.load_url(&format!("{base}/echo?again"));
+                    println!("session cookie, second request: {}", title(&mut argo).await);
+                    fail(format!("the first request carried {first:?}"));
+                }
                 argo.native.load_url(&format!("{base}/get"));
                 let script = title(&mut argo).await;
                 println!("session cookie, first request: {first}");
                 println!("session cookie, page script:   {script}");
-                if first != "echo:argocd.token=t0ken" {
-                    fail(format!("the first request carried {first:?}"));
-                }
                 if script != "cookie:" {
                     fail(format!("the page's scripts saw {script:?} (not HttpOnly)"));
                 }

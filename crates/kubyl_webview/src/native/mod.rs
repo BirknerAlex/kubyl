@@ -442,6 +442,35 @@ impl NativeWebView {
     }
 
     #[allow(unused_variables)]
+    /// `name domain path` of every cookie in the view's store, without values (diagnostics).
+    pub fn cookie_summaries(&self) -> Vec<String> {
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        {
+            self.webview
+                .cookies()
+                .map(|cookies| {
+                    cookies
+                        .iter()
+                        .map(|c| {
+                            format!(
+                                "{} {} {} secure={:?} http_only={:?}",
+                                c.name(),
+                                c.domain().unwrap_or("-"),
+                                c.path().unwrap_or("-"),
+                                c.secure(),
+                                c.http_only()
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_else(|err| vec![format!("error: {err}")])
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+        {
+            Vec::new()
+        }
+    }
+
     pub fn load_url(&self, url: &str) {
         // Normalized first: wry (macOS) unwraps `NSURL::URLWithString`, which rejects some
         // strings a user can type into the address bar.
