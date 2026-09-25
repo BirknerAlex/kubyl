@@ -40,26 +40,29 @@ impl LogRingBuffer {
         }
     }
 
-    /// Appends a raw line, assigning it the next sequence number. Returns the evicted line, if
-    /// pushing past capacity evicted one (so callers can maintain incremental derived state,
+    /// Appends a line built by `make` with the next sequence number. Returns the evicted line,
+    /// if pushing past capacity evicted one (so callers can maintain incremental derived state,
     /// e.g. per-level counts, without rescanning the whole ring).
-    pub fn push(&mut self, pod: String, container: String, text: String) -> (u64, Option<LogLine>) {
+    pub fn push_with(&mut self, make: impl FnOnce(u64) -> LogLine) -> (u64, Option<LogLine>) {
         let seq = self.next_seq;
         self.next_seq += 1;
-        let evicted = self.push_line(LogLine::new(seq, pod, container, text));
+        let evicted = self.push_line(make(seq));
         (seq, evicted)
     }
 
-    pub fn push_gap(
+    /// Appends a raw line (no timestamp), assigning it the next sequence number.
+    pub fn push(&mut self, pod: String, container: String, text: String) -> (u64, Option<LogLine>) {
+        self.push_with(|seq| LogLine::new(seq, pod.into(), container.into(), None, text))
+    }
+
+    /// Appends a marker line (reconnect gap, pod joined or left).
+    pub fn push_marker(
         &mut self,
         pod: String,
         container: String,
         message: String,
     ) -> (u64, Option<LogLine>) {
-        let seq = self.next_seq;
-        self.next_seq += 1;
-        let evicted = self.push_line(LogLine::gap(seq, pod, container, message));
-        (seq, evicted)
+        self.push_with(|seq| LogLine::marker(seq, pod.into(), container.into(), message))
     }
 
     fn push_line(&mut self, line: LogLine) -> Option<LogLine> {

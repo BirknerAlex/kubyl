@@ -26,7 +26,7 @@ impl Default for LogsSettings {
     fn default() -> Self {
         Self {
             ring_buffer_lines: DEFAULT_CAPACITY,
-            timestamps: false,
+            timestamps: true,
             wrap: false,
             follow: true,
             tail_lines: 1000,

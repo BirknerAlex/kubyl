@@ -116,10 +116,12 @@ fn selector_from_label_selector(selector: &LabelSelector) -> Option<String> {
     }
 }
 
-/// Picks the first pod whose containers all report Ready (or just the first pod if none do —
-/// better to try a forward and fail than to report "no pods").
+/// Picks the first Ready pod, else the first pod that isn't shutting down (better to try a
+/// forward and fail than to report "no pods"). Terminating pods are never picked: their
+/// replacement is about to take over.
 pub fn pick_pod(pods: &[PodInfo]) -> Option<&PodInfo> {
-    pods.iter().find(|p| p.ready).or_else(|| pods.first())
+    let alive = || pods.iter().filter(|p| !p.terminating);
+    alive().find(|p| p.ready).or_else(|| alive().next())
 }
 
 /// A pod's forward-relevant state, independent of `k8s-openapi`.
@@ -127,11 +129,17 @@ pub fn pick_pod(pods: &[PodInfo]) -> Option<&PodInfo> {
 pub struct PodInfo {
     pub name: String,
     pub ready: bool,
+    pub terminating: bool,
     pub container_ports: Vec<(String, u16)>,
 }
 
 fn pod_info(pod: &Pod) -> Option<PodInfo> {
     let name = pod.metadata.name.clone()?;
+    let terminating = pod.metadata.deletion_timestamp.is_some()
+        || matches!(
+            pod.status.as_ref().and_then(|s| s.phase.as_deref()),
+            Some("Succeeded" | "Failed")
+        );
     let ready = pod
         .status
         .as_ref()
@@ -160,7 +168,164 @@ fn pod_info(pod: &Pod) -> Option<PodInfo> {
     Some(PodInfo {
         name,
         ready,
+        terminating,
         container_ports,
+    })
+}
+
+/// A port the user can forward to, for the port picker.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PortChoice {
+    /// The port to request: a container port, or a Service's `spec.ports[].port`.
+    pub port: u16,
+    pub name: Option<String>,
+    /// For Service ports: the target port (`8080`, `http`).
+    pub target: Option<String>,
+    pub protocol: String,
+    /// Looks like HTTP(S): offer "Open in browser".
+    pub http: bool,
+    pub https: bool,
+}
+
+impl PortChoice {
+    /// `80 → http · TCP` / `5432 (postgres)`.
+    pub fn label(&self) -> String {
+        let mut label = self.port.to_string();
+        if let Some(target) = &self.target {
+            label.push_str(&format!(" → {target}"));
+        }
+        if let Some(name) = &self.name {
+            label.push_str(&format!(" ({name})"));
+        }
+        label
+    }
+}
+
+/// Well-known HTTP(S) ports.
+const HTTP_PORTS: &[u16] = &[
+    80, 443, 3000, 4000, 5000, 5601, 8000, 8008, 8080, 8081, 8088, 8443, 8888, 9000, 9090, 9093,
+    9091, 15672, 16686,
+];
+
+/// Whether a port looks like HTTP, and whether HTTPS: by `appProtocol`, the port name
+/// (`http`, `https`, `web`, `ui`, `metrics`…), or a well-known number.
+pub fn http_kind(port: u16, name: Option<&str>, app_protocol: Option<&str>) -> (bool, bool) {
+    let name = name.unwrap_or_default().to_ascii_lowercase();
+    let app = app_protocol.unwrap_or_default().to_ascii_lowercase();
+    let https = app == "https" || name.contains("https") || port == 443 || port == 8443;
+    let http = https
+        || matches!(
+            app.as_str(),
+            "http" | "http2" | "kubernetes.io/h2c" | "kubernetes.io/ws" | "kubernetes.io/wss"
+        )
+        || [
+            "http",
+            "web",
+            "ui",
+            "metrics",
+            "dashboard",
+            "grafana",
+            "admin",
+        ]
+        .iter()
+        .any(|n| name.contains(n))
+        || (HTTP_PORTS.contains(&port) && !name.contains("grpc"));
+    (http, https)
+}
+
+fn container_port_choices(spec: Option<&k8s_openapi::api::core::v1::PodSpec>) -> Vec<PortChoice> {
+    let mut choices: Vec<PortChoice> = Vec::new();
+    for container in spec.map(|s| s.containers.as_slice()).unwrap_or_default() {
+        for port in container.ports.iter().flatten() {
+            let Ok(number) = u16::try_from(port.container_port) else {
+                continue;
+            };
+            let protocol = port.protocol.clone().unwrap_or_else(|| "TCP".into());
+            if protocol != "TCP" || choices.iter().any(|c| c.port == number) {
+                continue;
+            }
+            let (http, https) = http_kind(number, port.name.as_deref(), None);
+            choices.push(PortChoice {
+                port: number,
+                name: port.name.clone(),
+                target: None,
+                protocol,
+                http,
+                https,
+            });
+        }
+    }
+    choices
+}
+
+/// The TCP ports `resource/name` exposes, for the port picker.
+pub async fn list_ports(
+    client: kube::Client,
+    namespace: &str,
+    resource: &str,
+    name: &str,
+) -> anyhow::Result<Vec<PortChoice>> {
+    Ok(match resource {
+        "pods" => {
+            let pod = Api::<Pod>::namespaced(client, namespace).get(name).await?;
+            container_port_choices(pod.spec.as_ref())
+        }
+        "services" => {
+            let service = Api::<Service>::namespaced(client, namespace)
+                .get(name)
+                .await?;
+            service
+                .spec
+                .and_then(|s| s.ports)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|p| p.protocol.as_deref().unwrap_or("TCP") == "TCP")
+                .filter_map(|p| {
+                    let number = u16::try_from(p.port).ok()?;
+                    let target = p.target_port.map(|t| match t {
+                        k8s_openapi::apimachinery::pkg::util::intstr::IntOrString::Int(n) => {
+                            n.to_string()
+                        }
+                        k8s_openapi::apimachinery::pkg::util::intstr::IntOrString::String(s) => s,
+                    });
+                    let (http, https) =
+                        http_kind(number, p.name.as_deref(), p.app_protocol.as_deref());
+                    Some(PortChoice {
+                        port: number,
+                        name: p.name,
+                        target,
+                        protocol: "TCP".into(),
+                        http,
+                        https,
+                    })
+                })
+                .collect()
+        }
+        "deployments" => container_port_choices(
+            Api::<Deployment>::namespaced(client, namespace)
+                .get(name)
+                .await?
+                .spec
+                .and_then(|s| s.template.spec)
+                .as_ref(),
+        ),
+        "statefulsets" => container_port_choices(
+            Api::<StatefulSet>::namespaced(client, namespace)
+                .get(name)
+                .await?
+                .spec
+                .and_then(|s| s.template.spec)
+                .as_ref(),
+        ),
+        "daemonsets" => container_port_choices(
+            Api::<DaemonSet>::namespaced(client, namespace)
+                .get(name)
+                .await?
+                .spec
+                .and_then(|s| s.template.spec)
+                .as_ref(),
+        ),
+        other => anyhow::bail!("port-forwarding isn't supported for {other}"),
     })
 }
 
@@ -361,11 +526,13 @@ mod tests {
             PodInfo {
                 name: "a".into(),
                 ready: false,
+                terminating: false,
                 container_ports: vec![],
             },
             PodInfo {
                 name: "b".into(),
                 ready: true,
+                terminating: false,
                 container_ports: vec![],
             },
         ];
@@ -373,10 +540,41 @@ mod tests {
     }
 
     #[test]
+    fn pick_pod_skips_terminating_pods() {
+        let pods = vec![
+            PodInfo {
+                name: "old".into(),
+                ready: true,
+                terminating: true,
+                container_ports: vec![],
+            },
+            PodInfo {
+                name: "new".into(),
+                ready: false,
+                terminating: false,
+                container_ports: vec![],
+            },
+        ];
+        assert_eq!(pick_pod(&pods).unwrap().name, "new");
+        assert!(pick_pod(&pods[..1]).is_none());
+    }
+
+    #[test]
+    fn detects_http_ports() {
+        assert_eq!(http_kind(80, Some("http"), None), (true, false));
+        assert_eq!(http_kind(8443, None, None), (true, true));
+        assert_eq!(http_kind(5432, Some("postgres"), None), (false, false));
+        assert_eq!(http_kind(9000, Some("grpc"), None), (false, false));
+        assert_eq!(http_kind(1234, Some("web"), None), (true, false));
+        assert_eq!(http_kind(1234, None, Some("https")), (true, true));
+    }
+
+    #[test]
     fn pick_pod_falls_back_when_none_ready() {
         let pods = vec![PodInfo {
             name: "a".into(),
             ready: false,
+            terminating: false,
             container_ports: vec![],
         }];
         assert_eq!(pick_pod(&pods).unwrap().name, "a");

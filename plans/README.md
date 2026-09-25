@@ -39,6 +39,7 @@ Each phase file is written so one Claude Code session can own it from start to f
 | 10 | [Packaging, release, auto-update, hardening](10-packaging-release.md) | 00 (CI), then all | `script/`, `.github/`, `crates/kubyl` bundling | none |
 | 11 | [Service web views over temporary port-forwards](11-service-webview.md) | 02, 05 | `kubyl_webview` (new) | 10 · Web view |
 | 12 | [Argo CD: applications, sync, history, rollback](12-argocd.md) | 02, 04, 05 (11 optional) | `kubyl_argocd` (new) | none yet |
+| 13 | [Kubeconfig editor: clusters, credentials, contexts, connection test](13-kubeconfig-editor.md) | 01, 04 | `kubyl_kubeconfig` (new) | none yet (board 11) |
 
 ```
 00 ─▶ 01 ─▶ 02 ─┬─▶ 03
@@ -47,11 +48,12 @@ Each phase file is written so one Claude Code session can own it from start to f
                 ├─▶ 07 ──────┼─▶ 09 (also needs 08)
                 └────────────┴─▶ 08 (needs 04 for install YAML/diff)
 05 ─▶ 11 (web views)        02 + 04 + 05 ─▶ 12 (Argo CD; uses 11 for "Open Argo CD UI" if present)
+01 + 04 ─▶ 13 (kubeconfig editor)
 10: CI part runs from 00 onward; packaging and release after the feature phases
 ```
 
-After phase 02, phases 03, 04, 05 and 07 can run in parallel sessions. Phase 11 can start once 05 is done, and phase 12 once 04 and 05 are done.
-Phases 11 and 12 add crates that phase 00 didn't stub (`kubyl_webview`, `kubyl_argocd`): their first commit adds the stub crate (workspace member plus the `init` line in `crates/kubyl/src/main.rs`) in a tiny PR that lands on `main` before the feature work, so parallel sessions don't conflict.
+After phase 02, phases 03, 04, 05 and 07 can run in parallel sessions. Phase 11 can start once 05 is done, phase 12 once 04 and 05 are done, and phase 13 once 04 is done.
+Phases 11, 12 and 13 add crates that phase 00 didn't stub (`kubyl_webview`, `kubyl_argocd`, `kubyl_kubeconfig`): their first commit adds the stub crate (workspace member plus the `init` line in `crates/kubyl/src/main.rs`) in a tiny PR that lands on `main` before the feature work, so parallel sessions don't conflict.
 Phase 00 must leave stub crates and registration traits so that parallel phases never edit
 the same files. See "Extension points" below.
 
@@ -84,6 +86,7 @@ crates/
   kubyl_updates/            # cluster update providers + preflight checks
   kubyl_webview/            # embedded web views over temporary port-forwards (phase 11)
   kubyl_argocd/             # Argo CD applications, sync, history, rollback (phase 12)
+  kubyl_kubeconfig/         # kubeconfig editor, connection test, creation wizard (phase 13)
 assets/                     # logo, icons, fonts, keymaps, themes
 design/mockups/             # mockup generator (HTML design canvas)
 plans/                      # these plans
@@ -104,7 +107,10 @@ plans/                      # these plans
 | Syntax | `tree-sitter-yaml` through gpui-component's `tree-sitter-yaml` feature (phase 04) | Highlighting and folding in gpui-component's code editor (`EditorState`); editor colors come from `kubyl_ui` (One Dark). |
 | YAML editor | gpui-component `EditorState` (Apache-2.0), not Zed's GPL `editor` (phase 04) | Diagnostics, hover and completion use its LSP-style providers; gutter markers, code lenses and end-of-line messages are painted by `kubyl_yaml` over the editor. Diffs: `similar` 3 (line diff, three-way merge). |
 | Apply | Server-side apply, field manager `kubyl`, strict field validation; `force` only after the user saw the conflicting managers; replace/create fallback on 415 (phase 04) | `kubyl_yaml::apply`. PROD clusters confirm with the change summary and the typed object name. Kubyl's own applies are kept in state.json (`yaml_history`, never Secrets). |
-| Terminal | `alacritty_terminal` (Apache-2.0) with a custom GPUI renderer | Same approach as Zed, without Zed's GPL view code. |
+| Terminal | `alacritty_terminal` (Apache-2.0) with a custom GPUI canvas renderer (decided in phase 05) | Same approach as Zed, without Zed's GPL view code. Cell width = the advance of `m` from GPUI's text system; runs are shaped with that width forced. Control keys, tab and escape are bound to `terminal::SendKeystroke` in the `TerminalView` key context, because gpui-component's `Root` binds `ctrl-c`/`tab` and `secondary-*` is Ctrl on Linux/Windows. |
+| Log view | `gpui::list` with `FollowMode::Tail`, spliced per batch (decided in phase 05) | Variable-height rows (wrap, pretty JSON). Timestamps are always requested from the API and split off each line; reconnects resume at `sinceTime`. Selector sources watch their pods. |
+| File transfers | Exec only: `tar` streams, `cat`, `dd` chunks with resume, `sha256sum` verification (decided in phase 06) | Works without `kubectl` and without anything installed in the image; distroless containers go through an ephemeral busybox container reading `/proc/1/root`. Uploads extract with `tar xof` (files belong to the container's user). |
+| Drag out to the OS | GPUI's `external_drag_payload` with files staged locally (decided in phase 06) | GPUI hands only existing local files to the OS (macOS, Wayland; no file promises, nothing on Windows/X11). Small pod files are downloaded when a drag starts and offered once complete; folders, large files and Secret mounts use "Download to…". |
 | Charts | Own GPUI `canvas`/path renderer in `kubyl_charts` | No webviews. |
 | Web views | `wry` (MIT/Apache-2.0) as a child view of the GPUI window; separate window or system browser as fallback (phase 11 spike decides per platform) | Only for phase 11 service web views, loaded lazily. |
 | File watching | `notify` | Kubeconfig hot reload. |
@@ -146,7 +152,28 @@ one list. That list is the only shared line, and it is append-only.
 - YAML (phase 04): open `ViewKind::Yaml` with an object ref (edit) or a list ref / no target
   (new resource); `kubyl_yaml::{parse, schema, validate, diff, apply, render}` are usable without
   the view (see plans/04-yaml-editor.md, "API for later phases").
-- Confirmations (phase 02/04): `kubyl_explorer::dialogs::confirm(ConfirmSpec { typed, lines, .. })`.
+- Confirmations (phase 02/04): `kubyl_explorer::dialogs::confirm(ConfirmSpec { typed, lines, .. })`,
+  one-line input: `kubyl_explorer::dialogs::prompt_text`.
+- Dock panels (phase 05): dispatch `kubyl_core::actions::ActivateDockPanel(id)` to show the dock
+  holding a `DockPanel` with that id, activate it and focus it (the panel's `Focusable` decides
+  which element). Dispatch it before focusing anything inside a hidden dock.
+- Active sessions (phase 05): long-running work registers a row with
+  `kubyl_logs::sessions::SessionRegistry::add(kind, title, subtitle, status, tone, on_stop)` and
+  keeps it current with `set_status` / `set_title` / `set_buttons`; the right-dock "Active
+  Sessions" panel and the status bar show them next to the resource watches
+  (`kubyl_resources::ResourceStores::watches`, pausable with `ResourceStore::pause/resume`).
+- Terminals (phase 05): `kubyl_terminal::open(TerminalSpec, in_tab, cx)` opens exec, attach,
+  debug-container or node-shell sessions in the bottom-dock Terminal panel. `kubyl_terminal::exec`
+  (`pod_info`, `run`, `create_debug_container`, `wait_running`) is the exec layer for other crates
+  (the file browser in phase 06).
+- Files (phase 06): open `ViewKind::Files` for a pod (`kubyl_files::view::open`, `f` in pod
+  lists). `kubyl_files::remote::open` probes a container and gives a `RemoteTarget` (list, read,
+  write, stat, mkdir, rename, delete, chmod over exec); `kubyl_files::queue::TransferQueue`
+  runs verified transfers for any crate (`enqueue(TransferJob)`).
+- Port-forwards from anywhere (phase 05): dispatch `kubyl_core::actions::ForwardPort { target,
+  port }` (one click: same local port when free, `80` → `8080`) and `StopForward(id)`; read the
+  running ones from the `kubyl_core::forwards::ActiveForwards` global (observe it to update).
+  `kubyl_portforward` publishes it; the details pane shows forwards next to each port.
 
 ### UX principles (from the mockups)
 

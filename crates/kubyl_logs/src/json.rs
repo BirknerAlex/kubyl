@@ -1,5 +1,7 @@
-//! Pretty/inline JSON formatting for lines that are (or contain) a JSON object, and extracting
-//! `key=value` filters from a clicked field.
+//! JSON log lines: inline (`key=value`) and pretty (indented, multi-line) renderings with token
+//! spans for key highlighting, the clickable fields of each rendering, and field filters.
+
+use std::ops::Range;
 
 use serde_json::Value;
 
@@ -13,24 +15,50 @@ pub fn parse_object(line: &str) -> Option<Value> {
     value.is_object().then_some(value)
 }
 
-/// Multi-line, indented rendering of a JSON value (`serde_json::to_string_pretty`).
-pub fn pretty(value: &Value) -> String {
-    serde_json::to_string_pretty(value).unwrap_or_default()
+/// What a span of rendered JSON is, for coloring.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Token {
+    Key,
+    String,
+    Number,
+    Bool,
+    Null,
+    Punctuation,
 }
 
-/// Flat `key: value, key: value` rendering used for the inline mode.
-pub fn inline(value: &Value) -> String {
-    match value {
-        Value::Object(map) => map
-            .iter()
-            .map(|(k, v)| format!("{k}={}", inline_scalar(v)))
-            .collect::<Vec<_>>()
-            .join(" "),
-        other => inline_scalar(other),
+/// A rendered JSON value: the text, token spans (for colors) and the clickable fields.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Rendered {
+    pub text: String,
+    pub tokens: Vec<(Range<usize>, Token)>,
+    /// Clickable fields: the byte range of the key in `text`, and the filter it adds.
+    pub fields: Vec<(Range<usize>, FieldFilter)>,
+}
+
+impl Rendered {
+    fn push(&mut self, text: &str, token: Option<Token>) -> Range<usize> {
+        let start = self.text.len();
+        self.text.push_str(text);
+        let range = start..self.text.len();
+        if let Some(token) = token {
+            self.tokens.push((range.clone(), token));
+        }
+        range
     }
 }
 
-fn inline_scalar(value: &Value) -> String {
+fn scalar_token(value: &Value) -> Token {
+    match value {
+        Value::String(_) => Token::String,
+        Value::Number(_) => Token::Number,
+        Value::Bool(_) => Token::Bool,
+        Value::Null => Token::Null,
+        _ => Token::Punctuation,
+    }
+}
+
+/// The text of a scalar as a filter compares it (strings without quotes).
+fn scalar_text(value: &Value) -> String {
     match value {
         Value::String(s) => s.clone(),
         Value::Null => "null".into(),
@@ -38,36 +66,167 @@ fn inline_scalar(value: &Value) -> String {
     }
 }
 
-/// A `field == value` filter, built from a clicked top-level JSON field.
-#[derive(Clone, Debug, PartialEq)]
+/// Flat `key=value` rendering; nested objects are flattened to dotted paths
+/// (`http.status=200`), arrays stay JSON.
+pub fn inline(value: &Value) -> Rendered {
+    let mut out = Rendered::default();
+    let Value::Object(map) = value else {
+        out.push(&scalar_text(value), Some(scalar_token(value)));
+        return out;
+    };
+    let mut first = true;
+    // Depth-first so nested fields stay next to their parent, in document order.
+    fn walk(
+        out: &mut Rendered,
+        first: &mut bool,
+        prefix: &str,
+        map: &serde_json::Map<String, Value>,
+    ) {
+        for (key, value) in map {
+            let path = if prefix.is_empty() {
+                key.clone()
+            } else {
+                format!("{prefix}.{key}")
+            };
+            if let Value::Object(inner) = value
+                && !inner.is_empty()
+            {
+                walk(out, first, &path, inner);
+                continue;
+            }
+            if !*first {
+                out.push(" ", None);
+            }
+            *first = false;
+            let key_range = out.push(&path, Some(Token::Key));
+            out.push("=", Some(Token::Punctuation));
+            let text = match value {
+                Value::Array(_) | Value::Object(_) => value.to_string(),
+                other => scalar_text(other),
+            };
+            out.push(&text, Some(scalar_token(value)));
+            if !matches!(value, Value::Array(_) | Value::Object(_)) {
+                out.fields.push((
+                    key_range,
+                    FieldFilter {
+                        field: path,
+                        value: scalar_text(value),
+                    },
+                ));
+            }
+        }
+    }
+    walk(&mut out, &mut first, "", map);
+    out
+}
+
+/// Indented multi-line rendering (two spaces, like `jq`).
+pub fn pretty(value: &Value) -> Rendered {
+    let mut out = Rendered::default();
+    /// `record`: offer the fields as filters. Not inside arrays: a dotted path can't address an
+    /// element, so the filter would hide every line (as in [`inline`]).
+    fn write(out: &mut Rendered, value: &Value, indent: usize, path: &str, record: bool) {
+        match value {
+            Value::Object(map) if !map.is_empty() => {
+                out.push("{", Some(Token::Punctuation));
+                let len = map.len();
+                for (i, (key, child)) in map.iter().enumerate() {
+                    out.push("\n", None);
+                    out.push(&"  ".repeat(indent + 1), None);
+                    let child_path = if path.is_empty() {
+                        key.clone()
+                    } else {
+                        format!("{path}.{key}")
+                    };
+                    let key_range = out.push(&format!("\"{key}\""), Some(Token::Key));
+                    out.push(": ", Some(Token::Punctuation));
+                    if record && !matches!(child, Value::Object(_) | Value::Array(_)) {
+                        out.fields.push((
+                            key_range,
+                            FieldFilter {
+                                field: child_path.clone(),
+                                value: scalar_text(child),
+                            },
+                        ));
+                    }
+                    write(out, child, indent + 1, &child_path, record);
+                    if i + 1 < len {
+                        out.push(",", Some(Token::Punctuation));
+                    }
+                }
+                out.push("\n", None);
+                out.push(&"  ".repeat(indent), None);
+                out.push("}", Some(Token::Punctuation));
+            }
+            Value::Array(items) if !items.is_empty() => {
+                out.push("[", Some(Token::Punctuation));
+                let len = items.len();
+                for (i, item) in items.iter().enumerate() {
+                    out.push("\n", None);
+                    out.push(&"  ".repeat(indent + 1), None);
+                    write(out, item, indent + 1, path, false);
+                    if i + 1 < len {
+                        out.push(",", Some(Token::Punctuation));
+                    }
+                }
+                out.push("\n", None);
+                out.push(&"  ".repeat(indent), None);
+                out.push("]", Some(Token::Punctuation));
+            }
+            other => {
+                out.push(&other.to_string(), Some(scalar_token(other)));
+            }
+        }
+    }
+    write(&mut out, value, 0, "", true);
+    out
+}
+
+/// A `field == value` filter, built from a clicked JSON field. `field` is a dotted path.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct FieldFilter {
     pub field: String,
     pub value: String,
 }
 
 impl FieldFilter {
-    /// Extracts the filter for `field` if `line` is JSON and has it at the top level.
+    /// Extracts the filter for `field` if `line` is JSON and has it.
     pub fn from_line(line: &str, field: &str) -> Option<Self> {
         let value = parse_object(line)?;
-        let field_value = value.get(field)?;
+        let field_value = lookup(&value, field)?;
         Some(FieldFilter {
             field: field.to_string(),
-            value: inline_scalar(field_value),
+            value: scalar_text(field_value),
         })
     }
 
     /// Whether a raw line matches this filter (JSON field equality, or substring fallback for
     /// non-JSON lines so the filter still narrows something sensible). A line that *is* valid
-    /// JSON but simply lacks `field` does not match — it does not fall back to substring
-    /// matching, since that would make unrelated JSON lines match by coincidence.
+    /// JSON but lacks `field` does not match.
     pub fn matches(&self, line: &str) -> bool {
         match parse_object(line) {
-            Some(value) => value
-                .get(&self.field)
-                .is_some_and(|v| inline_scalar(v) == self.value),
+            Some(value) => {
+                lookup(&value, &self.field).is_some_and(|v| scalar_text(v) == self.value)
+            }
             None => line.contains(&self.value),
         }
     }
+
+    /// `field=value`, for the filter chip.
+    pub fn label(&self) -> String {
+        format!("{}={}", self.field, self.value)
+    }
+}
+
+/// Looks up a dotted path (`http.status`), trying the whole key first for keys that contain
+/// dots themselves (`k8s.pod`).
+fn lookup<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
+    let map = value.as_object()?;
+    if let Some(found) = map.get(path) {
+        return Some(found);
+    }
+    let (head, rest) = path.split_once('.')?;
+    lookup(map.get(head)?, rest)
 }
 
 #[cfg(test)]
@@ -82,18 +241,53 @@ mod tests {
     }
 
     #[test]
-    fn inline_flattens_an_object() {
-        let value: Value = serde_json::from_str(r#"{"level":"info","code":200}"#).unwrap();
-        assert_eq!(inline(&value), "level=info code=200");
+    fn inline_flattens_an_object_with_spans_and_fields() {
+        let value: Value =
+            serde_json::from_str(r#"{"level":"info","http":{"status":200},"tags":["a"]}"#).unwrap();
+        let rendered = inline(&value);
+        assert_eq!(rendered.text, r#"level=info http.status=200 tags=["a"]"#);
+        assert_eq!(&rendered.text[rendered.tokens[0].0.clone()], "level");
+        assert_eq!(rendered.tokens[0].1, Token::Key);
+        let fields: Vec<String> = rendered.fields.iter().map(|(_, f)| f.label()).collect();
+        assert_eq!(fields, ["level=info", "http.status=200"]);
+        let (range, _) = &rendered.fields[1];
+        assert_eq!(&rendered.text[range.clone()], "http.status");
     }
 
     #[test]
-    fn field_filter_extracts_and_matches() {
-        let line = r#"{"level":"error","service":"payments"}"#;
-        let filter = FieldFilter::from_line(line, "service").unwrap();
+    fn pretty_indents_and_marks_keys() {
+        let value: Value = serde_json::from_str(r#"{"a":1,"b":{"c":"x"}}"#).unwrap();
+        let rendered = pretty(&value);
+        assert_eq!(
+            rendered.text,
+            "{\n  \"a\": 1,\n  \"b\": {\n    \"c\": \"x\"\n  }\n}"
+        );
+        let fields: Vec<String> = rendered.fields.iter().map(|(_, f)| f.label()).collect();
+        assert_eq!(fields, ["a=1", "b.c=x"]);
+    }
+
+    #[test]
+    fn pretty_offers_no_filters_inside_arrays() {
+        let value: Value =
+            serde_json::from_str(r#"{"ok":1,"items":[{"name":"a"}],"http":{"status":200}}"#)
+                .unwrap();
+        let fields: Vec<String> = pretty(&value)
+            .fields
+            .into_iter()
+            .map(|(_, f)| f.field)
+            .collect();
+        assert!(fields.contains(&"ok".to_string()));
+        assert!(fields.contains(&"http.status".to_string()));
+        assert!(!fields.iter().any(|f| f.starts_with("items")), "{fields:?}");
+    }
+
+    #[test]
+    fn field_filter_extracts_and_matches_nested_paths() {
+        let line = r#"{"level":"error","svc":{"name":"payments"}}"#;
+        let filter = FieldFilter::from_line(line, "svc.name").unwrap();
         assert_eq!(filter.value, "payments");
         assert!(filter.matches(line));
-        assert!(!filter.matches(r#"{"level":"error","service":"auth"}"#));
+        assert!(!filter.matches(r#"{"level":"error","svc":{"name":"auth"}}"#));
     }
 
     #[test]
@@ -102,10 +296,7 @@ mod tests {
             field: "service".to_string(),
             value: "payments".to_string(),
         };
-        // Valid JSON, but no `service` field: even though the text contains "payments" as a
-        // substring, this must not match via the non-JSON fallback path.
         assert!(!filter.matches(r#"{"level":"error","msg":"payments queue backed up"}"#));
-        // Genuinely non-JSON lines still use the substring fallback.
         assert!(filter.matches("payments queue backed up"));
     }
 }

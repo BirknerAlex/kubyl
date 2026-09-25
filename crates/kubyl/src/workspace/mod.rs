@@ -11,7 +11,7 @@ use gpui::{
     Pixels, Render, SharedString, Subscription, WeakEntity, Window, actions, div, prelude::*, px,
 };
 use gpui_component::resizable::{ResizableState, h_resizable, resizable_panel, v_resizable};
-use kubyl_core::actions::{OpenSettings, OpenView, ShowNotifications};
+use kubyl_core::actions::{ActivateDockPanel, OpenSettings, OpenView, ShowNotifications};
 use kubyl_core::{
     ActiveContext, ChromeRegistry, DockPosition, NotificationCenter, StatusBarPosition, TabHandle,
     ViewRegistry, ViewRequest,
@@ -288,6 +288,39 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Shows the dock holding the panel `id`, activates the panel and focuses it.
+    fn activate_dock_panel(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        for position in [DockPosition::Right, DockPosition::Bottom] {
+            let dock = match position {
+                DockPosition::Bottom => self.bottom_dock.clone(),
+                _ => self.right_dock.clone(),
+            };
+            if !dock.update(cx, |dock, cx| dock.activate_panel(id, cx)) {
+                continue;
+            }
+            let layout = match position {
+                DockPosition::Bottom => &mut self.docks.bottom,
+                _ => &mut self.docks.right,
+            };
+            let was_visible = std::mem::replace(&mut layout.visible, true);
+            // A zoomed pane hides every dock, visible or not: un-zoom so the panel shows.
+            let unzoomed = self.zoomed.take().and_then(|z| z.upgrade()).is_some();
+            if unzoomed {
+                for pane in self.center.panes() {
+                    pane.update(cx, |p, cx| p.set_zoomed(false, cx));
+                }
+            }
+            if !was_visible || unzoomed {
+                self.save_layout(window, cx);
+            }
+            let focus = dock.read(cx).active_focus_handle(cx);
+            focus.focus(window, cx);
+            cx.notify();
+            return;
+        }
+        tracing::warn!(panel = id, "no dock panel with this id");
+    }
+
     fn rem_scale(window: &Window) -> f32 {
         f32::from(window.rem_size()) / 16.0
     }
@@ -543,6 +576,9 @@ impl Render for Workspace {
             .on_action(
                 cx.listener(|this, action: &OpenView, window, cx| this.open(&action.0, window, cx)),
             )
+            .on_action(cx.listener(|this, action: &ActivateDockPanel, window, cx| {
+                this.activate_dock_panel(&action.0, window, cx)
+            }))
             .on_action(cx.listener(|_, _: &CloseWindow, window, _| window.remove_window()))
             .on_action(|_: &ZoomIn, _, cx| kubyl_ui::zoom(cx, Some(1.0)))
             .on_action(|_: &ZoomOut, _, cx| kubyl_ui::zoom(cx, Some(-1.0)))
@@ -766,5 +802,44 @@ mod tests {
             assert!(saved.bottom_dock.visible);
             assert!(!saved.sidebar.visible);
         });
+    }
+
+    struct TestPanel;
+
+    impl kubyl_core::DockPanel for TestPanel {
+        fn id(&self) -> &'static str {
+            "test-panel"
+        }
+
+        fn position(&self) -> DockPosition {
+            DockPosition::Bottom
+        }
+
+        fn build(&self, _: &mut Window, cx: &mut App) -> Box<dyn TabHandle> {
+            Box::new(cx.new(|cx| PlaceholderView::for_dock(DockPosition::Bottom, cx)))
+        }
+    }
+
+    #[gpui::test]
+    fn activating_a_dock_panel_shows_its_dock(cx: &mut TestAppContext) {
+        let _dir = init(cx);
+        cx.update(|cx| ChromeRegistry::add_dock_panel(cx, TestPanel));
+        let window = open(cx, WorkspaceLayout::default());
+        window
+            .update(cx, |workspace, window, cx| {
+                assert!(!workspace.docks.bottom.visible);
+                workspace.activate_dock_panel("test-panel", window, cx);
+                assert!(workspace.docks.bottom.visible);
+                // Unknown ids leave the layout alone.
+                workspace.activate_dock_panel("missing", window, cx);
+                assert!(workspace.docks.bottom.visible);
+                // A zoomed pane hides the dock even though it's visible: activating un-zooms.
+                let pane = workspace.active_pane.clone();
+                workspace.toggle_zoom(&pane, cx);
+                assert!(workspace.zoomed.is_some());
+                workspace.activate_dock_panel("test-panel", window, cx);
+                assert!(workspace.zoomed.is_none());
+            })
+            .unwrap();
     }
 }

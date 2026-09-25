@@ -7,9 +7,11 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
-use gpui::{App, AppContext as _, Entity, EventEmitter, Global, SharedString};
+use gpui::{App, AppContext as _, Entity, EventEmitter, Global, SharedString, Window};
 use kubyl_core::Tone;
+use kubyl_ui::IconName;
 
 /// Identifies one row in the active-sessions panel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -44,9 +46,42 @@ pub struct SessionInfo {
     pub id: SessionId,
     pub kind: SessionKind,
     pub title: SharedString,
+    /// Where it runs (namespace, cluster), shown before the status.
     pub subtitle: SharedString,
+    /// Live details: `3 pods · follow · 42 lines/s`, `2 conns · 1.2 MB`, `reconnecting…`.
     pub status: SharedString,
     pub tone: Tone,
+    pub started: Instant,
+    /// Extra buttons shown before the stop button (open in browser, save as favorite…).
+    pub buttons: Vec<SessionButton>,
+}
+
+/// What a session row button does.
+pub type ButtonHandler = Arc<dyn Fn(&mut Window, &mut App)>;
+
+/// A button on a session row.
+#[derive(Clone)]
+pub struct SessionButton {
+    pub id: &'static str,
+    pub icon: IconName,
+    pub tooltip: SharedString,
+    pub on_click: ButtonHandler,
+}
+
+impl SessionButton {
+    pub fn new(
+        id: &'static str,
+        icon: IconName,
+        tooltip: impl Into<SharedString>,
+        on_click: impl Fn(&mut Window, &mut App) + 'static,
+    ) -> Self {
+        Self {
+            id,
+            icon,
+            tooltip: tooltip.into(),
+            on_click: Arc::new(on_click),
+        }
+    }
 }
 
 type StopFn = Arc<dyn Fn(&mut App) + Send + Sync>;
@@ -98,6 +133,8 @@ impl SessionRegistry {
                 subtitle: subtitle.into(),
                 status: status.into(),
                 tone,
+                started: Instant::now(),
+                buttons: Vec::new(),
             });
             this.stops.insert(id, Arc::new(on_stop));
             cx.emit(());
@@ -113,6 +150,30 @@ impl SessionRegistry {
             if let Some(session) = this.sessions.iter_mut().find(|s| s.id == id) {
                 session.status = status.into();
                 session.tone = tone;
+                cx.emit(());
+                cx.notify();
+            }
+        });
+    }
+
+    /// Changes a session's title (a shell whose container or shell was resolved…).
+    pub fn set_title(cx: &mut App, id: SessionId, title: impl Into<SharedString>) {
+        let registry = Self::global(cx);
+        registry.update(cx, |this, cx| {
+            if let Some(session) = this.sessions.iter_mut().find(|s| s.id == id) {
+                session.title = title.into();
+                cx.emit(());
+                cx.notify();
+            }
+        });
+    }
+
+    /// Replaces the extra buttons of a session row.
+    pub fn set_buttons(cx: &mut App, id: SessionId, buttons: Vec<SessionButton>) {
+        let registry = Self::global(cx);
+        registry.update(cx, |this, cx| {
+            if let Some(session) = this.sessions.iter_mut().find(|s| s.id == id) {
+                session.buttons = buttons;
                 cx.emit(());
                 cx.notify();
             }
@@ -148,6 +209,10 @@ impl SessionRegistry {
     pub fn count(&self, kind: SessionKind) -> usize {
         self.sessions.iter().filter(|s| s.kind == kind).count()
     }
+
+    pub fn get(&self, id: SessionId) -> Option<&SessionInfo> {
+        self.sessions.iter().find(|s| s.id == id)
+    }
 }
 
 #[cfg(test)]
@@ -174,6 +239,20 @@ mod tests {
             assert_eq!(registry.read(cx).count(SessionKind::Logs), 1);
             SessionRegistry::set_status(cx, id, "reconnecting", Tone::Warning);
             assert_eq!(registry.read(cx).all()[0].status.as_ref(), "reconnecting");
+            SessionRegistry::set_title(cx, id, "web-1");
+            SessionRegistry::set_buttons(
+                cx,
+                id,
+                vec![SessionButton::new(
+                    "open",
+                    IconName::Globe,
+                    "Open",
+                    |_, _| {},
+                )],
+            );
+            let session = registry.read(cx).get(id).unwrap();
+            assert_eq!(session.title.as_ref(), "web-1");
+            assert_eq!(session.buttons.len(), 1);
             SessionRegistry::stop(cx, id);
             assert!(stopped.load(Ordering::SeqCst));
             assert_eq!(registry.read(cx).all().len(), 0);

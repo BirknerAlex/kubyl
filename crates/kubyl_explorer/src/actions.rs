@@ -395,7 +395,10 @@ fn targets(cx: &mut App, name: &str, mutating: bool) -> Option<(Vec<Selected>, C
     Some((items, caps))
 }
 
-fn client_and_resource(cx: &App, target: &ResourceRef) -> Option<(kube::Client, ApiResource)> {
+pub(crate) fn client_and_resource(
+    cx: &App,
+    target: &ResourceRef,
+) -> Option<(kube::Client, ApiResource)> {
     let manager = ConnectionManager::global(cx);
     let manager = manager.read(cx);
     let client = manager.client(&target.cluster)?;

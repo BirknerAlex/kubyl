@@ -139,15 +139,13 @@ pub fn init(cx: &mut App) {
     set_menus(cx);
     crate::views::init(cx);
 
-    // macOS apps stay open without windows; elsewhere closing the last window quits.
-    if !cfg!(target_os = "macos") {
-        cx.on_window_closed(|cx, _| {
-            if cx.windows().is_empty() {
-                cx.quit();
-            }
-        })
-        .detach();
-    }
+    // Closing the last window quits, on macOS too.
+    cx.on_window_closed(|cx, _| {
+        if cx.windows().is_empty() {
+            cx.quit();
+        }
+    })
+    .detach();
 }
 
 fn set_menus(cx: &mut App) {
@@ -265,6 +263,87 @@ mod screenshot {
             // dispatches any action by name.
             // `mouse=640:380` moves the pointer there (hover popups), `click=640:380` clicks,
             // in logical window pixels.
+            // `filedrop=640:380:/tmp/a;/tmp/b` drops files from the OS at that point.
+            step if step.starts_with("filedrop=") => {
+                let mut parts = step["filedrop=".len()..].splitn(3, ':');
+                let (Some(x), Some(y), Some(paths)) = (parts.next(), parts.next(), parts.next())
+                else {
+                    tracing::error!("bad screenshot step {step}");
+                    return;
+                };
+                let (Ok(x), Ok(y)) = (x.trim().parse::<f32>(), y.trim().parse::<f32>()) else {
+                    tracing::error!("bad screenshot step {step}");
+                    return;
+                };
+                let position = gpui::point(gpui::px(x), gpui::px(y));
+                let paths = gpui::ExternalPaths(paths.split(';').map(Into::into).collect());
+                window.draw(cx).clear(cx);
+                for event in [
+                    gpui::FileDropEvent::Entered { position, paths },
+                    gpui::FileDropEvent::Pending { position },
+                    gpui::FileDropEvent::Submit { position },
+                ] {
+                    window.dispatch_event(gpui::PlatformInput::FileDrop(event), cx);
+                    window.draw(cx).clear(cx);
+                }
+            }
+            // `drag=100:200>600:300` presses at the first point and moves to the second with the
+            // button held (the shot shows the drag in flight); `drop=` also releases it.
+            step if step.starts_with("drag=") || step.starts_with("drop=") => {
+                let (kind, span) = step.split_once('=').unwrap_or_default();
+                let point = |at: &str| {
+                    let (x, y) = at.split_once(':')?;
+                    Some(gpui::point(
+                        gpui::px(x.trim().parse::<f32>().ok()?),
+                        gpui::px(y.trim().parse::<f32>().ok()?),
+                    ))
+                };
+                let Some((from, to)) = span
+                    .split_once('>')
+                    .and_then(|(a, b)| Some((point(a)?, point(b)?)))
+                else {
+                    tracing::error!("bad screenshot step {step}");
+                    return;
+                };
+                window.draw(cx).clear(cx);
+                window.dispatch_event(
+                    gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                        button: gpui::MouseButton::Left,
+                        position: from,
+                        modifiers: Default::default(),
+                        click_count: 1,
+                        first_mouse: false,
+                    }),
+                    cx,
+                );
+                window.draw(cx).clear(cx);
+                for i in 1..=8 {
+                    let t = i as f32 / 8.0;
+                    let position =
+                        gpui::point(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t);
+                    window.dispatch_event(
+                        gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                            position,
+                            pressed_button: Some(gpui::MouseButton::Left),
+                            modifiers: Default::default(),
+                        }),
+                        cx,
+                    );
+                    window.draw(cx).clear(cx);
+                }
+                if kind == "drop" {
+                    window.dispatch_event(
+                        gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                            button: gpui::MouseButton::Left,
+                            position: to,
+                            modifiers: Default::default(),
+                            click_count: 1,
+                        }),
+                        cx,
+                    );
+                    window.draw(cx).clear(cx);
+                }
+            }
             step if step.starts_with("mouse=") || step.starts_with("click=") => {
                 let (kind, at) = step.split_once('=').unwrap_or_default();
                 let Some((x, y)) = at.split_once(':').and_then(|(x, y)| {

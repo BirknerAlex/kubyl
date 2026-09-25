@@ -1288,6 +1288,9 @@ impl ResourceListView {
         if statuses.contains(&StoreStatus::Loading) {
             return ("syncing".into(), kubyl_core::Tone::Info);
         }
+        if statuses.contains(&StoreStatus::Paused) {
+            return ("paused".into(), kubyl_core::Tone::Muted);
+        }
         ("live".into(), kubyl_core::Tone::Good)
     }
 
@@ -1334,6 +1337,9 @@ impl ResourceListView {
             }
             Some(StoreStatus::Unsupported) => format!("This cluster doesn't serve {label}."),
             Some(StoreStatus::Error(err)) => format!("Watch failed, retrying: {err}"),
+            Some(StoreStatus::Paused) => {
+                format!("The {label} watch is paused. Resume it in Active Sessions.")
+            }
             Some(StoreStatus::Ready) if !self.filter.is_empty() => {
                 format!("No {label} match the filter.")
             }

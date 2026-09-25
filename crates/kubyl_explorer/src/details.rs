@@ -1,10 +1,13 @@
 //! The details of one object: the right dock panel (follows the list selection) and the
 //! Details / Describe tabs.
 //!
-//! Summary: status pills, owner chain, containers (pods), usage, labels, annotations,
+//! Summary: status pills (with +/− scaling for Deployments, StatefulSets and ReplicaSets),
+//! owner chain, containers and ports (pods; ports forward with one click), usage, labels,
+//! annotations,
 //! conditions, related objects (selector → pods, Service → Endpoints, PVC → PV, Ingress →
 //! Services/Secrets), kind-specific sections (Deployment rollout history, Node capacity and
-//! taints) and recent events. Describe: `kubectl describe`-like text with events.
+//! taints) and recent events. Describe: `kubectl describe`-like text with events. YAML, Logs,
+//! Terminal and Files are other crates' views, built through the [`ViewRegistry`].
 //!
 //! Related stores (events, pods, owners…) are acquired only after the selection has been
 //! stable for [`SETTLE`], so scrolling through thousands of rows doesn't start watches.
@@ -19,7 +22,8 @@ use gpui::{
     Focusable, FontWeight, IntoElement, Render, SharedString, Subscription, Task, Window, div,
     prelude::*,
 };
-use kubyl_core::actions::OpenView;
+use kubyl_core::actions::{ForwardPort, OpenView, StopForward};
+use kubyl_core::forwards::ActiveForwards;
 use kubyl_core::{
     ClusterCaps, ClusterId, DockPanel, DockPosition, Gvr, Notification, NotificationCenter,
     ResourceRef, TabHandle, TabView, Tone, ViewKind, ViewRegistry, ViewRequest,
@@ -42,9 +46,14 @@ use kubyl_ui::{
 use serde_json::Value;
 
 use crate::catalog;
+use crate::dialogs::{self, ConfirmSpec};
 
 /// How long the selection must stay put before related objects are loaded.
 const SETTLE: Duration = Duration::from_millis(250);
+/// Clicks on +/− within this time become one scale request.
+const SCALE_DEBOUNCE: Duration = Duration::from_millis(350);
+/// Kinds with a `scale` subresource that the summary scales with +/−.
+const SCALABLE: &[&str] = &["deployments", "statefulsets", "replicasets"];
 
 /// What the details show.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -82,6 +91,8 @@ pub enum Mode {
     Logs,
     /// Inline exec terminal sub-tab (built on demand via [`ViewRegistry`]).
     Terminal,
+    /// Inline file browser sub-tab (built on demand via [`ViewRegistry`]).
+    Files,
 }
 
 /// Maps an extra sub-tab to the [`ViewKind`] it builds through the shared [`ViewRegistry`].
@@ -91,22 +102,50 @@ fn extra_view_kind(mode: Mode) -> Option<ViewKind> {
         Mode::Yaml => Some(ViewKind::Yaml),
         Mode::Logs => Some(ViewKind::Logs),
         Mode::Terminal => Some(ViewKind::Terminal),
+        Mode::Files => Some(ViewKind::Files),
         Mode::Summary | Mode::Describe => None,
     }
 }
 
-/// Mirrors `kubyl_logs`'s `ShowLogs` availability: pods and the workloads whose pod-template
-/// selector logs can follow.
+/// Mirrors `kubyl_logs::logs_applicable` (`ShowLogs`): pods, and the workloads and Services
+/// whose pod selector logs can follow.
 fn logs_applicable(resource: &str) -> bool {
     matches!(
         resource,
-        "pods" | "deployments" | "statefulsets" | "daemonsets" | "jobs"
+        "pods"
+            | "deployments"
+            | "statefulsets"
+            | "daemonsets"
+            | "replicasets"
+            | "jobs"
+            | "services"
     )
 }
 
 /// Mirrors `kubyl_terminal`'s `ShowShell` availability: pods on a non-read-only cluster.
 fn terminal_applicable(resource: &str, caps: &ClusterCaps) -> bool {
     resource == "pods" && !caps.read_only
+}
+
+/// Mirrors `kubyl_files`'s "Pod: Browse Files": pods on a non-read-only cluster.
+fn files_applicable(resource: &str, caps: &ClusterCaps) -> bool {
+    resource == "pods" && !caps.read_only
+}
+
+/// A scale request from the summary's +/− buttons, until the object shows it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PendingScale {
+    replicas: i64,
+}
+
+/// One row of a Ports list.
+struct PortRow {
+    port: u16,
+    /// `8080/TCP → 8080` or `8080/TCP`.
+    label: String,
+    /// The port name and, for pods, the container.
+    detail: String,
+    tcp: bool,
 }
 
 /// A cached extra sub-tab view, built once per target so switching tabs doesn't rebuild or
@@ -145,10 +184,13 @@ pub struct DetailsContent {
     extra: HashMap<Mode, ExtraTab>,
     /// Secret `data`/`stringData` keys whose decoded value is currently revealed.
     revealed: std::collections::HashSet<String>,
+    scale_pending: Option<PendingScale>,
+    scale_task: Option<Task<()>>,
+    _forwards_observer: Subscription,
 }
 
 impl DetailsContent {
-    fn new(mode: Mode) -> Self {
+    fn new(mode: Mode, cx: &mut Context<Self>) -> Self {
         Self {
             target: None,
             mode,
@@ -161,6 +203,10 @@ impl DetailsContent {
             _source_observer: None,
             extra: HashMap::new(),
             revealed: std::collections::HashSet::new(),
+            scale_pending: None,
+            scale_task: None,
+            // Port rows show running forwards.
+            _forwards_observer: cx.observe_global::<ActiveForwards>(|_, cx| cx.notify()),
         }
     }
 
@@ -187,17 +233,22 @@ impl DetailsContent {
             self.related = Related::default();
             self.extra.clear();
             self.revealed.clear();
+            self.scale_pending = None;
+            self.scale_task = None;
             // Fall back to Summary if the new target doesn't offer the sub-tab that was open
             // (e.g. navigating from a Pod's Terminal tab to a ConfigMap).
             let mode_valid = match (&target, self.mode) {
                 (_, Mode::Summary | Mode::Describe | Mode::Yaml) => target.is_some(),
                 (None, _) => false,
                 (Some(t), Mode::Logs) => logs_applicable(&t.gvr.resource),
-                (Some(t), Mode::Terminal) => {
+                (Some(t), Mode::Terminal | Mode::Files) => {
                     let caps = ConnectionManager::try_global(cx)
                         .map(|m| m.read(cx).caps(&t.cluster))
                         .unwrap_or_default();
-                    terminal_applicable(&t.gvr.resource, &caps)
+                    match self.mode {
+                        Mode::Files => files_applicable(&t.gvr.resource, &caps),
+                        _ => terminal_applicable(&t.gvr.resource, &caps),
+                    }
                 }
             };
             if !mode_valid {
@@ -569,6 +620,95 @@ fn link(
         .on_click(move |_, window, cx| open_details(target.clone(), window, cx))
 }
 
+/// Wraps an element in a tooltip (the kubyl_ui buttons have none).
+fn tooltip_wrap(id: &'static str, text: &'static str, child: impl IntoElement) -> impl IntoElement {
+    div()
+        .id(id)
+        .tooltip(move |window, cx| gpui_component::tooltip::Tooltip::new(text).build(window, cx))
+        .child(child)
+}
+
+/// A compact bordered button for detail rows (the regular [`kubyl_ui::Button`] is taller).
+fn row_button(
+    id: impl Into<SharedString>,
+    icon: IconName,
+    label: impl Into<SharedString>,
+    colors: &Colors,
+) -> gpui::Stateful<gpui::Div> {
+    let hover = colors.hover;
+    h_flex()
+        .id(id.into())
+        .flex_none()
+        .h(u(20.0))
+        .px(u(6.0))
+        .gap(u(4.0))
+        .rounded(u(4.0))
+        .border_1()
+        .border_color(colors.border)
+        .text_size(u(11.5))
+        .text_color(colors.text_muted)
+        .cursor_pointer()
+        .hover(move |s| s.bg(hover))
+        .child(Icon::new(icon).size(11.0))
+        .child(label.into())
+}
+
+fn protocol(port: &Value) -> &str {
+    match str_at(port, "/protocol") {
+        "" => "TCP",
+        p => p,
+    }
+}
+
+/// Container ports of a pod, per container.
+fn pod_ports(pod: &Value) -> Vec<PortRow> {
+    let mut rows = Vec::new();
+    for container in array_at(pod, "/spec/containers") {
+        for port in array_at(container, "/ports") {
+            let number = int_at(port, "/containerPort");
+            let Ok(number) = u16::try_from(number) else {
+                continue;
+            };
+            let name = str_at(port, "/name");
+            let container = str_at(container, "/name");
+            rows.push(PortRow {
+                port: number,
+                label: format!("{number}/{}", protocol(port)),
+                detail: if name.is_empty() {
+                    container.to_string()
+                } else {
+                    format!("{name} · {container}")
+                },
+                tcp: protocol(port) == "TCP",
+            });
+        }
+    }
+    rows
+}
+
+/// A Service's ports: `8080/TCP → 8080`.
+fn service_ports(svc: &Value) -> Vec<PortRow> {
+    array_at(svc, "/spec/ports")
+        .iter()
+        .filter_map(|port| {
+            let number = u16::try_from(int_at(port, "/port")).ok()?;
+            let target = port["targetPort"]
+                .as_str()
+                .map(String::from)
+                .unwrap_or_else(|| match &port["targetPort"] {
+                    Value::Null => number.to_string(),
+                    other => other.to_string(),
+                });
+            Some(PortRow {
+                port: number,
+                label: format!("{number}/{} → {target}", protocol(port)),
+                detail: str_at(port, "/name").to_string(),
+                tcp: protocol(port) == "TCP",
+            })
+        })
+        .collect()
+}
+
 /// Placeholder shown for a masked Secret value, conceptually like `kubyl_yaml::render::MASK`
 /// (not imported: replicating a one-line constant isn't worth a cross-crate dependency).
 const SECRET_MASK: &str = "••••••••";
@@ -665,12 +805,62 @@ impl DetailsContent {
             "Deployment" | "StatefulSet" | "ReplicaSet" => {
                 let ready = int_at(object, "/status/readyReplicas");
                 let desired = int_at(object, "/spec/replicas");
+                if self.scale_pending.is_some_and(|p| p.replicas == desired) {
+                    self.scale_pending = None;
+                }
                 let tone = if ready >= desired {
                     Tone::Good
                 } else {
                     Tone::Warning
                 };
                 pills = pills.child(StatusPill::new(format!("{ready}/{desired} ready"), tone));
+                if self.can_scale(target, cx) {
+                    let step = |id: &'static str, icon: IconName, tip: &'static str| {
+                        tooltip_wrap(
+                            id,
+                            tip,
+                            h_flex()
+                                .id(SharedString::from(format!("{id}-button")))
+                                .size(u(20.0))
+                                .justify_center()
+                                .rounded(u(4.0))
+                                .border_1()
+                                .border_color(colors.border)
+                                .cursor_pointer()
+                                .hover(|s| s.bg(colors.hover))
+                                .child(Icon::new(icon).size(11.0).color(colors.text_muted)),
+                        )
+                    };
+                    pills = pills.child(
+                        h_flex()
+                            .gap(u(3.0))
+                            .child(
+                                div()
+                                    .id("scale-down")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.scale_by(-1, window, cx)
+                                    }))
+                                    .child(step(
+                                        "scale-down-tip",
+                                        IconName::Minus,
+                                        "Scale down by one",
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .id("scale-up")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.scale_by(1, window, cx)
+                                    }))
+                                    .child(step("scale-up-tip", IconName::Plus, "Scale up by one")),
+                            ),
+                    );
+                }
+                if let Some(pending) = self.scale_pending {
+                    pills = pills.child(
+                        Chip::new(format!("scaling to {}", pending.replicas)).dot(colors.accent),
+                    );
+                }
             }
             _ => {
                 if let Some(phase) = object.pointer("/status/phase").and_then(Value::as_str) {
@@ -966,7 +1156,13 @@ impl DetailsContent {
         out
     }
 
-    fn render_pod(&self, pod: &Value, _: &Target, colors: &Colors, cx: &App) -> Vec<AnyElement> {
+    fn render_pod(
+        &self,
+        pod: &Value,
+        _: &Target,
+        colors: &Colors,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
         let now = jiff::Timestamp::now();
         let mut out = Vec::new();
         let statuses = array_at(pod, "/status/containerStatuses");
@@ -976,19 +1172,6 @@ impl DetailsContent {
             let status = statuses.iter().find(|s| str_at(s, "/name") == name);
             let (state, tone) = container_state(status, now);
             let color = tone_color(tone, colors);
-            let ports: Vec<String> = array_at(container, "/ports")
-                .iter()
-                .map(|p| {
-                    let protocol = match str_at(p, "/protocol") {
-                        "" => "TCP",
-                        p => p,
-                    };
-                    match str_at(p, "/name") {
-                        "" => format!(":{}/{protocol}", int_at(p, "/containerPort")),
-                        n => format!(":{}/{protocol} {n}", int_at(p, "/containerPort")),
-                    }
-                })
-                .collect();
             let resources: Vec<String> = ["requests", "limits"]
                 .iter()
                 .filter_map(|kind| {
@@ -1051,14 +1234,6 @@ impl DetailsContent {
                                     .text_color(colors.text_dim)
                                     .child(str_at(container, "/image").to_string()),
                             )
-                            .when(!ports.is_empty(), |this| {
-                                this.child(
-                                    div()
-                                        .text_size(u(11.5))
-                                        .text_color(colors.text_dim)
-                                        .child(ports.join(" · ")),
-                                )
-                            })
                             .when(
                                 !resources.is_empty() || !probes.is_empty() || restarts > 0,
                                 |this| {
@@ -1081,6 +1256,14 @@ impl DetailsContent {
             );
         }
         out.push(section("Containers", colors).child(list).into_any_element());
+        let ports = pod_ports(pod);
+        if !ports.is_empty() {
+            out.push(
+                section("Ports", colors)
+                    .child(self.port_list(ports, None, colors, cx))
+                    .into_any_element(),
+            );
+        }
 
         // Usage (phase 07 provides the data).
         let target = self.target.as_ref();
@@ -1353,33 +1536,19 @@ impl DetailsContent {
         svc: &Value,
         _: &Target,
         colors: &Colors,
-        cx: &App,
+        cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
-        let ports: Vec<String> = array_at(svc, "/spec/ports")
-            .iter()
-            .map(|p| {
-                format!(
-                    "{}{} → {}",
-                    int_at(p, "/port"),
-                    match str_at(p, "/protocol") {
-                        "" => "/TCP".into(),
-                        p => format!("/{p}"),
-                    },
-                    p["targetPort"]
-                        .as_str()
-                        .map(String::from)
-                        .unwrap_or_else(|| p["targetPort"].to_string())
-                )
-            })
-            .collect();
         let rows = vec![
             ("Type", str_at(svc, "/spec/type").to_string()),
             ("Cluster IP", str_at(svc, "/spec/clusterIP").to_string()),
-            ("Ports", ports.join(", ")),
         ];
+        let ports = service_ports(svc);
         let mut out = vec![
             section("Service", colors)
                 .child(kv(rows, colors))
+                .when(!ports.is_empty(), |this| {
+                    this.child(self.port_list(ports, Some("Ports"), colors, cx))
+                })
                 .into_any_element(),
         ];
         if let Some(store) = &self.related.endpoints {
@@ -1639,6 +1808,263 @@ impl DetailsContent {
         vec![section("Data", colors).child(list).into_any_element()]
     }
 
+    /// Ports with a one-click forward, or the running forward (open/copy, stop). `label`: the
+    /// kv label shown left of the first row (inside a kv section).
+    fn port_list(
+        &self,
+        ports: Vec<PortRow>,
+        label: Option<&'static str>,
+        colors: &Colors,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(target) = &self.target else {
+            return div().into_any_element();
+        };
+        let reference = ResourceRef::object(
+            target.cluster.clone(),
+            target.gvr.clone(),
+            target.namespace.clone(),
+            target.name.clone(),
+        );
+        let can_forward = !ConnectionManager::try_global(cx)
+            .map(|m| m.read(cx).caps(&target.cluster))
+            .unwrap_or_default()
+            .read_only
+            && !self.gone;
+        let mut list = v_flex().gap(u(5.0)).text_size(u(12.0));
+        for (ix, row) in ports.into_iter().enumerate() {
+            let forward = ActiveForwards::find(cx, &reference, row.port).cloned();
+            let control = if !row.tcp || !can_forward {
+                None
+            } else if let Some(forward) = forward {
+                let id = forward.id;
+                let local = forward.local.clone();
+                let url = forward.url.clone();
+                Some(
+                    h_flex()
+                        .gap(u(4.0))
+                        .child(match local {
+                            Some(local) => {
+                                let text = url.clone().unwrap_or_else(|| local.clone());
+                                div()
+                                    .id(SharedString::from(format!("forward-open-{ix}")))
+                                    .font_family(fonts::MONO)
+                                    .text_size(u(11.5))
+                                    .text_color(colors.green)
+                                    .cursor_pointer()
+                                    .hover(|s| s.underline())
+                                    .tooltip(move |window, cx| {
+                                        gpui_component::tooltip::Tooltip::new(if url.is_some() {
+                                            "Open in the browser"
+                                        } else {
+                                            "Copy the address"
+                                        })
+                                        .build(window, cx)
+                                    })
+                                    .on_click(move |_, _, cx| {
+                                        if text.starts_with("http") {
+                                            cx.open_url(&text);
+                                        } else {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                text.clone(),
+                                            ));
+                                            NotificationCenter::push(
+                                                cx,
+                                                Notification::info(format!("Copied {text}")),
+                                            );
+                                        }
+                                    })
+                                    .child(format!("→ {local}"))
+                                    .into_any_element()
+                            }
+                            None => div()
+                                .text_size(u(11.5))
+                                .text_color(colors.text_dim)
+                                .child("forwarding…")
+                                .into_any_element(),
+                        })
+                        .child(tooltip_wrap(
+                            "forward-stop-tip",
+                            "Stop the port-forward",
+                            IconButton::new(("forward-stop", ix), IconName::X)
+                                .icon_size(11.0)
+                                .on_click(move |_, window, cx| {
+                                    window.dispatch_action(Box::new(StopForward(id)), cx)
+                                }),
+                        ))
+                        .into_any_element(),
+                )
+            } else {
+                let target = reference.clone();
+                let port = row.port;
+                Some(
+                    row_button(
+                        format!("forward-{ix}"),
+                        IconName::ArrowRight,
+                        "Forward",
+                        colors,
+                    )
+                    .tooltip(move |window, cx| {
+                        gpui_component::tooltip::Tooltip::new(format!(
+                            "Forward port {port} to this machine"
+                        ))
+                        .build(window, cx)
+                    })
+                    .on_click(move |_, window, cx| {
+                        window.dispatch_action(
+                            Box::new(ForwardPort {
+                                target: target.clone(),
+                                port,
+                            }),
+                            cx,
+                        )
+                    })
+                    .into_any_element(),
+                )
+            };
+            list = list.child(
+                h_flex()
+                    .gap(u(8.0))
+                    .min_h(u(20.0))
+                    .when_some(label, |this, label| {
+                        this.child(
+                            div()
+                                .flex_none()
+                                .w(u(104.0))
+                                .text_color(colors.text_dim)
+                                .child(if ix == 0 { label } else { "" }),
+                        )
+                    })
+                    .child(
+                        div()
+                            .flex_none()
+                            .font_family(fonts::MONO)
+                            .text_size(u(11.5))
+                            .text_color(colors.text)
+                            .child(row.label),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(colors.text_dim)
+                            .child(row.detail),
+                    )
+                    .children(control),
+            );
+        }
+        list.into_any_element()
+    }
+
+    /// The +/− buttons: scalable kinds, a writable cluster, and no known RBAC denial.
+    fn can_scale(&self, target: &Target, cx: &App) -> bool {
+        if !SCALABLE.contains(&target.gvr.resource.as_str()) || self.gone {
+            return false;
+        }
+        let Some(manager) = ConnectionManager::try_global(cx) else {
+            return false;
+        };
+        let manager = manager.read(cx);
+        if manager.caps(&target.cluster).read_only {
+            return false;
+        }
+        let reference = ResourceRef::object(
+            target.cluster.clone(),
+            target.gvr.clone(),
+            target.namespace.clone(),
+            target.name.clone(),
+        );
+        crate::actions::access_for("Workload: Scale…", &reference)
+            .is_none_or(|query| manager.cached_can_i(&target.cluster, &query) != Some(false))
+    }
+
+    /// +/− one replica. Scaling to 0 asks first (typed on production clusters).
+    fn scale_by(&mut self, delta: i64, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(target), Some(object)) = (self.target.clone(), self.object.clone()) else {
+            return;
+        };
+        let current = self
+            .scale_pending
+            .map(|p| p.replicas)
+            .unwrap_or_else(|| int_at(&object, "/spec/replicas"));
+        let next = (current + delta).max(0);
+        if next == current {
+            return;
+        }
+        if next > 0 {
+            self.request_scale(next, cx);
+            return;
+        }
+        let production = ConnectionManager::try_global(cx)
+            .map(|m| m.read(cx).caps(&target.cluster).production)
+            .unwrap_or_default();
+        let mut spec = ConfirmSpec::new(
+            format!("Scale {} {} to 0?", target.kind.to_lowercase(), target.name),
+            "Scale to 0",
+        );
+        spec.lines = vec![
+            match &target.namespace {
+                Some(ns) => format!("{ns}/{}", target.name),
+                None => target.name.clone(),
+            }
+            .into(),
+        ];
+        spec.note = Some("All of its pods stop.".into());
+        spec.danger = true;
+        spec.typed = production.then(|| target.name.clone());
+        let weak = cx.weak_entity();
+        dialogs::confirm(
+            spec,
+            move |_, _, cx| {
+                weak.update(cx, |this, cx| this.request_scale(0, cx)).ok();
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Shows `replicas` right away and sends it after [`SCALE_DEBOUNCE`], so a few quick clicks
+    /// become one request.
+    fn request_scale(&mut self, replicas: i64, cx: &mut Context<Self>) {
+        let Some(target) = self.target.clone() else {
+            return;
+        };
+        self.scale_pending = Some(PendingScale { replicas });
+        let reference = ResourceRef::object(
+            target.cluster.clone(),
+            target.gvr.clone(),
+            target.namespace.clone(),
+            target.name.clone(),
+        );
+        self.scale_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SCALE_DEBOUNCE).await;
+            let job = cx.update(|cx| {
+                let (client, resource) = crate::actions::client_and_resource(cx, &reference)?;
+                let (namespace, name) = (reference.namespace.clone(), target.name.clone());
+                Some(kubyl_core::spawn_kube(cx, async move {
+                    kubyl_resources::ops::scale(client, resource, namespace, name, replicas as u32)
+                        .await
+                }))
+            });
+            let result = match job {
+                Some(job) => job.await,
+                None => Err("the cluster isn't connected".into()),
+            };
+            this.update(cx, |this, cx| {
+                if let Err(err) = result {
+                    this.scale_pending = None;
+                    NotificationCenter::push(
+                        cx,
+                        Notification::error(format!("Scaling {} failed: {err}", target.name)),
+                    );
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
     fn render_describe(&self, object: &Value, target: &Target, cx: &App) -> AnyElement {
         let colors = cx.colors();
         let events: Vec<Value> = self
@@ -1697,13 +2123,14 @@ impl Render for DetailsContent {
             .unwrap_or_default();
         let show_logs = logs_applicable(&target.gvr.resource);
         let show_terminal = terminal_applicable(&target.gvr.resource, &caps);
+        let show_files = files_applicable(&target.gvr.resource, &caps);
 
         let body = match mode {
             Mode::Summary => v_flex()
                 .children(self.render_summary(&object, &target, cx))
                 .into_any_element(),
             Mode::Describe => self.render_describe(&object, &target, cx),
-            Mode::Yaml | Mode::Logs | Mode::Terminal => {
+            Mode::Yaml | Mode::Logs | Mode::Terminal | Mode::Files => {
                 match self.ensure_extra_view(mode, window, cx) {
                     Some(view) => div().size_full().child(view).into_any_element(),
                     None => div()
@@ -1735,7 +2162,10 @@ impl Render for DetailsContent {
             .child(
                 h_flex()
                     .flex_none()
-                    .px(u(10.0))
+                    .flex_wrap()
+                    .pl(u(10.0))
+                    // Room for the dock's pin button.
+                    .pr(u(34.0))
                     .py(u(6.0))
                     .gap(u(4.0))
                     .text_size(u(12.0))
@@ -1766,6 +2196,13 @@ impl Render for DetailsContent {
                         this.child(tab("terminal", "Terminal", Mode::Terminal, mode).on_click(
                             cx.listener(|this, _, _, cx| this.set_mode(Mode::Terminal, cx)),
                         ))
+                    })
+                    .when(show_files, |this| {
+                        this.child(
+                            tab("files", "Files", Mode::Files, mode).on_click(
+                                cx.listener(|this, _, _, cx| this.set_mode(Mode::Files, cx)),
+                            ),
+                        )
                     }),
             )
             .child(
@@ -1795,7 +2232,7 @@ pub struct DetailsPanel {
 
 impl DetailsPanel {
     fn new(cx: &mut Context<Self>) -> Self {
-        let content = cx.new(|_| DetailsContent::new(Mode::Summary));
+        let content = cx.new(|cx| DetailsContent::new(Mode::Summary, cx));
         let subscriptions = vec![
             cx.observe_global::<ResourceSelection>(|this, cx| this.selection_changed(cx)),
             cx.observe(&content, |_, _, cx| cx.notify()),
@@ -1919,7 +2356,7 @@ impl DetailsView {
             })
             .unwrap_or_else(|| kind_guess(&target.gvr.resource));
         let content = cx.new(|cx| {
-            let mut content = DetailsContent::new(mode);
+            let mut content = DetailsContent::new(mode, cx);
             content.set_target(Target::from_ref(&target, kind), None, None, cx);
             content
         });
@@ -1962,7 +2399,7 @@ impl TabView for DetailsView {
             Mode::Describe => format!("{name} · describe").into(),
             // `DetailsView` is only ever constructed with `Summary` or `Describe` (the two
             // top-level entry `ViewKind`s); the extra sub-tabs live inside `DetailsContent`.
-            Mode::Summary | Mode::Yaml | Mode::Logs | Mode::Terminal => name.into(),
+            Mode::Summary | Mode::Yaml | Mode::Logs | Mode::Terminal | Mode::Files => name.into(),
         }
     }
 
@@ -1973,7 +2410,9 @@ impl TabView for DetailsView {
     fn view_request(&self, _: &App) -> Option<ViewRequest> {
         let kind = match self.mode {
             Mode::Describe => describe_view_kind(),
-            Mode::Summary | Mode::Yaml | Mode::Logs | Mode::Terminal => ViewKind::Details,
+            Mode::Summary | Mode::Yaml | Mode::Logs | Mode::Terminal | Mode::Files => {
+                ViewKind::Details
+            }
         };
         Some(ViewRequest::for_resource(kind, self.target.clone()))
     }
@@ -2002,8 +2441,9 @@ mod tests {
         assert!(logs_applicable("statefulsets"));
         assert!(logs_applicable("daemonsets"));
         assert!(logs_applicable("jobs"));
+        assert!(logs_applicable("replicasets"));
+        assert!(logs_applicable("services"));
         assert!(!logs_applicable("configmaps"));
-        assert!(!logs_applicable("services"));
 
         let writable = ClusterCaps::default();
         let read_only = ClusterCaps {
@@ -2013,6 +2453,37 @@ mod tests {
         assert!(terminal_applicable("pods", &writable));
         assert!(!terminal_applicable("pods", &read_only));
         assert!(!terminal_applicable("deployments", &writable));
+        assert!(files_applicable("pods", &writable));
+        assert!(!files_applicable("pods", &read_only));
+        assert!(!files_applicable("services", &writable));
+    }
+
+    #[test]
+    fn ports_of_pods_and_services() {
+        let pod = json!({"spec": {"containers": [
+            {"name": "api", "ports": [
+                {"containerPort": 8080, "name": "http"},
+                {"containerPort": 53, "protocol": "UDP"}
+            ]},
+            {"name": "sidecar", "ports": [{"containerPort": 9090}]}
+        ]}});
+        let ports = pod_ports(&pod);
+        assert_eq!(ports.len(), 3);
+        assert_eq!((ports[0].port, ports[0].label.as_str()), (8080, "8080/TCP"));
+        assert_eq!(ports[0].detail, "http · api");
+        assert!(!ports[1].tcp, "UDP ports can't be forwarded");
+        assert_eq!(ports[2].detail, "sidecar");
+
+        let svc = json!({"spec": {"ports": [
+            {"port": 80, "targetPort": "http", "name": "web"},
+            {"port": 5432, "targetPort": 5432},
+            {"port": 9000}
+        ]}});
+        let ports = service_ports(&svc);
+        assert_eq!(ports[0].label, "80/TCP → http");
+        assert_eq!(ports[0].detail, "web");
+        assert_eq!(ports[1].label, "5432/TCP → 5432");
+        assert_eq!(ports[2].label, "9000/TCP → 9000");
     }
 
     #[test]
@@ -2020,6 +2491,7 @@ mod tests {
         assert_eq!(extra_view_kind(Mode::Yaml), Some(ViewKind::Yaml));
         assert_eq!(extra_view_kind(Mode::Logs), Some(ViewKind::Logs));
         assert_eq!(extra_view_kind(Mode::Terminal), Some(ViewKind::Terminal));
+        assert_eq!(extra_view_kind(Mode::Files), Some(ViewKind::Files));
         assert_eq!(extra_view_kind(Mode::Summary), None);
         assert_eq!(extra_view_kind(Mode::Describe), None);
     }

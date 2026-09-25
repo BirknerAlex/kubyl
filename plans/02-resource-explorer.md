@@ -61,6 +61,20 @@ backbone the other feature phases plug into.
 
 ## Handoff log
 
+### 2026-09-25: details additions (branch `phase/05-finish-06-file-browser`)
+
+- A "Files" sub-tab for pods (`ViewKind::Files` from `kubyl_files`, like Logs and Terminal).
+  The sub-tab row wraps in the narrow dock and leaves room for the pin button.
+- Ports: pods get a Ports section (per container) and Services list their ports in the Service
+  section, each with a one-click "Forward" (`kubyl_core::actions::ForwardPort`). A running
+  forward shows its local address (click opens HTTP ports in the browser, else copies) and a
+  stop button, read from `kubyl_core::forwards::ActiveForwards`. UDP ports and read-only
+  clusters get no button.
+- Deployments, StatefulSets and ReplicaSets: − / + next to "ready" scale by one. Quick clicks
+  are merged into one request (350 ms), shown as "scaling to N" until the object has it; 0
+  asks first (typed on production). Hidden on read-only clusters and when RBAC denies
+  `patch …/scale`.
+
 ### 2026-09-24: phase 02 implemented
 
 **What exists.**

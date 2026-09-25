@@ -1,8 +1,7 @@
 # Phase 05: Logs, exec terminal, port-forwarding
 
-**Status:** in progress — solid, tested core in all three crates; several sub-items per bullet
-below are still missing. See the Handoff log for the precise breakdown before starting the next
-session.
+**Status:** done (2026-09-25; verified against the `kubyl-dev` kind cluster with live tests and
+screenshots, see the Handoff log)
 **Depends on:** 02
 **Owns:** `crates/kubyl_logs`, `crates/kubyl_terminal`, `crates/kubyl_portforward`
 **Mockups:** board 2 · Live logs, exec shell, port-forwards
@@ -15,30 +14,30 @@ port-forward manager. All of them appear in one "Active sessions" panel.
 ## Tasks
 
 ### Logs (`kubyl_logs`)
-- [ ] Sources: a single pod/container, all containers of a pod, and all pods of a workload (Deployment/StatefulSet/DaemonSet/Job, or any label selector). New pods join automatically and deleted pods are marked
-- [ ] Options: follow, since (duration or time), tail lines, timestamps, previous container, wrap, init/ephemeral containers
-- [ ] Virtualized log view in a ring buffer (default 100k lines, configurable), 60 fps at 5k lines/s. Per-pod color prefix
-- [ ] Level detection (JSON `level`/`severity`, logfmt, common text patterns). Level filter chips with counts
-- [ ] Search: text/regex, case toggle, match count, next/prev, highlight, "filter to matches" mode
-- [ ] JSON pretty/inline toggle with key highlighting. Click a JSON field to add it as a filter
-- [ ] Pause (the buffer keeps filling, a counter shows new lines), jump to bottom, copy selection, download (visible or full) to a file
-- [ ] Reconnect with backoff on stream errors, with a gap marker in the view
+- [x] Sources: a single pod/container, all containers of a pod, and all pods of a workload (Deployment/StatefulSet/DaemonSet/Job, or any label selector). New pods join automatically and deleted pods are marked
+- [x] Options: follow, since (duration or time), tail lines, timestamps, previous container, wrap, init/ephemeral containers
+- [x] Virtualized log view in a ring buffer (default 100k lines, configurable), 60 fps at 5k lines/s. Per-pod color prefix
+- [x] Level detection (JSON `level`/`severity`, logfmt, common text patterns). Level filter chips with counts
+- [x] Search: text/regex, case toggle, match count, next/prev, highlight, "filter to matches" mode
+- [x] JSON pretty/inline toggle with key highlighting. Click a JSON field to add it as a filter
+- [x] Pause (the buffer keeps filling, a counter shows new lines), jump to bottom, copy selection, download (visible or full) to a file
+- [x] Reconnect with backoff on stream errors, with a gap marker in the view
 
 ### Exec terminal (`kubyl_terminal`)
-- [ ] `alacritty_terminal` backend with a GPUI renderer (glyph atlas via GPUI text system, 256 colors and true color, selection, scrollback, links, bracketed paste, resize → `TerminalSize` over the exec channel)
-- [ ] Exec via kube `AttachedProcess` (websocket). Shell auto-detection (`/bin/bash` → `/bin/sh` → `sh`) with a manual override
-- [ ] Attach to a running process (`kubectl attach`) and ephemeral debug containers (`kubectl debug` with a chosen image, target container) for distroless pods
-- [ ] Node shell (privileged debug pod on a node, behind a confirmation, disabled on read-only clusters)
-- [ ] Terminal tabs in the bottom dock and as editor tabs. Split terminals
+- [x] `alacritty_terminal` backend with a GPUI renderer (glyph atlas via GPUI text system, 256 colors and true color, selection, scrollback, links, bracketed paste, resize → `TerminalSize` over the exec channel)
+- [x] Exec via kube `AttachedProcess` (websocket). Shell auto-detection (`/bin/bash` → `/bin/sh` → `sh`) with a manual override
+- [x] Attach to a running process (`kubectl attach`) and ephemeral debug containers (`kubectl debug` with a chosen image, target container) for distroless pods
+- [x] Node shell (privileged debug pod on a node, behind a confirmation, disabled on read-only clusters)
+- [x] Terminal tabs in the bottom dock and as editor tabs. Split terminals
 
 ### Port-forwarding (`kubyl_portforward`)
-- [ ] Forward from a Pod, Service (resolve targetPort → pod, re-resolve when the pod dies) or Deployment. Pick local port or auto. Bind address 127.0.0.1 by default
-- [ ] Manager: list, connection count, bytes, reconnect state, stop. Persist favorite forwards, optionally auto-start them when the cluster connects
-- [ ] "Open in browser" for HTTP ports
+- [x] Forward from a Pod, Service (resolve targetPort → pod, re-resolve when the pod dies) or Deployment. Pick local port or auto. Bind address 127.0.0.1 by default
+- [x] Manager: list, connection count, bytes, reconnect state, stop. Persist favorite forwards, optionally auto-start them when the cluster connects
+- [x] "Open in browser" for HTTP ports
 
 ### Active sessions panel
-- [ ] Right dock listing log streams, terminals, port-forwards and watches with status and a stop button (as in the mockup)
-- [ ] Status-bar counters (watches, forwards)
+- [x] Right dock listing log streams, terminals, port-forwards and watches with status and a stop button (as in the mockup)
+- [x] Status-bar counters (watches, forwards)
 
 ## Acceptance criteria
 
@@ -48,6 +47,101 @@ port-forward manager. All of them appear in one "Active sessions" panel.
 - A port-forward to a Service survives a pod restart.
 
 ## Handoff log
+
+### 2026-09-25 (completion, branch `phase/05-finish-06-file-browser`)
+
+An audit of `main` found that none of the 18 tasks was complete (several features existed only
+as library code, most log-view actions had no binding, `s` bypassed read-only clusters, 256
+colors rendered wrong). This entry supersedes the gap lists in the older entries below. Every
+task is now done and checked against the dev cluster.
+
+**Verification.** `cargo test --workspace` (264 tests), clippy, fmt and `cargo deny` pass.
+Live tests, ignored by default, run against kind with `KUBYL_TEST_KUBECONFIG` (see the header of
+each file):
+- `kubyl_logs/tests/live.rs`: a 3-replica deployment's backlog arrives interleaved in timestamp
+  order with live lines from every pod; a killed pod leaves and its replacement joins.
+- `kubyl_terminal/tests/live.rs`: exec with a TTY resize (`stty size` answers `30 100`), an
+  ephemeral debug container sharing the target's processes, a node shell (privileged pod +
+  `nsenter`) whose pod is deleted afterwards.
+- `kubyl_portforward/tests/live.rs`: a Service forward keeps answering on the same local port
+  after its only pod was deleted and replaced.
+
+Screenshots (`--features screenshot`, isolated `HOME` with the kind kubeconfig) confirmed the log
+view (interleaved pods, level chips with counts, ERROR rows, search "timeout" highlighted with
+"144 of 147", inline and pretty JSON, clicking a JSON key adds a `level=info` filter, pause
+counter), `vi` and busybox `top` in an exec tab (full-height grid, inverse header), `s` opening
+the Terminal panel in the bottom dock with a working shell, the Port-Forward and Debug Container
+dialogs and the Active Sessions panel with a forward and seven watches. `script/dev-cluster.sh`
+now deploys `checkout-events` (3 replicas, JSON and text logs at every level) for this. htop
+isn't in any dev-cluster image; `top` exercises the same inverse/cursor paths.
+
+**Shared-crate changes** (own commits): `kubyl_core::actions::ActivateDockPanel(id)` (the
+workspace shows the dock holding that panel and focuses it); `ResourceStores::watches`,
+`ResourceStore::pause/resume` and `StoreStatus::Paused` in `kubyl_resources` (the explorer list
+shows "paused"); the Details pane's logs sub-tab follows `kubyl_logs::logs_applicable`
+(ReplicaSets and Services too).
+
+#### Logs
+- Selector sources (workloads, ReplicaSets, Services, or a selector typed via the container menu's
+  "Label selector…") watch their pods with `kube::runtime::watcher`: pods join when their
+  containers start, deleted pods leave (chip dimmed and struck through, marker row).
+- Timestamps are always requested and split off the text: level detection and JSON work with
+  timestamps shown, reconnects resume at `sinceTime` and skip duplicates. The initial backlog of
+  all containers is fetched non-following and merged by timestamp before live lines start.
+  Containers of finished pods end ("exited with code 0") instead of reconnecting forever.
+- Options: Follow (API follow + tail-follow scrolling), Timestamps (default on), Wrap, Previous,
+  JSON (raw / inline / pretty), since menu (last N lines, last minutes/hours, a local time,
+  everything), container menu (one container, init and ephemeral containers).
+- The list is a `gpui::list` with `FollowMode::Tail`, spliced incrementally, so wrapped lines and
+  pretty JSON get variable heights. Ingest benchmark: 5,040 lines in 60 frame batches cost
+  0.06 ms per frame (release), 0.4 ms (debug); rendering only touches visible rows.
+- Search highlights matches (current one stronger), counts "N of M", Enter/Shift-Enter and n/N
+  scroll to matches, `.*` and `Aa` toggles, filter to matches. Row click/shift-click selects,
+  ⌘C copies; download visible lines, or the complete log fetched from the API, to a file.
+- All view actions are in the palette ("Logs: …") and bound: single letters in the `LogList`
+  context (so typing in the search box doesn't trigger them), ⌘F/⌘S/⌘⇧S/⌥⌘X/⌥⌘C in `LogsView`.
+
+#### Terminal
+- The renderer paints a cell grid on a canvas: cell width is the advance of `m` from GPUI's text
+  system and glyph runs are shaped with that width forced, so columns line up at any zoom.
+  Full xterm palette (plus OSC 4 changes), inverse/dim/hidden/italic/underline/strikeout, wide
+  characters, cursor shapes and visibility, scrollback indicator.
+- Mouse selection (double/triple click for words/lines) and copy, wheel scrollback (alternate
+  scroll on the alternate screen, reports in mouse mode), ⌘/Ctrl-click links (URLs and OSC 8),
+  SGR/X10 mouse reporting, bracketed paste, xterm key encoding.
+- **Key policy:** gpui-component's `Root` binds `ctrl-c` (copy) and `tab`, and Linux/Windows map
+  `secondary-*` to Ctrl, so control keys, tab, escape and a few alt keys are bound to
+  `terminal::SendKeystroke` in the `TerminalView` context. Copy/paste are ⌘C/⌘V on macOS and
+  Ctrl-Shift-C/V elsewhere. Later phases that embed terminals get this for free.
+- Sessions: exec (container and shell pickers in the header, reconnect), attach (`a`, follows
+  the container's tty/stdin), ephemeral debug containers (`shift-d`, dialog: image, process
+  sharing target, command), node shells (`s` on Nodes: typed confirmation on PROD, privileged
+  pod in `terminal.node_shell_namespace`, deleted when the session ends and after 12 h at the
+  latest). All handlers re-check read-only; `s` only applies to Pods.
+- Terminals open in the bottom-dock Terminal panel (tabs, `+`, split side by side);
+  `terminal.open_in = "tab"` or `alt-s` opens exec shells as editor tabs (restored on start).
+  `` ctrl-` `` shows the panel.
+
+#### Port-forwarding and sessions
+- `shift-f` opens a dialog: the target's TCP ports (container or Service ports with their target,
+  HTTP ones marked), a custom port for pods that declare none, local port (auto or fixed), bind
+  address, open in browser, save, start on connect. `alt-shift-f` forwards the first port
+  directly.
+- Forwards are listening, reconnecting (target doesn't resolve; the port stays open and a probe
+  re-resolves every 4 s) or failed (bind error, with a toast). Terminating pods are never picked.
+- Saved forwards (`state.json` `port_forwards`, keyed by context + server + file like explorer
+  favorites) start when their cluster connects; "Port Forward: Saved Forwards…" lists them.
+- Active Sessions: header count, status-colored icons, per-row buttons (open in browser for HTTP
+  ports, copy address, save/forget), details on their own line, resource watches with
+  pause/resume. The status bar counts logs, shells, forwards and watches and opens the panel.
+
+#### Deviations and limits
+- Board 2 shows logs and the terminal in one layout; here the log view is an editor tab and the
+  Terminal panel sits in the bottom dock, which gives the same arrangement. The log toolbars wrap
+  onto a second line at narrow widths instead of clipping.
+- Processes started in an exec session keep running after the websocket closes (a Kubernetes
+  behavior `kubectl exec` shares). Ephemeral containers stay in the pod until it is deleted.
+- Paused watches show their last objects and "paused" in the resource list until resumed.
 
 ### 2026-09-25 (CodeRabbit review fixes, PR #1)
 
