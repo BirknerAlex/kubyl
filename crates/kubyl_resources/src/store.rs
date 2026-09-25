@@ -127,6 +127,8 @@ pub enum StoreStatus {
     Unsupported,
     /// The watch failed and is retrying with backoff.
     Error(String),
+    /// The user paused the watch (Active Sessions panel); the objects are the last known state.
+    Paused,
 }
 
 impl StoreStatus {
@@ -157,6 +159,8 @@ pub struct ResourceStore {
     status: StoreStatus,
     generation: u64,
     running: bool,
+    /// Set by [`Self::pause`]; reconnects don't restart the watch until [`Self::resume`].
+    paused: bool,
     task: Option<Task<()>>,
 }
 
@@ -168,6 +172,7 @@ impl ResourceStore {
             status: StoreStatus::Waiting,
             generation: 0,
             running: false,
+            paused: false,
             task: None,
         }
     }
@@ -212,6 +217,29 @@ impl ResourceStore {
         self.generation
     }
 
+    /// Whether the watch is running (listing or watching).
+    pub fn is_running(&self) -> bool {
+        self.running
+    }
+
+    /// Stops the watch but keeps the last known objects, until [`Self::resume`].
+    pub fn pause(&mut self, cx: &mut Context<Self>) {
+        self.paused = true;
+        self.stop(StoreStatus::Paused, cx);
+    }
+
+    /// Restarts a watch stopped with [`Self::pause`].
+    pub fn resume(&mut self, cx: &mut Context<Self>) {
+        if !self.paused {
+            return;
+        }
+        self.paused = false;
+        self.status = StoreStatus::Waiting;
+        self.generation += 1;
+        cx.notify();
+        self.ensure_running(cx);
+    }
+
     pub(crate) fn apply(&mut self, changes: Vec<Change>, cx: &mut Context<Self>) {
         tracing::trace!(resource = %self.key.gvr, changes = changes.len(), "store batch");
         for change in changes {
@@ -251,6 +279,9 @@ impl ResourceStore {
 
     /// Starts watching when the cluster is connected and serves the resource.
     fn ensure_running(&mut self, cx: &mut Context<Self>) {
+        if self.paused {
+            return;
+        }
         let Some(manager) = ConnectionManager::try_global(cx) else {
             return;
         };
@@ -461,6 +492,15 @@ struct Entry {
     idle_since: Option<Instant>,
 }
 
+/// One registered watch, for the Active Sessions panel.
+#[derive(Clone)]
+pub struct WatchInfo {
+    pub key: StoreKey,
+    pub store: Entity<ResourceStore>,
+    /// Views holding a [`StoreHandle`]; `0` = idle, stopped after the grace period.
+    pub users: usize,
+}
+
 /// Shared stores, ref-counted by [`StoreHandle`]s.
 #[derive(Default)]
 pub struct ResourceStores {
@@ -543,6 +583,28 @@ impl ResourceStores {
         cx.try_global::<Self>().map_or_else(Vec::new, |s| {
             s.entries.values().map(|e| e.store.clone()).collect()
         })
+    }
+
+    /// Every registered watch with its number of users, ordered by resource and namespace.
+    pub fn watches(cx: &App) -> Vec<WatchInfo> {
+        let mut watches: Vec<WatchInfo> = cx.try_global::<Self>().map_or_else(Vec::new, |s| {
+            s.entries
+                .iter()
+                .map(|(key, entry)| WatchInfo {
+                    key: key.clone(),
+                    store: entry.store.clone(),
+                    users: Rc::strong_count(&entry.lease).saturating_sub(1),
+                })
+                .collect()
+        });
+        watches.sort_by(|a, b| {
+            (&a.key.cluster, &a.key.gvr.resource, &a.key.namespace).cmp(&(
+                &b.key.cluster,
+                &b.key.gvr.resource,
+                &b.key.namespace,
+            ))
+        });
+        watches
     }
 
     /// Number of running watches (status bar).
@@ -686,6 +748,39 @@ mod tests {
             assert!(ResourceStores::peek(cx, &key).is_some());
             assert!(!ResourceStores::sweep(start + GRACE, cx));
             assert!(ResourceStores::peek(cx, &key).is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn pausing_keeps_objects_until_resumed(cx: &mut gpui::TestAppContext) {
+        let key = StoreKey::new(ClusterId::new("c"), Gvr::new("", "v1", "pods"), None);
+        let store = cx.new(|_| ResourceStore::from_objects(key, [pod("a", "one")]));
+        store.update(cx, |store, cx| {
+            store.pause(cx);
+            assert_eq!(store.status(), &StoreStatus::Paused);
+            assert!(!store.is_running());
+            assert_eq!(store.len(), 1);
+            store.resume(cx);
+            // No connection manager in tests: the store waits for the cluster.
+            assert_eq!(store.status(), &StoreStatus::Waiting);
+        });
+    }
+
+    #[gpui::test]
+    fn watches_report_their_users(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            cx.default_global::<ResourceStores>();
+            let pods = StoreKey::new(ClusterId::new("c"), Gvr::new("", "v1", "pods"), None);
+            let nodes = StoreKey::new(ClusterId::new("c"), Gvr::new("", "v1", "nodes"), None);
+            let first = ResourceStores::acquire(cx, pods.clone());
+            let _second = first.clone();
+            let _nodes = ResourceStores::acquire(cx, nodes);
+            let watches = ResourceStores::watches(cx);
+            assert_eq!(watches.len(), 2);
+            assert_eq!(watches[0].key.gvr.resource, "nodes");
+            assert_eq!(watches[0].users, 1);
+            assert_eq!(watches[1].key, pods);
+            assert_eq!(watches[1].users, 2);
         });
     }
 

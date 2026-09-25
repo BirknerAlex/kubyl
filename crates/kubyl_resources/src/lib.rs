@@ -30,7 +30,7 @@ pub use filter::Filter;
 pub use selection::{ResourceSelection, Selected};
 pub use store::{
     ObjectKey, ResourceStore, ResourceStores, StoreHandle, StoreKey, StoreMode, StoreStatus,
-    key_of, object_key,
+    WatchInfo, key_of, object_key,
 };
 
 use gpui::App;
