@@ -3,8 +3,8 @@
 //! - Downloads of folders stream `tar cf -` from the container and extract on the fly; single
 //!   files stream `cat`, and large ones are fetched in `dd` chunks appended to a `.kubyl-part`
 //!   file, so a retry after a network blip resumes at the last complete chunk.
-//! - Uploads stream a local tar archive into `tar xf - -C <dir>` (modes and mtimes kept), or
-//!   `cat >` for a single file when the image has no tar.
+//! - Uploads stream a local tar archive into `tar xof - -C <dir>` (modes and mtimes kept, owned
+//!   by the container's user), or `cat >` for a single file when the image has no tar.
 //! - Verification compares SHA-256 on both sides (`sha256sum` in the container).
 //!
 //! Progress is reported as byte deltas on a channel; the queue turns them into speed and ETA.
@@ -74,8 +74,20 @@ pub enum Verification {
     Unverified(String),
 }
 
-/// Bytes moved since the last report.
-pub type ProgressTx = mpsc::UnboundedSender<u64>;
+/// What a running transfer reports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Progress {
+    /// Bytes moved since the last report.
+    Bytes(u64),
+    /// The total size, once known (folders).
+    Total(u64),
+}
+
+pub type ProgressTx = mpsc::UnboundedSender<Progress>;
+
+fn report(progress: &ProgressTx, bytes: u64) {
+    progress.unbounded_send(Progress::Bytes(bytes)).ok();
+}
 
 const RETRIES: u32 = 5;
 
@@ -204,7 +216,7 @@ async fn stream_cat(job: &TransferJob, part: &Path, progress: &ProgressTx) -> an
             break;
         }
         file.write_all(&buf[..n]).await?;
-        progress.unbounded_send(n as u64).ok();
+        report(progress, n as u64);
     }
     file.flush().await?;
     let mut err_text = String::new();
@@ -260,7 +272,7 @@ async fn download_chunks(
     file.set_len(resume_at).await?;
     drop(file);
     if resume_at > 0 {
-        progress.unbounded_send(resume_at).ok();
+        report(progress, resume_at);
     }
     let mut file = tokio::fs::OpenOptions::new()
         .append(true)
@@ -287,7 +299,7 @@ async fn download_chunks(
             }
         };
         file.write_all(&bytes).await?;
-        progress.unbounded_send(bytes.len() as u64).ok();
+        report(progress, bytes.len() as u64);
         if (bytes.len() as u64) < chunk {
             break;
         }
@@ -309,6 +321,12 @@ async fn download_dir(job: &TransferJob, progress: &ProgressTx) -> anyhow::Resul
     tokio::fs::create_dir_all(&staging).await?;
     let parent = crate::entry::parent(&job.remote);
     let name = crate::entry::file_name(&job.remote).to_string();
+    if job.size == 0
+        && caps.du
+        && let Ok(total) = job.target.du(&[&job.remote]).await
+    {
+        progress.unbounded_send(Progress::Total(total)).ok();
+    }
 
     let mut process = remote::exec_stream(
         &job.target,
@@ -346,7 +364,7 @@ async fn download_dir(job: &TransferJob, progress: &ProgressTx) -> anyhow::Resul
             if n == 0 {
                 break;
             }
-            progress.unbounded_send(n as u64).ok();
+            report(progress, n as u64);
             if tx.send(buf[..n].to_vec()).is_err() {
                 break;
             }
@@ -386,6 +404,14 @@ async fn upload(job: &TransferJob, progress: &ProgressTx) -> anyhow::Result<()> 
     if !caps.shell {
         anyhow::bail!("Uploading needs a shell in the container");
     }
+    let mut total = job.size;
+    if total == 0 {
+        let path = job.local.clone();
+        total = tokio::task::spawn_blocking(move || local::tree_size(&path))
+            .await
+            .unwrap_or(0);
+        progress.unbounded_send(Progress::Total(total)).ok();
+    }
     if !caps.tar {
         if job.is_dir {
             anyhow::bail!("Uploading folders needs tar in the container");
@@ -395,7 +421,7 @@ async fn upload(job: &TransferJob, progress: &ProgressTx) -> anyhow::Result<()> 
     let mut process = remote::exec_stream(
         &job.target,
         sh(
-            "mkdir -p -- \"$1\" && tar xf - -C \"$1\"",
+            "mkdir -p -- \"$1\" && tar xof - -C \"$1\"",
             [job.target.real(&job.remote)],
         ),
         true,
@@ -428,7 +454,6 @@ async fn upload(job: &TransferJob, progress: &ProgressTx) -> anyhow::Result<()> 
         builder.into_inner()?.flush()
     });
     let mut sent = 0u64;
-    let total = job.size;
     while let Some(chunk) = rx.recv().await {
         stdin.write_all(&chunk).await?;
         // Tar adds headers and padding: don't report more than the payload.
@@ -439,7 +464,7 @@ async fn upload(job: &TransferJob, progress: &ProgressTx) -> anyhow::Result<()> 
             n
         };
         sent += n;
-        progress.unbounded_send(report).ok();
+        progress.unbounded_send(Progress::Bytes(report)).ok();
     }
     build
         .await
@@ -472,7 +497,7 @@ async fn upload_cat(job: &TransferJob, progress: &ProgressTx) -> anyhow::Result<
             break;
         }
         stdin.write_all(&buf[..n]).await?;
-        progress.unbounded_send(n as u64).ok();
+        report(progress, n as u64);
     }
     stdin.shutdown().await.ok();
     drop(stdin);

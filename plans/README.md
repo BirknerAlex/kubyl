@@ -106,6 +106,8 @@ plans/                      # these plans
 | Apply | Server-side apply, field manager `kubyl`, strict field validation; `force` only after the user saw the conflicting managers; replace/create fallback on 415 (phase 04) | `kubyl_yaml::apply`. PROD clusters confirm with the change summary and the typed object name. Kubyl's own applies are kept in state.json (`yaml_history`, never Secrets). |
 | Terminal | `alacritty_terminal` (Apache-2.0) with a custom GPUI canvas renderer (decided in phase 05) | Same approach as Zed, without Zed's GPL view code. Cell width = the advance of `m` from GPUI's text system; runs are shaped with that width forced. Control keys, tab and escape are bound to `terminal::SendKeystroke` in the `TerminalView` key context, because gpui-component's `Root` binds `ctrl-c`/`tab` and `secondary-*` is Ctrl on Linux/Windows. |
 | Log view | `gpui::list` with `FollowMode::Tail`, spliced per batch (decided in phase 05) | Variable-height rows (wrap, pretty JSON). Timestamps are always requested from the API and split off each line; reconnects resume at `sinceTime`. Selector sources watch their pods. |
+| File transfers | Exec only: `tar` streams, `cat`, `dd` chunks with resume, `sha256sum` verification (decided in phase 06) | Works without `kubectl` and without anything installed in the image; distroless containers go through an ephemeral busybox container reading `/proc/1/root`. Uploads extract with `tar xof` (files belong to the container's user). |
+| Drag out to the OS | GPUI's `external_drag_payload` with files staged locally (decided in phase 06) | GPUI hands only existing local files to the OS (macOS, Wayland; no file promises, nothing on Windows/X11). Small pod files are downloaded when a drag starts and offered once complete; folders, large files and Secret mounts use "Download to…". |
 | Charts | Own GPUI `canvas`/path renderer in `kubyl_charts` | No webviews. |
 | Web views | `wry` (MIT/Apache-2.0) as a child view of the GPUI window; separate window or system browser as fallback (phase 11 spike decides per platform) | Only for phase 11 service web views, loaded lazily. |
 | File watching | `notify` | Kubeconfig hot reload. |
@@ -161,6 +163,10 @@ one list. That list is the only shared line, and it is append-only.
   debug-container or node-shell sessions in the bottom-dock Terminal panel. `kubyl_terminal::exec`
   (`pod_info`, `run`, `create_debug_container`, `wait_running`) is the exec layer for other crates
   (the file browser in phase 06).
+- Files (phase 06): open `ViewKind::Files` for a pod (`kubyl_files::view::open`, `f` in pod
+  lists). `kubyl_files::remote::open` probes a container and gives a `RemoteTarget` (list, read,
+  write, stat, mkdir, rename, delete, chmod over exec); `kubyl_files::queue::TransferQueue`
+  runs verified transfers for any crate (`enqueue(TransferJob)`).
 
 ### UX principles (from the mockups)
 

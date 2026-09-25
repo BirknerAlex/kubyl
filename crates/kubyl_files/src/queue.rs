@@ -9,7 +9,7 @@ use futures::channel::mpsc;
 use gpui::{App, AppContext as _, Context, Entity, EventEmitter, Global, Task};
 
 use crate::settings::FilesSettings;
-use crate::transfer::{self, Direction, TransferJob, Verification};
+use crate::transfer::{self, Direction, Progress, TransferJob, Verification};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TransferState {
@@ -263,7 +263,7 @@ impl TransferQueue {
         transfer.state = TransferState::Running;
         transfer.started = Some(Instant::now());
         let job = transfer.job.clone();
-        let (tx, mut rx) = mpsc::unbounded::<u64>();
+        let (tx, mut rx) = mpsc::unbounded::<Progress>();
         let run = kubyl_core::spawn_kube(cx, transfer::run(job, tx));
         transfer.task = Some(cx.spawn(async move |this, cx| {
             // Progress is drained ~8 times a second while the transfer runs; the channel
@@ -276,10 +276,12 @@ impl TransferQueue {
                             .timer(Duration::from_millis(125))
                             .await;
                         let mut delta = 0;
+                        let mut total = None;
                         let mut closed = false;
                         loop {
                             match rx.try_recv() {
-                                Ok(n) => delta += n,
+                                Ok(Progress::Bytes(n)) => delta += n,
+                                Ok(Progress::Total(n)) => total = Some(n),
                                 Err(mpsc::TryRecvError::Closed) => {
                                     closed = true;
                                     break;
@@ -287,9 +289,9 @@ impl TransferQueue {
                                 Err(mpsc::TryRecvError::Empty) => break,
                             }
                         }
-                        if delta > 0
+                        if (delta > 0 || total.is_some())
                             && this
-                                .update(cx, |this, cx| this.progress(id, delta, cx))
+                                .update(cx, |this, cx| this.progress(id, delta, total, cx))
                                 .is_err()
                         {
                             return;
@@ -306,8 +308,11 @@ impl TransferQueue {
         }));
     }
 
-    fn progress(&mut self, id: u64, delta: u64, cx: &mut Context<Self>) {
+    fn progress(&mut self, id: u64, delta: u64, total: Option<u64>, cx: &mut Context<Self>) {
         if let Some(t) = self.transfers.iter_mut().find(|t| t.id == id) {
+            if let Some(total) = total {
+                t.total_bytes = total;
+            }
             t.done_bytes += delta;
             if t.total_bytes > 0 && t.done_bytes > t.total_bytes {
                 // `du` rounds; tar adds headers.
@@ -363,9 +368,9 @@ pub fn human_speed(bytes_per_second: f64) -> String {
     format!("{}/s", crate::entry::human_size(bytes_per_second as u64))
 }
 
-/// `4s`, `2m 10s`, `1h 5m`.
+/// `4s`, `2m 10s`, `1h 5m`: rounded up, so an ETA never reads `0s` before the end.
 pub fn human_duration(duration: Duration) -> String {
-    let secs = duration.as_secs();
+    let secs = duration.as_secs() + u64::from(duration.subsec_nanos() > 0);
     match secs {
         0..60 => format!("{secs}s"),
         60..3600 => format!("{}m {}s", secs / 60, secs % 60),
@@ -390,6 +395,7 @@ mod tests {
     fn formats_speed_and_duration() {
         assert_eq!(human_speed(38.0 * 1024.0 * 1024.0), "38.0 MB/s");
         assert_eq!(human_duration(Duration::from_secs(4)), "4s");
+        assert_eq!(human_duration(Duration::from_millis(300)), "1s");
         assert_eq!(human_duration(Duration::from_secs(130)), "2m 10s");
         assert_eq!(human_duration(Duration::from_secs(3900)), "1h 5m");
     }

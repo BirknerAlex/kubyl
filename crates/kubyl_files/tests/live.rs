@@ -113,8 +113,10 @@ async fn run(job: TransferJob) -> (anyhow::Result<Verification>, u64) {
     let (tx, mut rx) = mpsc::unbounded();
     let result = transfer::run(job, tx).await;
     let mut bytes = 0;
-    while let Some(n) = rx.next().await {
-        bytes += n;
+    while let Some(progress) = rx.next().await {
+        if let transfer::Progress::Bytes(n) = progress {
+            bytes += n;
+        }
     }
     (result, bytes)
 }
@@ -204,6 +206,18 @@ async fn browse_upload_download_and_distroless() {
     assert_eq!(result.expect("upload"), Verification::Verified);
     let uploaded = target.list("/data/in/batch").await.unwrap();
     assert_eq!(uploaded.len(), 100);
+    // Owned by the container's user (root here), not the uid from the local archive.
+    let owners = target
+        .run("stat -c %u \"$1\"/*", &["/data/in/batch"])
+        .await
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&owners)
+            .lines()
+            .all(|uid| uid == "0"),
+        "{}",
+        String::from_utf8_lossy(&owners)
+    );
 
     // Download a 20 MB file in chunks, then resume a partial download.
     target
