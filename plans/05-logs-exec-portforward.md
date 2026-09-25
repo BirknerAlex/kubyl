@@ -205,9 +205,9 @@ and proxies bytes bidirectionally per connection via `tokio::io::copy_bidirectio
 `manager.rs` tracks connection count and bytes sent/received per forward and reports them as the
 session's status string in the shared Active Sessions panel (so "list, connection count, bytes,
 stop" all work there); `shift-f` on a Pod/Service/Deployment/StatefulSet/DaemonSet starts a
-forward with hard-coded default ports (8080 for Pod/workload, 80 for Service) and an
-auto-assigned local port — **there's no target/port picker dialog yet**, which is the main
-missing piece for real usability.
+forward using the first container port (Pod/workload) or first Service port (Service, no
+explicit port requested) and an auto-assigned local port — **there's no target/port picker
+dialog yet**, which is the main missing piece for real usability.
 
 Missing: `favorites.rs` (the persisted-favorites data model, `state.json` key
 `"port_forwards"`) is fully unit-tested but **not wired into `init(cx)` at all** — nothing saves
@@ -228,12 +228,22 @@ try).
 
 #### For the next session
 1. Wire `favorites.rs` into an actual "save as favorite" / auto-start-on-connect flow.
-2. Add a target/port picker dialog for port-forwards instead of the hard-coded defaults.
-3. Probe shells for real in `kubyl_terminal` (use `shell::probe_command` via a quick `exec`
-   before the interactive one) and wire `exec::Mode::Attach`, ephemeral debug containers and node
-   shell.
+2. Add a target/port picker dialog for port-forwards instead of always using the first port.
+3. Wire `exec::Mode::Attach`, ephemeral debug containers and node shell in `kubyl_terminal`.
 4. Decide where watch counts should live (`kubyl_core` vs. a small `kubyl_resources` addition)
    and surface them in `kubyl_logs::dock`.
 5. Verify against `script/dev-cluster.sh`: 3-replica deployment log interleaving, pod-kill
    rejoin, `vim`/`htop` in an exec shell, and a Service forward surviving a pod restart — none of
    this was exercised live in this session.
+
+#### 2026-09-25: second CodeRabbit pass (3 more findings)
+- `manager.rs`: `Forward` gained a `listening` flag, set only on `ForwardEvent::Listening`;
+  `last_url` now filters to listening forwards so a bind failure never surfaces
+  `http://127.0.0.1:0` to "open last forward in browser". `ForwardEvent::Error`'s session status
+  now includes the error message instead of the bare string `"error"`.
+- `resolve.rs`: the Service path no longer falls back to the Service's own numeric port when a
+  named `targetPort` isn't present on the chosen pod's containers — that could forward to an
+  unrelated process listening on the same port number by coincidence. It now returns an error
+  naming the service, requested target port and chosen pod instead.
+- Removed a stale "probe shells for real" TODO left over from the first CodeRabbit pass — that
+  was already fixed then (`shell::detect`).

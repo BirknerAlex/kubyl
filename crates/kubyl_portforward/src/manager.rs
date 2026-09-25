@@ -32,6 +32,7 @@ struct Forward {
     label: String,
     bind_address: String,
     local_port: u16,
+    listening: bool,
     connections: u64,
     bytes_sent: u64,
     bytes_received: u64,
@@ -146,6 +147,7 @@ impl PortForwardManager {
                     label: spec.label,
                     bind_address: spec.bind_address,
                     local_port: spec.local_port,
+                    listening: false,
                     connections: 0,
                     bytes_sent: 0,
                     bytes_received: 0,
@@ -184,6 +186,7 @@ impl PortForwardManager {
         match event {
             ForwardEvent::Listening { local_port } => {
                 forward.local_port = *local_port;
+                forward.listening = true;
             }
             ForwardEvent::ConnectionOpened => {
                 forward.connections += 1;
@@ -196,7 +199,12 @@ impl PortForwardManager {
                 forward.bytes_received += received;
             }
             ForwardEvent::Error(message) => {
-                SessionRegistry::set_status(cx, forward.session_id, "error", Tone::Bad);
+                SessionRegistry::set_status(
+                    cx,
+                    forward.session_id,
+                    format!("error: {message}"),
+                    Tone::Bad,
+                );
                 tracing::debug!(forward = %forward.label, "port-forward error: {message}");
                 cx.notify();
                 return true;
@@ -222,12 +230,14 @@ impl PortForwardManager {
     }
 
     /// The most recently started forward's local URL, for the "open last forward" action.
+    /// Only considers forwards that reached `Listening`, so a bind failure never yields
+    /// `http://127.0.0.1:0`.
     pub fn last_url(&self) -> Option<String> {
         self.forwards
-            .keys()
-            .max()
-            .map(|id| ForwardId(*id))
-            .and_then(|id| self.local_url(id))
+            .iter()
+            .filter(|(_, forward)| forward.listening)
+            .max_by_key(|(id, _)| **id)
+            .map(|(_, forward)| format!("http://{}:{}", forward.bind_address, forward.local_port))
     }
 }
 

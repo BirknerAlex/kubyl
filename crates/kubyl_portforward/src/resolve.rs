@@ -265,8 +265,13 @@ pub async fn resolve(
             let chosen = pick_pod(&pods)
                 .ok_or_else(|| anyhow::anyhow!("service {service} has no backing pods"))?;
             let port = resolve_target_port(&matched.target_port, &chosen.container_ports)
-                .or(requested)
-                .unwrap_or(u16::try_from(matched.port).unwrap_or(0));
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "service {service} target port {:?} is not present on pod {}",
+                        matched.target_port,
+                        chosen.name
+                    )
+                })?;
             Ok(Resolved {
                 pod: chosen.name.clone(),
                 port,
