@@ -19,7 +19,8 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
     COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_CANCEL, ICoreWebView2_14,
 };
 use webview2_com::{
-    AcceleratorKeyPressedEventHandler, FocusChangedEventHandler, ProcessFailedEventHandler,
+    AcceleratorKeyPressedEventHandler, ClearServerCertificateErrorActionsCompletedHandler,
+    FocusChangedEventHandler, ProcessFailedEventHandler,
     ServerCertificateErrorDetectedEventHandler, take_pwstr,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState;
@@ -36,6 +37,20 @@ pub fn configure<'a>(builder: WebViewBuilder<'a>, options: &NativeOptions) -> We
     match &options.storage {
         Storage::Isolated { id } => builder.with_profile_name(super::storage_name(id)),
         Storage::Private => builder,
+    }
+}
+
+/// Forgets the certificates allowed so far: WebView2 caches `AlwaysAllow` per host and
+/// certificate for the session ("Clear site data" asks again).
+pub fn clear_certificate_decisions(webview: &wry::WebView) {
+    // SAFETY: a COM call on the live webview (UI thread).
+    unsafe {
+        if let Ok(core) = webview.webview().cast::<ICoreWebView2_14>() {
+            core.ClearServerCertificateErrorActions(
+                &ClearServerCertificateErrorActionsCompletedHandler::create(Box::new(|_| Ok(()))),
+            )
+            .ok();
+        }
     }
 }
 

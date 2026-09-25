@@ -258,18 +258,36 @@ type SecTrustRef = *const c_void;
 #[allow(non_camel_case_types)]
 type CFTypeRef = *const c_void;
 
+/// `SecTrustWithErrorCallback`: the trust, whether the system trusts it (a C `bool`, one
+/// byte), and why not.
+type TrustResult = Block<dyn Fn(SecTrustRef, u8, CFTypeRef)>;
+
 #[link(name = "Security", kind = "framework")]
 unsafe extern "C" {
     fn SecTrustGetCertificateCount(trust: SecTrustRef) -> isize;
     fn SecTrustGetCertificateAtIndex(trust: SecTrustRef, index: isize) -> CFTypeRef;
     fn SecCertificateCopyData(certificate: CFTypeRef) -> CFTypeRef;
+    fn SecTrustEvaluateAsyncWithError(
+        trust: SecTrustRef,
+        queue: *const c_void,
+        result: &TrustResult,
+    ) -> i32;
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {
     fn CFDataGetLength(data: CFTypeRef) -> isize;
     fn CFDataGetBytePtr(data: CFTypeRef) -> *const u8;
+    fn CFRetain(value: CFTypeRef) -> CFTypeRef;
     fn CFRelease(value: CFTypeRef);
+}
+
+unsafe extern "C" {
+    static _dispatch_main_q: c_void;
+}
+
+fn dispatch_get_main_queue() -> *const c_void {
+    &raw const _dispatch_main_q
 }
 
 /// The certificate chain of a trust object, leaf first, as DER.
@@ -365,27 +383,60 @@ unsafe extern "C-unwind" fn did_receive_challenge(
         }
         let chain = chain(trust);
         let fingerprint: Option<[u8; 32]> = chain.first().map(|leaf| Sha256::digest(leaf).into());
-        let decision = VIEWS.with_borrow(|views| {
-            let entry = views.get(&(webview as usize))?;
-            let accepted = fingerprint.is_some_and(|f| entry.accepted.borrow().contains(&f));
-            if !accepted {
-                entry
-                    .events
-                    .unbounded_send(NativeEvent::CertificateRejected {
-                        chain: chain.clone(),
-                    })
-                    .ok();
-            }
-            Some(accepted)
+        let key = webview as usize;
+        let accepted = VIEWS.with_borrow(|views| {
+            let entry = views.get(&key)?;
+            Some(fingerprint.is_some_and(|f| entry.accepted.borrow().contains(&f)))
         });
-        if decision == Some(true) {
-            let credential: *mut AnyObject =
-                msg_send![objc2::class!(NSURLCredential), credentialForTrust: trust];
-            handler.call((USE_CREDENTIAL, credential));
-        } else {
+        match accepted {
+            Some(true) => {
+                let credential: *mut AnyObject =
+                    msg_send![objc2::class!(NSURLCredential), credentialForTrust: trust];
+                handler.call((USE_CREDENTIAL, credential));
+                return;
+            }
+            None => {
+                handler.call((CANCEL_CHALLENGE, std::ptr::null_mut()));
+                return;
+            }
+            Some(false) => {}
+        }
+        // Not accepted here: certificates the system trusts (a local CA in the keychain) load
+        // as usual, anything else is cancelled and the tab asks. Evaluating can block on the
+        // network, so it runs off the main thread and answers on the main queue.
+        let pending = handler.copy();
+        CFRetain(trust);
+        let result = RcBlock::new(move |trust: SecTrustRef, trusted: u8, _error: CFTypeRef| {
+            if trusted != 0 {
+                pending.call((PERFORM_DEFAULT_HANDLING, std::ptr::null_mut()));
+            } else {
+                reject(key, &chain);
+                pending.call((CANCEL_CHALLENGE, std::ptr::null_mut()));
+            }
+            // Retained above for the evaluation.
+            CFRelease(trust);
+        });
+        if SecTrustEvaluateAsyncWithError(trust, dispatch_get_main_queue(), &result) != 0 {
+            // The evaluation didn't start: the callback won't run.
+            reject(key, &self::chain(trust));
+            CFRelease(trust);
             handler.call((CANCEL_CHALLENGE, std::ptr::null_mut()));
         }
     }
+}
+
+/// Tells the tab of the web view `key` that its certificate needs the user's decision.
+fn reject(key: usize, chain: &[Vec<u8>]) {
+    VIEWS.with_borrow(|views| {
+        if let Some(entry) = views.get(&key) {
+            entry
+                .events
+                .unbounded_send(NativeEvent::CertificateRejected {
+                    chain: chain.to_vec(),
+                })
+                .ok();
+        }
+    });
 }
 
 /// Test driver: posts real AppKit events (clicks at view-relative fractions, typed text,
@@ -411,14 +462,8 @@ pub fn post_test_input(webview: &wry::WebView, script: &str) {
 
 #[cfg(debug_assertions)]
 unsafe extern "C" {
-    static _dispatch_main_q: c_void;
     fn dispatch_time(when: u64, delta: i64) -> u64;
     fn dispatch_after(when: u64, queue: *const c_void, block: *mut c_void);
-}
-
-#[cfg(debug_assertions)]
-unsafe fn dispatch_get_main_queue() -> *const c_void {
-    &raw const _dispatch_main_q
 }
 
 #[cfg(debug_assertions)]

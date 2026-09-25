@@ -438,9 +438,13 @@ impl NativeWebView {
         with_wry! { self.webview.open_devtools(); }
     }
 
-    /// Clears cookies, storage and caches of this view's data store.
+    /// Clears cookies, storage and caches of this view's data store, and (Windows) the
+    /// certificates allowed in this session. WebKitGTK keeps allowed certificates in the
+    /// service's context until its last view closes.
     pub fn clear_browsing_data(&self) {
         with_wry! { self.webview.clear_all_browsing_data().ok(); }
+        #[cfg(target_os = "windows")]
+        windows::clear_certificate_decisions(&self.webview);
     }
 
     /// Sets the title of the page's own window ([`Placement::Window`]).

@@ -742,7 +742,11 @@ impl WebViewTab {
     /// Stops the forward of a tab that stayed in the background (setting), and restarts it
     /// when the tab shows again.
     fn check_idle(&mut self, cx: &mut Context<Self>) {
-        let shown = self.embedded.as_ref().is_some_and(|e| e.is_shown());
+        // A page in its own window (Wayland) may be in use whatever the tab shows.
+        let shown = self
+            .embedded
+            .as_ref()
+            .is_some_and(|e| e.is_shown() || e.native.placement() == Placement::Window);
         if shown || self.phase != Phase::Page || self.open_in_browser_mode(cx) {
             self.last_seen = Instant::now();
             return;

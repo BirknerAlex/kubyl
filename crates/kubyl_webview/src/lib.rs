@@ -125,8 +125,9 @@ pub fn init(cx: &mut App) {
     ChromeRegistry::add_details_section(cx, details::WebViewDetails);
     ResourceColumns::extend(cx, "", "Service", WebColumn);
 
+    // Core Services and Pods only (a Knative Service is `services` too), like the details.
     let applies = |target: &ResourceRef, _: &kubyl_core::ClusterCaps| {
-        matches!(target.gvr.resource.as_str(), "services" | "pods")
+        (target.gvr.group.is_empty() && matches!(target.gvr.resource.as_str(), "services" | "pods"))
             || (target.gvr.resource == "ingresses" && target.gvr.group == "networking.k8s.io")
     };
     // Web views are a read path: allowed on read-only clusters too (the toolbar says so).

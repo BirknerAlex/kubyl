@@ -119,10 +119,19 @@ fn setup(client: &kube::Client) {
 
 fn teardown(client: &kube::Client) {
     block_on(async {
-        Api::<Namespace>::all(client.clone())
+        let namespaces = Api::<Namespace>::all(client.clone());
+        namespaces
             .delete(NAMESPACE, &DeleteParams::default())
             .await
             .ok();
+        // The next test's setup can't create anything in a terminating namespace.
+        for _ in 0..120 {
+            if matches!(namespaces.get_opt(NAMESPACE).await, Ok(None)) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        panic!("namespace {NAMESPACE} wasn't deleted");
     });
 }
 

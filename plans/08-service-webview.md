@@ -134,9 +134,13 @@ on the UI thread (debug and release alike). Linux binaries link WebKitGTK 4.1 an
   cancels and the tab shows the interstitial (subject, issuer, validity, names, fingerprint).
   macOS: wry has no hook, so `webView:didReceiveAuthenticationChallenge:completionHandler:` is
   added to wry's navigation delegate class at runtime (the class name is mangled per wry
-  version: it's taken from the live delegate) and the delegate is set again. Windows:
-  `ServerCertificateErrorDetected` (runtime ≥ 1.0.1245). Linux: `load-failed-with-tls-errors`
-  + `allow_tls_certificate_for_host`.
+  version: it's taken from the live delegate) and the delegate is set again; certificates the
+  system trusts (a local CA) load as usual, checked with `SecTrustEvaluateAsyncWithError` (the
+  synchronous call can block on the network). Windows: `ServerCertificateErrorDetected`
+  (runtime ≥ 1.0.1245). Linux: `load-failed-with-tls-errors` + `allow_tls_certificate_for_host`.
+  "Clear site data" forgets the accepted certificates (and, on Windows, WebView2's cached
+  decisions); WebKitGTK keeps an allowed certificate in the service's context until its last
+  view closes.
 - **Storage.** macOS: `WKWebsiteDataStore` per identifier (macOS 14+; older systems get a
   non-persistent store per view, so nothing is ever shared); Windows: one user data folder,
   a profile per service; Linux: one WebKitGTK context (data directory) per service, shared by
