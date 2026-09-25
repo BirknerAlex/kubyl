@@ -241,26 +241,38 @@ pub fn set_cookies_then_load(
         tracing::debug!(url, "not loading an invalid URL");
         return;
     };
-    let pending = Rc::new(Cell::new(cookies.len()));
-    let load = Rc::new(RefCell::new(Some((view.clone(), request))));
-    let done = move || {
-        pending.set(pending.get().saturating_sub(1));
-        if pending.get() == 0
-            && let Some((view, request)) = load.borrow_mut().take()
-        {
-            // SAFETY: `loadRequest:` on the WKWebView with an NSURLRequest (returns a
-            // WKNavigation we don't need).
-            unsafe {
-                let _: *mut AnyObject = msg_send![&*view, loadRequest: &*request];
-            }
-        }
-    };
     // SAFETY: plain getters of WKWebView → WKWebViewConfiguration → WKWebsiteDataStore →
     // WKHTTPCookieStore; the store lives as long as the web view's data store.
     let store: *mut AnyObject = unsafe {
         let configuration: *mut AnyObject = msg_send![&*view, configuration];
         let data_store: *mut AnyObject = msg_send![configuration, websiteDataStore];
         msg_send![data_store, httpCookieStore]
+    };
+    let pending = Rc::new(Cell::new(cookies.len()));
+    let load = Rc::new(RefCell::new(Some((view.clone(), request))));
+    let done = move || {
+        pending.set(pending.get().saturating_sub(1));
+        if pending.get() != 0 {
+            return;
+        }
+        let load = load.clone();
+        // A read of the store after the writes: some WebKit versions call a `setCookie:`
+        // completion before the cookie reaches the network process, and the first request
+        // would go without it.
+        let flushed = RcBlock::new(move |_cookies: *mut AnyObject| {
+            if let Some((view, request)) = load.borrow_mut().take() {
+                // SAFETY: `loadRequest:` on the WKWebView with an NSURLRequest (returns a
+                // WKNavigation we don't need).
+                unsafe {
+                    let _: *mut AnyObject = msg_send![&*view, loadRequest: &*request];
+                }
+            }
+        });
+        // SAFETY: `getAllCookies:` with a `void (^)(NSArray<NSHTTPCookie *> *)` block, on the
+        // main thread.
+        unsafe {
+            let _: () = msg_send![store, getAllCookies: &*flushed];
+        }
     };
     for cookie in cookies {
         let Some(ns_cookie) = ns_cookie(cookie) else {
@@ -282,7 +294,7 @@ pub fn set_cookies_then_load(
 fn ns_cookie(cookie: &wry::cookie::Cookie<'_>) -> Option<Retained<objc2_foundation::NSHTTPCookie>> {
     use objc2_foundation::{
         NSDictionary, NSHTTPCookie, NSHTTPCookieDomain, NSHTTPCookieName, NSHTTPCookiePath,
-        NSHTTPCookieSameSiteLax, NSHTTPCookieSameSitePolicy, NSHTTPCookieSecure, NSHTTPCookieValue,
+        NSHTTPCookieSecure, NSHTTPCookieValue,
     };
 
     let name = NSString::from_str(cookie.name());
@@ -293,9 +305,13 @@ fn ns_cookie(cookie: &wry::cookie::Cookie<'_>) -> Option<Retained<objc2_foundati
         |on: Option<bool>| NSString::from_str(if on == Some(true) { "TRUE" } else { "FALSE" });
     let secure = flag(cookie.secure());
     let http_only = flag(cookie.http_only());
+    // Plain strings for HttpOnly and SameSite, like wry: with the SameSite constants,
+    // `cookieWithProperties:` fails on some macOS versions (wry#1616).
     let http_only_key = NSString::from_str("HttpOnly");
-    // SAFETY: the property keys are Foundation's constants; the values are NSStrings, as
-    // `cookieWithProperties:` expects.
+    let same_site_key = NSString::from_str("SameSite");
+    let lax = NSString::from_str("lax");
+    // SAFETY: the property keys are Foundation's constants and plain strings; the values are
+    // NSStrings, as `cookieWithProperties:` expects.
     unsafe {
         let keys: [&NSString; 7] = [
             NSHTTPCookieName,
@@ -304,17 +320,9 @@ fn ns_cookie(cookie: &wry::cookie::Cookie<'_>) -> Option<Retained<objc2_foundati
             NSHTTPCookiePath,
             NSHTTPCookieSecure,
             &http_only_key,
-            NSHTTPCookieSameSitePolicy,
+            &same_site_key,
         ];
-        let values: [&AnyObject; 7] = [
-            &name,
-            &value,
-            &domain,
-            &path,
-            &secure,
-            &http_only,
-            NSHTTPCookieSameSiteLax,
-        ];
+        let values: [&AnyObject; 7] = [&name, &value, &domain, &path, &secure, &http_only, &lax];
         let properties = NSDictionary::from_slices(&keys, &values);
         NSHTTPCookie::cookieWithProperties(&properties)
     }
