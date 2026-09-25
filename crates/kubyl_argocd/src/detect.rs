@@ -45,6 +45,21 @@ pub struct Sso {
     pub dex: bool,
     /// An external OIDC provider (`oidc.config`), by issuer.
     pub oidc_issuer: Option<String>,
+    /// `oidc.config` has a `cliClientID` (a public client the CLI and Kubyl sign in with).
+    pub oidc_cli_client: bool,
+}
+
+impl Sso {
+    pub fn configured(&self) -> bool {
+        self.dex || self.oidc_issuer.is_some()
+    }
+
+    /// Whether Kubyl (like `argocd login --sso`) can sign in through the browser: with Dex, or
+    /// an OIDC provider with a `cliClientID`. Argo CD's web client usually needs
+    /// argocd-server's secret.
+    pub fn from_browser(&self) -> bool {
+        self.dex || self.oidc_cli_client
+    }
 }
 
 /// One Argo CD installation.
@@ -223,6 +238,13 @@ fn apply_cm(install: &mut Install, cm: &ConfigMap) {
             .find_map(|l| l.trim().strip_prefix("issuer:"))
             .map(|i| i.trim().trim_matches('"').trim_matches('\'').to_string())
             .filter(|i| !i.is_empty())
+    });
+    install.sso.oidc_cli_client = data.get("oidc.config").is_some_and(|c| {
+        c.lines().any(|l| {
+            l.trim()
+                .strip_prefix("cliClientID:")
+                .is_some_and(|v| !v.trim().trim_matches('"').trim_matches('\'').is_empty())
+        })
     });
 }
 
@@ -445,6 +467,15 @@ mod tests {
             Some("https://acme.okta.com")
         );
         assert!(!install.sso.dex);
+        assert!(
+            !install.sso.from_browser(),
+            "the web client needs argocd-server's secret"
+        );
+        let cm: ConfigMap = serde_json::from_value(json!({"metadata": {"name": "argocd-cm"},
+            "data": {"oidc.config": "issuer: https://acme.okta.com\nclientID: abc\ncliClientID: abc-cli\n"}}))
+        .unwrap();
+        apply_cm(&mut install, &cm);
+        assert!(install.sso.from_browser());
         let params: ConfigMap =
             serde_json::from_value(json!({"metadata": {"name": "argocd-cmd-params-cm"},
             "data": {"application.namespaces": "argocd-apps, team-*", "server.insecure": "true",

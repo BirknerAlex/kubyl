@@ -342,29 +342,25 @@ pub fn open_argo_ui(cluster: &kubyl_core::ClusterId, window: &mut Window, cx: &m
         );
         return;
     };
-    // SSO can't work through the forward (Argo CD only accepts its own URL): the page is signed
-    // in with API mode's session instead, so sign in first when that's the only way in.
+    // SSO can't work through the forward (Argo CD only redirects to its own URL). Signed in to
+    // API mode, the page gets that session; otherwise SSO users get Argo CD's own URL in their
+    // browser, where SSO (and WebAuthn) works.
     let signed_in = argo
         .read(cx)
         .web_session_token(cluster, &install.namespace, &server.name, cx)
         .is_some();
-    let sso = install.sso.dex || install.sso.oidc_issuer.is_some();
-    if sso
-        && kubyl_webview::store::WebViewSettings::get(cx).open_in
-            == kubyl_webview::store::OpenIn::Browser
+    let browser = kubyl_webview::store::WebViewSettings::get(cx).open_in
+        == kubyl_webview::store::OpenIn::Browser;
+    if install.sso.configured()
+        && (!signed_in || browser)
         && let Some(url) = install.url.clone()
     {
-        // The system browser can't get the session; SSO works at Argo CD's own URL.
         if let Err(err) = open::that_detached(&url) {
             NotificationCenter::push(
                 cx,
                 Notification::error(format!("Couldn't open {url}: {err}")),
             );
         }
-        return;
-    }
-    if sso && !signed_in {
-        crate::dialogs::open_sign_in_with(cluster.clone(), true, window, cx);
         return;
     }
     let https = !install.insecure && server.https_port.is_some();

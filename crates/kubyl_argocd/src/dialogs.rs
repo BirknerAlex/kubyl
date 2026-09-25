@@ -1412,16 +1412,6 @@ impl Render for DeleteDialog {
 /// Opens the API-mode sign-in for a cluster: it shows which install (namespace, Service, URL)
 /// the credentials go to; signing in confirms it.
 pub fn open_sign_in(cluster: ClusterId, window: &mut Window, cx: &mut App) {
-    open_sign_in_with(cluster, false, window, cx);
-}
-
-/// The sign-in dialog; with `then_open_ui`, the Argo CD UI opens (signed in) afterwards.
-pub fn open_sign_in_with(
-    cluster: ClusterId,
-    then_open_ui: bool,
-    window: &mut Window,
-    cx: &mut App,
-) {
     let Some(argo) = ArgoCd::try_global(cx) else {
         return;
     };
@@ -1429,11 +1419,7 @@ pub fn open_sign_in_with(
     if installs.is_empty() {
         argo.update(cx, |argo, cx| argo.redetect(&cluster, cx));
     }
-    let view = cx.new(|cx| {
-        let mut dialog = SignInDialog::new(cluster, window, cx);
-        dialog.then_open_ui = then_open_ui;
-        dialog
-    });
+    let view = cx.new(|cx| SignInDialog::new(cluster, window, cx));
     let focus = {
         let dialog = view.read(cx);
         match dialog.method {
@@ -1463,7 +1449,6 @@ struct SignInDialog {
     busy: bool,
     /// The SSO sign-in page, while the browser is at it.
     sso_url: Option<String>,
-    then_open_ui: bool,
     focus: FocusHandle,
     _task: Option<Task<()>>,
     _sso_urls: Option<Task<()>>,
@@ -1520,7 +1505,6 @@ impl SignInDialog {
             error: None,
             busy: false,
             sso_url: None,
-            then_open_ui: false,
             focus: cx.focus_handle(),
             _task: None,
             _sso_urls: None,
@@ -1550,7 +1534,7 @@ impl SignInDialog {
         if let Some(install) = &self.install
             && self.method == Method::Password
         {
-            if install.sso.dex || install.sso.oidc_issuer.is_some() {
+            if install.sso.configured() {
                 self.method = Method::Sso;
             } else if !install.admin_enabled {
                 self.method = Method::Token;
@@ -1625,9 +1609,6 @@ impl SignInDialog {
                             .update(cx, |i, cx| i.set_value("", window, cx));
                         this.token.update(cx, |i, cx| i.set_value("", window, cx));
                         window.close_dialog(cx);
-                        if this.then_open_ui {
-                            crate::actions::open_argo_ui(&this.cluster, window, cx);
-                        }
                     }
                     Err(err) => this.error = Some(err),
                 }
@@ -1642,13 +1623,16 @@ impl SignInDialog {
 
 impl SignInDialog {
     fn sso_body(&self, colors: &Colors) -> AnyElement {
-        let configured = self.install.as_ref().and_then(|i| {
-            i.sso
-                .oidc_issuer
-                .clone()
-                .or_else(|| i.sso.dex.then(|| "Argo CD's Dex".to_string()))
-        });
-        let intro = match &configured {
+        let sso = self
+            .install
+            .as_ref()
+            .map(|i| i.sso.clone())
+            .unwrap_or_default();
+        let provider = sso
+            .oidc_issuer
+            .clone()
+            .or_else(|| sso.dex.then(|| "Argo CD's Dex".to_string()));
+        let intro = match &provider {
             Some(provider) => format!(
                 "Opens {provider} in your browser, like `argocd login --sso`. After you sign in there, the browser comes back to {}.",
                 crate::sso::REDIRECT_URI
@@ -1659,6 +1643,21 @@ impl SignInDialog {
             .gap(u(8.0))
             .text_size(u(12.0))
             .child(div().text_color(colors.text_muted).child(intro));
+        if provider.is_some() && !sso.from_browser() {
+            body = body.child(
+                widgets::warning_box(colors)
+                    .child(
+                        Icon::new(IconName::TriangleAlert)
+                            .size(14.0)
+                            .color(colors.yellow),
+                    )
+                    .child(div().flex_1().child(format!(
+                        "Argo CD's oidc.config has no `cliClientID`, so the provider will probably only accept argocd-server (it has the client secret). Like `argocd login --sso`, Kubyl needs a public client: add one in {} with the redirect URI {}, and set it as `cliClientID` in argocd-cm. Until then, use the Token tab.",
+                        provider.clone().unwrap_or_default(),
+                        crate::sso::REDIRECT_URI
+                    ))),
+            );
+        }
         if self.busy {
             body = body.child(
                 h_flex()
