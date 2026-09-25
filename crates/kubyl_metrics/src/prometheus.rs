@@ -179,6 +179,27 @@ impl fmt::Debug for PromClient {
 
 const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Credentials only go over HTTPS, or plain HTTP to this machine (`kubectl port-forward`).
+fn credentials_allowed(uri: &http::Uri) -> Result<(), PromError> {
+    let loopback = match uri
+        .host()
+        .map(|h| h.trim_start_matches('[').trim_end_matches(']'))
+    {
+        Some("localhost") => true,
+        Some(host) => host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback()),
+        None => false,
+    };
+    if uri.scheme_str() == Some("https") || loopback {
+        Ok(())
+    } else {
+        Err(PromError::Transport(format!(
+            "not sending credentials to {uri} over plain HTTP; use an https:// URL"
+        )))
+    }
+}
+
 impl PromClient {
     /// Uses the cluster's client (service proxy) for [`Target::Service`].
     pub fn new(cluster: kube::Client, target: Target) -> Self {
@@ -204,6 +225,7 @@ impl PromClient {
             .trim_end_matches('/')
             .parse()
             .map_err(|e| PromError::Transport(format!("invalid URL: {e}")))?;
+        credentials_allowed(&uri)?;
         let mut config = kube::Config::new(uri);
         config.root_cert = roots;
         config.connect_timeout = Some(Duration::from_secs(10));
@@ -230,6 +252,9 @@ impl PromClient {
             .trim_end_matches('/')
             .parse()
             .map_err(|e| PromError::Transport(format!("invalid URL: {e}")))?;
+        if authorization.is_some() {
+            credentials_allowed(&uri)?;
+        }
         let mut config = kube::Config::new(uri);
         config.accept_invalid_certs = insecure;
         config.connect_timeout = Some(Duration::from_secs(10));
@@ -552,6 +577,29 @@ mod tests {
         );
         // The token never shows up in debug output.
         assert!(!format!("{prom:?}").contains("s3cr3t"));
+    }
+
+    #[tokio::test]
+    async fn credentials_need_https_or_loopback() {
+        let token = SecretString::from("Bearer s3cr3t".to_string());
+        let external = |url: &str| PromClient::external(url, false, Some(&token)).err();
+        assert!(external("https://prom.example.com").is_none());
+        assert!(external("http://localhost:9090").is_none());
+        assert!(external("http://127.0.0.1:9090").is_none());
+        assert!(external("http://[::1]:9090").is_none());
+        assert!(matches!(
+            external("http://prom.example.com"),
+            Some(PromError::Transport(message)) if message.contains("plain HTTP")
+        ));
+        // Without credentials, plain HTTP is fine.
+        assert!(PromClient::external("http://prom.example.com", false, None).is_ok());
+        let bearer = Bearer::User(kubyl_kube::auth::BearerToken::Static(token.clone()));
+        let route = Target::Route {
+            namespace: "openshift-monitoring".into(),
+            service: "thanos-querier".into(),
+            url: "http://thanos.apps.example".into(),
+        };
+        assert!(PromClient::direct("http://thanos.apps.example", route, None, bearer).is_err());
     }
 
     #[test]

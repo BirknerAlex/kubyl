@@ -42,7 +42,7 @@ pub const DEMAND_TTL: Duration = Duration::from_secs(30);
 const KEEP: Duration = Duration::from_secs(300);
 /// How often a cluster without Prometheus is searched again.
 const REDETECT: Duration = Duration::from_secs(300);
-/// Consecutive target failures before Prometheus is searched again.
+/// Consecutive target failures before Prometheus is searched again. Any answer resets the count.
 const MAX_FAILURES: u32 = 3;
 /// Pod histories (details dock): window and resolution.
 const HISTORY_WINDOW: Duration = Duration::from_secs(3600);
@@ -216,6 +216,8 @@ struct ClusterMetrics {
     failures: u32,
     pods: HashMap<ObjectKey, Usage>,
     pods_fetch: Fetch,
+    /// The scope of the last pod fetch: a wider one is fetched right away.
+    pods_scope: Option<PodScope>,
     /// metrics-server forbade listing across namespaces: fetch per namespace.
     pods_per_namespace: bool,
     nodes: HashMap<String, Usage>,
@@ -239,6 +241,7 @@ impl ClusterMetrics {
             failures: 0,
             pods: HashMap::new(),
             pods_fetch: Fetch::default(),
+            pods_scope: None,
             pods_per_namespace: false,
             nodes: HashMap::new(),
             nodes_fetch: Fetch::default(),
@@ -695,6 +698,7 @@ impl MetricsService {
                 if state.source != before {
                     // Different source: current values come from somewhere else now.
                     state.pods_fetch = Fetch::default();
+                    state.pods_scope = None;
                     state.nodes_fetch = Fetch::default();
                     state.histories.clear();
                     state.ranges.clear();
@@ -769,9 +773,17 @@ impl MetricsService {
         };
         let per_namespace = state.pods_per_namespace;
         let queries = state.queries.clone();
-        let pods_due = pods_wanted.is_some() && state.pods_fetch.due(every);
+        // A view that asks for a namespace the last fetch didn't cover doesn't wait for the
+        // next interval.
+        let scope_grew = match (&pods_wanted, &state.pods_scope) {
+            (Some(wanted), Some(fetched)) => !fetched.covers(wanted, state.pods_per_namespace),
+            _ => false,
+        };
+        let pods_due = pods_wanted.is_some()
+            && (state.pods_fetch.due(every) || (scope_grew && !state.pods_fetch.in_flight));
         if pods_due {
             state.pods_fetch.start();
+            state.pods_scope = pods_wanted.clone();
         }
         let nodes_due = nodes_wanted && state.nodes_fetch.due(every);
         if nodes_due {
@@ -960,6 +972,7 @@ impl MetricsService {
                         }
                         state.nodes = nodes;
                         state.nodes_fetch.finish(None);
+                        state.failures = 0;
                     }
                     Err(err) => {
                         tracing::debug!(%cluster, %err, "node usage failed");
@@ -1037,6 +1050,7 @@ impl MetricsService {
                             window: "last 1h".into(),
                         });
                         entry.fetch.finish(None);
+                        state.failures = 0;
                     }
                     Err(err) => entry.fetch.finish(Some(err.to_string().into())),
                 }
@@ -1095,6 +1109,7 @@ impl MetricsService {
                             step,
                         });
                         entry.fetch.finish(None);
+                        state.failures = 0;
                     }
                     Err(err) => {
                         tracing::debug!(%cluster, query = key.query, %err, "range query failed");
@@ -1157,6 +1172,21 @@ enum PodScope {
     /// across namespaces is forbidden.
     All(Vec<String>),
     Namespaces(Vec<String>),
+}
+
+impl PodScope {
+    /// Whether a fetch of `self` has the pods `wanted` asks for. `per_namespace`: listing across
+    /// namespaces is forbidden, so only the named namespaces were fetched.
+    fn covers(&self, wanted: &PodScope, per_namespace: bool) -> bool {
+        match (self, wanted) {
+            (PodScope::All(_), _) if !per_namespace => true,
+            (PodScope::Namespaces(_), PodScope::All(_)) if !per_namespace => false,
+            (
+                PodScope::All(fetched) | PodScope::Namespaces(fetched),
+                PodScope::All(wanted) | PodScope::Namespaces(wanted),
+            ) => wanted.iter().all(|ns| fetched.contains(ns)),
+        }
+    }
 }
 
 /// The result of looking for a source.
@@ -1408,6 +1438,21 @@ pub fn store_auth_header(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pod_scopes_cover() {
+        let ns = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        let all = PodScope::All(ns(&["a"]));
+        let a = PodScope::Namespaces(ns(&["a"]));
+        let ab = PodScope::Namespaces(ns(&["a", "b"]));
+        assert!(all.covers(&ab, false));
+        assert!(ab.covers(&a, false));
+        assert!(!a.covers(&ab, false), "b wasn't fetched");
+        assert!(!a.covers(&all, false));
+        // Listing across namespaces is forbidden: only the named ones were fetched.
+        assert!(!all.covers(&ab, true));
+        assert!(ab.covers(&PodScope::All(ns(&["b"])), true));
+    }
 
     #[test]
     fn spans() {
