@@ -66,11 +66,13 @@ enum Item {
     },
     Group {
         cluster: ClusterId,
-        /// `workloads`, `custom`, `custom:cert-manager.io`.
+        /// `workloads`, `custom`, `custom:cert-manager.io`, `administration/argocd`.
         id: String,
         label: SharedString,
         depth: usize,
         expanded: bool,
+        /// Extra text on the row (a contributed group's version…).
+        badge: Option<SharedString>,
     },
     Kind {
         cluster: ClusterId,
@@ -90,7 +92,11 @@ impl Item {
             Item::Root(c) => format!("root|{c}"),
             Item::Status { cluster, .. } => format!("status|{cluster}"),
             Item::Group { cluster, id, .. } => format!("group|{cluster}|{id}"),
-            Item::Kind { cluster, kind, .. } => format!("kind|{cluster}|{}", kind.gvr),
+            Item::Kind { cluster, kind, .. } => match kind.via {
+                // The same kind is listed under Custom Resources too.
+                Some(via) => format!("kind|{cluster}|{via}|{}", kind.gvr),
+                None => format!("kind|{cluster}|{}", kind.gvr),
+            },
             Item::View { cluster, entry, .. } => format!("view|{cluster}|{}", entry.id),
         }
     }
@@ -131,6 +137,11 @@ impl ClustersSection {
                 cx.notify();
             }),
             Settings::observe::<ExplorerSettings>(cx, |_, _| {}),
+            // Groups other crates contribute (their badges change).
+            cx.observe_global::<catalog::TreeGroups>(|this, cx| {
+                this.schedule_count_sync(cx);
+                cx.notify();
+            }),
         ];
         if let Some(manager) = ConnectionManager::try_global(cx) {
             subscriptions.push(
@@ -316,6 +327,7 @@ impl ClustersSection {
                             label: api_group.into(),
                             depth: 2,
                             expanded,
+                            badge: None,
                         });
                         if expanded {
                             children.extend(visible.into_iter().map(|kind| Item::Kind {
@@ -333,6 +345,7 @@ impl ClustersSection {
                             label: "Custom Resources".into(),
                             depth: 1,
                             expanded,
+                            badge: None,
                         });
                         if expanded {
                             items.extend(children);
@@ -353,7 +366,38 @@ impl ClustersSection {
                     .filter(|v| !v.needs_olm || caps.olm)
                     .filter(|v| matches(v.label))
                     .collect();
-                if kinds.is_empty() && views.is_empty() {
+                // Groups other crates add here (Argo CD under Administration), shown while the
+                // cluster serves their kinds.
+                let mut contributed = Vec::new();
+                for group in catalog::contributed_groups(def.id, cx) {
+                    let visible: Vec<TreeKind> = catalog::contributed_kinds(&group, &discovery)
+                        .into_iter()
+                        .filter(|k| matches(&k.label) || matches(group.label))
+                        .filter(|k| self.allowed(&cluster, k, cx))
+                        .collect();
+                    if visible.is_empty() {
+                        continue;
+                    }
+                    let id = format!("{}/{}", def.id, group.id);
+                    let expanded = self.is_expanded_group(&cluster, &id) || query.is_some();
+                    let badge = group.badge.as_ref().and_then(|badge| badge(&cluster, cx));
+                    contributed.push(Item::Group {
+                        cluster: cluster.clone(),
+                        id,
+                        label: group.label.into(),
+                        depth: 2,
+                        expanded,
+                        badge,
+                    });
+                    if expanded {
+                        contributed.extend(visible.into_iter().map(|kind| Item::Kind {
+                            cluster: cluster.clone(),
+                            kind,
+                            depth: 3,
+                        }));
+                    }
+                }
+                if kinds.is_empty() && views.is_empty() && contributed.is_empty() {
                     continue;
                 }
                 if !def.collapsible {
@@ -376,6 +420,7 @@ impl ClustersSection {
                     label: def.label.into(),
                     depth: 1,
                     expanded,
+                    badge: None,
                 });
                 if expanded {
                     items.extend(views.into_iter().map(|entry| Item::View {
@@ -388,6 +433,7 @@ impl ClustersSection {
                         kind,
                         depth: 2,
                     }));
+                    items.extend(contributed);
                 }
             }
         }
@@ -518,13 +564,18 @@ impl ClustersSection {
                 let events = kind.gvr.group.is_empty()
                     && kind.gvr.resource == "events"
                     && ViewRegistry::is_registered(cx, &ViewKind::Events);
+                // Rows of a contributed group open the kind's own view (Argo CD Applications);
+                // the same kind under Custom Resources opens the generic table.
+                let view = if events {
+                    ViewKind::Events
+                } else if kind.via.is_some() {
+                    ViewRegistry::list_view(cx, &kind.gvr)
+                } else {
+                    ViewKind::Table
+                };
                 window.dispatch_action(
                     Box::new(OpenView(ViewRequest::for_resource(
-                        if events {
-                            ViewKind::Events
-                        } else {
-                            ViewKind::Table
-                        },
+                        view,
                         ResourceRef::list(cluster.clone(), kind.gvr.clone(), None),
                     ))),
                     cx,
@@ -696,11 +747,23 @@ impl ClustersSection {
                 label,
                 depth,
                 expanded,
+                badge,
                 ..
-            } => TreeRow::new(id, label.clone())
-                .depth(*depth)
-                .expanded(Some(*expanded))
-                .selected(selected),
+            } => {
+                let row = TreeRow::new(id, label.clone())
+                    .depth(*depth)
+                    .expanded(Some(*expanded))
+                    .selected(selected);
+                match badge {
+                    Some(badge) => row.end_child(
+                        div()
+                            .text_size(u(11.0))
+                            .text_color(colors.text_dim)
+                            .child(badge.clone()),
+                    ),
+                    None => row,
+                }
+            }
             Item::Kind {
                 cluster,
                 kind,

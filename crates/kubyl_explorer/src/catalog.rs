@@ -2,8 +2,10 @@
 //! custom resources found by discovery, grouped by API group.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
-use kubyl_core::{Gvr, ViewKind};
+use gpui::{App, BorrowAppContext as _, Global, SharedString};
+use kubyl_core::{ClusterId, Gvr, ViewKind};
 use kubyl_kube::discovery::{ApiResourceInfo, Discovery};
 use kubyl_ui::IconName;
 
@@ -17,7 +19,8 @@ pub struct KnownKind {
     pub icon: IconName,
 }
 
-const fn k(
+/// A [`KnownKind`] (for [`TreeGroup::kinds`]).
+pub const fn k(
     group: &'static str,
     resource: &'static str,
     label: &'static str,
@@ -386,6 +389,9 @@ pub struct TreeKind {
     pub label: String,
     pub icon: IconName,
     pub namespaced: bool,
+    /// The contributed group ([`TreeGroup::id`]) the row belongs to. Its rows open the kind's
+    /// own list view ([`kubyl_core::ViewRegistry::list_view`]) instead of the generic table.
+    pub via: Option<&'static str>,
 }
 
 fn tree_kind(info: &ApiResourceInfo, label: &str, icon: IconName) -> TreeKind {
@@ -395,7 +401,64 @@ fn tree_kind(info: &ApiResourceInfo, label: &str, icon: IconName) -> TreeKind {
         label: label.to_string(),
         icon,
         namespaced: info.namespaced,
+        via: None,
     }
+}
+
+/// Shows extra text on a contributed group's row for a cluster (a version, a state).
+pub type GroupBadge = Arc<dyn Fn(&ClusterId, &App) -> Option<SharedString>>;
+
+/// A group another crate adds below a curated group of the cluster tree, e.g. "Argo CD" under
+/// Administration. Its kinds are shown when the cluster serves them (the group disappears with
+/// its CRDs) and open their registered list view. They stay under Custom Resources too.
+#[derive(Clone)]
+pub struct TreeGroup {
+    /// Unique id, e.g. `argocd`.
+    pub id: &'static str,
+    /// The curated group it sits in, e.g. `administration`.
+    pub parent: &'static str,
+    pub label: &'static str,
+    pub kinds: Vec<KnownKind>,
+    pub badge: Option<GroupBadge>,
+}
+
+/// Groups contributed with [`register_tree_group`].
+#[derive(Default)]
+pub struct TreeGroups(pub Vec<TreeGroup>);
+
+impl Global for TreeGroups {}
+
+/// Adds a group to the cluster tree (from a feature crate's `init`).
+pub fn register_tree_group(cx: &mut App, group: TreeGroup) {
+    cx.default_global::<TreeGroups>().0.push(group);
+}
+
+/// Re-renders the tree, e.g. after a group's badge changed.
+pub fn tree_groups_changed(cx: &mut App) {
+    if cx.has_global::<TreeGroups>() {
+        cx.update_global::<TreeGroups, _>(|_, _| {});
+    }
+}
+
+/// The contributed groups below `parent`.
+pub fn contributed_groups(parent: &str, cx: &App) -> Vec<TreeGroup> {
+    cx.try_global::<TreeGroups>()
+        .map(|g| g.0.iter().filter(|g| g.parent == parent).cloned().collect())
+        .unwrap_or_default()
+}
+
+/// The kinds of a contributed group that the cluster serves.
+pub fn contributed_kinds(group: &TreeGroup, discovery: &Discovery) -> Vec<TreeKind> {
+    group
+        .kinds
+        .iter()
+        .filter_map(|known| {
+            find(discovery, known.group, known.resource).map(|info| TreeKind {
+                via: Some(group.id),
+                ..tree_kind(info, known.label, known.icon)
+            })
+        })
+        .collect()
 }
 
 /// The preferred, listable resource for a group and plural name.
@@ -552,6 +615,38 @@ mod tests {
         let workloads = group_kinds(group("workloads").unwrap(), &discovery);
         assert_eq!(workloads.len(), 1);
         assert_eq!(workloads[0].label, "Pods");
+    }
+
+    #[test]
+    fn contributed_groups_show_served_kinds_only() {
+        let group = TreeGroup {
+            id: "argocd",
+            parent: "administration",
+            label: "Argo CD",
+            kinds: vec![
+                k(
+                    "argoproj.io",
+                    "applications",
+                    "Applications",
+                    IconName::Layers,
+                ),
+                k("argoproj.io", "appprojects", "Projects", IconName::Folder),
+            ],
+            badge: None,
+        };
+        let mut discovery = Discovery {
+            groups: vec![],
+            resources: vec![resource("argoproj.io", "Application", "applications")],
+            aggregated: true,
+        };
+        let kinds = contributed_kinds(&group, &discovery);
+        assert_eq!(kinds.len(), 1);
+        assert_eq!(kinds[0].label, "Applications");
+        assert_eq!(kinds[0].via, Some("argocd"));
+        // Still a custom resource.
+        assert!(custom_groups(&discovery).contains_key("argoproj.io"));
+        discovery.resources.clear();
+        assert!(contributed_kinds(&group, &discovery).is_empty());
     }
 
     #[test]
