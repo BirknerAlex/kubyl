@@ -37,7 +37,18 @@ pub struct UsageHistory {
     pub source: SharedString,
 }
 
-/// Supplies usage data. Implemented by phase 07.
+/// What a provider knows about a cluster's metrics source, for "why is there no usage" hints.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SourceStatus {
+    /// Still looking (or the cluster isn't connected).
+    Detecting,
+    /// Usage is available; the label names the source (`Prometheus`, `metrics-server`).
+    Ready(SharedString),
+    /// No source; the text says why and what to install.
+    Unavailable(SharedString),
+}
+
+/// Supplies usage data. Implemented by `kubyl_metrics`.
 pub trait MetricsProvider: 'static {
     fn pod_usage(
         &self,
@@ -56,6 +67,10 @@ pub trait MetricsProvider: 'static {
         _cx: &App,
     ) -> Option<UsageHistory> {
         None
+    }
+    /// The cluster's metrics source.
+    fn source_status(&self, _cluster: &ClusterId, _cx: &App) -> SourceStatus {
+        SourceStatus::Detecting
     }
 }
 
