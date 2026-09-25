@@ -40,27 +40,37 @@ impl LogRingBuffer {
         }
     }
 
-    /// Appends a raw line, assigning it the next sequence number.
-    pub fn push(&mut self, pod: String, container: String, text: String) -> u64 {
+    /// Appends a raw line, assigning it the next sequence number. Returns the evicted line, if
+    /// pushing past capacity evicted one (so callers can maintain incremental derived state,
+    /// e.g. per-level counts, without rescanning the whole ring).
+    pub fn push(&mut self, pod: String, container: String, text: String) -> (u64, Option<LogLine>) {
         let seq = self.next_seq;
         self.next_seq += 1;
-        self.push_line(LogLine::new(seq, pod, container, text));
-        seq
+        let evicted = self.push_line(LogLine::new(seq, pod, container, text));
+        (seq, evicted)
     }
 
-    pub fn push_gap(&mut self, pod: String, container: String, message: String) -> u64 {
+    pub fn push_gap(
+        &mut self,
+        pod: String,
+        container: String,
+        message: String,
+    ) -> (u64, Option<LogLine>) {
         let seq = self.next_seq;
         self.next_seq += 1;
-        self.push_line(LogLine::gap(seq, pod, container, message));
-        seq
+        let evicted = self.push_line(LogLine::gap(seq, pod, container, message));
+        (seq, evicted)
     }
 
-    fn push_line(&mut self, line: LogLine) {
-        if self.lines.len() >= self.capacity {
-            self.lines.pop_front();
+    fn push_line(&mut self, line: LogLine) -> Option<LogLine> {
+        let evicted = if self.lines.len() >= self.capacity {
             self.evicted += 1;
-        }
+            self.lines.pop_front()
+        } else {
+            None
+        };
         self.lines.push_back(line);
+        evicted
     }
 
     pub fn len(&self) -> usize {
@@ -81,6 +91,16 @@ impl LogRingBuffer {
 
     pub fn get(&self, index: usize) -> Option<&LogLine> {
         self.lines.get(index)
+    }
+
+    /// Looks up a line by its stable `seq`, in O(1) (lines are stored in increasing-seq order,
+    /// so the front line's seq gives the offset of every other line).
+    pub fn get_by_seq(&self, seq: u64) -> Option<&LogLine> {
+        let front_seq = self.lines.front()?.seq;
+        let index = seq.checked_sub(front_seq)?;
+        self.lines
+            .get(index as usize)
+            .filter(|line| line.seq == seq)
     }
 
     pub fn clear(&mut self) {
@@ -109,6 +129,36 @@ mod tests {
         assert_eq!(ring.evicted(), 2);
         let texts: Vec<_> = ring.iter().map(|l| l.text.clone()).collect();
         assert_eq!(texts, ["line 2", "line 3", "line 4"]);
+    }
+
+    #[test]
+    fn push_reports_the_evicted_line_once_past_capacity() {
+        let mut ring = LogRingBuffer::new(2);
+        let (_, evicted) = ring.push("pod".into(), "c".into(), "a".into());
+        assert!(evicted.is_none());
+        let (_, evicted) = ring.push("pod".into(), "c".into(), "b".into());
+        assert!(evicted.is_none());
+        let (_, evicted) = ring.push("pod".into(), "c".into(), "c".into());
+        assert_eq!(evicted.map(|l| l.text), Some("a".to_string()));
+    }
+
+    #[test]
+    fn get_by_seq_finds_lines_and_rejects_evicted_ones() {
+        let mut ring = LogRingBuffer::new(2);
+        for i in 0..4 {
+            ring.push("pod".into(), "c".into(), format!("line {i}"));
+        }
+        assert!(ring.get_by_seq(0).is_none());
+        assert!(ring.get_by_seq(1).is_none());
+        assert_eq!(
+            ring.get_by_seq(2).map(|l| l.text.clone()),
+            Some("line 2".to_string())
+        );
+        assert_eq!(
+            ring.get_by_seq(3).map(|l| l.text.clone()),
+            Some("line 3".to_string())
+        );
+        assert!(ring.get_by_seq(4).is_none());
     }
 
     #[test]

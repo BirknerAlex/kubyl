@@ -57,10 +57,14 @@ impl FieldFilter {
     }
 
     /// Whether a raw line matches this filter (JSON field equality, or substring fallback for
-    /// non-JSON lines so the filter still narrows something sensible).
+    /// non-JSON lines so the filter still narrows something sensible). A line that *is* valid
+    /// JSON but simply lacks `field` does not match — it does not fall back to substring
+    /// matching, since that would make unrelated JSON lines match by coincidence.
     pub fn matches(&self, line: &str) -> bool {
-        match parse_object(line).and_then(|v| v.get(&self.field).cloned()) {
-            Some(value) => inline_scalar(&value) == self.value,
+        match parse_object(line) {
+            Some(value) => value
+                .get(&self.field)
+                .is_some_and(|v| inline_scalar(v) == self.value),
             None => line.contains(&self.value),
         }
     }
@@ -90,5 +94,18 @@ mod tests {
         assert_eq!(filter.value, "payments");
         assert!(filter.matches(line));
         assert!(!filter.matches(r#"{"level":"error","service":"auth"}"#));
+    }
+
+    #[test]
+    fn field_filter_does_not_substring_fallback_for_valid_json_missing_the_field() {
+        let filter = FieldFilter {
+            field: "service".to_string(),
+            value: "payments".to_string(),
+        };
+        // Valid JSON, but no `service` field: even though the text contains "payments" as a
+        // substring, this must not match via the non-JSON fallback path.
+        assert!(!filter.matches(r#"{"level":"error","msg":"payments queue backed up"}"#));
+        // Genuinely non-JSON lines still use the substring fallback.
+        assert!(filter.matches("payments queue backed up"));
     }
 }

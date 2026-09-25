@@ -5,6 +5,7 @@
 //! ring buffer, search/filter state and the kube object lookups needed to resolve a workload's
 //! pod selector.
 
+use std::collections::VecDeque;
 use std::ops::Range;
 
 use futures::StreamExt as _;
@@ -16,13 +17,14 @@ use gpui::{
 use gpui_component::input::{Input, InputEvent, InputState};
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, StatefulSet};
 use k8s_openapi::api::batch::v1::Job;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector;
 use kube::Api;
 use kubyl_core::{ClusterId, ResourceRef, TabView, Tone, ViewRequest};
 use kubyl_kube::ConnectionManager;
 use kubyl_ui::{ActiveColors, Colors, Icon, IconName, fonts, h_flex, u, v_flex};
 
 use crate::json;
-use crate::level::LogLevel;
+use crate::level::{LogLevel, detect_level};
 use crate::line::{LogLine, pod_color};
 use crate::ring::LogRingBuffer;
 use crate::search::{MatchCursor, Search};
@@ -70,6 +72,18 @@ pub struct LogsView {
     cursor: MatchCursor,
     status: SharedString,
     session_id: Option<SessionId>,
+    /// The status last pushed to `SessionRegistry`, so `apply_events` only calls
+    /// `set_status` when it actually changes instead of ~60 times a second.
+    last_session_status: Option<(SharedString, Tone)>,
+    /// Cached per-level line counts, updated incrementally as lines are pushed/evicted instead
+    /// of rescanning the whole (up to 100k-line) ring every render.
+    level_counts: [usize; LogLevel::ALL.len()],
+    /// Seqs of lines passing the level filter, in ring order. Updated incrementally as lines are
+    /// pushed/evicted (`push_line_indexed`); only rebuilt from scratch when `active_levels`
+    /// changes (`rebuild_visible_cache`).
+    visible_cache: VecDeque<u64>,
+    /// `visible_cache` further narrowed by `filter_to_matches`, maintained the same way.
+    rendered_cache: VecDeque<u64>,
     _stream_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -121,9 +135,22 @@ impl LogsView {
             cursor: MatchCursor::default(),
             status: "connecting…".into(),
             session_id: None,
+            last_session_status: None,
+            level_counts: [0; LogLevel::ALL.len()],
+            visible_cache: VecDeque::new(),
+            rendered_cache: VecDeque::new(),
             _stream_task: None,
             _subscriptions: vec![subscription],
         };
+        let release_subscription = cx.on_release(|this, cx| {
+            // The tab was closed without the user clicking "stop" in the Active Sessions panel:
+            // drop the session row too (the stream task itself stops when `this` is dropped,
+            // since `_stream_task`/`_run_task` are held only by this view).
+            if let Some(id) = this.session_id.take() {
+                SessionRegistry::remove(cx, id);
+            }
+        });
+        this._subscriptions.push(release_subscription);
         this.start(cx);
         this
     }
@@ -180,6 +207,7 @@ impl LogsView {
                     crate::stream::run(run_client, namespace, source, options, tx).await
                 })
             });
+            let stop_weak = this.clone();
             this.update(cx, |this, cx| {
                 let id = SessionRegistry::add(
                     cx,
@@ -188,7 +216,19 @@ impl LogsView {
                     subtitle,
                     "streaming",
                     Tone::Good,
-                    |_| {},
+                    move |cx| {
+                        // Dropping `_stream_task` drops the outer spawned future, which in turn
+                        // drops the `_run_task` local it holds, aborting the kube stream (the
+                        // Task-drop rule from AGENTS.md).
+                        stop_weak
+                            .update(cx, |this, cx| {
+                                this._stream_task = None;
+                                this.session_id = None;
+                                this.status = "stopped".into();
+                                cx.notify();
+                            })
+                            .ok();
+                    },
                 );
                 this.session_id = Some(id);
             })
@@ -218,6 +258,10 @@ impl LogsView {
 
     fn apply_events(&mut self, events: Vec<StreamEvent>, cx: &mut Context<Self>) {
         let mut appended = 0u64;
+        // The most specific status this batch produced, if any (e.g. `Reconnecting`). Only
+        // falls back to "streaming" below when nothing more specific happened this batch, so a
+        // `Reconnecting` event isn't immediately stomped by the default at the end.
+        let mut pending_status: Option<(SharedString, Tone)> = None;
         for event in events {
             match event {
                 StreamEvent::Line {
@@ -226,23 +270,20 @@ impl LogsView {
                     text,
                     ..
                 } => {
-                    self.ring.push(pod, container, text);
+                    self.push_line_indexed(pod, container, text, false);
                     appended += 1;
                 }
                 StreamEvent::PodJoined(pod) => {
-                    self.ring
-                        .push_gap(pod.clone(), String::new(), format!("── {pod} joined ──"));
+                    let message = format!("── {pod} joined ──");
+                    self.push_line_indexed(pod, String::new(), message, true);
                 }
                 StreamEvent::PodGone(pod) => {
-                    self.ring
-                        .push_gap(pod.clone(), String::new(), format!("── {pod} left ──"));
+                    let message = format!("── {pod} left ──");
+                    self.push_line_indexed(pod, String::new(), message, true);
                 }
                 StreamEvent::Reconnecting { pod, container } => {
-                    self.ring
-                        .push_gap(pod, container, "── reconnecting… ──".to_string());
-                    if let Some(id) = self.session_id {
-                        SessionRegistry::set_status(cx, id, "reconnecting", Tone::Warning);
-                    }
+                    self.push_line_indexed(pod, container, "── reconnecting… ──".to_string(), true);
+                    pending_status = Some(("reconnecting".into(), Tone::Warning));
                 }
                 StreamEvent::Error(message) => {
                     self.status = format!("error: {message}").into();
@@ -252,70 +293,155 @@ impl LogsView {
         if self.paused {
             self.paused_new_lines += appended;
         } else if let Some(id) = self.session_id {
-            SessionRegistry::set_status(cx, id, "streaming", Tone::Good);
+            let status = pending_status.unwrap_or(("streaming".into(), Tone::Good));
+            // Avoid calling into the registry (which notifies its own subscribers) ~60 times a
+            // second when nothing actually changed.
+            if self.last_session_status.as_ref() != Some(&status) {
+                SessionRegistry::set_status(cx, id, status.0.clone(), status.1);
+                self.last_session_status = Some(status);
+            }
         }
-        self.recompute_search();
         cx.notify();
+    }
+
+    /// Pushes one line (or gap marker) into the ring and keeps `level_counts`, `visible_cache`,
+    /// `rendered_cache` and the search `cursor` in sync incrementally — an O(1) amortized update
+    /// per line instead of rescanning the whole (up to 100k-line) ring on every batch.
+    fn push_line_indexed(
+        &mut self,
+        pod: String,
+        container: String,
+        text: String,
+        gap: bool,
+    ) -> u64 {
+        let level = if gap {
+            LogLevel::Unknown
+        } else {
+            detect_level(&text)
+        };
+        let search_matches = self.search.as_ref().is_some_and(|s| s.matches(&text));
+
+        let (seq, evicted) = if gap {
+            self.ring.push_gap(pod, container, text)
+        } else {
+            self.ring.push(pod, container, text)
+        };
+
+        if !gap {
+            self.level_counts[level_index(level)] += 1;
+        }
+        if let Some(evicted_line) = &evicted {
+            if !evicted_line.gap_marker {
+                self.level_counts[level_index(evicted_line.level)] -= 1;
+            }
+            if self.visible_cache.front() == Some(&evicted_line.seq) {
+                self.visible_cache.pop_front();
+            }
+            if self.rendered_cache.front() == Some(&evicted_line.seq) {
+                self.rendered_cache.pop_front();
+            }
+            self.cursor.remove_front_if(evicted_line.seq);
+        }
+
+        let passes_level = gap || self.active_levels[level_index(level)];
+        if passes_level {
+            self.visible_cache.push_back(seq);
+            if search_matches {
+                self.cursor.push_back(seq);
+            }
+            let restrict_to_matches = self.filter_to_matches && self.search.is_some();
+            if !restrict_to_matches || search_matches {
+                self.rendered_cache.push_back(seq);
+            }
+        }
+        seq
     }
 
     fn set_query(&mut self, query: String, cx: &mut Context<Self>) {
         if query.is_empty() {
             self.search = None;
-            self.cursor.set_matches(Vec::new());
         } else {
             match Search::new(&query, self.search_regex, self.search_case_sensitive) {
                 Ok(search) => self.search = Some(search),
                 Err(err) => self.status = format!("bad pattern: {err}").into(),
             }
         }
-        self.recompute_search();
+        // The query changed: this is exactly the case where resetting match navigation back to
+        // the first match is correct (unlike new data arriving under an unchanged query, which
+        // is handled incrementally by `push_line_indexed` and must not reset it).
+        self.rebuild_matches_and_rendered();
         cx.notify();
     }
 
-    fn recompute_search(&mut self) {
-        let Some(search) = &self.search else {
-            self.cursor.set_matches(Vec::new());
-            return;
+    /// Full recompute of the search match set (and, in turn, `rendered_cache`) from
+    /// `visible_cache`. Only call this when the search query/regex/case-sensitivity or the level
+    /// filter changes — everything else is maintained incrementally.
+    fn rebuild_matches_and_rendered(&mut self) {
+        let matches = match &self.search {
+            Some(search) => {
+                let visible = self.filtered_lines();
+                search.find_all(&visible)
+            }
+            None => Vec::new(),
         };
-        let visible: Vec<&LogLine> = self.filtered_lines();
-        let matches = search.find_all(&visible);
         self.cursor.set_matches(matches);
+        self.rebuild_rendered_cache();
+    }
+
+    /// Rebuilds `rendered_cache` from `visible_cache` and the current `filter_to_matches`/search
+    /// state, without touching match navigation.
+    fn rebuild_rendered_cache(&mut self) {
+        self.rendered_cache = if self.filter_to_matches
+            && let Some(search) = &self.search
+        {
+            self.visible_cache
+                .iter()
+                .copied()
+                .filter(|&seq| {
+                    self.ring
+                        .get_by_seq(seq)
+                        .is_some_and(|l| search.matches(&l.text))
+                })
+                .collect()
+        } else {
+            self.visible_cache.clone()
+        };
+    }
+
+    /// Full rebuild of `visible_cache` from the ring — only needed when `active_levels` changes
+    /// (new/evicted lines are handled incrementally by `push_line_indexed`).
+    fn rebuild_visible_cache(&mut self) {
+        self.visible_cache = self
+            .ring
+            .iter()
+            .filter(|line| line.gap_marker || self.active_levels[level_index(line.level)])
+            .map(|line| line.seq)
+            .collect();
+        self.rebuild_matches_and_rendered();
     }
 
     /// Lines passing the level filter, in ring-buffer order.
     fn filtered_lines(&self) -> Vec<&LogLine> {
-        self.ring
+        self.visible_cache
             .iter()
-            .filter(|line| line.gap_marker || self.active_levels[level_index(line.level)])
+            .filter_map(|&seq| self.ring.get_by_seq(seq))
             .collect()
     }
 
     fn rendered_lines(&self) -> Vec<&LogLine> {
-        let base = self.filtered_lines();
-        if self.filter_to_matches
-            && let Some(search) = &self.search
-        {
-            base.into_iter()
-                .filter(|l| search.matches(&l.text))
-                .collect()
-        } else {
-            base
-        }
+        self.rendered_cache
+            .iter()
+            .filter_map(|&seq| self.ring.get_by_seq(seq))
+            .collect()
     }
 
     fn level_counts(&self) -> [usize; LogLevel::ALL.len()] {
-        let mut counts = [0usize; LogLevel::ALL.len()];
-        for line in self.ring.iter() {
-            if !line.gap_marker {
-                counts[level_index(line.level)] += 1;
-            }
-        }
-        counts
+        self.level_counts
     }
 
     fn toggle_level(&mut self, level: LogLevel, cx: &mut Context<Self>) {
         self.active_levels[level_index(level)] ^= true;
-        self.recompute_search();
+        self.rebuild_visible_cache();
         cx.notify();
     }
 
@@ -339,10 +465,15 @@ impl LogsView {
 
     fn render_line(&self, line: &LogLine, colors: &Colors) -> impl IntoElement {
         let color = pod_color(line.pod_color_index, colors);
+        // `uniform_list` virtualizes rows at a fixed height, so multi-line text would overlap
+        // adjacent rows. `json::pretty` is multi-line by design, so use the flat `key=value`
+        // rendering here instead — still easier to scan than raw JSON, without breaking
+        // virtualization. (A real fix needs variable-height rows, e.g. `gpui::list`/`ListState`;
+        // out of scope for this pass.)
         let display_text = if self.pretty_json
             && let Some(value) = json::parse_object(&line.text)
         {
-            json::pretty(&value)
+            json::inline(&value)
         } else {
             line.text.clone()
         };
@@ -412,58 +543,73 @@ async fn resolve_source(
         "deployments" => {
             let api: Api<Deployment> = Api::namespaced(client, namespace);
             let obj = api.get(name).await?;
-            let selector = obj
-                .spec
-                .and_then(|s| s.selector.match_labels)
-                .unwrap_or_default();
+            let selector = obj.spec.map(|s| s.selector).unwrap_or_default();
             Ok(LogSource::Workload {
-                label_selector: to_selector(selector),
+                label_selector: label_selector_to_string(selector),
             })
         }
         "statefulsets" => {
             let api: Api<StatefulSet> = Api::namespaced(client, namespace);
             let obj = api.get(name).await?;
-            let selector = obj
-                .spec
-                .and_then(|s| s.selector.match_labels)
-                .unwrap_or_default();
+            let selector = obj.spec.map(|s| s.selector).unwrap_or_default();
             Ok(LogSource::Workload {
-                label_selector: to_selector(selector),
+                label_selector: label_selector_to_string(selector),
             })
         }
         "daemonsets" => {
             let api: Api<DaemonSet> = Api::namespaced(client, namespace);
             let obj = api.get(name).await?;
-            let selector = obj
-                .spec
-                .and_then(|s| s.selector.match_labels)
-                .unwrap_or_default();
+            let selector = obj.spec.map(|s| s.selector).unwrap_or_default();
             Ok(LogSource::Workload {
-                label_selector: to_selector(selector),
+                label_selector: label_selector_to_string(selector),
             })
         }
         "jobs" => {
             let api: Api<Job> = Api::namespaced(client, namespace);
             let obj = api.get(name).await?;
-            let selector = obj
-                .spec
-                .and_then(|s| s.selector)
-                .and_then(|s| s.match_labels)
-                .unwrap_or_default();
+            let selector = obj.spec.and_then(|s| s.selector).unwrap_or_default();
             Ok(LogSource::Workload {
-                label_selector: to_selector(selector),
+                label_selector: label_selector_to_string(selector),
             })
         }
         other => anyhow::bail!("logs aren't supported for {other}"),
     }
 }
 
-fn to_selector(labels: std::collections::BTreeMap<String, String>) -> String {
-    labels
-        .into_iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect::<Vec<_>>()
-        .join(",")
+/// Builds the string form of a `LabelSelector` that `kube`'s `ListParams::labels` expects,
+/// combining `matchLabels` (`k=v`) with `matchExpressions` (`k in (a,b)`, `k notin (a,b)`, `k`
+/// for `Exists`, `!k` for `DoesNotExist`) — the same selector-string ANDing rules Kubernetes
+/// itself uses. Workloads that only use `matchExpressions` previously got an empty selector here,
+/// which lists (and streams logs for) every pod in the namespace instead of the workload's own.
+fn label_selector_to_string(selector: LabelSelector) -> String {
+    let mut parts = Vec::new();
+    if let Some(labels) = selector.match_labels {
+        for (key, value) in labels {
+            parts.push(format!("{key}={value}"));
+        }
+    }
+    if let Some(expressions) = selector.match_expressions {
+        for expr in expressions {
+            let key = expr.key;
+            match expr.operator.as_str() {
+                "In" => {
+                    let values = expr.values.unwrap_or_default().join(",");
+                    parts.push(format!("{key} in ({values})"));
+                }
+                "NotIn" => {
+                    let values = expr.values.unwrap_or_default().join(",");
+                    parts.push(format!("{key} notin ({values})"));
+                }
+                "Exists" => parts.push(key),
+                "DoesNotExist" => parts.push(format!("!{key}")),
+                _ => {
+                    // Unknown/future operator: skip it rather than build an invalid selector
+                    // string that would make the whole `list` call fail.
+                }
+            }
+        }
+    }
+    parts.join(",")
 }
 
 impl Focusable for LogsView {
@@ -529,6 +675,9 @@ impl Render for LogsView {
             }))
             .on_action(cx.listener(|this, _: &FilterToMatches, _, cx| {
                 this.filter_to_matches = !this.filter_to_matches;
+                // Doesn't change the match set itself, just what's rendered, so match
+                // navigation (`cursor`) is left untouched.
+                this.rebuild_rendered_cache();
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &NextMatch, _, cx| {
@@ -623,5 +772,69 @@ impl Render for LogsView {
                 )
                 .flex_1(),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn label_selector_combines_match_labels_and_match_expressions() {
+        let selector = LabelSelector {
+            match_labels: Some(std::collections::BTreeMap::from([(
+                "app".to_string(),
+                "web".to_string(),
+            )])),
+            match_expressions: Some(vec![
+                k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelectorRequirement {
+                    key: "tier".to_string(),
+                    operator: "In".to_string(),
+                    values: Some(vec!["frontend".to_string(), "edge".to_string()]),
+                },
+                k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelectorRequirement {
+                    key: "env".to_string(),
+                    operator: "NotIn".to_string(),
+                    values: Some(vec!["dev".to_string()]),
+                },
+                k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelectorRequirement {
+                    key: "canary".to_string(),
+                    operator: "DoesNotExist".to_string(),
+                    values: None,
+                },
+                k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelectorRequirement {
+                    key: "region".to_string(),
+                    operator: "Exists".to_string(),
+                    values: None,
+                },
+            ]),
+        };
+        assert_eq!(
+            label_selector_to_string(selector),
+            "app=web,tier in (frontend,edge),env notin (dev),!canary,region"
+        );
+    }
+
+    #[test]
+    fn label_selector_with_only_match_expressions_is_not_empty() {
+        // A workload using only `matchExpressions` (no `matchLabels`) must not resolve to an
+        // empty selector string, which would list every pod in the namespace instead of just
+        // this workload's.
+        let selector = LabelSelector {
+            match_labels: None,
+            match_expressions: Some(vec![
+                k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelectorRequirement {
+                    key: "app".to_string(),
+                    operator: "In".to_string(),
+                    values: Some(vec!["payments".to_string()]),
+                },
+            ]),
+        };
+        assert_eq!(label_selector_to_string(selector), "app in (payments)");
+    }
+
+    #[test]
+    fn empty_label_selector_yields_empty_string() {
+        assert_eq!(label_selector_to_string(LabelSelector::default()), "");
     }
 }

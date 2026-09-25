@@ -71,11 +71,25 @@ pub enum StreamEvent {
 
 /// Aborts its task when dropped, so cancelling the outer `spawn_kube` task (or a pod leaving a
 /// workload's selector) stops every stream it started.
-struct TaskGuard(tokio::task::JoinHandle<()>);
+struct TaskGuard(Option<tokio::task::JoinHandle<()>>);
+
+impl TaskGuard {
+    fn new(handle: tokio::task::JoinHandle<()>) -> Self {
+        Self(Some(handle))
+    }
+
+    /// Extracts the join handle without aborting the task, so the caller can await its natural
+    /// completion (e.g. a non-follow container task that's expected to finish on its own).
+    fn into_join_handle(mut self) -> tokio::task::JoinHandle<()> {
+        self.0.take().expect("join handle taken twice")
+    }
+}
 
 impl Drop for TaskGuard {
     fn drop(&mut self) {
-        self.0.abort();
+        if let Some(handle) = self.0.take() {
+            handle.abort();
+        }
     }
 }
 
@@ -90,7 +104,7 @@ pub async fn run(
 ) {
     match source {
         LogSource::Container { pod, container } => {
-            let _guard = TaskGuard(tokio::spawn(container_task(
+            let _guard = TaskGuard::new(tokio::spawn(container_task(
                 client, namespace, pod, container, options, tx,
             )));
             std::future::pending::<()>().await;
@@ -109,7 +123,7 @@ pub async fn run(
             };
             let mut guards = Vec::new();
             for container in containers {
-                guards.push(TaskGuard(tokio::spawn(container_task(
+                guards.push(TaskGuard::new(tokio::spawn(container_task(
                     client.clone(),
                     namespace.clone(),
                     pod.clone(),
@@ -165,7 +179,7 @@ async fn workload_loop(
                     tx.unbounded_send(StreamEvent::PodJoined(name.clone())).ok();
                     let mut guards = Vec::new();
                     for container in container_names(pod, false) {
-                        guards.push(TaskGuard(tokio::spawn(container_task(
+                        guards.push(TaskGuard::new(tokio::spawn(container_task(
                             client.clone(),
                             namespace.clone(),
                             name.clone(),
@@ -191,6 +205,14 @@ async fn workload_loop(
             }
         }
         if !options.follow {
+            // A non-follow view: don't abort the per-container tasks we just started (dropping
+            // `known`'s `TaskGuard`s would do that immediately, before they deliver any lines).
+            // Wait for each to finish streaming its (already-bounded, non-follow) log instead.
+            for guards in known.into_values() {
+                for guard in guards {
+                    let _ = guard.into_join_handle().await;
+                }
+            }
             return;
         }
         tokio::time::sleep(POLL_INTERVAL).await;
@@ -210,6 +232,10 @@ async fn container_task(
     let api: Api<Pod> = Api::namespaced(client, &namespace);
     let mut backoff = BACKOFF_START;
     let mut first_attempt = true;
+    // Wall-clock time of the last line we delivered (or of task start, if none yet). Used to set
+    // `since_seconds` on reconnect so a terminated/rotated container doesn't replay its whole log
+    // on every retry (e.g. an infinite fast reconnect loop against a completed Job's container).
+    let mut last_seen = tokio::time::Instant::now();
     loop {
         let mut params = LogParams {
             follow: options.follow,
@@ -221,15 +247,20 @@ async fn container_task(
         if first_attempt {
             params.tail_lines = options.tail_lines;
             params.since_seconds = options.since_seconds;
+        } else {
+            let elapsed = last_seen.elapsed().as_secs().max(1);
+            params.since_seconds = Some(elapsed as i64);
         }
+        let mut received_data = false;
         match api.log_stream(&pod, &params).await {
             Ok(stream) => {
                 first_attempt = false;
-                backoff = BACKOFF_START;
                 let mut lines = stream.lines();
                 while let Some(line) = lines.next().await {
                     match line {
                         Ok(text) => {
+                            received_data = true;
+                            last_seen = tokio::time::Instant::now();
                             if tx
                                 .unbounded_send(StreamEvent::Line {
                                     pod: pod.clone(),
@@ -264,8 +295,16 @@ async fn container_task(
         {
             return;
         }
+        // Only reset backoff once we've actually received data on a connection — a connection
+        // that opens successfully but immediately errors/ends without delivering anything (e.g.
+        // a terminated container being re-opened) must keep backing off, not spin at
+        // `BACKOFF_START` forever.
+        if received_data {
+            backoff = BACKOFF_START;
+        } else {
+            backoff = (backoff * 2).min(BACKOFF_MAX);
+        }
         tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(BACKOFF_MAX);
     }
 }
 

@@ -1,5 +1,7 @@
 //! Text/regex search over the ring buffer: match count, next/prev, "filter to matches".
 
+use std::collections::VecDeque;
+
 use regex::{Regex, RegexBuilder};
 
 use crate::line::LogLine;
@@ -51,28 +53,60 @@ impl Search {
         }
     }
 
-    /// Indices (into `lines`) of every matching line, in order.
-    pub fn find_all(&self, lines: &[&LogLine]) -> Vec<usize> {
+    /// Seqs (the ring buffer's stable per-line identity) of every matching line, in order.
+    pub fn find_all(&self, lines: &[&LogLine]) -> Vec<u64> {
         lines
             .iter()
-            .enumerate()
-            .filter(|(_, l)| self.matches(&l.text))
-            .map(|(i, _)| i)
+            .filter(|l| self.matches(&l.text))
+            .map(|l| l.seq)
             .collect()
     }
 }
 
-/// Cursor over a set of match indices: next/prev with wraparound.
+/// Cursor over a set of matching lines (identified by their ring buffer `seq`, not a
+/// recompute-volatile index): next/prev with wraparound.
+///
+/// Matches are keyed by `seq` rather than position so that appending a newly-arrived matching
+/// line (`push_back`) or dropping an evicted one (`remove_front_if`) doesn't require rebuilding
+/// the whole set and doesn't disturb the user's current match position — only an actual
+/// query/filter change (`set_matches`) resets navigation back to the first match.
 #[derive(Default)]
 pub struct MatchCursor {
-    matches: Vec<usize>,
+    matches: VecDeque<u64>,
     current: Option<usize>,
 }
 
 impl MatchCursor {
-    pub fn set_matches(&mut self, matches: Vec<usize>) {
+    /// Replaces the match set outright and resets navigation to the first match. Use this only
+    /// when the search query/regex/case-sensitivity or the level filter actually changes; for
+    /// new data arriving under an unchanged query, use `push_back`/`remove_front_if` instead.
+    pub fn set_matches(&mut self, matches: Vec<u64>) {
         self.current = if matches.is_empty() { None } else { Some(0) };
-        self.matches = matches;
+        self.matches = matches.into();
+    }
+
+    /// Appends a newly-arrived matching line without disturbing `current`.
+    pub fn push_back(&mut self, seq: u64) {
+        self.matches.push_back(seq);
+        if self.current.is_none() {
+            self.current = Some(0);
+        }
+    }
+
+    /// Drops `seq` from the front of the match set if it's there (i.e. the ring buffer just
+    /// evicted it), adjusting `current` to stay valid.
+    pub fn remove_front_if(&mut self, seq: u64) {
+        if self.matches.front() != Some(&seq) {
+            return;
+        }
+        self.matches.pop_front();
+        if let Some(current) = self.current {
+            self.current = if self.matches.is_empty() {
+                None
+            } else {
+                Some(current.saturating_sub(1))
+            };
+        }
     }
 
     pub fn count(&self) -> usize {
@@ -84,11 +118,11 @@ impl MatchCursor {
         self.current.map(|c| c + 1)
     }
 
-    pub fn current_line(&self) -> Option<usize> {
-        self.current.map(|c| self.matches[c])
+    pub fn current_line(&self) -> Option<u64> {
+        self.current.and_then(|c| self.matches.get(c).copied())
     }
 
-    pub fn go_next(&mut self) -> Option<usize> {
+    pub fn go_next(&mut self) -> Option<u64> {
         if self.matches.is_empty() {
             return None;
         }
@@ -100,7 +134,7 @@ impl MatchCursor {
         self.current_line()
     }
 
-    pub fn go_prev(&mut self) -> Option<usize> {
+    pub fn go_prev(&mut self) -> Option<u64> {
         if self.matches.is_empty() {
             return None;
         }
@@ -165,5 +199,36 @@ mod tests {
         assert_eq!(cursor.go_next(), Some(3));
         assert_eq!(cursor.go_prev(), Some(9));
         assert_eq!(cursor.position(), Some(3));
+    }
+
+    #[test]
+    fn push_back_does_not_disturb_current_position() {
+        // Simulates new matching lines streaming in while the user has navigated to the 2nd of
+        // 3 matches: appending more matches (as a batch arrives) must not reset `current`.
+        let mut cursor = MatchCursor::default();
+        cursor.set_matches(vec![1, 2, 3]);
+        cursor.go_next(); // now on seq 2 (position 2)
+        assert_eq!(cursor.position(), Some(2));
+        cursor.push_back(4);
+        cursor.push_back(5);
+        assert_eq!(cursor.position(), Some(2));
+        assert_eq!(cursor.current_line(), Some(2));
+        assert_eq!(cursor.count(), 5);
+    }
+
+    #[test]
+    fn remove_front_if_shifts_current_and_ignores_non_front_seqs() {
+        let mut cursor = MatchCursor::default();
+        cursor.set_matches(vec![10, 20, 30]);
+        cursor.go_next(); // current = 1 (seq 20)
+
+        // Not the front: no-op.
+        cursor.remove_front_if(20);
+        assert_eq!(cursor.count(), 3);
+
+        // Evicting the front match shifts current down by one so it still points at seq 20.
+        cursor.remove_front_if(10);
+        assert_eq!(cursor.count(), 2);
+        assert_eq!(cursor.current_line(), Some(20));
     }
 }
