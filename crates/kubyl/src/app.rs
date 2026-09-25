@@ -259,6 +259,11 @@ mod screenshot {
             "toast" => {
                 NotificationCenter::push(cx, Notification::success("Connected to kind-kubyl-dev"))
             }
+            // `toast=<text>` posts an error notification with that text (no commas).
+            step if step.starts_with("toast=") => NotificationCenter::push(
+                cx,
+                Notification::error(step["toast=".len()..].to_string()),
+            ),
             // `palette=:cert` opens the command palette with that query; `action=pane::GoBack`
             // dispatches any action by name.
             // `mouse=640:380` moves the pointer there (hover popups), `click=640:380` clicks,
