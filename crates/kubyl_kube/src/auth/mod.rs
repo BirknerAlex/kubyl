@@ -291,8 +291,8 @@ impl<B: Send + 'static> AsyncPredicate<Request<B>> for AuthLayer {
     }
 }
 
-/// Seconds until the `exp` claim of a JWT, without verifying it (the API server does that).
-pub(crate) fn jwt_expiry(token: &str) -> Option<jiff::Timestamp> {
+/// The `exp` claim of a JWT, without verifying it (the server that accepts it does that).
+pub fn jwt_expiry(token: &str) -> Option<jiff::Timestamp> {
     use base64::Engine as _;
     let payload = token.split('.').nth(1)?;
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD

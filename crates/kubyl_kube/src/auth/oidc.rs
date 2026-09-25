@@ -612,7 +612,9 @@ impl OidcAuth {
     }
 }
 
-async fn bind_loopback(ports: &[u16]) -> Result<(tokio::net::TcpListener, u16), AuthError> {
+/// Binds the first free port of `ports` on 127.0.0.1, for an OAuth redirect to
+/// `http://localhost:<port>`. Also used by Argo CD's SSO sign-in.
+pub async fn bind_loopback(ports: &[u16]) -> Result<(tokio::net::TcpListener, u16), AuthError> {
     let mut last_err = None;
     for &port in ports {
         match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
@@ -635,8 +637,9 @@ const SUCCESS_PAGE: &str = "<!doctype html><meta charset=utf-8><title>Kubyl</tit
 <body style=\"font:15px system-ui;background:#282c33;color:#dce0e5;display:grid;place-items:center;height:90vh\">\
 <div><h2 style=\"font-weight:600\">Signed in to Kubyl</h2><p>You can close this tab and return to the app.</p></div>";
 
-/// Serves the loopback redirect until a request carries `code` and the right `state`.
-pub(super) async fn wait_for_code(
+/// Serves the loopback redirect until a request carries `code` and the right `state` (any
+/// path).
+pub async fn wait_for_code(
     listener: &tokio::net::TcpListener,
     state: &str,
 ) -> Result<String, AuthError> {
