@@ -33,6 +33,9 @@ use crate::watches::{self, NamespaceUpdate};
 
 /// Delay before re-running discovery after CRDs change (installs come in bursts).
 const CRD_DEBOUNCE: Duration = Duration::from_millis(800);
+/// While a CRD isn't served yet (not Established), discovery re-runs: 1 s doubling, 5 times.
+const UNSERVED_DELAY: Duration = Duration::from_secs(1);
+const UNSERVED_RETRIES: u32 = 5;
 /// Watch updates are applied at most this often.
 const BATCH_INTERVAL: Duration = Duration::from_millis(100);
 /// Reconnect backoff after failures: 5 s doubling up to 60 s.
@@ -127,6 +130,10 @@ pub struct Cluster {
     pub discovery: Option<Arc<Discovery>>,
     /// Number of CRDs, once the CRD watch has listed them.
     pub crd_count: Option<usize>,
+    /// Their names (`<plural>.<group>`).
+    crds: Vec<String>,
+    /// Discovery re-runs so far for CRDs that aren't served yet.
+    unserved_retries: u32,
     pub namespaces: Namespaces,
     /// The proxy in use.
     pub proxy: Option<String>,
@@ -150,6 +157,8 @@ impl Default for Cluster {
             caps: ClusterCaps::default(),
             discovery: None,
             crd_count: None,
+            crds: Vec::new(),
+            unserved_retries: 0,
             namespaces: Namespaces::default(),
             proxy: None,
             credential_expires_at: None,
@@ -710,6 +719,8 @@ impl ConnectionManager {
         cluster.client = None;
         cluster.discovery = None;
         cluster.crd_count = None;
+        cluster.crds.clear();
+        cluster.unserved_retries = 0;
         cluster.access.clear();
         let config = self.loaded.configs.get(&info.file).cloned();
         let (Some(config), None) = (config, info.error.clone()) else {
@@ -1117,17 +1128,17 @@ impl ConnectionManager {
         });
 
         // CRDs: every change after the first list re-runs discovery.
-        let (crd_tx, mut crd_rx) = mpsc::unbounded::<usize>();
+        let (crd_tx, mut crd_rx) = mpsc::unbounded::<Vec<String>>();
         let crd_watch = spawn_kube(cx, watches::watch_crds(client.clone(), crd_tx));
         let id_crd = id.clone();
         let crds = cx.spawn(async move |this, cx| {
             let mut first = true;
-            while let Some(mut count) = crd_rx.next().await {
+            while let Some(mut crds) = crd_rx.next().await {
                 if !first {
                     cx.background_executor().timer(CRD_DEBOUNCE).await;
                 }
                 while let Ok(next) = crd_rx.try_recv() {
-                    count = next;
+                    crds = next;
                 }
                 let rediscover = !first;
                 first = false;
@@ -1139,10 +1150,14 @@ impl ConnectionManager {
                     else {
                         return false;
                     };
-                    cluster.crd_count = Some(count);
+                    cluster.crd_count = Some(crds.len());
+                    cluster.crds = crds;
                     if rediscover {
                         tracing::info!(context = %id_crd, "CRDs changed; re-running discovery");
+                        cluster.unserved_retries = 0;
                         this.run_discovery(&id_crd, generation, client.clone(), cx);
+                    } else {
+                        this.rediscover_unserved(&id_crd, generation, client.clone(), cx);
                     }
                     cx.emit(ConnectionEvent::DiscoveryChanged(id_crd.clone()));
                     cx.notify();
@@ -1188,6 +1203,54 @@ impl ConnectionManager {
         cx.notify();
     }
 
+    /// A new CRD is only served once it's Established, a status update the CRD watch doesn't
+    /// report. While a CRD the watch listed isn't in discovery, discovery re-runs (a few times).
+    fn rediscover_unserved(
+        &mut self,
+        id: &ClusterId,
+        generation: u64,
+        client: kube::Client,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(cluster) = self
+            .clusters
+            .get_mut(id)
+            .filter(|c| c.generation == generation)
+        else {
+            return;
+        };
+        let Some(discovery) = cluster.discovery.as_ref() else {
+            return;
+        };
+        let unserved = cluster
+            .crds
+            .iter()
+            .filter(|name| !discovery.serves_crd(name))
+            .count();
+        if unserved == 0 || cluster.unserved_retries >= UNSERVED_RETRIES {
+            return;
+        }
+        let delay = UNSERVED_DELAY * 2u32.pow(cluster.unserved_retries);
+        cluster.unserved_retries += 1;
+        let id = id.clone();
+        let task_id = id.clone();
+        let task = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(delay).await;
+            this.update(cx, |this, cx| {
+                if this
+                    .clusters
+                    .get(&task_id)
+                    .is_some_and(|c| c.generation == generation)
+                {
+                    tracing::debug!(context = %task_id, unserved, "CRDs not served yet; re-running discovery");
+                    this.run_discovery(&task_id, generation, client, cx);
+                }
+            })
+            .ok();
+        });
+        self.push_task(&id, generation, task);
+    }
+
     fn run_discovery(
         &mut self,
         id: &ClusterId,
@@ -1195,6 +1258,7 @@ impl ConnectionManager {
         client: kube::Client,
         cx: &mut Context<Self>,
     ) {
+        let retry_client = client.clone();
         let discover = spawn_kube(cx, async move { discovery::discover(&client).await });
         let task_id = id.clone();
         let task = cx.spawn(async move |this, cx| {
@@ -1230,6 +1294,7 @@ impl ConnectionManager {
                         cluster.discovery = Some(Arc::new(discovery));
                         cx.emit(ConnectionEvent::DiscoveryChanged(id.clone()));
                         this.sync_active(cx);
+                        this.rediscover_unserved(&id, generation, retry_client, cx);
                         cx.notify();
                     }
                     Err(err) => tracing::warn!(context = %id, "discovery failed: {err}"),

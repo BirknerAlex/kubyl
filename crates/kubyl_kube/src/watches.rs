@@ -79,10 +79,10 @@ pub async fn watch_namespaces(client: Client, tx: UnboundedSender<NamespaceUpdat
     }
 }
 
-/// Sends the CRD count once the initial list is done, then again whenever a CRD is added,
-/// removed or its spec changes (a new generation). Every message after the first means
-/// "re-run discovery".
-pub async fn watch_crds(client: Client, tx: UnboundedSender<usize>) {
+/// Sends the CRD names (`<plural>.<group>`) once the initial list is done, then again whenever
+/// a CRD is added, removed or its spec changes (a new generation). Every message after the
+/// first means "re-run discovery".
+pub async fn watch_crds(client: Client, tx: UnboundedSender<Vec<String>>) {
     let api: Api<PartialObjectMeta<CustomResourceDefinition>> = Api::all(client);
     let mut stream = watcher(api, watcher::Config::default())
         .default_backoff()
@@ -113,7 +113,7 @@ pub async fn watch_crds(client: Client, tx: UnboundedSender<usize>) {
                 names = std::mem::take(&mut initializing);
                 if !ready {
                     ready = true;
-                    tx.unbounded_send(names.len()).ok();
+                    tx.unbounded_send(crd_names(&names)).ok();
                 }
                 changed
             }
@@ -130,13 +130,19 @@ pub async fn watch_crds(client: Client, tx: UnboundedSender<usize>) {
                 true
             }
         };
-        if changed && tx.unbounded_send(names.len()).is_err() {
+        if changed && tx.unbounded_send(crd_names(&names)).is_err() {
             return;
         }
     }
 }
 
-/// Status-only updates don't bump the generation, so they don't re-run discovery.
+fn crd_names(names: &BTreeSet<(String, i64)>) -> Vec<String> {
+    names.iter().map(|(name, _)| name.clone()).collect()
+}
+
+/// Status-only updates don't bump the generation, so they don't re-run discovery. (A CRD that
+/// becomes Established later is caught by the manager: it re-runs discovery while a CRD isn't
+/// served.)
 fn name_and_generation(meta: &kube::core::ObjectMeta) -> (String, i64) {
     (
         meta.name.clone().unwrap_or_default(),
