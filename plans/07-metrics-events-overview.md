@@ -179,3 +179,17 @@ Ideas not done yet: ingress-nginx request rate/latency/5xx on Ingress details (w
 exist), per-container breakdowns in multi-container pods, Service details through their
 endpoints' pods.
 
+### 2026-09-25, before merge (same branch)
+
+- Busy clusters: current pod usage is fetched only for the namespaces views ask about (one
+  Prometheus query with a namespace regex; on metrics-server one request per namespace for up to
+  five) unless something wants every namespace (the cluster overview). The details Metrics
+  section waits 400 ms before fetching, so arrowing through a list doesn't query every row.
+  Workload pod patterns use the generated suffix lengths (Deployment: 6–10 + 5 characters,
+  DaemonSet/ReplicaSet/Job: 5), so `web` doesn't match the pods of a `web-api` Job.
+- Unrelated fix on this branch: long messages in the notification history (e.g. a 401 with the
+  cluster URL) ran past the dialog; they wrap now and the list scrolls.
+- Screenshot harness: `scroll=x:y:dy` and `toast=<text>` steps.
+- Status: done. All tasks and acceptance criteria are met on kind; CI passes on macOS, Linux
+  and Windows.
+
