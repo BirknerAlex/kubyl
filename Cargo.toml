@@ -15,6 +15,7 @@ publish = false
 [workspace.dependencies]
 # Internal crates
 kubyl_charts = { path = "crates/kubyl_charts" }
+kubyl_argocd = { path = "crates/kubyl_argocd" }
 kubyl_core = { path = "crates/kubyl_core" }
 kubyl_explorer = { path = "crates/kubyl_explorer" }
 kubyl_files = { path = "crates/kubyl_files" }

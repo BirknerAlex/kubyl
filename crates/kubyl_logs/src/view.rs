@@ -426,6 +426,23 @@ pub struct LogsView {
     _subscriptions: Vec<Subscription>,
 }
 
+/// A search for the next log view of a target ([`crate::open_filtered`]).
+#[derive(Default)]
+pub(crate) struct PendingSearch(pub Option<SearchRequest>);
+
+#[derive(Clone)]
+pub(crate) struct SearchRequest {
+    pub target: ResourceRef,
+    pub query: String,
+    pub regex: bool,
+    pub at: Instant,
+}
+
+impl gpui::Global for PendingSearch {}
+
+/// How long a pending search waits for its view.
+const PENDING_SEARCH_TTL: Duration = Duration::from_secs(5);
+
 impl LogsView {
     pub fn new(target: Option<ResourceRef>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let has_target = target.is_some();
@@ -524,7 +541,34 @@ impl LogsView {
         } else {
             this.phase = Phase::Failed("nothing to show".into());
         }
+        this.take_pending_search(window, cx);
         this
+    }
+
+    /// Applies a search that [`crate::open_filtered`] left for this view: the query, with only
+    /// matching lines shown.
+    fn take_pending_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pending) = cx.try_global::<PendingSearch>() else {
+            return;
+        };
+        let Some(request) = pending.0.clone() else {
+            return;
+        };
+        if request.target != self.target {
+            return;
+        }
+        cx.set_global(PendingSearch(None));
+        // A request whose tab never opened (an existing tab was focused instead) goes stale.
+        if request.at.elapsed() > PENDING_SEARCH_TTL {
+            return;
+        }
+        let query = request.query;
+        self.search_input
+            .update(cx, |input, cx| input.set_value(query.clone(), window, cx));
+        self.search_regex = request.regex;
+        self.filter_to_matches = true;
+        self.set_query(query, cx);
+        self.rebuild_rendered();
     }
 
     fn is_selector_source(&self) -> bool {

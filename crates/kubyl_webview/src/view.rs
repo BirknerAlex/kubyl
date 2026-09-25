@@ -426,6 +426,7 @@ impl WebViewTab {
             zoom: self.zoom,
             accepted_certs: self.accepted.clone(),
             shortcuts: self.shortcuts.clone(),
+            cookies: crate::session::cookies_for(&self.target, cx),
         };
         let events = self.events.clone();
         cx.spawn_in(window, async move |this, cx| {

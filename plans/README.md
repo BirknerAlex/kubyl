@@ -36,7 +36,7 @@ Each phase file is written so one Claude Code session can own it from start to f
 | 07 | [Overview, metrics (Prometheus), events](07-metrics-events-overview.md) | 02 | `kubyl_metrics`, `kubyl_charts`, `kubyl_overview` | 4 · Overview |
 | 08 | [Service web views over temporary port-forwards](08-service-webview.md) | 02, 05 | `kubyl_webview` (new) | 10 · Web view |
 | 09 | [Packaging, release, auto-update, hardening](09-packaging-release.md) | 00 (CI), then all | `script/`, `.github/`, `crates/kubyl` bundling | none |
-| 10 | [Argo CD: applications, sync, history, rollback](10-argocd.md) | 02, 04, 05 (08 optional) | `kubyl_argocd` (new) | none yet |
+| 10 | [Argo CD: applications, sync, history, rollback](10-argocd.md) | 02, 04, 05 (08 optional) | `kubyl_argocd` (new) | 12–15 · Argo CD |
 | 11 | [Kubeconfig editor: clusters, credentials, contexts, connection test](11-kubeconfig-editor.md) | 01, 04 | `kubyl_kubeconfig` (new) | none yet (board 11) |
 | 12 | [Operators (OLM) and Helm releases](12-operators-olm.md) | 02, 04 | `kubyl_operators` | 7 · Operators |
 | 13 | [Cluster updates](13-cluster-updates.md) | 02, 07, 12 | `kubyl_updates` | 8 · Updates |
@@ -53,7 +53,7 @@ Each phase file is written so one Claude Code session can own it from start to f
 ```
 
 After phase 02, phases 03, 04, 05 and 07 can run in parallel sessions. Phase 08 can start once 05 is done, phase 10 once 04 and 05 are done, and phase 11 once 04 is done.
-Phases 08, 10 and 11 add crates that phase 00 didn't stub (`kubyl_webview`, `kubyl_argocd`, `kubyl_kubeconfig`): their first commit adds the stub crate (workspace member plus the `init` line in `crates/kubyl/src/main.rs`) in a tiny PR that lands on `main` before the feature work, so parallel sessions don't conflict.
+Phases 08, 10 and 11 add crates that phase 00 didn't stub (`kubyl_webview`, `kubyl_argocd`, `kubyl_kubeconfig`): their first commit adds the stub crate (workspace member plus the `init` line in `crates/kubyl/src/main.rs`) in a tiny PR that lands on `main` before the feature work, so parallel sessions don't conflict (phase 10 skipped it on request: its crate landed with the feature PR).
 Phase 00 must leave stub crates and registration traits so that parallel phases never edit
 the same files. See "Extension points" below.
 
@@ -101,7 +101,7 @@ plans/                      # these plans
 | Kubernetes client | `kube` + `k8s-openapi` (latest), features `runtime`, `ws`, `oauth`, `oidc`, `gzip`, `rustls-tls` + `ring`, `http-proxy`, `socks5` | Dynamic API (`DynamicObject`, `discovery`) is the default path. Typed APIs only where needed. Get clients, discovery, namespaces and caps from `kubyl_kube::ConnectionManager::global(cx)` (phase 01), never build your own. Exec and OIDC credentials are injected by Kubyl's auth layer, not by kube. |
 | Async | Dedicated multi-thread **Tokio** runtime on background threads. GPUI's executor drives UI only. | Bridge in `kubyl_core::runtime`: `spawn_kube(fut) -> Task<T>` plus channels into `cx.spawn`. No Tokio calls on the UI thread. |
 | State model | Per-cluster **watch caches** (kube `reflector` stores) feed GPUI `Entity<…>` models via batched diffs (≤ 60 Hz) | Views never await network calls directly. |
-| Secrets | `keyring` 4 (macOS Keychain, Windows Credential Manager, Secret Service) | OIDC refresh/ID tokens (keyed by issuer + client id), OpenShift OAuth tokens (keyed by API server + kubeconfig user). Exec credentials are cached in memory only. Never written to disk in plain text, except the opt-in dev store `KUBYL_CREDENTIAL_STORE=file` (`memory` for tests). |
+| Secrets | `keyring` 4 (macOS Keychain, Windows Credential Manager, Secret Service) | OIDC refresh/ID tokens (keyed by issuer + client id), OpenShift OAuth tokens (keyed by API server + kubeconfig user), Argo CD session tokens (keyed by API server + context + namespace + Service, phase 10). Exec credentials are cached in memory only. Never written to disk in plain text, except the opt-in dev store `KUBYL_CREDENTIAL_STORE=file` (`memory` for tests). |
 | OIDC | `openidconnect` crate: auth-code + PKCE with loopback redirect, device-code fallback | Compatible with kubelogin-style kubeconfigs: redirect `http://localhost:8000` (then `18000`), like kubelogin (decided in phase 01). `script/oidc-dev.sh` runs Dex + an OIDC kind cluster. |
 | OpenShift OAuth | `kubyl_kube::auth::openshift` on the `openidconnect` re-export of `reqwest` (phase 07) | Contexts with an `oc login` token (`sha256~…`) sign in like `oc login`: browser (`openshift-cli-client`, PKCE, loopback), username/password (challenging client) or a pasted token. Endpoints from `/.well-known/oauth-authorization-server`. |
 | YAML | `granit-parser` 1.3 (decided in phase 04): the saphyr-parser fork that `serde-saphyr` 1.3 uses, events with byte spans and comments. `kubyl_yaml::parse` builds a spanned tree on it; output goes through `serde-saphyr` (keys sorted like `kubectl get -o yaml`) | The editor never re-serializes the user's buffer: diagnostics, hover, completion, Secret masking and the managedFields toggle work on spans and text edits, so comments and key order survive. `serde_yaml` is unmaintained; `serde_yaml_ng` has no node spans. |
@@ -116,6 +116,8 @@ plans/                      # these plans
 | Metrics | `kubyl_metrics::MetricsService`: one demand-driven cache per cluster (decided in phase 07). Prometheus through the API server's service proxy (discovered, or a settings override incl. an external URL whose Authorization header lives in the keychain), metrics-server as fallback | Reads mark data as wanted; a 1 s loop refreshes whatever is stale, so every view shares one fetch and unwatched clusters cost nothing. The PromQL library is versioned, prefers kube-prometheus recording rules when present, and is overridable (`metrics.queries`). Current usage: Prometheus instant queries (else metrics-server); history: Prometheus range queries only. Which exporters and rules exist comes from `/api/v1/label/__name__/values`; panels and charts whose metric is missing are left out. Node-exporter series are joined to node names through `node_uname_info`. |
 | Events | `events.k8s.io/v1` with core `v1` fallback, over shared `ResourceStores` watches; `OOMKilled` warnings derived from pod status (decided in phase 07) | Kubernetes records no Event for an OOM kill (only `BackOff` after the restart), so the stream derives one from `lastState.terminated.reason`, marked "pod status". Repeats fold into `×N`. |
 | Web views | `wry` 0.57 (MIT/Apache-2.0), decided per platform in phase 08: **macOS** WKWebView as an NSView child of GPUI's view; **Windows** WebView2 as an HWND child; **Linux X11** WebKitGTK as an X11 child window; **Linux Wayland** a GTK window of its own that the tab drives (Wayland can't embed another client's surface); the **system browser** (`webview.open_in = "browser"`, or when a view can't be created) with a session tab that keeps the forward | `kubyl_webview::host` places native views where their tab paints them and hides them when the tab isn't painted or GPUI draws over them (dialogs, palette, toasts, the tab's menu). Views are created from a GPUI task outside `App` updates (WebView2 pumps Win32 messages while creating). Kubyl's shortcuts reach GPUI while the page has focus (macOS: GPUI's `performKeyEquivalent:`; Windows: WebView2 `AcceleratorKeyPressed`; Linux: GTK `key-press-event`). One data store per (cluster, namespace, service): WKWebsiteDataStore identifier (macOS 14+, private stores before), a WebView2 profile, a WebKitGTK context. Self-signed HTTPS is accepted per (cluster, service, port) by certificate fingerprint through each engine's trust hook. Forwards stay TCP (no Host rewriting). Nothing is initialized until the first web view; the WebKit/WebKitGTK libraries are linked (Linux packages depend on WebKitGTK 4.1 and GTK 3). |
+| Argo CD access | Two modes (decided in phase 10). **Kubernetes mode** (default): reads the Argo CD CRDs through `ResourceStores` and acts by patching the `Application` (`operation` like `argocd app sync`, refresh annotation, `spec.syncPolicy`, finalizers for cascading delete) under the user's kube RBAC. **API mode** (after signing in): `argocd-server`'s REST API for diffs, the full resource tree and actions under Argo CD's RBAC | Same `operation` format in v3.4 and v3.5 (the two tested minors). Per-resource health is computed from live objects in Kubernetes mode (Argo CD 3.x doesn't store it). `kubyl_argocd::run::run` picks the mode per action. |
+| Argo CD server trust | Kubyl never signs in to an argocd-server it found by itself: the user confirms the install (cluster, namespace, Service, URL shown) when signing in, and `state.json` keeps that per context with the **Service UID**; a re-created Service asks again. Kube credentials never reach Argo CD | Through the API server's service proxy the Argo CD token travels as the `argocd.token` cookie (the proxy strips `Authorization`, verified); otherwise over a temporary loopback forward (`ForwardSpec::ephemeral`) with a bearer header. Sign-in: SSO in the system browser like `argocd login --sso` (Dex, or a `cliClientID`; PKCE, redirect `http://localhost:8085/auth/callback`, refresh token renews it), username/password, or a pasted token. Tokens only in the keychain. Detection reads ConfigMaps, Services and workloads, never Secrets. Argo CD's web UI in a web view gets the session as its `argocd.token` cookie (session only, HttpOnly, only that Service): the one exception to "no credentials in web content". |
 | File watching | `notify` | Kubeconfig hot reload. |
 | Settings | JSON (`serde_json`) in `dirs::config_dir()/kubyl/` (override with `$KUBYL_CONFIG_DIR`) | `settings.json` (user, hot-reloaded, with a generated `settings.schema.json`), `state.json` (UI state, favorites, tabs). Typed sections: `kubyl_settings::{SettingsSection, StateSection}`. |
 | UI units | Sizes use `kubyl_ui::u(px)` (rems); the window's rem size follows `ui_font_size` | Zoom (⌘+/⌘-) scales the whole UI. Colors come from `cx.colors()`. |
@@ -208,6 +210,27 @@ one list. That list is the only shared line, and it is append-only.
   kind that has a provider.
 - Tabs (phase 08): `TabView::tab_dot` (a colored dot, e.g. the cluster color) and
   `TabView::wants_close` (the pane closes the tab when its view asks).
+- Kind-specific views (phase 10): `ViewRegistry::register_list_view(cx, group, resource, kind)`
+  and `register_object_view` make the explorer, the palette and `open_selected` open a kind's
+  own view instead of the generic table/details (`ViewRegistry::list_view`/`object_view`
+  resolve, with the generic view as fallback).
+- Sidebar groups (phase 10): `kubyl_explorer::catalog::register_tree_group(cx, TreeGroup {
+  id, parent, label, kinds, badge })` adds a group under a built-in one (e.g. Argo CD under
+  Administration); only kinds the cluster serves show, and the group follows discovery.
+  Call `catalog::tree_groups_changed(cx)` when the badge changes. The kinds stay under Custom
+  Resources too.
+- Edit notices (phase 10): `ChromeRegistry::add_edit_notice(cx, impl EditNotice)` puts a
+  warning banner in the YAML editor for objects it matches (Argo CD: "managed by app X,
+  self-heal may revert this").
+- Diffs and filtered logs (phase 10): `kubyl_yaml::diff_view(&LineDiff, side_by_side, colors)`
+  renders phase 04's diff anywhere; `kubyl_logs::open_filtered(target, query, regex)` opens a
+  log view with a search applied (matches only).
+- Web view sessions (phase 10): `kubyl_webview::add_session_provider(cx, |target, cx| cookies)`
+  hands session cookies (HttpOnly, session only, set before the first load) to web views of a
+  target the crate holds a session for. Only for a target the user confirmed.
+- Argo CD (phase 10): `ClusterCaps::argocd` (`applications`, `application_sets`, `projects`,
+  `any()`) says which Argo CD CRDs a cluster serves; `kubyl_argocd::dock::managed_by(object)`
+  tells which Application tracks an object.
 
 ### UX principles (from the mockups)
 

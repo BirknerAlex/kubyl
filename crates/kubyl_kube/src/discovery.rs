@@ -107,6 +107,17 @@ impl Discovery {
     pub fn by_gvr(&self, gvr: &Gvr) -> Option<&ApiResourceInfo> {
         self.resources.iter().find(|r| &r.gvr == gvr)
     }
+
+    /// Whether the CRD named `name` (`<plural>.<group>`) is served. A new CRD is only served
+    /// once it's Established.
+    pub fn serves_crd(&self, name: &str) -> bool {
+        let Some((plural, group)) = name.split_once('.') else {
+            return false;
+        };
+        self.resources
+            .iter()
+            .any(|r| r.gvr.resource == plural && r.gvr.group == group)
+    }
 }
 
 /// Discovers every resource type. Aggregated discovery first, legacy as a fallback.
@@ -366,5 +377,8 @@ mod tests {
                 .unwrap()
                 .is_listable()
         );
+        assert!(discovery.serves_crd("certificates.cert-manager.io"));
+        assert!(!discovery.serves_crd("issuers.cert-manager.io"));
+        assert!(!discovery.serves_crd("pods"));
     }
 }

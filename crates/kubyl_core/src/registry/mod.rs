@@ -6,7 +6,7 @@
 //! | [`ViewRegistry`] | building a tab for a [`ViewRequest`] (resource + [`ViewKind`](crate::ViewKind)) |
 //! | [`ActionRegistry`] | named actions with key bindings, availability and palette/key-hint metadata |
 //! | [`ResourceColumns`] | per-kind table columns (server-side `Table` is the fallback) |
-//! | [`ChromeRegistry`] | [`StatusBarItem`], [`DockPanel`], [`SidebarSection`] and [`DetailsSection`] contributions |
+//! | [`ChromeRegistry`] | [`StatusBarItem`], [`DockPanel`], [`SidebarSection`], [`DetailsSection`] and [`EditNotice`] contributions |
 
 mod actions;
 mod chrome;
@@ -15,8 +15,8 @@ mod views;
 
 pub use actions::{ActionRegistry, ActionSpec, Availability};
 pub use chrome::{
-    ChromeRegistry, DetailsSection, DockPanel, DockPosition, SidebarSection, StatusBarItem,
-    StatusBarPosition,
+    ChromeRegistry, DetailsSection, DockPanel, DockPosition, EditNotice, SidebarSection,
+    StatusBarItem, StatusBarPosition,
 };
 pub use columns::{
     Align, CellAction, CellButton, CellValue, ColumnDef, ColumnProvider, ColumnWidth,

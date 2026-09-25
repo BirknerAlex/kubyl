@@ -1197,10 +1197,11 @@ impl ResourceListView {
             return;
         };
         let target = self.row_ref(row);
+        // A kind's own view when a crate registered one (Argo CD Applications).
+        let kind = kubyl_core::ViewRegistry::object_view(cx, &target.gvr);
         window.dispatch_action(
             Box::new(kubyl_core::actions::OpenView(ViewRequest::for_resource(
-                ViewKind::Details,
-                target,
+                kind, target,
             ))),
             cx,
         );

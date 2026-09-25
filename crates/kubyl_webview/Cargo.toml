@@ -30,6 +30,7 @@ futures.workspace = true
 k8s-openapi.workspace = true
 kube.workspace = true
 schemars.workspace = true
+secrecy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 raw-window-handle.workspace = true
@@ -54,7 +55,7 @@ windows.workspace = true
 block2.workspace = true
 objc2.workspace = true
 objc2-app-kit = { workspace = true, features = ["NSEvent", "NSView", "NSWindow", "NSGraphics", "block2", "objc2-core-foundation"] }
-objc2-foundation = { workspace = true, features = ["NSProcessInfo", "NSString", "NSGeometry", "objc2-core-foundation"] }
+objc2-foundation = { workspace = true, features = ["NSProcessInfo", "NSString", "NSGeometry", "objc2-core-foundation", "NSHTTPCookie", "NSDictionary", "NSURL", "NSURLRequest"] }
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }

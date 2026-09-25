@@ -14,7 +14,7 @@ use gpui_component::input::{Input, InputEvent, InputState};
 use kubyl_core::actions::OpenView;
 use kubyl_core::{
     ActionRegistry, ActiveContext, ClusterId, Gvk, Notification, NotificationCenter, ResourceRef,
-    ViewKind, ViewRequest,
+    ViewRegistry, ViewRequest,
 };
 use kubyl_explorer::favorites::{self, Favorites};
 use kubyl_kube::ConnectionManager;
@@ -485,13 +485,12 @@ fn run(target: Target, split: bool, window: &mut Window, cx: &mut App) {
                     },
                 );
             }
+            // A kind's own view when a crate registered one (`:apps` → Argo CD Applications).
+            let kind = ViewRegistry::list_view(cx, &gvr);
             open(
                 window,
                 cx,
-                ViewRequest::for_resource(
-                    ViewKind::Table,
-                    ResourceRef::list(cluster, gvr, namespace),
-                ),
+                ViewRequest::for_resource(kind, ResourceRef::list(cluster, gvr, namespace)),
             );
         }
         Target::Context(id) => {
@@ -535,11 +534,10 @@ fn run(target: Target, split: bool, window: &mut Window, cx: &mut App) {
                 ResourceRef::list(ClusterId::new(""), gvr, None),
             ),
         ),
-        Target::Object(target) => open(
-            window,
-            cx,
-            ViewRequest::for_resource(ViewKind::Details, target),
-        ),
+        Target::Object(target) => {
+            let kind = ViewRegistry::object_view(cx, &target.gvr);
+            open(window, cx, ViewRequest::for_resource(kind, target))
+        }
         Target::Filtered {
             cluster,
             gvr,

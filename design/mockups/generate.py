@@ -61,6 +61,15 @@ ICONS = {
  "up": '<path d="M12 19V5M5 12l7-7 7 7"></path>',
  "copy": '<rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>',
  "store": '<path d="M3 9h18l-2-5H5zM4 9v11h16V9M9 20v-6h6v6"></path>',
+ "branch": '<path d="M15 6a9 9 0 0 0-9 9V3"></path><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle>',
+ "commit": '<circle cx="12" cy="12" r="3"></circle><path d="M3 12h6M15 12h6"></path>',
+ "history": '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path><path d="M12 7v5l4 2"></path>',
+ "rollback": '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path>',
+ "fork": '<circle cx="12" cy="18" r="3"></circle><circle cx="6" cy="6" r="3"></circle><circle cx="18" cy="6" r="3"></circle><path d="M18 9v2c0 .6-.4 1-1 1H7c-.6 0-1-.4-1-1V9"></path><path d="M12 12v3"></path>',
+ "kanban": '<path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"></path><path d="M8 10v4M12 10v2M16 10v6"></path>',
+ "tree": '<path d="M8 5h13M13 12h8M13 19h8"></path><path d="M3 10a2 2 0 0 0 2 2h3"></path><path d="M3 5v12a2 2 0 0 0 2 2h3"></path>',
+ "ext": '<path d="M15 3h6v6M10 14 21 3"></path><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>',
+ "square": '<rect width="18" height="18" x="3" y="3" rx="2"></rect>',
  "gear": '<circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>',
 }
 
@@ -1032,6 +1041,320 @@ def webview_screen():
 </div>"""
     return page("Service web view — Kubyl", inner)
 
+# ---------- 12–15. Argo CD ----------
+# Argo CD's own status colors mapped to theme tokens.
+ARGO_SYNC = {"Synced": C["green"], "OutOfSync": C["yellow"], "Unknown": C["dim"]}
+ARGO_HEALTH = {"Healthy": C["green"], "Progressing": C["accent"], "Degraded": C["red"], "Suspended": C["purple"],
+               "Missing": C["yellow"], "Unknown": C["dim"]}
+
+def apill(status, table=None):
+    c = (table or {**ARGO_SYNC, **ARGO_HEALTH}).get(status, C["muted"])
+    return f'<span class="pill">{dot(c)}<span style="color:{c}">{status}</span></span>'
+
+def check(on, label="", sub=""):
+    box = (f'<span style="width:14px;height:14px;border-radius:3px;flex-shrink:0;display:flex;align-items:center;justify-content:center;'
+           f'{"background:var(--accent)" if on else "border:1px solid #5d636f;box-sizing:border-box"}">'
+           + (f'<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#1b1e24" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>' if on else "") + '</span>')
+    text = f'<div style="min-width:0"><div style="font-size:12.5px">{label}</div>' + (f'<div style="font-size:11.5px;color:var(--dim)">{sub}</div>' if sub else "") + '</div>'
+    return f'<label style="display:flex;gap:8px;align-items:flex-start">{box}{text if label else ""}</label>'
+
+def argo_sidebar(active):
+    a = lambda n: n == active
+    rows = [
+        f'<div class="phead"><span style="flex:1;font-weight:500;color:var(--text)">Explorer</span><button class="ib" aria-label="Filter kinds">{ic("search",13)}</button><button class="ib" aria-label="Add kubeconfig">{ic("plus",14)}</button><button class="ib" aria-label="More">{ic("more",14)}</button></div>',
+        f'<div class="sec">{ic("cr",11)}Favorites<span style="flex:1"></span><span style="font-weight:400;letter-spacing:0;text-transform:none;color:var(--faint)">4</span></div>',
+        f'<div class="sec">{ic("cd",11)}Clusters</div>',
+        ti("prod-eu-west-1", 0, "wheel", open_=True, root=True, color=C["red"], extra='<span class="prod" style="font-size:9.5px;padding:0 4px">PROD</span>'),
+        ti("Overview", 1, "gauge"),
+        ti("Events", 1, "bell", "23", color=C["yellow"]),
+        ti("Workloads", 1, open_=False),
+        ti("Network", 1, open_=False),
+        ti("Config &amp; Secrets", 1, open_=False),
+        ti("Storage", 1, open_=False),
+        ti("Access Control", 1, open_=False),
+        ti("Cluster", 1, open_=False),
+        ti("Administration", 1, open_=True),
+        ti("Installed Operators", 2, "blocks", "7"),
+        ti("OperatorHub", 2, "store"),
+        ti("Cluster Updates", 2, "up"),
+        ti("Argo CD", 2, open_=True, extra=f'<span style="font-size:11px;color:var(--dim)">v3.5.3</span>'),
+        ti("Applications", 3, "layers", "10", on=a("Applications"),
+           extra=f'<span style="margin-right:2px">{dot(C["yellow"])}</span>'),
+        ti("ApplicationSets", 3, "fork", "2", on=a("ApplicationSets")),
+        ti("Projects", 3, "kanban", "4", on=a("Projects")),
+        ti("Custom Resources", 1, open_=True),
+        ti("argoproj.io", 2, open_=False),
+        ti("cert-manager.io", 2, open_=False),
+        ti("monitoring.coreos.com", 2, open_=False),
+        ti('<span style="color:var(--dim)">14 more API groups…</span>', 2),
+        ti("staging-eu-west-1", 0, "wheel", open_=False, root=True, color=C["yellow"]),
+        ti("prod-us-east-1", 0, "wheel", open_=False, root=True, color=C["red"]),
+        ti("gke-analytics", 0, "wheel", open_=False, root=True, color=C["cyan"]),
+    ]
+    return '<aside class="side">' + "\n".join(rows) + '</aside>'
+
+def argo_shell(active, tabbar, content, overlay="", right_extra=""):
+    return f'''<div class="app">
+{titlebar()}
+<div class="body">
+{argo_sidebar(active)}
+<main class="main">
+{tabbar}
+{content}
+</main>
+</div>
+{statusbar(right_extra=right_extra)}
+{overlay}
+</div>'''
+
+# name, app namespace, project, sync, health, auto (prune, heal), source, target, synced, destination (label, link), last sync (age, result), op
+ARGO_APPS = [
+ ("checkout-api", "argocd", "payments", "Synced", "Healthy", (True, True, True), ("acme/payments-deploy", "apps/checkout-api"), "main", "3f9c2a1", ("in-cluster", "payments", True), ("12m", "Succeeded"), None),
+ ("payment-gateway", "argocd", "payments", "OutOfSync", "Degraded", (True, False, False), ("acme/payments-deploy", "apps/payment-gateway"), "main", "8d41b07", ("in-cluster", "payments", True), ("47m", "Succeeded"), None),
+ ("ledger-writer", "argocd", "payments", "Synced", "Progressing", (True, True, False), ("acme/payments-deploy", "apps/ledger-writer"), "main", "3f9c2a1", ("in-cluster", "payments", True), ("now", ""), "Syncing 12/40"),
+ ("fraud-scorer", "argocd", "risk", "Synced", "Healthy", (True, True, True), ("charts.acme.io", "fraud-scorer 0.19.4"), "0.19.4", "0.19.4", ("in-cluster", "risk", True), ("6h", "Succeeded"), None),
+ ("reports-ui", "team-reports", "reports", "Unknown", "Missing", (False, False, False), ("acme/reports", "deploy/ui"), "release-3", "—", ("in-cluster", "reports", True), ("3d", "Failed"), None),
+ ("kube-prometheus-stack", "argocd", "platform", "OutOfSync", "Healthy", (True, True, False), ("2 sources", "prometheus-community · acme/platform"), "72.6.2", "72.6.2", ("in-cluster", "monitoring", True), ("2h", "Succeeded"), None),
+ ("ingress-nginx", "argocd", "platform", "Synced", "Healthy", (True, True, True), ("kubernetes.github.io", "ingress-nginx 4.12.1"), "4.12.1", "4.12.1", ("prod-us-east-1", "ingress-nginx", True), ("1d", "Succeeded"), None),
+ ("cert-manager", "argocd", "platform", "Synced", "Healthy", (True, True, True), ("charts.jetstack.io", "cert-manager v1.15.3"), "v1.15.3", "v1.15.3", ("in-cluster", "cert-manager", True), ("4d", "Succeeded"), None),
+ ("settlement-batch", "argocd", "payments", "Synced", "Suspended", (False, False, False), ("acme/payments-deploy", "apps/settlement"), "main", "c21e9d0", ("in-cluster", "payments", True), ("9d", "Succeeded"), None),
+ ("analytics-etl", "argocd", "data", "Synced", "Healthy", (True, False, True), ("acme/data-platform", "etl/overlays/prod"), "v2.8.0", "a7b0c44", ("eks-legacy", "etl", False), ("5d", "Succeeded"), None),
+]
+AC = "grid-template-columns: minmax(0,1.3fr) 70px 104px 104px 42px minmax(0,1.5fr) 64px minmax(0,1fr) 58px"
+
+def argo_rows(selected):
+    out = []
+    for i, (n, ans, proj, sync, health, auto, (repo, path), target, rev, (dc, dns, link), (age, res), op) in enumerate(ARGO_APPS):
+        auto_on, prune, heal = auto
+        auto_cell = (f'<span style="display:flex;gap:3px;align-items:center;color:var(--green)" title="auto-sync{", prune" if prune else ""}{", self-heal" if heal else ""}">{ic("refresh",12,C["green"])}'
+                     f'<span class="mono" style="font-size:10.5px;color:var(--dim)">{"P" if prune else ""}{"H" if heal else ""}</span></span>') if auto_on else '<span style="color:var(--faint);font-size:12px">manual</span>'
+        ns = f'<span style="color:var(--dim)"> · {ans}</span>' if ans != "argocd" else ""
+        sync_cell = f'<span class="chip" style="height:19px;color:#a8cdf3;background:#2d3b4d;gap:6px"><svg width="10" height="10" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="#3f5a78" stroke-width="4"></circle><path d="M12 3a9 9 0 0 1 9 9" fill="none" stroke="#74ade8" stroke-width="4" stroke-linecap="round"></path></svg>{op}</span>' if op else apill(sync, ARGO_SYNC)
+        dest = (f'<a href="#" class="mono" style="font-size:12px;text-decoration:none">{dc}<span style="color:var(--dim)"> · </span>{dns}</a>' if link
+                else f'<span class="mono" style="font-size:12px;color:var(--muted)">{dc} · {dns}</span>')
+        res_icon = {"Succeeded": ic("ok", 12, C["green"]), "Failed": ic("err", 12, C["red"])}.get(res, "")
+        out.append(f'''<div class="tr{" on" if i == selected else ""}" style="{AC};height:32px">
+<span class="mono" style="font-size:12px">{n}{ns}</span><span style="color:var(--muted)">{proj}</span>{sync_cell}{apill(health, ARGO_HEALTH)}{auto_cell}
+<span style="font-size:12px"><span class="mono" style="font-size:11.5px">{path}</span> <span style="color:var(--dim)">@ {target}</span></span>
+<span class="mono" style="font-size:11.5px">{rev}</span>{dest}
+<span style="display:flex;gap:5px;align-items:center;font-size:12px;color:var(--muted)">{res_icon}{age}</span></div>''')
+    return "".join(out)
+
+def argo_filters():
+    def fchip(label, n, c, on=False):
+        return f'<span class="chip{" on" if on else ""}">{dot(c)}{label}<span class="mono" style="font-size:11px;color:var(--dim)">{n}</span></span>'
+    sync = "".join(fchip(s, n, ARGO_SYNC[s], s == "OutOfSync" and False) for s, n in [("Synced", 7), ("OutOfSync", 2), ("Unknown", 1)])
+    health = "".join(fchip(s, n, ARGO_HEALTH[s]) for s, n in [("Healthy", 6), ("Progressing", 1), ("Degraded", 1), ("Suspended", 1), ("Missing", 1)])
+    lab = lambda t: f'<span style="font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--dim)">{t}</span>'
+    return f'''<div style="height:36px;flex-shrink:0;display:flex;align-items:center;gap:6px;padding:0 12px;border-bottom:1px solid var(--bv);white-space:nowrap;overflow:hidden">
+{sync}<span style="width:1px;height:16px;background:var(--border);margin:0 4px"></span>{health}<span style="flex:1"></span></div>'''
+
+def argo_toolbar(mode_chip):
+    return f'''<div class="tool">
+<div class="crumb" style="white-space:nowrap">{ic("layers",14,C["accent"])}<b>Applications</b><span>·</span><span>10</span><span style="color:var(--yellow)">· 2 out of sync</span><span style="color:var(--red)">· 1 degraded</span></div>
+<div style="flex:1"></div>
+<button class="btn g" style="height:24px;padding:0 6px">Project{ic("cd",11)}</button><button class="btn g" style="height:24px;padding:0 6px">Destination{ic("cd",11)}</button>
+<div class="inp" style="width:150px">{ic("filter",12)}Filter</div>
+{mode_chip}
+<button class="ib" aria-label="Open Argo CD UI" title="Open Argo CD UI">{ic("globe",14)}</button>
+<span class="chip" style="color:var(--green)">{dot(C["green"])}live</span>
+</div>'''
+
+K8S_MODE = f'<span class="chip" title="Reads and patches the Application objects with your Kubernetes access">{ic("wheel",11)}Kubernetes mode</span>'
+API_MODE = f'<span class="chip on">{ic("link",11)}API · alice</span>'
+
+def argo_apps_screen():
+    center = f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0">
+{argo_toolbar(K8S_MODE)}
+{argo_filters()}
+<div class="th" style="{AC}"><span>NAME {ic("cd",10)}</span><span>PROJECT</span><span>SYNC</span><span>HEALTH</span><span>AUTO</span><span>SOURCE @ TARGET</span><span>REVISION</span><span>DESTINATION</span><span>LAST</span></div>
+<div style="flex:1;overflow:hidden">{argo_rows(1)}</div>
+{hints([("↵","Open"),("s","Sync…"),("r","Refresh"),("⇧r","Hard refresh"),("h","History"),("e","Edit YAML"),("⌃d","Delete…"),("/","Filter")])}
+</div>'''
+    res = lambda kind, name, sync, health: f'<div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12px"><span style="color:var(--dim);width:78px">{kind}</span><span class="mono" style="flex:1;font-size:11.5px;overflow:hidden;text-overflow:ellipsis">{name}</span>{apill(sync, ARGO_SYNC)}</div>'
+    toggle = lambda on: f'<span style="width:26px;height:15px;border-radius:8px;background:{C["accent"] if on else "#4a505c"};position:relative;display:inline-block;flex-shrink:0"><span style="position:absolute;top:2px;{"right" if on else "left"}:2px;width:11px;height:11px;border-radius:50%;background:#fff"></span></span>'
+    pol = lambda t, on: f'<div style="display:flex;align-items:center;gap:8px;font-size:12px;padding:3px 0"><span style="flex:1;color:var(--muted)">{t}</span>{toggle(on)}</div>'
+    dock = f'''<aside class="dock" style="width:300px">
+<div class="phead" style="border-bottom:1px solid var(--bv)"><span style="flex:1;color:var(--text);font-weight:500">Application details</span><button class="ib" aria-label="Pin">{ic("star",13)}</button><button class="ib" aria-label="Close">{ic("x",13)}</button></div>
+<div class="dsec">
+<div class="mono" style="font-size:12.5px;color:var(--text);margin-bottom:6px">payment-gateway</div>
+<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">{apill("OutOfSync", ARGO_SYNC)}{apill("Degraded", ARGO_HEALTH)}<span class="chip">payments</span></div>
+<div style="display:flex;gap:6px;margin-top:10px"><button class="btn p" style="height:24px">{ic("refresh",12,"#1b1e24")}Sync…</button><button class="btn" style="height:24px">Refresh</button><button class="btn g" style="height:24px">{ic("history",12)}History</button><button class="btn g" style="height:24px">Open</button></div>
+</div>
+<div class="dsec"><p class="dtitle">Out of sync · 2 of 6 resources</p>
+{res("Deployment","payment-gateway","OutOfSync","Degraded")}{res("ConfigMap","payment-gateway-env","OutOfSync","")}
+<div style="font-size:11.5px;color:var(--dim);margin-top:6px;line-height:17px">The diff needs API mode. <a href="#">Sign in to Argo CD…</a></div></div>
+<div class="dsec"><p class="dtitle">Source</p><dl class="kv" style="margin:0;grid-template-columns:78px minmax(0,1fr)"><dt>Repository</dt><dd><a href="#" style="text-decoration:none">github.com/acme/payments-deploy</a></dd><dt>Path</dt><dd class="mono" style="font-size:11.5px">apps/payment-gateway</dd><dt>Target</dt><dd class="mono" style="font-size:11.5px">main {ic("branch",11,C["dim"])} <a href="#" style="text-decoration:none">8d41b07</a></dd><dt>Destination</dt><dd><a href="#" style="text-decoration:none">in-cluster · payments</a></dd></dl></div>
+<div class="dsec"><p class="dtitle">Sync policy</p>{pol("Auto-sync", True)}{pol("Prune", False)}{pol("Self-heal", False)}
+<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px"><span class="chip mchip">CreateNamespace=true</span><span class="chip mchip">ServerSideApply=true</span></div></div>
+<div class="dsec" style="border-bottom:0"><p class="dtitle">Last operation</p>
+<div style="display:flex;gap:8px;font-size:12px;align-items:flex-start">{ic("ok",13,C["green"])}<div style="flex:1;line-height:18px"><div>Sync succeeded · 47m ago · by <span class="mono" style="font-size:11.5px">alice</span></div><div style="color:var(--dim)">revision 8d41b07 · 6 resources synced</div></div></div></div>
+</aside>'''
+    content = f'<div style="flex:1;display:flex;min-height:0">{center}{dock}</div>'
+    tb = tabs([("layers", "Applications", True), ("fork", "ApplicationSets", False), ("box", "Pods", False)])
+    return page("Argo CD applications — Kubyl", argo_shell("Applications", tb, content))
+
+def app_header(name, sync, health, mode_chip, extra_btn=""):
+    return f'''<div style="display:flex;align-items:center;gap:10px;padding:12px 16px 10px;border-bottom:1px solid var(--bv)">
+<span style="width:30px;height:30px;border-radius:7px;background:#bf956a22;border:1px solid #bf956a55;display:flex;align-items:center;justify-content:center">{ic("layers",16,C["orange"])}</span>
+<div style="min-width:0"><div style="display:flex;align-items:center;gap:8px"><span class="mono" style="font-size:15px;font-weight:500">{name}</span><span class="chip">payments</span><span style="font-size:12px;color:var(--dim)">argocd namespace</span></div>
+<div style="display:flex;gap:12px;align-items:center;margin-top:3px;font-size:12px">{apill(sync, ARGO_SYNC)}{apill(health, ARGO_HEALTH)}<span style="color:var(--green);display:flex;gap:4px;align-items:center">{ic("refresh",12,C["green"])}auto-sync · prune · self-heal</span></div></div>
+<div style="flex:1"></div>
+{mode_chip}
+<button class="btn" style="height:26px">{ic("refresh",12)}Refresh{ic("cd",11)}</button>
+<button class="btn p" style="height:26px">{ic("refresh",12,"#1b1e24")}Sync…</button>
+{extra_btn}
+<button class="btn g" style="height:26px">{ic("globe",13)}Argo CD UI</button>
+<button class="ib" aria-label="More">{ic("more",14)}</button>
+</div>'''
+
+def app_subtabs(active, counts):
+    items = [("Summary", ""), ("Resources", counts.get("Resources", "")), ("Diff", counts.get("Diff", "")), ("History", counts.get("History", "")), ("Events", ""), ("Controller logs", "")]
+    return '<div style="display:flex;gap:2px;padding:0 12px;border-bottom:1px solid var(--bv);height:36px;align-items:stretch">' + "".join(
+        f'<span style="display:flex;align-items:center;gap:6px;padding:0 10px;{"color:var(--text);box-shadow:inset 0 -2px 0 var(--accent)" if t == active else "color:var(--dim)"}">{t}' + (f'<span class="chip" style="height:17px">{c}</span>' if c else "") + '</span>'
+        for t, c in items) + '</div>'
+
+def argo_app_screen():
+    TC = "grid-template-columns: minmax(0,1fr) 104px 110px minmax(0,0.55fr) 56px"
+    guide = lambda d: "".join(f'<span style="width:16px;flex-shrink:0;align-self:stretch;border-left:1px solid #3e4450;margin-left:6px"></span>' for _ in range(d))
+    def node(depth, icon, kind, name, sync, health, info, age, open_=None, on=False, live=False):
+        chev = ic("cd", 11, C["dim"]) if open_ is True else ic("cr", 11, C["dim"]) if open_ is False else '<span style="width:11px;flex-shrink:0"></span>'
+        tag = '<span class="chip" style="height:16px;font-size:10.5px;padding:0 5px">live</span>' if live else ""
+        s = apill(sync, ARGO_SYNC) if sync else '<span style="color:var(--faint)">—</span>'
+        h = apill(health, ARGO_HEALTH) if health else '<span style="color:var(--faint)">—</span>'
+        return (f'<div class="tr{" on" if on else ""}" style="{TC};height:30px"><span style="display:flex;align-items:center;gap:6px;height:100%;min-width:0">{guide(depth)}{chev}{ic(icon,13,C["dim"])}'
+                f'<span style="color:var(--dim);font-size:12px">{kind}</span><span class="mono" style="font-size:12px;overflow:hidden;text-overflow:ellipsis">{name}</span>{tag}</span>{s}{h}'
+                f'<span style="font-size:12px;color:var(--muted)">{info}</span><span class="mono" style="font-size:11.5px;color:var(--muted)">{age}</span></div>')
+    tree = "".join([
+        node(0, "layers", "Application", "checkout-api", "Synced", "Healthy", "rev 3f9c2a1", "41d", True),
+        node(1, "layers", "Deployment", "checkout-api", "Synced", "Healthy", "3/3 ready · rev 14", "41d", True),
+        node(2, "copy", "ReplicaSet", "checkout-api-7d9f8c6b5", "", "Healthy", "3 pods", "3d", True, live=True),
+        node(3, "box", "Pod", "checkout-api-7d9f8c6b5-x2kqp", "", "Healthy", "Running · 10.0.12.188", "3d", on=True, live=True),
+        node(3, "box", "Pod", "checkout-api-7d9f8c6b5-m8fzt", "", "Healthy", "Running · 10.0.14.21", "3d", live=True),
+        node(3, "box", "Pod", "checkout-api-7d9f8c6b5-qj4wn", "", "Healthy", "Running · 10.0.11.7", "3d", live=True),
+        node(2, "copy", "ReplicaSet", "checkout-api-5c7b9d8f4", "", "Healthy", "0 pods · rev 13", "48d", False, live=True),
+        node(1, "network", "Service", "checkout-api", "Synced", "Healthy", "ClusterIP 10.96.44.12", "41d"),
+        node(1, "file", "ConfigMap", "checkout-api-config", "Synced", "", "4 keys", "41d"),
+        node(1, "activity", "HPA", "checkout-api", "Synced", "Healthy", "3–10 · cpu 38%", "41d"),
+        node(1, "shield", "PodDisruptionBudget", "checkout-api", "Synced", "", "minAvailable 2", "41d"),
+        node(1, "user", "ServiceAccount", "checkout-api", "Synced", "", "", "41d"),
+        node(1, "key", "ExternalSecret", "checkout-api-db", "Synced", "Healthy", "SecretSynced", "41d"),
+        node(1, "file", "ServiceMonitor", "checkout-api", "Synced", "", "", "41d"),
+    ])
+    seg = lambda items: '<span style="display:flex;border:1px solid var(--border);border-radius:5px;overflow:hidden">' + "".join(f'<span style="display:flex;align-items:center;gap:5px;height:22px;padding:0 8px;font-size:12px;{"background:#2d3b4d;color:#a8cdf3" if on else "color:var(--dim)"}">{ic(i,12)}{t}</span>' for i, t, on in items) + '</span>'
+    center = f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0">
+<div style="height:38px;flex-shrink:0;display:flex;align-items:center;gap:8px;padding:0 12px;border-bottom:1px solid var(--bv)">
+{seg([("tree","Tree",True),("list","List",False)])}
+<span class="chip on">All 14</span><span class="chip">{dot(C["yellow"])}Out of sync 0</span><span class="chip">{dot(C["red"])}Unhealthy 0</span>
+<span style="flex:1"></span><span style="font-size:11.5px;color:var(--dim);white-space:nowrap"><span class="chip" style="height:16px;font-size:10.5px;padding:0 5px">live</span> children from Kubyl's watches</span>
+<div class="inp" style="width:170px;height:24px">{ic("filter",12)}Filter</div></div>
+<div class="th" style="{TC}"><span>RESOURCE</span><span>SYNC</span><span>HEALTH</span><span>INFO</span><span>AGE</span></div>
+<div style="flex:1;overflow:hidden">{tree}</div>
+{hints([("↵","Open in Kubyl"),("l","Logs"),("e","Edit YAML"),("d","Diff"),("t","Tree / list"),("s","Sync…"),("r","Refresh")])}
+</div>'''
+    src = lambda i, repo, path, rev: f'<div style="display:flex;gap:8px;padding:5px 0;align-items:flex-start">{ic("branch",13,C["dim"])}<div style="min-width:0;flex:1;font-size:12px;line-height:18px"><a href="#" style="text-decoration:none">{repo}</a><div class="mono" style="font-size:11.5px;color:var(--muted)">{path} <span style="color:var(--dim)">@</span> {rev}</div></div></div>'
+    toggle = lambda on: f'<span style="width:26px;height:15px;border-radius:8px;background:{C["accent"] if on else "#4a505c"};position:relative;display:inline-block;flex-shrink:0"><span style="position:absolute;top:2px;{"right" if on else "left"}:2px;width:11px;height:11px;border-radius:50%;background:#fff"></span></span>'
+    pol = lambda t, on: f'<div style="display:flex;align-items:center;gap:8px;font-size:12px;padding:3px 0"><span style="flex:1;color:var(--muted)">{t}</span>{toggle(on)}</div>'
+    res = lambda k, n: f'<div style="display:flex;gap:8px;font-size:12px;padding:2px 0">{ic("ok",12,C["green"])}<span style="color:var(--dim);width:74px">{k}</span><span class="mono" style="font-size:11.5px;flex:1;overflow:hidden;text-overflow:ellipsis">{n}</span><span style="color:var(--dim)">synced</span></div>'
+    side = f'''<aside style="width:330px;flex-shrink:0;border-left:1px solid var(--border);background:var(--panel);overflow:hidden">
+<div class="dsec"><p class="dtitle">Sources</p>{src(1,"github.com/acme/payments-deploy","apps/checkout-api","main")}
+<dl class="kv" style="margin:6px 0 0;grid-template-columns:78px minmax(0,1fr)"><dt>Synced</dt><dd class="mono" style="font-size:11.5px"><a href="#" style="text-decoration:none">3f9c2a1</a> <span style="color:var(--dim);font-family:'IBM Plex Sans'">· bump image to 2.14.1</span></dd><dt>Destination</dt><dd><a href="#" style="text-decoration:none">in-cluster · payments</a></dd><dt>Type</dt><dd>Kustomize</dd></dl></div>
+<div class="dsec"><p class="dtitle">Sync policy</p>{pol("Auto-sync", True)}{pol("Prune", True)}{pol("Self-heal", True)}
+<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px"><span class="chip mchip">CreateNamespace=true</span><span class="chip mchip">PruneLast=true</span><span class="chip mchip">retry 5 · 5s×2</span></div></div>
+<div class="dsec"><p class="dtitle">Conditions</p><div style="display:flex;gap:8px;font-size:12px;line-height:17px">{ic("alert",13,C["yellow"])}<div><b style="font-weight:500">SyncWarning</b><div style="color:var(--dim)">ServiceMonitor CRD version v1 is deprecated upstream</div></div></div></div>
+<div class="dsec" style="border-bottom:0"><p class="dtitle">Last operation</p>
+<div style="display:flex;gap:8px;font-size:12px;align-items:flex-start;margin-bottom:8px">{ic("ok",13,C["green"])}<div style="flex:1;line-height:18px"><div>Auto-sync succeeded · 12m ago</div><div style="color:var(--dim)">revision 3f9c2a1 · took 9s</div></div></div>
+{res("Deployment","checkout-api")}{res("ConfigMap","checkout-api-config")}{res("Service","checkout-api")}
+<div style="font-size:11.5px;color:var(--dim);margin-top:4px">and 6 more unchanged</div></div>
+</aside>'''
+    content = f'''<div style="flex:1;display:flex;flex-direction:column;min-height:0">{app_header("checkout-api", "Synced", "Healthy", API_MODE)}{app_subtabs("Resources", {"Resources": "14", "History": "12"})}
+<div style="flex:1;display:flex;min-height:0">{center}{side}</div></div>'''
+    tb = tabs([("layers", "Applications", False), ("layers", "checkout-api", True), ("box", "Pods", False)])
+    return page("Argo CD application — Kubyl", argo_shell("Applications", tb, content, right_extra=f'<span style="color:var(--text)">{ic("link",12,C["accent"])}Argo CD API</span>'))
+
+HISTORY = [
+ (14, "8d41b07", "raise pool size to 40", "main", "47m", "alice", True),
+ (13, "5b1e9c4", "payment-gateway 5.2.0", "main", "2d", "bob", False),
+ (12, "e03d7a2", "add fraud check timeout", "main", "5d", "automated", False),
+ (11, "91c4f58", "payment-gateway 5.1.3", "main", "9d", "automated", False),
+ (10, "4a2e8b1", "rotate TLS secret name", "main", "12d", "automated", False),
+ (9, "d7f60c3", "payment-gateway 5.1.2", "main", "20d", "carol", False),
+]
+
+def argo_history_screen():
+    HC = "grid-template-columns: 50px 130px minmax(0,1.6fr) 100px 110px 120px"
+    rows = "".join(f'''<div class="tr{" on" if i == 1 else ""}" style="{HC};height:34px">
+<span class="mono" style="color:{C["accent"] if cur else C["dim"]}">#{n}</span>
+<span style="display:flex;gap:8px;align-items:center;min-width:0">{ic("commit",13,C["dim"])}<a href="#" class="mono" style="font-size:12px;text-decoration:none">{sha}</a>{ic("ext",11,C["dim"])}</span>
+<span style="font-size:12px"><span style="color:var(--dim)">acme/payments-deploy</span> <span class="mono" style="font-size:11.5px">apps/payment-gateway</span> <span style="color:var(--dim)">@ {br}</span></span>
+<span class="mono" style="font-size:11.5px;color:var(--muted)">{when} ago</span><span style="font-size:12px;color:{C["dim"] if by == "automated" else C["text"]}">{by}</span>
+<span>{'<span class="chip on" style="height:19px">current</span>' if cur else f'<button class="btn g" style="height:22px;padding:0 8px">{ic("rollback",12)}Roll back…</button>'}</span></div>''' for i, (n, sha, msg, br, when, by, cur) in enumerate(HISTORY))
+    center = f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0">
+<div style="height:38px;flex-shrink:0;display:flex;align-items:center;gap:8px;padding:0 12px;border-bottom:1px solid var(--bv);font-size:12px;color:var(--dim)">{ic("history",13)}12 deployments, newest first · revisions link to GitHub<span style="flex:1"></span><span>history limit 12 (spec.revisionHistoryLimit)</span></div>
+<div class="th" style="{HC}"><span>ID</span><span>REVISION</span><span>SOURCE</span><span>DEPLOYED</span><span>BY</span><span></span></div>
+<div style="flex:1;overflow:hidden">{rows}</div>
+{hints([("b","Roll back…"),("↵","Open commit"),("c","Copy revision"),("s","Sync…")])}
+</div>'''
+    content = f'''<div style="flex:1;display:flex;flex-direction:column;min-height:0">{app_header("payment-gateway", "OutOfSync", "Degraded", K8S_MODE)}{app_subtabs("History", {"Resources": "6", "History": "12"})}
+<div style="flex:1;display:flex;min-height:0">{center}</div></div>'''
+    modal = f'''<div style="position:absolute;inset:0;background:rgba(15,17,21,.55);display:flex;align-items:flex-start;justify-content:center;padding-top:110px">
+<div role="dialog" aria-label="Roll back payment-gateway" style="width:540px;background:#2f343e;border:1px solid var(--border);border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,.5);overflow:hidden">
+<div style="display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--bv)">{ic("rollback",16,C["accent"])}<b style="font-weight:600;flex:1">Roll back payment-gateway</b><span class="prod" style="font-size:9.5px;padding:0 4px">PROD</span></div>
+<div style="padding:16px;display:flex;flex-direction:column;gap:14px">
+<div style="font-size:12.5px;color:var(--muted);line-height:19px">Deploys history entry <b class="mono" style="font-weight:500;color:var(--text)">#13</b> again: the revision and source it was synced with, 2 days ago by bob.</div>
+<div class="card" style="padding:10px 12px;display:flex;flex-direction:column;gap:6px;background:#2a2e36">
+<div style="display:flex;gap:10px;align-items:center;font-size:12px"><span style="color:var(--dim);width:70px">Revision</span><span class="mono">8d41b07</span><span style="color:var(--dim)">→</span><a href="#" class="mono" style="text-decoration:none">5b1e9c4</a><span style="flex:1"></span><a href="#" style="font-size:11.5px;text-decoration:none">compare on GitHub {ic("ext",11,C["accent"])}</a></div>
+<div style="display:flex;gap:10px;align-items:center;font-size:12px"><span style="color:var(--dim);width:70px">Source</span><span>unchanged</span><span class="mono" style="font-size:11.5px;color:var(--dim)">acme/payments-deploy · apps/payment-gateway</span></div>
+<div style="display:flex;gap:10px;align-items:center;font-size:12px"><span style="color:var(--dim);width:70px">Current</span><span>#14 · deployed 47m ago by alice</span></div>
+</div>
+<div style="display:flex;gap:10px;padding:10px 12px;border-radius:7px;background:#35322a;border:1px solid #5a4f33">{ic("alert",15,C["yellow"])}<div style="flex:1;display:flex;flex-direction:column;gap:8px"><div style="font-size:12.5px;line-height:18px"><b style="font-weight:600;color:var(--yellow)">Auto-sync is on.</b> Argo CD would sync back to <span class="mono" style="font-size:11.5px">main</span> right away, so rollback needs it off.</div>
+{check(True, "Turn off auto-sync first", "Removes spec.syncPolicy.automated; turn it on again from the summary.")}</div></div>
+<div style="display:flex;gap:18px">{check(False, "Prune", "delete resources that 5b1e9c4 doesn't have")}{check(False, "Dry run")}</div>
+<div style="display:flex;flex-direction:column;gap:6px"><div style="font-size:12px;color:var(--muted)">This is a production cluster. Type <span class="mono" style="color:var(--text)">payment-gateway</span> to confirm.</div>
+<div class="inp focus" style="height:28px"><span class="mono" style="font-size:12.5px;color:var(--text)">payment-gate</span><span style="display:inline-block;width:1px;height:15px;background:var(--accent);margin-left:-6px"></span></div></div>
+<div style="font-size:11.5px;color:var(--dim);line-height:17px">{ic("wheel",12)} Kubernetes mode: writes <span class="mono">operation.sync</span> with the entry's revision and source, like <span class="mono">argocd app rollback --core</span>.</div>
+</div>
+<div style="display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--bv)"><button class="btn g">Cancel</button><button class="btn" style="border-color:#7a4448;color:var(--red);opacity:.55">{ic("rollback",12,C["red"])}Roll back to #13</button></div>
+</div></div>'''
+    tb = tabs([("layers", "Applications", False), ("layers", "payment-gateway", True)])
+    return page("Argo CD history and rollback — Kubyl", argo_shell("Applications", tb, content, modal))
+
+def argo_sync_screen():
+    center = f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0">
+{argo_toolbar(API_MODE)}
+{argo_filters()}
+<div class="th" style="{AC}"><span>NAME {ic("cd",10)}</span><span>PROJECT</span><span>SYNC</span><span>HEALTH</span><span>AUTO</span><span>SOURCE @ TARGET</span><span>REVISION</span><span>DESTINATION</span><span>LAST</span></div>
+<div style="flex:1;overflow:hidden">{argo_rows(5)}</div>
+{hints([("↵","Open"),("s","Sync…"),("r","Refresh"),("⇧r","Hard refresh"),("h","History"),("e","Edit YAML"),("⌃d","Delete…"),("/","Filter")])}
+</div>'''
+    RC = "grid-template-columns: 22px 108px minmax(0,1fr) 92px"
+    resources = [(True, "Deployment", "kube-prometheus-stack-operator", "OutOfSync"), (True, "ConfigMap", "kube-prometheus-stack-grafana", "OutOfSync"),
+                 (False, "Service", "kube-prometheus-stack-prometheus", "Synced"), (False, "Prometheus", "kube-prometheus-stack-prometheus", "Synced"),
+                 (False, "ServiceMonitor", "kube-prometheus-stack-kubelet", "Synced")]
+    rrows = "".join(f'<div style="display:grid;{RC};align-items:center;height:26px;padding:0 10px;font-size:12px;border-top:1px solid #363c46">{check(on)}<span style="color:var(--dim)">{k}</span><span class="mono" style="font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{n}</span>{apill(s, ARGO_SYNC)}</div>' for on, k, n, s in resources)
+    opts = [("Prune", "delete resources no longer in Git", True), ("Dry run", "", False), ("Apply only", "skip hooks (kubectl apply)", False),
+            ("Force", "delete and re-create when apply fails", False), ("Replace", "kubectl replace/create", False), ("Server-side apply", "", True)]
+    grid = "".join(check(on, t, s) for t, s, on in opts)
+    modal = f'''<div style="position:absolute;inset:0;background:rgba(15,17,21,.55);display:flex;align-items:flex-start;justify-content:center;padding-top:80px">
+<div role="dialog" aria-label="Sync kube-prometheus-stack" style="width:580px;background:#2f343e;border:1px solid var(--border);border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,.5);overflow:hidden">
+<div style="display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--bv)">{ic("refresh",16,C["accent"])}<b style="font-weight:600;flex:1">Sync kube-prometheus-stack</b>{apill("OutOfSync", ARGO_SYNC)}</div>
+<div style="padding:16px;display:flex;flex-direction:column;gap:14px">
+<div style="display:flex;flex-direction:column;gap:6px"><div style="font-size:12px;color:var(--dim)">Revisions</div>
+<div style="display:grid;grid-template-columns:minmax(0,1fr) 150px;gap:8px;align-items:center;font-size:12px">
+<span style="display:flex;gap:6px;align-items:center;min-width:0">{ic("branch",12,C["dim"])}<span class="mono" style="font-size:11.5px;overflow:hidden;text-overflow:ellipsis">prometheus-community · kube-prometheus-stack</span></span><div class="inp" style="height:26px"><span class="mono" style="font-size:12px;color:var(--text)">72.6.2</span></div>
+<span style="display:flex;gap:6px;align-items:center;min-width:0">{ic("branch",12,C["dim"])}<span class="mono" style="font-size:11.5px">acme/platform · values/monitoring</span></span><div class="inp focus" style="height:26px"><span class="mono" style="font-size:12px;color:var(--text)">main</span></div></div></div>
+<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 18px">{grid}</div>
+<div style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--dim)">From the app:<span class="chip mchip">CreateNamespace=true</span><span class="chip mchip">ServerSideApply=true</span></div>
+<div class="card" style="overflow:hidden;background:#2a2e36">
+<div style="display:flex;align-items:center;gap:8px;height:30px;padding:0 10px;font-size:12px">{check(True)}<span>Selective sync</span><span style="color:var(--dim)">· 2 of 38 selected</span><span style="flex:1"></span><span class="chip on" style="height:18px">out of sync</span><span class="chip" style="height:18px">all</span></div>
+{rrows}</div>
+</div>
+<div style="display:flex;align-items:center;gap:8px;padding:12px 16px;border-top:1px solid var(--bv)"><span style="font-size:11.5px;color:var(--dim);display:flex;gap:6px;align-items:center">{ic("link",12)}API mode · as alice</span><span style="flex:1"></span><button class="btn g">Cancel</button><button class="btn p">{ic("refresh",12,"#1b1e24")}Synchronize</button></div>
+</div></div>'''
+    content = f'<div style="flex:1;display:flex;min-height:0">{center}</div>'
+    tb = tabs([("layers", "Applications", True), ("fork", "ApplicationSets", False), ("box", "Pods", False)])
+    return page("Argo CD sync — Kubyl", argo_shell("Applications", tb, content, modal, f'<span style="color:var(--text)">{ic("link",12,C["accent"])}Argo CD API</span>'))
+
 SCREENS = [
  ("Main.dc.html", "1 · Pods (k9s-style table + details)", pods_screen),
  ("Logs.dc.html", "2 · Live logs, exec shell, port-forwards", logs_screen),
@@ -1043,6 +1366,10 @@ SCREENS = [
  ("Updates.dc.html", "8 · Cluster updates — OpenShift-style", updates_screen),
  ("Files.dc.html", "9 · Pod file browser — drag & drop upload/download", files_screen),
  ("Webview.dc.html", "10 · Service web view over a temporary port-forward", webview_screen),
+ ("ArgoApps.dc.html", "12 · Argo CD applications (sync, health, filters)", argo_apps_screen),
+ ("ArgoApp.dc.html", "13 · Argo CD application: resource tree and summary", argo_app_screen),
+ ("ArgoHistory.dc.html", "14 · Argo CD application: history and rollback", argo_history_screen),
+ ("ArgoSync.dc.html", "15 · Argo CD sync dialog (options, selective sync)", argo_sync_screen),
 ]
 
 boards, order = {}, []

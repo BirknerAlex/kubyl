@@ -4854,10 +4854,12 @@ version = "0.1.2"
 dependencies = [
  "anyhow",
  "dirs 7.0.0",
+ "futures",
  "gpui-component",
  "gpui-pre",
  "gpui-pre-platform",
  "image",
+ "kubyl_argocd",
  "kubyl_charts",
  "kubyl_core",
  "kubyl_explorer",
@@ -4887,6 +4889,44 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "winresource",
+]
+
+[[package]]
+name = "kubyl_argocd"
+version = "0.1.2"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "futures",
+ "gpui-component",
+ "gpui-pre",
+ "http",
+ "http-body-util",
+ "jiff",
+ "k8s-openapi",
+ "kube",
+ "kubyl_core",
+ "kubyl_explorer",
+ "kubyl_kube",
+ "kubyl_logs",
+ "kubyl_portforward",
+ "kubyl_resources",
+ "kubyl_settings",
+ "kubyl_ui",
+ "kubyl_webview",
+ "kubyl_yaml",
+ "open",
+ "openidconnect",
+ "parking_lot",
+ "schemars 1.2.2",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]
@@ -5268,6 +5308,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "raw-window-handle",
  "schemars 1.2.2",
+ "secrecy",
  "serde",
  "serde_json",
  "sha2 0.11.0",

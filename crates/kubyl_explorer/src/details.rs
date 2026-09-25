@@ -444,6 +444,11 @@ impl DetailsContent {
                         .fields(format!("metadata.name={volume}"));
                     self.related.volume = Some(self.acquire(key, cx));
                 }
+                // The pods using the claim.
+                if let Some(ns) = &ns {
+                    let pods = StoreKey::new(cluster.clone(), core("pods"), Some(ns.clone()));
+                    self.related.pods = Some(self.acquire(pods, cx));
+                }
             }
             _ => {}
         }
@@ -563,6 +568,23 @@ fn selector_of(kind: &str, object: &Value) -> Option<Vec<(String, String)>> {
         .map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_string()))
         .collect();
     (!pairs.is_empty()).then_some(pairs)
+}
+
+/// Whether `pod` mounts the claim `claim`: by name, or as a generic ephemeral volume (whose
+/// claim is named `<pod>-<volume>`).
+fn uses_claim(pod: &Value, claim: &str) -> bool {
+    let pod_name = str_at(pod, "/metadata/name");
+    array_at(pod, "/spec/volumes").iter().any(|volume| {
+        volume
+            .pointer("/persistentVolumeClaim/claimName")
+            .and_then(Value::as_str)
+            == Some(claim)
+            || (volume.get("ephemeral").is_some()
+                && claim
+                    .strip_prefix(pod_name)
+                    .and_then(|rest| rest.strip_prefix('-'))
+                    == Some(str_at(volume, "/name")))
+    })
 }
 
 fn matches_selector(object: &Value, selector: &[(String, String)]) -> bool {
@@ -1000,18 +1022,30 @@ impl DetailsContent {
         }
         out.extend(self.contributed_sections(target, cx));
 
-        // Pods selected by workloads (not Deployments: their pods show via ReplicaSets too).
-        if let (Some(selector), Some(pods), Some(ns)) = (
-            selector_of(&target.kind, object),
+        // Pods selected by workloads (not Deployments: their pods show via ReplicaSets too),
+        // and the pods using a claim.
+        type PodFilter = Box<dyn Fn(&Value) -> bool>;
+        let pod_filter: Option<(PodFilter, &str)> = match target.kind.as_str() {
+            "PersistentVolumeClaim" => {
+                let claim = target.name.to_string();
+                Some((
+                    Box::new(move |pod| uses_claim(pod, &claim)),
+                    "No pod uses this claim.",
+                ))
+            }
+            kind => selector_of(kind, object).map(|selector| {
+                let filter: PodFilter = Box::new(move |pod| matches_selector(pod, &selector));
+                (filter, "No pods match the selector.")
+            }),
+        };
+        if let (Some((filter, empty)), Some(pods), Some(ns)) = (
+            pod_filter,
             self.related.pods.as_ref(),
             target.namespace.clone(),
         ) {
             let store = pods.read(cx);
-            let mut matching: Vec<&Arc<Value>> = store
-                .objects()
-                .values()
-                .filter(|p| matches_selector(p, &selector))
-                .collect();
+            let mut matching: Vec<&Arc<Value>> =
+                store.objects().values().filter(|p| filter(p)).collect();
             matching.sort_by(|a, b| str_at(a, "/metadata/name").cmp(str_at(b, "/metadata/name")));
             let mut list = v_flex().gap(u(4.0)).text_size(u(12.0));
             for (ix, pod) in matching.iter().take(12).enumerate() {
@@ -1056,11 +1090,7 @@ impl DetailsContent {
                 );
             }
             if matching.is_empty() {
-                list = list.child(
-                    div()
-                        .text_color(colors.text_dim)
-                        .child("No pods match the selector."),
-                );
+                list = list.child(div().text_color(colors.text_dim).child(empty));
             }
             out.push(
                 section(format!("Pods · {}", matching.len()), &colors)
@@ -1102,12 +1132,10 @@ impl DetailsContent {
             for condition in conditions {
                 let ok = str_at(condition, "/status") == "True";
                 let kind = str_at(condition, "/type").to_string();
-                // Node pressure conditions are healthy when False.
-                let healthy = if target.kind == "Node" && kind != "Ready" {
-                    !ok
-                } else {
-                    ok
-                };
+                // Node pressure conditions and a claim's `Unused` are healthy when False.
+                let negative = (target.kind == "Node" && kind != "Ready")
+                    || (target.kind == "PersistentVolumeClaim" && kind == "Unused");
+                let healthy = if negative { !ok } else { ok };
                 grid = grid.child(
                     h_flex()
                         .w(u(150.0))
@@ -2638,6 +2666,29 @@ mod tests {
         assert!(files_applicable("pods", &writable));
         assert!(!files_applicable("pods", &read_only));
         assert!(!files_applicable("services", &writable));
+    }
+
+    #[test]
+    fn pods_using_a_claim() {
+        let pod = json!({
+            "metadata": {"name": "web-0"},
+            "spec": {"volumes": [
+                {"name": "config", "configMap": {"name": "web"}},
+                {"name": "data", "persistentVolumeClaim": {"claimName": "data-web-0"}},
+                {"name": "scratch", "ephemeral": {"volumeClaimTemplate": {}}}
+            ]}
+        });
+        assert!(uses_claim(&pod, "data-web-0"));
+        assert!(
+            uses_claim(&pod, "web-0-scratch"),
+            "generic ephemeral volume"
+        );
+        assert!(!uses_claim(&pod, "web-0-config"), "not an ephemeral volume");
+        assert!(!uses_claim(&pod, "data-web-1"));
+        assert!(!uses_claim(
+            &json!({"metadata": {"name": "x"}}),
+            "data-web-0"
+        ));
     }
 
     #[test]

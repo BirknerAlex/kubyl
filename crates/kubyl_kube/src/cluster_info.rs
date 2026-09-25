@@ -1,7 +1,7 @@
 //! What kind of cluster this is: distribution guess and capabilities (`ClusterCaps`).
 
 use k8s_openapi::apimachinery::pkg::version::Info;
-use kubyl_core::ClusterCaps;
+use kubyl_core::{ArgoCdCaps, ClusterCaps};
 
 use crate::discovery::Discovery;
 use crate::kubeconfig::ContextInfo;
@@ -140,6 +140,24 @@ pub fn caps(
         metrics_server: has("metrics.k8s.io"),
         prometheus: info.is_some_and(|i| !i.prometheus_candidates.is_empty()),
         olm: has("operators.coreos.com") || has("olm.operatorframework.io"),
+        argocd: argocd_caps(discovery),
+    }
+}
+
+/// Which Argo CD CRDs are served. Argo Workflows, Rollouts and Events share `argoproj.io`, so
+/// the group alone says nothing.
+fn argocd_caps(discovery: Option<&Discovery>) -> ArgoCdCaps {
+    let served = |resource: &str| {
+        discovery.is_some_and(|d| {
+            d.resources.iter().any(|r| {
+                r.gvr.group == "argoproj.io" && r.gvr.resource == resource && r.is_listable()
+            })
+        })
+    };
+    ArgoCdCaps {
+        applications: served("applications"),
+        application_sets: served("applicationsets"),
+        projects: served("appprojects"),
     }
 }
 
@@ -176,6 +194,41 @@ mod tests {
             git_version: git.into(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn argocd_caps_follow_each_crd() {
+        use crate::discovery::ApiResourceInfo;
+        use kubyl_core::{Gvk, Gvr};
+        let resource = |plural: &str, kind: &str| ApiResourceInfo {
+            gvk: Gvk::new("argoproj.io", "v1alpha1", kind),
+            gvr: Gvr::new("argoproj.io", "v1alpha1", plural),
+            singular: kind.to_lowercase(),
+            namespaced: true,
+            verbs: vec!["list".into(), "watch".into()],
+            short_names: vec![],
+            categories: vec![],
+            subresources: vec![],
+            preferred: true,
+        };
+        let settings = ContextSettings::default();
+        // Argo Workflows alone is not Argo CD.
+        let workflows = Discovery {
+            resources: vec![resource("workflows", "Workflow")],
+            ..Default::default()
+        };
+        assert!(!caps(Some(&workflows), None, &settings).argocd.any());
+        let apps_only = Discovery {
+            resources: vec![
+                resource("workflows", "Workflow"),
+                resource("applications", "Application"),
+            ],
+            ..Default::default()
+        };
+        let argocd = caps(Some(&apps_only), None, &settings).argocd;
+        assert!(argocd.any() && argocd.applications);
+        assert!(!argocd.application_sets && !argocd.projects);
+        assert_eq!(caps(None, None, &settings).argocd, ArgoCdCaps::default());
     }
 
     #[test]

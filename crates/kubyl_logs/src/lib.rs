@@ -25,7 +25,9 @@ pub mod view;
 
 use gpui::{App, AppContext as _, Window, actions};
 use kubyl_core::actions::OpenView;
-use kubyl_core::{ActionRegistry, ActionSpec, ChromeRegistry, ViewKind, ViewRegistry, ViewRequest};
+use kubyl_core::{
+    ActionRegistry, ActionSpec, ChromeRegistry, ResourceRef, ViewKind, ViewRegistry, ViewRequest,
+};
 use kubyl_resources::ResourceSelection;
 use kubyl_settings::Settings;
 
@@ -54,6 +56,28 @@ pub fn logs_applicable(resource: &str) -> bool {
             | "jobs"
             | "services"
     )
+}
+
+/// Opens the log view of `target` with `query` in the search box (a regular expression when
+/// `regex` is set) and only matching lines shown, e.g. the Argo CD application controller's
+/// lines about one app.
+pub fn open_filtered(
+    target: ResourceRef,
+    query: String,
+    regex: bool,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    cx.set_global(view::PendingSearch(Some(view::SearchRequest {
+        target: target.clone(),
+        query,
+        regex,
+        at: std::time::Instant::now(),
+    })));
+    window.dispatch_action(
+        Box::new(OpenView(ViewRequest::for_resource(ViewKind::Logs, target))),
+        cx,
+    );
 }
 
 /// Registers this crate's views, actions and chrome contributions.

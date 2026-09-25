@@ -71,6 +71,19 @@ pub trait DetailsSection: 'static {
     fn build(&self, target: &ResourceRef, kind: &str, cx: &mut App) -> Option<AnyView>;
 }
 
+/// A note the YAML editor shows above an object it edits, e.g. "Managed by Argo CD app
+/// `guestbook`: self-heal reverts changes made here".
+pub trait EditNotice: 'static {
+    /// The notice for `object` (the live object as JSON), or `None` when it doesn't apply.
+    /// Called while rendering: answer from memory, never from the network.
+    fn notice(
+        &self,
+        target: &ResourceRef,
+        object: &serde_json::Value,
+        cx: &App,
+    ) -> Option<SharedString>;
+}
+
 /// Contributions to the window chrome.
 #[derive(Default)]
 pub struct ChromeRegistry {
@@ -78,6 +91,7 @@ pub struct ChromeRegistry {
     dock_panels: Vec<Arc<dyn DockPanel>>,
     sidebar_sections: Vec<Arc<dyn SidebarSection>>,
     details_sections: Vec<Arc<dyn DetailsSection>>,
+    edit_notices: Vec<Arc<dyn EditNotice>>,
 }
 
 impl Global for ChromeRegistry {}
@@ -113,6 +127,24 @@ impl ChromeRegistry {
 
     pub fn details_sections(&self) -> &[Arc<dyn DetailsSection>] {
         &self.details_sections
+    }
+
+    pub fn add_edit_notice(cx: &mut App, notice: impl EditNotice) {
+        cx.default_global::<Self>()
+            .edit_notices
+            .push(Arc::new(notice));
+    }
+
+    /// The first notice any crate has for `object` (see [`EditNotice`]).
+    pub fn edit_notice(
+        cx: &App,
+        target: &ResourceRef,
+        object: &serde_json::Value,
+    ) -> Option<SharedString> {
+        cx.try_global::<Self>()?
+            .edit_notices
+            .iter()
+            .find_map(|n| n.notice(target, object, cx))
     }
 
     pub fn status_items(

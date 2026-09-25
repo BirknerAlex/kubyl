@@ -10,6 +10,7 @@
 //! - [`forward`]: reference-counted temporary forwards on `kubyl_portforward`.
 //! - [`target`]: service ports, HTTP detection, presets; [`store`]: settings and memory.
 //! - [`details`]: the "Web views" details section; [`picker`]: port pickers.
+//! - [`session`]: session cookies from crates that hold a session for a target (Argo CD).
 
 pub mod cert;
 pub mod details;
@@ -17,6 +18,7 @@ pub mod forward;
 pub mod host;
 pub mod native;
 pub mod picker;
+pub mod session;
 pub mod store;
 pub mod target;
 pub mod view;
@@ -40,6 +42,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 pub use host::snapshots;
+pub use session::{SessionCookie, add_session_provider};
 
 use forward::WebForwards;
 use target::{

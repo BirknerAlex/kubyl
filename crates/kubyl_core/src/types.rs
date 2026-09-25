@@ -217,6 +217,27 @@ pub struct ClusterCaps {
     pub metrics_server: bool,
     pub prometheus: bool,
     pub olm: bool,
+    /// Which Argo CD CRDs the cluster serves (some installs only have some of them).
+    pub argocd: ArgoCdCaps,
+}
+
+/// The Argo CD custom resources a cluster serves (`argoproj.io`). Argo Workflows, Rollouts and
+/// Events share the group, so each kind is checked on its own.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ArgoCdCaps {
+    /// `applications.argoproj.io`.
+    pub applications: bool,
+    /// `applicationsets.argoproj.io`.
+    pub application_sets: bool,
+    /// `appprojects.argoproj.io`.
+    pub projects: bool,
+}
+
+impl ArgoCdCaps {
+    /// Any Argo CD CRD is served: the Argo CD UI is shown.
+    pub fn any(&self) -> bool {
+        self.applications || self.application_sets || self.projects
+    }
 }
 
 #[cfg(test)]

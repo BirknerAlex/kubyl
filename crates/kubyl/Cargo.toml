@@ -32,12 +32,14 @@ gpui.workspace = true
 gpui_platform.workspace = true
 gpui-component.workspace = true
 dirs.workspace = true
+futures.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 tracing-appender.workspace = true
 tracing-subscriber.workspace = true
 
+kubyl_argocd.workspace = true
 kubyl_charts.workspace = true
 kubyl_core.workspace = true
 kubyl_explorer.workspace = true
@@ -66,7 +68,7 @@ winresource.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2.workspace = true
 objc2-app-kit.workspace = true
-objc2-foundation.workspace = true
+objc2-foundation = { workspace = true, features = ["NSProcessInfo", "NSString"] }
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
