@@ -62,6 +62,11 @@ cargo run -p kubyl
   user's `~/.kube/config` isn't modified.
 - Live tests against those clusters are ignored by default: see the header of
   `crates/kubyl_kube/tests/live.rs`.
+- Web views: `script/webview-dev.sh` (after `prometheus-dev.sh`) adds Grafana, an Ingress, a
+  self-signed HTTPS service and a non-HTTP-looking port. Real web views are tested by
+  `KUBYL_TEST_WEBVIEW=1 cargo test -p kubyl_webview --test live_webview` (needs a display; on
+  Linux use `xvfb-run`); the forward lifecycle by the ignored tests in
+  `crates/kubyl_webview/tests/live.rs`.
 
 ## Gotchas
 - GPUI tests must not start OS threads that wake GPUI tasks (file watchers, network on Tokio):

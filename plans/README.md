@@ -115,7 +115,7 @@ plans/                      # these plans
 | Charts | Own GPUI `canvas`/path renderer in `kubyl_charts` | No webviews. Eight series colors: the theme's accent/orange/purple/cyan hues plus magenta/mint/indigo/amber, re-stepped in lightness per theme (adjacent CVD separation, 3:1 on the card surface). A chart shows at most four series plus a dashed "other". `ColorRegistry` keeps an entity's color on every chart of a scope (`<cluster>/namespace`…), filling the safest slots first (phase 07). |
 | Metrics | `kubyl_metrics::MetricsService`: one demand-driven cache per cluster (decided in phase 07). Prometheus through the API server's service proxy (discovered, or a settings override incl. an external URL whose Authorization header lives in the keychain), metrics-server as fallback | Reads mark data as wanted; a 1 s loop refreshes whatever is stale, so every view shares one fetch and unwatched clusters cost nothing. The PromQL library is versioned, prefers kube-prometheus recording rules when present, and is overridable (`metrics.queries`). Current usage: Prometheus instant queries (else metrics-server); history: Prometheus range queries only. Which exporters and rules exist comes from `/api/v1/label/__name__/values`; panels and charts whose metric is missing are left out. Node-exporter series are joined to node names through `node_uname_info`. |
 | Events | `events.k8s.io/v1` with core `v1` fallback, over shared `ResourceStores` watches; `OOMKilled` warnings derived from pod status (decided in phase 07) | Kubernetes records no Event for an OOM kill (only `BackOff` after the restart), so the stream derives one from `lastState.terminated.reason`, marked "pod status". Repeats fold into `×N`. |
-| Web views | `wry` (MIT/Apache-2.0) as a child view of the GPUI window; separate window or system browser as fallback (phase 08 spike decides per platform) | Only for phase 08 service web views, loaded lazily. |
+| Web views | `wry` 0.57 (MIT/Apache-2.0), decided per platform in phase 08: **macOS** WKWebView as an NSView child of GPUI's view; **Windows** WebView2 as an HWND child; **Linux X11** WebKitGTK as an X11 child window; **Linux Wayland** a GTK window of its own that the tab drives (Wayland can't embed another client's surface); the **system browser** (`webview.open_in = "browser"`, or when a view can't be created) with a session tab that keeps the forward | `kubyl_webview::host` places native views where their tab paints them and hides them when the tab isn't painted or GPUI draws over them (dialogs, palette, toasts, the tab's menu). Views are created from a GPUI task outside `App` updates (WebView2 pumps Win32 messages while creating). Kubyl's shortcuts reach GPUI while the page has focus (macOS: GPUI's `performKeyEquivalent:`; Windows: WebView2 `AcceleratorKeyPressed`; Linux: GTK `key-press-event`). One data store per (cluster, namespace, service): WKWebsiteDataStore identifier (macOS 14+, private stores before), a WebView2 profile, a WebKitGTK context. Self-signed HTTPS is accepted per (cluster, service, port) by certificate fingerprint through each engine's trust hook. Forwards stay TCP (no Host rewriting). Nothing is initialized until the first web view; the WebKit/WebKitGTK libraries are linked (Linux packages depend on WebKitGTK 4.1 and GTK 3). |
 | File watching | `notify` | Kubeconfig hot reload. |
 | Settings | JSON (`serde_json`) in `dirs::config_dir()/kubyl/` (override with `$KUBYL_CONFIG_DIR`) | `settings.json` (user, hot-reloaded, with a generated `settings.schema.json`), `state.json` (UI state, favorites, tabs). Typed sections: `kubyl_settings::{SettingsSection, StateSection}`. |
 | UI units | Sizes use `kubyl_ui::u(px)` (rems); the window's rem size follows `ui_font_size` | Zoom (⌘+/⌘-) scales the whole UI. Colors come from `cx.colors()`. |
@@ -196,6 +196,18 @@ one list. That list is the only shared line, and it is append-only.
   port }` (one click: same local port when free, `80` → `8080`) and `StopForward(id)`; read the
   running ones from the `kubyl_core::forwards::ActiveForwards` global (observe it to update).
   `kubyl_portforward` publishes it; the details pane shows forwards next to each port.
+- Temporary forwards (phase 08): `ForwardSpec::ephemeral` (`kubyl_portforward::manager::Ephemeral`)
+  makes a forward unsaveable, keeps it out of `ActiveForwards`, titles its Active Sessions row
+  and calls back when the user stops it; `PortForwardManager::info(id)` gives its state, local
+  port, pod, connections and bytes.
+- Web views (phase 08): dispatch `kubyl_webview::OpenWebView { target, port, path, ask }` for a
+  port of a Service or Pod (`ask`: pick the scheme and start path first). The tab shares the
+  port's loopback forward (`kubyl_webview::forward::WebForwards`) with other tabs of the port.
+- Table cells with buttons (phase 08): `CellValue::Buttons(Vec<CellButton>)`, each building
+  its action for the row's object; `ResourceColumns::extend` adds columns (before `age`) to a
+  kind that has a provider.
+- Tabs (phase 08): `TabView::tab_dot` (a colored dot, e.g. the cluster color) and
+  `TabView::wants_close` (the pane closes the tab when its view asks).
 
 ### UX principles (from the mockups)
 
