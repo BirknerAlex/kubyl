@@ -58,8 +58,11 @@ pub fn open_in_panel(spec: TerminalSpec, window: &mut Window, cx: &mut App) -> b
     let Some(panel) = panel_for(window.window_handle(), cx) else {
         return false;
     };
-    panel.update(cx, |panel, cx| panel.open(spec, window, cx));
+    // Dispatch from the current focus: the new terminal isn't rendered while the dock is
+    // hidden, so focusing it first would dispatch from outside the workspace. The workspace
+    // focuses the panel's active terminal when it shows the dock.
     window.dispatch_action(Box::new(ActivateDockPanel(PANEL_ID.into())), cx);
+    panel.update(cx, |panel, cx| panel.open(spec, false, window, cx));
     true
 }
 
@@ -94,15 +97,23 @@ impl TerminalPanel {
         terminal
     }
 
-    /// Opens a terminal in a new tab and focuses it.
-    pub fn open(&mut self, spec: TerminalSpec, window: &mut Window, cx: &mut Context<Self>) {
+    /// Opens a terminal in a new tab (and focuses it, when the panel is visible).
+    pub fn open(
+        &mut self,
+        spec: TerminalSpec,
+        focus: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let terminal = self.terminal(spec, cx);
         self.tabs.push(PanelTab {
             terminals: vec![terminal.clone()],
             active: 0,
         });
         self.active = self.tabs.len() - 1;
-        terminal.read(cx).focus_handle(cx).focus(window, cx);
+        if focus {
+            terminal.read(cx).focus_handle(cx).focus(window, cx);
+        }
         cx.notify();
     }
 
@@ -133,7 +144,7 @@ impl TerminalPanel {
             terminal.read(cx).focus_handle(cx).focus(window, cx);
             cx.notify();
         } else {
-            self.open(spec, window, cx);
+            self.open(spec, true, window, cx);
         }
     }
 

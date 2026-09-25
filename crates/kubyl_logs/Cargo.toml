@@ -16,6 +16,7 @@ workspace = true
 gpui.workspace = true
 gpui-component.workspace = true
 kubyl_core.workspace = true
+kubyl_explorer.workspace = true
 kubyl_kube.workspace = true
 kubyl_resources.workspace = true
 kubyl_settings.workspace = true

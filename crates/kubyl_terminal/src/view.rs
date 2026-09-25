@@ -25,7 +25,7 @@ use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 use kubyl_core::{
     ClusterId, Notification, NotificationCenter, ResourceRef, TabView, Tone, ViewRequest,
 };
-use kubyl_kube::ConnectionManager;
+use kubyl_kube::{ConnectionEvent, ConnectionManager};
 use kubyl_logs::sessions::{SessionId, SessionKind, SessionRegistry};
 use kubyl_ui::{ActiveColors, Colors, Icon, IconButton, IconName, fonts, h_flex, u};
 use schemars::JsonSchema;
@@ -205,6 +205,8 @@ pub struct TerminalView {
     last_report_cell: Option<(usize, usize)>,
     hovered_link: Option<(usize, Range<usize>, String)>,
     scroll_remainder: f32,
+    /// Waits for the cluster to connect (a tab restored at startup).
+    connect_subscription: Option<Subscription>,
     _task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -248,6 +250,7 @@ impl TerminalView {
             last_report_cell: None,
             hovered_link: None,
             scroll_remainder: 0.0,
+            connect_subscription: None,
             _task: None,
             _subscriptions: Vec::new(),
         };
@@ -373,8 +376,10 @@ impl TerminalView {
             .client(&self.spec.target.cluster)
         else {
             self.status = Status::NotConnected;
+            self.wait_for_cluster(cx);
             return;
         };
+        self.connect_subscription = None;
         self.ensure_session(cx);
         let settings = kubyl_settings::Settings::get::<TerminalSettings>(cx).clone();
         let spec = self.spec.clone();
@@ -595,6 +600,31 @@ impl TerminalView {
             })
             .ok();
         }));
+    }
+
+    /// Connects the cluster (a tab restored at startup opens before it) and starts the session
+    /// once it is up.
+    fn wait_for_cluster(&mut self, cx: &mut Context<Self>) {
+        if self.connect_subscription.is_some() {
+            return;
+        }
+        let manager = ConnectionManager::global(cx);
+        let cluster = self.spec.target.cluster.clone();
+        manager.update(cx, |manager, cx| manager.ensure_connected(&cluster, cx));
+        self.connect_subscription = Some(cx.subscribe(
+            &manager,
+            move |this, manager, event: &ConnectionEvent, cx| {
+                if let ConnectionEvent::StateChanged(id) = event
+                    && *id == cluster
+                    && manager.read(cx).state(id).is_connected()
+                    && this.status == Status::NotConnected
+                {
+                    this.status = Status::Starting("connecting…".into());
+                    this.start(cx);
+                    cx.notify();
+                }
+            },
+        ));
     }
 
     fn receive(&mut self, bytes: &[u8], cx: &mut Context<Self>) {

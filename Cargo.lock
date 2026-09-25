@@ -4557,6 +4557,7 @@ dependencies = [
  "k8s-openapi",
  "kube",
  "kubyl_core",
+ "kubyl_explorer",
  "kubyl_kube",
  "kubyl_resources",
  "kubyl_settings",

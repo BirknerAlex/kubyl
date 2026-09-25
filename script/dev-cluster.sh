@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Creates a local kind cluster `kubyl-dev` with the sample workloads the mockups show:
-# a deployment, a statefulset, a cronjob, a crashlooping pod, a pending pod and the
-# cert-manager CRDs (with an Issuer and a Certificate), all in the `payments` namespace.
+# a deployment, a statefulset, a cronjob, a crashlooping pod, a pending pod, a 3-replica
+# deployment with JSON logs (log view) and the cert-manager CRDs (with an Issuer and a
+# Certificate), all in the `payments` namespace.
 #
 # Usage:
 #   script/dev-cluster.sh            create the cluster (or update the workloads if it exists)
@@ -182,6 +183,43 @@ spec:
         - name: gateway
           image: busybox:1.37
           command: ["sh", "-c", "echo 'INFO starting gateway'; sleep 2; echo 'ERROR upstream timeout calling bank-api:8443' >&2; exit 1"]
+---
+# Three replicas writing JSON and plain-text logs with levels (log view, board 2): an INFO line
+# every 300 ms, WARN/ERROR with "timeout" now and then, DEBUG stats.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: checkout-events
+  namespace: ${NAMESPACE}
+  labels: { app: checkout-events, team: payments }
+spec:
+  replicas: 3
+  selector:
+    matchLabels: { app: checkout-events }
+  template:
+    metadata:
+      labels: { app: checkout-events, team: payments }
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: api
+          image: busybox:1.37
+          resources:
+            requests: { cpu: 5m, memory: 8Mi }
+          command:
+            - sh
+            - -c
+            - |
+              i=0
+              while true; do
+                i=\$((i+1))
+                ms=\$((20 + i % 37))
+                echo "{\"level\":\"info\",\"msg\":\"POST /v1/checkout 200\",\"order\":\"ord_\$i\",\"latency_ms\":\$ms,\"pod\":\"\$HOSTNAME\"}"
+                if [ \$((i % 7)) -eq 0 ]; then echo "{\"level\":\"warn\",\"msg\":\"payment-gateway slow response\",\"attempt\":1,\"latency_ms\":1840}"; fi
+                if [ \$((i % 13)) -eq 0 ]; then echo "ERROR upstream timeout after 2000ms calling payment-gateway:8443/authorize"; fi
+                if [ \$((i % 5)) -eq 0 ]; then echo "DEBUG pool stats active=14 idle=6 waiting=0"; fi
+                sleep 0.3
+              done
 ---
 # Pending pod: no node carries the requested label.
 apiVersion: v1

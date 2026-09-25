@@ -40,7 +40,7 @@ use kubyl_core::{
     ActionRegistry, ActionSpec, ClusterId, Notification, NotificationCenter, ResourceRef, TabView,
     Tone, ViewRequest,
 };
-use kubyl_kube::ConnectionManager;
+use kubyl_kube::{ConnectionEvent, ConnectionManager};
 use kubyl_ui::{ActiveColors, Chip, Colors, Icon, IconButton, IconName, fonts, h_flex, u, v_flex};
 
 use crate::json::{self, FieldFilter, Token};
@@ -188,11 +188,13 @@ impl JsonMode {
     }
 }
 
-/// Where the stream starts: the last `n` lines, the last minutes, or everything.
+/// Where the stream starts: the last `n` lines, the last minutes, a point in time, or
+/// everything.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SinceChoice {
     Tail(i64),
     Minutes(i64),
+    Time(jiff::Timestamp),
     Everything,
 }
 
@@ -215,6 +217,16 @@ impl SinceChoice {
             SinceChoice::Tail(n) => format!("last {}", thousands(n as u64)),
             SinceChoice::Minutes(m) if m >= 60 && m % 60 == 0 => format!("since {}h", m / 60),
             SinceChoice::Minutes(m) => format!("since {m}m"),
+            SinceChoice::Time(t) => {
+                let tz = TimeZone::system();
+                let at = t.to_zoned(tz.clone());
+                let today = jiff::Timestamp::now().to_zoned(tz).date();
+                if at.date() == today {
+                    format!("since {}", at.strftime("%H:%M"))
+                } else {
+                    format!("since {}", at.strftime("%m-%d %H:%M"))
+                }
+            }
             SinceChoice::Everything => "everything".into(),
         }
     }
@@ -226,6 +238,7 @@ impl SinceChoice {
                 format!("Last {} hour{}", m / 60, if m == 60 { "" } else { "s" })
             }
             SinceChoice::Minutes(m) => format!("Last {m} minutes"),
+            SinceChoice::Time(_) => self.label(),
             SinceChoice::Everything => "Everything".into(),
         }
     }
@@ -235,6 +248,7 @@ impl SinceChoice {
         let (since, tail_lines) = match self {
             SinceChoice::Tail(n) => (Since::Start, Some(n)),
             SinceChoice::Minutes(m) => (Since::Seconds(m * 60), None),
+            SinceChoice::Time(t) => (Since::Time(t), None),
             SinceChoice::Everything => (Since::Start, None),
         };
         LogOptions {
@@ -244,6 +258,37 @@ impl SinceChoice {
             previous,
         }
     }
+}
+
+/// Parses "since a time" input in the local time zone: `10:42`, `10:42:05`,
+/// `2026-09-25 10:42` or an RFC 3339 timestamp.
+pub fn parse_since_time(input: &str, tz: &TimeZone) -> Result<jiff::Timestamp, String> {
+    let input = input.trim();
+    if let Ok(timestamp) = input.parse::<jiff::Timestamp>() {
+        return Ok(timestamp);
+    }
+    if let Ok(datetime) = input.parse::<jiff::civil::DateTime>() {
+        return datetime
+            .to_zoned(tz.clone())
+            .map(|z| z.timestamp())
+            .map_err(|e| e.to_string());
+    }
+    if let Ok(time) = input.parse::<jiff::civil::Time>() {
+        let now = jiff::Timestamp::now().to_zoned(tz.clone());
+        let mut at = now
+            .date()
+            .to_datetime(time)
+            .to_zoned(tz.clone())
+            .map_err(|e| e.to_string())?;
+        // A time later than now means yesterday.
+        if at.timestamp() > now.timestamp() {
+            at = at.yesterday().map_err(|e| e.to_string())?;
+        }
+        return Ok(at.timestamp());
+    }
+    Err(format!(
+        "{input:?} isn't a time (try 10:42 or 2026-09-25 10:42)"
+    ))
 }
 
 /// `1284` → `1,284`.
@@ -325,9 +370,6 @@ pub struct LogsView {
     // Source and options.
     source: Option<LogSource>,
     containers: PodContainers,
-    selector_input: Entity<InputState>,
-    /// A resolved selector to show in `selector_input` on the next render.
-    pending_selector: Option<String>,
     container_filter: ContainerFilter,
     since: SinceChoice,
     follow: bool,
@@ -362,6 +404,9 @@ pub struct LogsView {
     list_state: ListState,
     /// The rows while paused.
     frozen: Option<Vec<u64>>,
+    /// The newest line when the view was paused: filter changes while paused show lines up
+    /// to here.
+    pause_limit: Option<u64>,
     paused_new_lines: u64,
     /// Selected lines: `(anchor, head)` seqs.
     selection: Option<(u64, u64)>,
@@ -373,6 +418,8 @@ pub struct LogsView {
     session_id: Option<SessionId>,
     session_status: Option<(SharedString, Tone)>,
     session_updated: Option<Instant>,
+    /// Waits for the cluster to connect (a tab restored at startup).
+    connect_subscription: Option<Subscription>,
     _stream_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -390,38 +437,25 @@ impl LogsView {
         });
         let kind = kind_label(&target.gvr.resource);
         let search_input = cx.new(|cx| InputState::new(window, cx).placeholder("Search logs…"));
-        let selector_input = cx.new(|cx| InputState::new(window, cx).placeholder("label selector"));
         let settings = kubyl_settings::Settings::get::<LogsSettings>(cx).clone();
-        let mut subscriptions = vec![
-            cx.subscribe_in(
-                &search_input,
-                window,
-                |this, input, event: &InputEvent, window, cx| match event {
-                    InputEvent::Change => {
-                        let text = input.read(cx).value().to_string();
-                        this.set_query(text, cx);
+        let mut subscriptions = vec![cx.subscribe_in(
+            &search_input,
+            window,
+            |this, input, event: &InputEvent, window, cx| match event {
+                InputEvent::Change => {
+                    let text = input.read(cx).value().to_string();
+                    this.set_query(text, cx);
+                }
+                InputEvent::PressEnter { shift, .. } => {
+                    if *shift {
+                        this.go_to_match(false, window, cx);
+                    } else {
+                        this.go_to_match(true, window, cx);
                     }
-                    InputEvent::PressEnter { shift, .. } => {
-                        if *shift {
-                            this.go_to_match(false, window, cx);
-                        } else {
-                            this.go_to_match(true, window, cx);
-                        }
-                    }
-                    _ => {}
-                },
-            ),
-            cx.subscribe_in(
-                &selector_input,
-                window,
-                |this, input, event: &InputEvent, _, cx| {
-                    if let InputEvent::PressEnter { .. } = event {
-                        let selector = input.read(cx).value().trim().to_string();
-                        this.set_selector(selector, cx);
-                    }
-                },
-            ),
-        ];
+                }
+                _ => {}
+            },
+        )];
         subscriptions.push(cx.on_release(|this, cx| {
             // The tab was closed: drop the session row too (the stream task stops when `this`
             // is dropped, since only this view holds it).
@@ -442,8 +476,6 @@ impl LogsView {
             kind,
             source: None,
             containers: PodContainers::default(),
-            selector_input,
-            pending_selector: None,
             container_filter: ContainerFilter::default(),
             since: SinceChoice::Tail(settings.tail_lines.max(1)),
             follow: settings.follow,
@@ -470,6 +502,7 @@ impl LogsView {
             cursor: MatchCursor::default(),
             list_state,
             frozen: None,
+            pause_limit: None,
             paused_new_lines: 0,
             selection: None,
             phase: Phase::Resolving,
@@ -479,6 +512,7 @@ impl LogsView {
             session_id: None,
             session_status: None,
             session_updated: None,
+            connect_subscription: None,
             _stream_task: None,
             _subscriptions: subscriptions,
         };
@@ -511,6 +545,7 @@ impl LogsView {
         self.pending_evicted = 0;
         self.cursor = MatchCursor::default();
         self.frozen = None;
+        self.pause_limit = None;
         self.paused_new_lines = 0;
         self.selection = None;
         self.reconnecting.clear();
@@ -537,9 +572,10 @@ impl LogsView {
             .client(&self.target.cluster)
         else {
             self.phase = Phase::NotConnected;
-            self.update_session(true, cx);
+            self.wait_for_cluster(cx);
             return;
         };
+        self.connect_subscription = None;
         self.phase = Phase::Resolving;
         let namespace = self.target.namespace.clone().unwrap_or_default();
         let resource = self.target.gvr.resource.clone();
@@ -619,11 +655,31 @@ impl LogsView {
         }));
     }
 
-    fn set_resolved(&mut self, resolved: Resolved, cx: &mut Context<Self>) {
-        if let LogSource::Selector { label_selector } = &resolved.source {
-            // The input needs a window to change its text: applied in the next render.
-            self.pending_selector = Some(label_selector.clone());
+    /// Connects the cluster (a tab restored at startup opens before it) and starts streaming
+    /// once it is up.
+    fn wait_for_cluster(&mut self, cx: &mut Context<Self>) {
+        if self.connect_subscription.is_some() {
+            return;
         }
+        let manager = ConnectionManager::global(cx);
+        let cluster = self.target.cluster.clone();
+        manager.update(cx, |manager, cx| manager.ensure_connected(&cluster, cx));
+        self.connect_subscription = Some(cx.subscribe(
+            &manager,
+            move |this, manager, event: &ConnectionEvent, cx| {
+                if let ConnectionEvent::StateChanged(id) = event
+                    && *id == cluster
+                    && manager.read(cx).state(id).is_connected()
+                    && this.phase == Phase::NotConnected
+                {
+                    this.start(cx);
+                    cx.notify();
+                }
+            },
+        ));
+    }
+
+    fn set_resolved(&mut self, resolved: Resolved, cx: &mut Context<Self>) {
         self.source = Some(resolved.source);
         self.containers = resolved.containers;
         cx.notify();
@@ -976,6 +1032,16 @@ impl LogsView {
         self.pending_appended = 0;
         self.pending_evicted = 0;
         if self.frozen.is_some() {
+            // Paused: filter the paused lines again, but keep newer ones out.
+            let last = self.pause_limit;
+            let rows: Vec<u64> = self
+                .rendered
+                .iter()
+                .copied()
+                .filter(|seq| last.is_some_and(|last| *seq <= last))
+                .collect();
+            self.list_state.reset(rows.len());
+            self.frozen = Some(rows);
             return;
         }
         self.list_state.reset(self.rendered.len());
@@ -1085,6 +1151,7 @@ impl LogsView {
 
     fn toggle_pause(&mut self, cx: &mut Context<Self>) {
         if self.frozen.take().is_some() {
+            self.pause_limit = None;
             self.paused_new_lines = 0;
             self.list_state.reset(self.rendered.len());
             if self.follow {
@@ -1092,6 +1159,7 @@ impl LogsView {
             }
         } else {
             self.frozen = Some(self.rendered.iter().copied().collect());
+            self.pause_limit = self.ring.iter().last().map(|line| line.seq);
         }
         cx.notify();
     }
@@ -1559,6 +1627,10 @@ impl LogsView {
         };
         let containers = self.containers.clone();
         let filter = self.container_filter.clone();
+        let selector = match &self.source {
+            Some(LogSource::Selector { label_selector }) => Some(label_selector.clone()),
+            _ => None,
+        };
         let menu_weak = weak.clone();
         let container_menu = menu_button("log-containers", IconName::Box, container_label, &colors)
             .dropdown_menu(move |menu, _, _| {
@@ -1620,6 +1692,27 @@ impl LogsView {
                         ));
                     }
                 }
+                if let Some(selector) = selector.clone() {
+                    let weak = menu_weak.clone();
+                    menu = menu.separator().item(
+                        PopupMenuItem::new(format!("Label selector: {selector}…")).on_click(
+                            move |_, window, cx| {
+                                let weak = weak.clone();
+                                kubyl_explorer::dialogs::prompt_text(
+                                    "Stream the pods of a label selector".into(),
+                                    "Label selector",
+                                    selector.clone(),
+                                    move |text, _, cx| {
+                                        weak.update(cx, |this, cx| this.set_selector(text, cx))
+                                            .ok();
+                                    },
+                                    window,
+                                    cx,
+                                );
+                            },
+                        ),
+                    );
+                }
                 menu.separator()
                     .item(item(
                         "Include init containers".into(),
@@ -1661,7 +1754,46 @@ impl LogsView {
                             }),
                     );
                 }
-                menu
+                let weak = since_weak.clone();
+                let checked = matches!(since, SinceChoice::Time(_));
+                let label = if checked {
+                    format!("{}…", since.label().replacen("since", "Since", 1))
+                } else {
+                    "Since a time…".to_string()
+                };
+                menu.item(PopupMenuItem::new(label).checked(checked).on_click(
+                    move |_, window, cx| {
+                        let weak = weak.clone();
+                        let tz = TimeZone::system();
+                        let hour_ago = jiff::Timestamp::now()
+                            .checked_sub(jiff::SignedDuration::from_hours(1))
+                            .unwrap_or_else(|_| jiff::Timestamp::now())
+                            .to_zoned(tz.clone())
+                            .strftime("%Y-%m-%d %H:%M")
+                            .to_string();
+                        kubyl_explorer::dialogs::prompt_text(
+                            "Stream logs since".into(),
+                            "Local time (10:42, 2026-09-25 10:42 or RFC 3339)",
+                            hour_ago,
+                            move |text, _, cx| match parse_since_time(&text, &tz) {
+                                Ok(at) => {
+                                    weak.update(cx, |this, cx| {
+                                        this.set_option(
+                                            |this| this.since = SinceChoice::Time(at),
+                                            cx,
+                                        )
+                                    })
+                                    .ok();
+                                }
+                                Err(err) => {
+                                    NotificationCenter::push(cx, Notification::error(err));
+                                }
+                            },
+                            window,
+                            cx,
+                        );
+                    },
+                ))
             });
 
         // JSON menu.
@@ -1712,11 +1844,12 @@ impl LogsView {
 
         h_flex()
             .flex_none()
-            .h(u(kubyl_ui::sizes::TOOLBAR))
+            .min_h(u(kubyl_ui::sizes::TOOLBAR))
+            .py(u(6.0))
             .px(u(12.0))
             .gap(u(6.0))
             .items_center()
-            .overflow_hidden()
+            .flex_wrap()
             .border_b_1()
             .border_color(colors.border)
             .bg(colors.panel)
@@ -1729,23 +1862,6 @@ impl LogsView {
             .child(div().text_color(colors.text_faint).child("|"))
             .child(container_menu)
             .child(since_menu)
-            .when(self.is_selector_source(), |this| {
-                this.child(
-                    div()
-                        .w(u(180.0))
-                        .h(u(24.0))
-                        .px(u(6.0))
-                        .flex()
-                        .items_center()
-                        .rounded(u(5.0))
-                        .border_1()
-                        .border_color(colors.border)
-                        .bg(colors.input_background)
-                        .font_family(fonts::MONO)
-                        .text_size(u(11.5))
-                        .child(Input::new(&self.selector_input).appearance(false)),
-                )
-            })
             .child(div().flex_1())
             .child(
                 clickable(
@@ -1926,11 +2042,12 @@ impl LogsView {
         let status_color = kubyl_ui::tone_color(tone, &colors);
         h_flex()
             .flex_none()
-            .h(u(38.0))
+            .min_h(u(38.0))
+            .py(u(5.0))
             .px(u(12.0))
             .gap(u(8.0))
             .items_center()
-            .overflow_hidden()
+            .flex_wrap()
             .border_b_1()
             .border_color(colors.border_variant)
             .bg(colors.subheader_background)
@@ -2237,11 +2354,7 @@ impl TabView for LogsView {
 }
 
 impl Render for LogsView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if let Some(selector) = self.pending_selector.take() {
-            self.selector_input
-                .update(cx, |input, cx| input.set_value(selector, window, cx));
-        }
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors().clone();
         let source_bar = self.render_source_bar(cx);
         let search_bar = self.render_search_bar(cx);
@@ -2530,6 +2643,12 @@ mod tests {
                 );
                 assert_eq!(view.row_count(), 5);
                 assert_eq!(view.paused_new_lines, 1);
+                // Filters still apply to the paused lines, without letting new ones in.
+                view.toggle_level(LogLevel::Info, cx);
+                assert_eq!(view.row_count(), 2);
+                assert_eq!(view.list_state.item_count(), 2);
+                view.toggle_level(LogLevel::Info, cx);
+                assert_eq!(view.row_count(), 5);
                 view.toggle_pause(cx);
                 assert_eq!(view.row_count(), 6);
                 assert_eq!(view.list_state.item_count(), 6);
@@ -2613,6 +2732,48 @@ mod tests {
             .unwrap();
     }
 
+    /// 5,000 lines/s arrive as ~84 lines per 16 ms frame. Ingesting them (level detection,
+    /// filters, search, list splicing) must leave most of the frame for rendering, which only
+    /// touches the visible rows. Prints the cost; the bound is loose for debug builds.
+    #[gpui::test]
+    fn five_thousand_lines_per_second_fit_the_frame_budget(cx: &mut gpui::TestAppContext) {
+        let (_dir, window) = open_view(cx);
+        window
+            .update(cx, |view, _, cx| {
+                view.set_query("timeout".into(), cx);
+                let start = Instant::now();
+                let mut n = 0;
+                for _frame in 0..60 {
+                    let batch: Vec<RawLine> = (0..84)
+                        .map(|_| {
+                            n += 1;
+                            let text = if n % 13 == 0 {
+                                "ERROR upstream timeout after 2000ms".to_string()
+                            } else {
+                                format!(
+                                    r#"{{"level":"info","msg":"POST /v1/checkout 200","order":"ord_{n}"}}"#
+                                )
+                            };
+                            RawLine {
+                                pod: format!("web-{}", n % 3),
+                                container: "api".into(),
+                                timestamp: Some(jiff::Timestamp::now()),
+                                text,
+                            }
+                        })
+                        .collect();
+                    view.apply_events(vec![StreamEvent::Lines(batch)], cx);
+                }
+                let elapsed = start.elapsed();
+                let per_frame = elapsed / 60;
+                println!("5,040 lines in 60 batches: {elapsed:?} total, {per_frame:?} per frame");
+                assert_eq!(view.ring.len(), 5040);
+                assert_eq!(view.cursor.count(), 5040 / 13);
+                assert!(per_frame < Duration::from_millis(16), "{per_frame:?} per frame");
+            })
+            .unwrap();
+    }
+
     #[test]
     fn times_show_milliseconds() {
         let ts: jiff::Timestamp = "2026-09-25T10:42:17.902123456Z".parse().unwrap();
@@ -2622,6 +2783,21 @@ mod tests {
                 .to_string(),
             "10:42:17.902"
         );
+    }
+
+    #[test]
+    fn parses_since_times() {
+        let tz = TimeZone::fixed(jiff::tz::offset(2));
+        let at = parse_since_time("2026-09-25 10:42", &tz).unwrap();
+        assert_eq!(at.to_string(), "2026-09-25T08:42:00Z");
+        let at = parse_since_time("2026-09-25T10:42:05Z", &tz).unwrap();
+        assert_eq!(at.to_string(), "2026-09-25T10:42:05Z");
+        let at = parse_since_time("00:00", &tz).unwrap();
+        assert!(at <= jiff::Timestamp::now());
+        assert!(parse_since_time("yesterday-ish", &tz).is_err());
+        let options = SinceChoice::Time(at).options(true, false);
+        assert_eq!(options.since, Since::Time(at));
+        assert_eq!(options.tail_lines, None);
     }
 
     #[test]

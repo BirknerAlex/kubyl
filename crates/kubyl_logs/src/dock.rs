@@ -161,31 +161,41 @@ fn watch_status(watch: &WatchInfo, cx: &App) -> (String, Tone, bool) {
     (format!("watch · {state} · {views}"), tone, paused)
 }
 
-fn row(id: impl Into<gpui::ElementId>, colors: &Colors) -> gpui::Stateful<gpui::Div> {
-    h_flex()
+/// A panel row: icon, title and buttons on the first line, the details below at full width
+/// (they wrap rather than being cut off by the buttons).
+fn row(
+    id: impl Into<gpui::ElementId>,
+    icon: Icon,
+    title: SharedString,
+    detail: SharedString,
+    buttons: Vec<gpui::AnyElement>,
+    colors: &Colors,
+) -> gpui::Stateful<gpui::Div> {
+    v_flex()
         .id(id)
         .px(u(14.0))
-        .py(u(9.0))
-        .gap(u(10.0))
-        .items_start()
+        .py(u(8.0))
+        .gap(u(2.0))
         .border_b_1()
         .border_color(colors.border_variant)
-}
-
-fn texts(title: SharedString, detail: SharedString, colors: &Colors) -> impl IntoElement {
-    v_flex()
-        .flex_1()
-        .min_w_0()
         .child(
-            div()
-                .truncate()
-                .text_size(u(12.5))
-                .text_color(colors.text)
-                .child(title),
+            h_flex()
+                .gap(u(10.0))
+                .child(icon)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(u(12.5))
+                        .text_color(colors.text)
+                        .child(title),
+                )
+                .children(buttons),
         )
         .child(
             div()
-                .truncate()
+                .pl(u(24.0))
                 .text_size(u(11.5))
                 .text_color(colors.text_dim)
                 .child(detail),
@@ -207,18 +217,10 @@ impl ActiveSessionsView {
         }
         detail.push(session.status.to_string());
         detail.push(age(session.started, now));
-        row(("session", id.raw() as usize), colors)
-            .child(
-                Icon::new(session_icon(session.kind))
-                    .size(14.0)
-                    .color(tone_color(session.tone, colors)),
-            )
-            .child(texts(
-                session.title.clone(),
-                detail.join(" · ").into(),
-                colors,
-            ))
-            .children(session.buttons.into_iter().map(|button| {
+        let mut buttons: Vec<gpui::AnyElement> = session
+            .buttons
+            .into_iter()
+            .map(|button| {
                 let on_click = button.on_click.clone();
                 let tooltip = button.tooltip.clone();
                 div()
@@ -239,16 +241,29 @@ impl ActiveSessionsView {
                         .icon_size(12.0)
                         .on_click(move |_, window, cx| on_click(window, cx)),
                     )
-            }))
-            .child(
-                IconButton::new(
-                    SharedString::from(format!("stop-{}", id.raw())),
-                    IconName::X,
-                )
-                .icon_size(12.0)
-                .on_click(cx.listener(move |_, _, _, cx| SessionRegistry::stop(cx, id))),
+                    .into_any_element()
+            })
+            .collect();
+        buttons.push(
+            IconButton::new(
+                SharedString::from(format!("stop-{}", id.raw())),
+                IconName::X,
             )
-            .into_any_element()
+            .icon_size(12.0)
+            .on_click(cx.listener(move |_, _, _, cx| SessionRegistry::stop(cx, id)))
+            .into_any_element(),
+        );
+        row(
+            ("session", id.raw() as usize),
+            Icon::new(session_icon(session.kind))
+                .size(14.0)
+                .color(tone_color(session.tone, colors)),
+            session.title.clone(),
+            detail.join(" · ").into(),
+            buttons,
+            colors,
+        )
+        .into_any_element()
     }
 
     fn render_watch(
@@ -268,35 +283,43 @@ impl ActiveSessionsView {
         if let Some(selector) = &watch.key.label_selector {
             title.push_str(&format!(" · {selector}"));
         }
+        if let Some(selector) = &watch.key.field_selector {
+            title.push_str(&format!(" · {selector}"));
+        }
+        if watch.key.mode == kubyl_resources::StoreMode::Metadata {
+            title.push_str(" · metadata");
+        }
         let store = watch.store.clone();
-        row(("watch", ix), colors)
-            .child(
-                Icon::new(IconName::Zap)
-                    .size(14.0)
-                    .color(tone_color(tone, colors)),
-            )
-            .child(texts(title.into(), detail.into(), colors))
-            .child(
-                IconButton::new(
-                    ("watch-toggle", ix),
-                    if paused {
-                        IconName::Play
-                    } else {
-                        IconName::Pause
-                    },
-                )
-                .icon_size(12.0)
-                .on_click(move |_, _, cx| {
-                    store.update(cx, |store, cx| {
-                        if paused {
-                            store.resume(cx)
-                        } else {
-                            store.pause(cx)
-                        }
-                    })
-                }),
-            )
-            .into_any_element()
+        let toggle = IconButton::new(
+            ("watch-toggle", ix),
+            if paused {
+                IconName::Play
+            } else {
+                IconName::Pause
+            },
+        )
+        .icon_size(12.0)
+        .on_click(move |_, _, cx| {
+            store.update(cx, |store, cx| {
+                if paused {
+                    store.resume(cx)
+                } else {
+                    store.pause(cx)
+                }
+            })
+        })
+        .into_any_element();
+        row(
+            ("watch", ix),
+            Icon::new(IconName::Zap)
+                .size(14.0)
+                .color(tone_color(tone, colors)),
+            title.into(),
+            detail.into(),
+            vec![toggle],
+            colors,
+        )
+        .into_any_element()
     }
 }
 
