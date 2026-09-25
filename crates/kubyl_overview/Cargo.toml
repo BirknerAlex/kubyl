@@ -14,4 +14,24 @@ workspace = true
 
 [dependencies]
 gpui.workspace = true
+gpui-component.workspace = true
+jiff.workspace = true
+kubyl_charts.workspace = true
 kubyl_core.workspace = true
+kubyl_explorer.workspace = true
+kubyl_kube.workspace = true
+kubyl_metrics.workspace = true
+kubyl_resources.workspace = true
+kubyl_settings.workspace = true
+kubyl_ui.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+futures.workspace = true
+gpui = { workspace = true, features = ["test-support"] }
+k8s-openapi.workspace = true
+kube.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

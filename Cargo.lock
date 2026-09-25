@@ -4633,8 +4633,25 @@ dependencies = [
 name = "kubyl_overview"
 version = "0.1.1"
 dependencies = [
+ "futures",
+ "gpui-component",
  "gpui-pre",
+ "jiff",
+ "k8s-openapi",
+ "kube",
+ "kubyl_charts",
  "kubyl_core",
+ "kubyl_explorer",
+ "kubyl_kube",
+ "kubyl_metrics",
+ "kubyl_resources",
+ "kubyl_settings",
+ "kubyl_ui",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
