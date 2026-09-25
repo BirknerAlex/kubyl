@@ -26,8 +26,8 @@ use kubyl_charts::Sparkline;
 use kubyl_core::actions::{ForwardPort, OpenView, StopForward};
 use kubyl_core::forwards::ActiveForwards;
 use kubyl_core::{
-    ClusterCaps, ClusterId, DockPanel, DockPosition, Gvr, Notification, NotificationCenter,
-    ResourceRef, TabHandle, TabView, Tone, ViewKind, ViewRegistry, ViewRequest,
+    ChromeRegistry, ClusterCaps, ClusterId, DockPanel, DockPosition, Gvr, Notification,
+    NotificationCenter, ResourceRef, TabHandle, TabView, Tone, ViewKind, ViewRegistry, ViewRequest,
 };
 use kubyl_kube::ConnectionManager;
 use kubyl_resources::columns::{
@@ -190,6 +190,9 @@ pub struct DetailsContent {
     scale_task: Option<Task<()>>,
     _forwards_observer: Subscription,
     _metrics_observer: Subscription,
+    /// Sections other crates contribute (`ChromeRegistry::add_details_section`), built once per
+    /// target.
+    sections: Option<(Target, Vec<AnyView>)>,
 }
 
 impl DetailsContent {
@@ -212,6 +215,7 @@ impl DetailsContent {
             _forwards_observer: cx.observe_global::<ActiveForwards>(|_, cx| cx.notify()),
             // Usage numbers and sparklines.
             _metrics_observer: cx.observe_global::<Metrics>(|_, cx| cx.notify()),
+            sections: None,
         }
     }
 
@@ -237,6 +241,7 @@ impl DetailsContent {
         if !same_object {
             self.related = Related::default();
             self.extra.clear();
+            self.sections = None;
             self.revealed.clear();
             self.scale_pending = None;
             self.scale_task = None;
@@ -309,6 +314,28 @@ impl DetailsContent {
             }));
         }
         cx.notify();
+    }
+
+    /// Sections from other crates for `target` (built when the target changes).
+    fn contributed_sections(&mut self, target: &Target, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        if self.sections.as_ref().map(|(t, _)| t) != Some(target) {
+            let reference = ResourceRef::object(
+                target.cluster.clone(),
+                target.gvr.clone(),
+                target.namespace.clone(),
+                target.name.clone(),
+            );
+            let builders: Vec<_> = ChromeRegistry::global(cx).details_sections().to_vec();
+            let views = builders
+                .iter()
+                .filter_map(|section| section.build(&reference, &target.kind, cx))
+                .collect();
+            self.sections = Some((target.clone(), views));
+        }
+        self.sections
+            .as_ref()
+            .map(|(_, views)| views.iter().map(|v| v.clone().into_any_element()).collect())
+            .unwrap_or_default()
     }
 
     fn set_mode(&mut self, mode: Mode, cx: &mut Context<Self>) {
@@ -971,6 +998,7 @@ impl DetailsContent {
             "Secret" => out.extend(self.render_secret(object, &colors, cx)),
             _ => {}
         }
+        out.extend(self.contributed_sections(target, cx));
 
         // Pods selected by workloads (not Deployments: their pods show via ReplicaSets too).
         if let (Some(selector), Some(pods), Some(ns)) = (
