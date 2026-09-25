@@ -4604,6 +4604,7 @@ dependencies = [
  "gpui-pre",
  "http",
  "jiff",
+ "k8s-openapi",
  "kube",
  "kubyl_charts",
  "kubyl_core",

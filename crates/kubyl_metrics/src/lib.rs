@@ -11,10 +11,14 @@
 //! - [`prometheus`]: the HTTP API client (service proxy or an external URL).
 //! - [`queries`]: the versioned PromQL library, recording-rule aware, overridable in settings.
 //! - [`metrics_server`]: `metrics.k8s.io` (current values only).
+//! - [`panels`] and [`details`]: the Metrics section of the details (network, disk, throttling,
+//!   pressure, OOM kills… for pods, nodes, namespaces, workloads and PVCs).
 //! - [`settings`]: the `"metrics"` settings.json section.
 
+pub mod details;
 pub mod discover;
 pub mod metrics_server;
+pub mod panels;
 pub mod prometheus;
 pub mod provider;
 pub mod queries;
@@ -54,6 +58,7 @@ pub fn init(cx: &mut App) {
     Metrics::set_provider(cx, provider::ServiceProvider(service));
     Metrics::changed(cx);
     ChromeRegistry::add_status_item(cx, status::MetricsStatusItem);
+    ChromeRegistry::add_details_section(cx, details::MetricsDetails);
 
     for spec in [
         ActionSpec::new("Metrics: Look for Prometheus Again", Redetect),

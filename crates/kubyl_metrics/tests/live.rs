@@ -18,8 +18,9 @@ use kube::{Client, Config};
 use kubyl_charts::TimeRange;
 use kubyl_metrics::discover::{self, Found};
 use kubyl_metrics::metrics_server;
+use kubyl_metrics::panels;
 use kubyl_metrics::prometheus::{PromClient, PromError, Target};
-use kubyl_metrics::queries::{LIBRARY, Queries, RULE_PROBE};
+use kubyl_metrics::queries::{LIBRARY, Queries};
 
 async fn client() -> Client {
     let path = std::env::var("KUBYL_TEST_KUBECONFIG").expect("set KUBYL_TEST_KUBECONFIG");
@@ -84,16 +85,10 @@ async fn every_library_query_runs() {
     }
     let client = client().await;
     let prom = prometheus(&client).await;
-    let rules: HashSet<String> = prom
-        .query(RULE_PROBE)
-        .await
-        .unwrap()
-        .into_iter()
-        .filter_map(|s| s.labels.get("__name__").cloned())
-        .collect();
-    println!("recording rules: {rules:?}");
+    let rules: HashSet<String> = prom.metric_names().await.unwrap().into_iter().collect();
+    println!("{} metric names", rules.len());
     assert!(
-        !rules.is_empty(),
+        rules.contains("node_namespace_pod_container:container_cpu_usage_seconds_total:sum_rate5m"),
         "kube-prometheus-stack ships recording rules"
     );
     for queries in [
@@ -124,6 +119,73 @@ async fn every_library_query_runs() {
     );
     let promql = queries.render("node_memory", &[]).unwrap();
     assert!(prom.query(&promql).await.unwrap().len() >= 2);
+}
+
+/// The details panels get data for real objects: a pod, a deployment's pods, a namespace and a
+/// node (panels whose metric the Prometheus lacks are skipped, like in the app).
+#[tokio::test]
+#[ignore]
+async fn detail_panels_have_data() {
+    if !prometheus_expected() {
+        return;
+    }
+    let client = client().await;
+    let prom = prometheus(&client).await;
+    let names: HashSet<String> = prom.metric_names().await.unwrap().into_iter().collect();
+    let queries = Queries::new(Default::default(), names.clone());
+    let pods: kube::Api<k8s_openapi::api::core::v1::Pod> =
+        kube::Api::namespaced(client.clone(), "payments");
+    let pod = pods
+        .list(&kube::api::ListParams::default().labels("app=checkout-api"))
+        .await
+        .unwrap()
+        .items
+        .remove(0);
+    let pod_name = pod.metadata.name.unwrap();
+    let object = |resource: &str, ns: Option<&str>, name: &str| {
+        kubyl_core::ResourceRef::object(
+            kubyl_core::ClusterId::new("kind"),
+            kubyl_core::Gvr::new("", "v1", resource),
+            ns.map(str::to_string),
+            name.to_string(),
+        )
+    };
+    let cases = [
+        (object("pods", Some("payments"), &pod_name), "Pod"),
+        (
+            object("deployments", Some("payments"), "checkout-api"),
+            "Deployment",
+        ),
+        (object("namespaces", None, "payments"), "Namespace"),
+        (object("nodes", None, "kubyl-dev-worker"), "Node"),
+    ];
+    let (start, end, step) = TimeRange::M15.window(kubyl_metrics::service::now());
+    for (target, kind) in cases {
+        let (defs, filters) = panels::for_object(&target, kind).unwrap();
+        let filters: Vec<(&str, &str)> = filters
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        for def in defs.iter().filter(|d| names.contains(d.needs)) {
+            for series in def.series {
+                let promql = queries.render(series.query, &filters).unwrap();
+                let result = prom
+                    .query_range(&promql, start, end, step)
+                    .await
+                    .unwrap_or_else(|e| panic!("{kind}/{}: {e}\n{promql}", def.id));
+                let points: usize = result.iter().map(|s| s.values.len()).sum();
+                println!(
+                    "{kind:>10} {:>10} {:>22}: {points} points",
+                    def.id, series.name
+                );
+                // Traffic, CPU and memory always exist; drops, OOM kills… may legitimately be
+                // absent or zero, but must still be valid queries.
+                if matches!(def.id, "network" | "cpu" | "memory") {
+                    assert!(points > 0, "{kind}/{}: no data\n{promql}", def.id);
+                }
+            }
+        }
+    }
 }
 
 #[tokio::test]

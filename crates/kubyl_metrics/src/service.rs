@@ -32,7 +32,7 @@ use secrecy::SecretString;
 use crate::discover::{self, Found};
 use crate::metrics_server;
 use crate::prometheus::{PromClient, PromError, RangeSeries, Sample, Target};
-use crate::queries::{Queries, RULE_PROBE};
+use crate::queries::Queries;
 use crate::settings::{MetricsSettings, PrometheusOverride, SourcePreference};
 
 /// Data asked for within this long is kept fresh.
@@ -514,15 +514,11 @@ impl MetricsService {
             .or_else(|| state.nodes_fetch.error.clone())
     }
 
-    /// Recording rules the cluster's Prometheus has (for the source tooltip).
-    pub fn rules(&self, cluster: &ClusterId) -> Vec<String> {
-        let mut rules: Vec<String> = self
-            .clusters
+    /// Whether the cluster's Prometheus has series named `metric` (node-exporter, PSI…).
+    pub fn has_metric(&self, cluster: &ClusterId, metric: &str) -> bool {
+        self.clusters
             .get(cluster)
-            .map(|c| c.queries.rules().iter().cloned().collect())
-            .unwrap_or_default();
-        rules.sort();
-        rules
+            .is_some_and(|c| c.queries.has(metric))
     }
 
     // ----- Control -----
@@ -1138,15 +1134,12 @@ async fn detect(
     if want_prometheus {
         match find_prometheus(&client, &settings, &override_, auth_key).await {
             Ok(prom) => {
-                let rules = prom
-                    .query(RULE_PROBE)
+                // Which recording rules and optional exporters (node-exporter, PSI, volume
+                // stats…) exist decides which queries and panels are used.
+                let rules: HashSet<String> = prom
+                    .metric_names()
                     .await
-                    .map(|samples| {
-                        samples
-                            .into_iter()
-                            .filter_map(|s| s.labels.get("__name__").cloned())
-                            .collect()
-                    })
+                    .map(|names| names.into_iter().collect())
                     .unwrap_or_default();
                 return Detected::Prometheus(Box::new(prom), rules);
             }

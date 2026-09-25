@@ -36,4 +36,5 @@ url.workspace = true
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
+k8s-openapi.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

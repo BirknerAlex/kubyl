@@ -245,6 +245,13 @@ impl PromClient {
         parse_matrix(&body)
     }
 
+    /// Every metric name the server has (`/api/v1/label/__name__/values`): an index lookup, so
+    /// it's cheap even on big servers. Recording rules are metric names too.
+    pub async fn metric_names(&self) -> Result<Vec<String>, PromError> {
+        let body = self.get("/api/v1/label/__name__/values", &[]).await?;
+        parse_names(&body)
+    }
+
     /// A cheap query that any Prometheus-compatible API answers.
     pub async fn probe(&self, timeout: Duration) -> Result<(), PromError> {
         match tokio::time::timeout(timeout, self.query("vector(1)")).await {
@@ -257,7 +264,11 @@ impl PromClient {
         let query = url::form_urlencoded::Serializer::new(String::new())
             .extend_pairs(params.iter().map(|(k, v)| (*k, v.as_str())))
             .finish();
-        let uri = format!("{}{path}?{query}", self.base);
+        let uri = if query.is_empty() {
+            format!("{}{path}", self.base)
+        } else {
+            format!("{}{path}?{query}", self.base)
+        };
         let request = http::Request::get(uri)
             .header(http::header::ACCEPT, "application/json")
             .body(Vec::new())
@@ -336,6 +347,24 @@ fn point(pair: &Value) -> Option<(f64, f64)> {
     let time = pair.get(0)?.as_f64()?;
     let value: f64 = pair.get(1)?.as_str()?.parse().ok()?;
     value.is_finite().then_some((time, value))
+}
+
+/// Parses a label-values response (`{"status":"success","data":["a","b"]}`).
+pub fn parse_names(body: &Value) -> Result<Vec<String>, PromError> {
+    match body.get("status").and_then(Value::as_str) {
+        Some("success") => {}
+        Some("error") => return Err(query_error(body)),
+        _ => return Err(PromError::Invalid("missing status".into())),
+    }
+    body["data"]
+        .as_array()
+        .map(|names| {
+            names
+                .iter()
+                .filter_map(|n| n.as_str().map(str::to_string))
+                .collect()
+        })
+        .ok_or_else(|| PromError::Invalid("expected a list of names".into()))
 }
 
 /// Parses an instant-query response.
@@ -422,6 +451,13 @@ mod tests {
         assert_eq!(series[0].values, vec![(10.0, 1.0), (20.0, 2.0)]);
         assert_eq!(series[0].label("namespace"), "a");
         assert_eq!(series[0].label("missing"), "");
+    }
+
+    #[test]
+    fn parses_metric_names() {
+        let body = json!({"status": "success", "data": ["up", "node_uname_info"]});
+        assert_eq!(parse_names(&body).unwrap(), ["up", "node_uname_info"]);
+        assert!(parse_names(&json!({"status": "success", "data": {}})).is_err());
     }
 
     #[test]
