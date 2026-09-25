@@ -35,10 +35,14 @@ jobs:
       tag: ${{ steps.bump.outputs.tag }}
       proceed: ${{ steps.bump.outputs.proceed }}
     steps:
+      # `main` is protected by a ruleset requiring PRs + passing status checks; the default
+      # GITHUB_TOKEN (github-actions[bot]) isn't a bypass actor, so the direct push+tag below
+      # would be rejected. RELEASE_PUSH_TOKEN is a token for the repo owner, who *is* a
+      # configured bypass actor (see repo ruleset "Stable").
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.RELEASE_PUSH_TOKEN }}
 
       - uses: taiki-e/install-action@v2
         with:

@@ -31,6 +31,17 @@ Artifacts published: macOS universal (arm64+x86_64) notarized `.dmg`; Windows `x
   `plans/10-packaging-release.md` for the full packaging backlog.
 - No auto-update mechanism; users update by re-downloading.
 
+## One-time setup: pushing the version-bump commit to a protected `main`
+
+The `version` job commits `chore(release): vX.Y.Z` and pushes it (plus the tag) straight to
+`main`. If `main` has a ruleset requiring PRs/status checks, the default `GITHUB_TOKEN`
+(`github-actions[bot]`) can't push directly unless it's a configured bypass actor — and a
+personal (non-org) repo's rulesets can't list "GitHub Actions" as an Integration bypass actor at
+all. The workaround: add a repo secret `RELEASE_PUSH_TOKEN` containing a token for a user who
+*is* listed as a bypass actor on the ruleset (Settings → Rules → your ruleset → Bypass list), e.g.
+`gh auth token | gh secret set RELEASE_PUSH_TOKEN`. The `version` job's checkout step uses this
+token instead of `GITHUB_TOKEN` so the push succeeds.
+
 ## One-time setup: Apple Developer certificates (for macOS signing + notarization)
 
 You said you already have an Apple Developer Program membership — good, that's the only paid
