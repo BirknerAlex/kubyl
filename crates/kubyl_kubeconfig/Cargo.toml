@@ -13,5 +13,37 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+anyhow.workspace = true
+base64.workspace = true
+futures.workspace = true
 gpui.workspace = true
+gpui-component.workspace = true
+jiff.workspace = true
+k8s-openapi.workspace = true
+kube.workspace = true
 kubyl_core.workspace = true
+kubyl_explorer.workspace = true
+kubyl_kube.workspace = true
+kubyl_settings.workspace = true
+kubyl_ui.workspace = true
+kubyl_yaml.workspace = true
+lsp-types.workspace = true
+parking_lot.workspace = true
+rustls.workspace = true
+rustls-native-certs.workspace = true
+rustls-pki-types.workspace = true
+schemars.workspace = true
+secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+similar.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+tracing.workspace = true
+url.workspace = true
+x509-cert.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+tempfile.workspace = true

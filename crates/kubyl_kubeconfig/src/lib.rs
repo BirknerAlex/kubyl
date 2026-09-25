@@ -1,7 +1,11 @@
 //! Kubeconfig editor: clusters, credentials, contexts, connection test and the "New
 //! kubeconfig" wizard.
-//!
-//! Stub; implemented in `plans/11-kubeconfig-editor.md`.
+
+pub mod certs;
+pub mod files;
+pub mod model;
+pub mod tls;
+pub mod yaml;
 
 use gpui::App;
 
