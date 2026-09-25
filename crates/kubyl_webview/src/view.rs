@@ -467,6 +467,7 @@ impl WebViewTab {
             }
             NativeEvent::NewWindow(url) => self.new_window(url, window, cx),
             NativeEvent::DownloadStarted { url, staged } => {
+                tracing::debug!(url, staged = %staged.display(), "download started");
                 let name = staged
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
@@ -479,6 +480,7 @@ impl WebViewTab {
                 });
             }
             NativeEvent::DownloadFinished { url, staged, ok } => {
+                tracing::debug!(url, ?staged, ok, "download finished");
                 self.download_finished(url, staged, ok, cx)
             }
             NativeEvent::CertificateRejected { chain } => {
@@ -741,6 +743,7 @@ impl WebViewTab {
         }
         let minutes = WebViewSettings::get(cx).idle_stop_minutes;
         if minutes > 0 && self.last_seen.elapsed() > Duration::from_secs(u64::from(minutes) * 60) {
+            tracing::debug!(target = %self.target, "idle in the background: stopping the forward");
             self.set_phase(Phase::Idle);
             self.hold(false, cx);
             cx.notify();
@@ -750,6 +753,7 @@ impl WebViewTab {
     /// Rendering means the tab is on screen: an idle tab wakes up.
     fn wake_if_idle(&mut self, cx: &mut Context<Self>) {
         if self.phase == Phase::Idle {
+            tracing::debug!(target = %self.target, "shown again: restarting the forward");
             self.last_seen = Instant::now();
             self.phase = Phase::Starting;
             self.hold(true, cx);

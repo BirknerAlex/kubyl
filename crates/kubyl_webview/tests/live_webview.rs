@@ -176,7 +176,9 @@ fn main() {
         }
         cx.spawn(async move |cx| {
             // Web view creation pumps the Win32 message loop: outside of any App update.
+            let started = std::time::Instant::now();
             let mut signed_in = view(&parent, cluster_a, format!("{base}/set"), 0);
+            println!("first web view created in {:?}", started.elapsed());
             let test = async {
                 let set = title(&mut signed_in).await;
                 if set != "set" {

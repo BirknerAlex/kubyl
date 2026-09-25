@@ -117,6 +117,11 @@ pub fn init(cx: &mut App) {
         }))
     });
     ChromeRegistry::add_status_item(cx, WebStatusItem);
+    // Downloads nobody saved (the app quit while asking) don't pile up.
+    let staging = view::data_dir().join("downloads");
+    cx.background_executor()
+        .spawn(async move { remove_stale_downloads(&staging) })
+        .detach();
     ChromeRegistry::add_details_section(cx, details::WebViewDetails);
     ResourceColumns::extend(cx, "", "Service", WebColumn);
 
@@ -182,6 +187,25 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &OpenPicker, cx| {
         with_window(cx, picker::open_namespace_picker);
     });
+}
+
+/// Removes staged downloads older than a day.
+fn remove_stale_downloads(staging: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(staging) else {
+        return;
+    };
+    let day = std::time::Duration::from_secs(24 * 60 * 60);
+    for entry in entries.flatten() {
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age > day);
+        if old {
+            std::fs::remove_dir_all(entry.path()).ok();
+        }
+    }
 }
 
 /// Registers an action of the focused web view (palette, and its default key binding).

@@ -182,13 +182,14 @@ fn port_button(
         target: target.clone(),
         port: port.port,
         path,
-        ask: !port.web,
+        // Another tab of an open port keeps its scheme; only a first open asks.
+        ask: !port.web && tabs == 0,
     };
     let label = match (port.web, tabs) {
+        (_, 1) => "Open · 1 tab".to_string(),
+        (_, n) if n > 1 => format!("Open · {n} tabs"),
         (false, _) => "Open as web view…".to_string(),
-        (true, 0) => "Web view".to_string(),
-        (true, 1) => "Open · 1 tab".to_string(),
-        (true, n) => format!("Open · {n} tabs"),
+        (true, _) => "Web view".to_string(),
     };
     let accent = colors.accent;
     div()
@@ -216,7 +217,7 @@ fn port_button(
                     .text_color(colors.text_muted)
             }
         })
-        .when(port.web, |this| {
+        .when(port.web || tabs > 0, |this| {
             this.child(Icon::new(IconName::Globe).size(12.0).color(if tabs > 0 {
                 accent
             } else {

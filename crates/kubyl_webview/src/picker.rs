@@ -360,6 +360,7 @@ impl Render for Picker {
                             Some(
                                 h_flex()
                                     .id(("web-picker-row", ix))
+                                    .w_full()
                                     .h(u(40.0))
                                     .px(u(14.0))
                                     .gap(u(10.0))
