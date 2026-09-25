@@ -111,7 +111,9 @@ plans/                      # these plans
 | Log view | `gpui::list` with `FollowMode::Tail`, spliced per batch (decided in phase 05) | Variable-height rows (wrap, pretty JSON). Timestamps are always requested from the API and split off each line; reconnects resume at `sinceTime`. Selector sources watch their pods. |
 | File transfers | Exec only: `tar` streams, `cat`, `dd` chunks with resume, `sha256sum` verification (decided in phase 06) | Works without `kubectl` and without anything installed in the image; distroless containers go through an ephemeral busybox container reading `/proc/1/root`. Uploads extract with `tar xof` (files belong to the container's user). |
 | Drag out to the OS | GPUI's `external_drag_payload` with files staged locally (decided in phase 06) | GPUI hands only existing local files to the OS (macOS, Wayland; no file promises, nothing on Windows/X11). Small pod files are downloaded when a drag starts and offered once complete; folders, large files and Secret mounts use "Download to…". |
-| Charts | Own GPUI `canvas`/path renderer in `kubyl_charts` | No webviews. |
+| Charts | Own GPUI `canvas`/path renderer in `kubyl_charts` | No webviews. Series colors are the theme's accent/orange/purple/cyan hues re-stepped in lightness per theme (validated for CVD separation and 3:1 contrast on the card surface); a fifth series folds into a dashed "other". Colors follow the entity, not its rank (phase 07). |
+| Metrics | `kubyl_metrics::MetricsService`: one demand-driven cache per cluster (decided in phase 07). Prometheus through the API server's service proxy (discovered, or a settings override incl. an external URL whose Authorization header lives in the keychain), metrics-server as fallback | Reads mark data as wanted; a 1 s loop refreshes whatever is stale, so every view shares one fetch and unwatched clusters cost nothing. The PromQL library is versioned, prefers kube-prometheus recording rules when present, and is overridable (`metrics.queries`). Current usage: Prometheus instant queries (else metrics-server); history: Prometheus range queries only. |
+| Events | `events.k8s.io/v1` with core `v1` fallback, over shared `ResourceStores` watches; `OOMKilled` warnings derived from pod status (decided in phase 07) | Kubernetes records no Event for an OOM kill (only `BackOff` after the restart), so the stream derives one from `lastState.terminated.reason`, marked "pod status". Repeats fold into `×N`. |
 | Web views | `wry` (MIT/Apache-2.0) as a child view of the GPUI window; separate window or system browser as fallback (phase 11 spike decides per platform) | Only for phase 11 service web views, loaded lazily. |
 | File watching | `notify` | Kubeconfig hot reload. |
 | Settings | JSON (`serde_json`) in `dirs::config_dir()/kubyl/` (override with `$KUBYL_CONFIG_DIR`) | `settings.json` (user, hot-reloaded, with a generated `settings.schema.json`), `state.json` (UI state, favorites, tabs). Typed sections: `kubyl_settings::{SettingsSection, StateSection}`. |
@@ -170,6 +172,21 @@ one list. That list is the only shared line, and it is append-only.
   lists). `kubyl_files::remote::open` probes a container and gives a `RemoteTarget` (list, read,
   write, stat, mkdir, rename, delete, chmod over exec); `kubyl_files::queue::TransferQueue`
   runs verified transfers for any crate (`enqueue(TransferJob)`).
+- Metrics (phase 07): `kubyl_resources::metrics::Metrics::provider(cx)` answers pod/node usage,
+  pod history (sparklines) and `source_status` from a cache; asking keeps the data fresh.
+  Observe the `Metrics` global (bumped by `Metrics::changed`) to re-render or re-sort. For
+  charts and totals use `kubyl_metrics::MetricsService::global(cx)`: `source`, `nodes`, `pods`,
+  `range(cluster, &RangeKey::new("namespace_cpu", TimeRange::H1).filter("namespace", ns))`
+  (query ids in `kubyl_metrics::queries::LIBRARY`); observe the entity for new results.
+- Charts (phase 07): `kubyl_charts::{LineChart, Sparkline, Meter, TimeRangePicker}`;
+  `series_color(i, colors)` for categorical series, `data::{align, top_n}` for Prometheus data.
+- Overview and events (phase 07): open `ViewKind::Overview` with
+  `ResourceRef::list(cluster, Gvr::new("", "", ""), namespace)` (a namespace gives the namespace
+  variant) and `ViewKind::Events` (namespace `None` follows the active one). The right-dock panel
+  id is `events`. `kubyl_overview::events::EventsFeed` is the live, groupable, pausable stream for
+  any scope.
+- Secrets typed by the user (phase 07): `kubyl_explorer::dialogs::prompt_secret` (masked); store
+  the value with `kubyl_kube::auth::store`, never in settings.
 - Port-forwards from anywhere (phase 05): dispatch `kubyl_core::actions::ForwardPort { target,
   port }` (one click: same local port when free, `80` → `8080`) and `StopForward(id)`; read the
   running ones from the `kubyl_core::forwards::ActiveForwards` global (observe it to update).

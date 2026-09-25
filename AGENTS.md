@@ -53,10 +53,11 @@ cargo run -p kubyl
   `wait=800`, which is enough to click through keyboard flows. Steps are comma-separated, so
   `keys=` can't type commas; type `:`/`#` as themselves (not `shift-;`), and close completion
   menus with `escape` before `enter` when typing into the YAML editor.
-- Local clusters: `script/dev-cluster.sh` (kind, sample workloads) and `script/oidc-dev.sh`
-  (Dex + an OIDC-enabled kind cluster). `script/load-pods.sh` adds 5,000 pods (and `--churn`)
-  for list performance checks. Point `KUBECONFIG` at a scratch file so the user's
-  `~/.kube/config` isn't modified.
+- Local clusters: `script/dev-cluster.sh` (kind, sample workloads), `script/prometheus-dev.sh`
+  (metrics-server and kube-prometheus-stack on it; `--metrics-server-only` for the fallback) and
+  `script/oidc-dev.sh` (Dex + an OIDC-enabled kind cluster). `script/load-pods.sh` adds 5,000
+  pods (and `--churn`) for list performance checks. Point `KUBECONFIG` at a scratch file so the
+  user's `~/.kube/config` isn't modified.
 - Live tests against those clusters are ignored by default: see the header of
   `crates/kubyl_kube/tests/live.rs`.
 
