@@ -1982,23 +1982,11 @@ impl TabView for DetailsView {
 impl Render for DetailsView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors().clone();
-        // Summary/Describe read like prose, so they're capped for readability; the embedded
-        // YAML/Logs/Terminal sub-tabs are tools that should use the full pane width.
-        let full_width = matches!(
-            self.content.read(cx).mode,
-            Mode::Yaml | Mode::Logs | Mode::Terminal
-        );
         v_flex()
             .track_focus(&self.focus)
             .size_full()
             .bg(colors.background)
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .when(!full_width, |this| this.max_w(u(980.0)))
-                    .child(self.content.clone()),
-            )
+            .child(div().flex_1().min_h_0().child(self.content.clone()))
     }
 }
 
