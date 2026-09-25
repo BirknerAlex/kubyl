@@ -122,10 +122,8 @@ from the nodes table.
   OS notifications.
 
 **Not verified / limits.**
-- OpenShift `thanos-querier` and VictoriaMetrics are discovered by name and probed, but weren't
-  tried against real clusters. The API server strips the user's Authorization header on proxied
-  requests, so an OpenShift querier that requires auth needs the URL override (route) plus the
-  keychain header.
+- VictoriaMetrics is discovered by name and probed, but wasn't tried against a real cluster.
+  OpenShift's `thanos-querier` was (see the last handoff entry).
 - Range queries use a fixed `[5m]` rate window; on the 7d range (84 min steps) peaks between
   steps are smoothed away.
 - The Events view uses `kubyl_ui::DataTable`, which doesn't scroll horizontally: with the right
@@ -193,3 +191,27 @@ endpoints' pods.
 - Status: done. All tasks and acceptance criteria are met on kind; CI passes on macOS, Linux
   and Windows.
 
+### 2026-09-25, OpenShift and review fixes (same branch)
+
+- OpenShift monitoring: `thanos-querier` sits behind kube-rbac-proxy, and the API server strips
+  credentials from proxied requests, so the service proxy always gets a 401. After a 401/403
+  Kubyl calls the Service's Route directly (`kubyl_metrics::openshift::through_route`): with the
+  user's own token (`ConnectionManager::bearer_token`), else a short-lived TokenRequest token of
+  `openshift-monitoring/prometheus-k8s`. TLS is checked against the OS roots, then the ingress
+  CA from `openshift-config-managed/default-ingress-cert`. The Route's `spec.path` is only what
+  it matches, not a prefix. Verified by the user on an OpenShift cluster.
+- OpenShift sign-in (`kubyl_kube`, phase 01's crate, own commits): `oc login` tokens
+  (`sha256~…`) expire and can't be refreshed. These contexts are `AuthMethod::OpenShift`; on a
+  401 Kubyl tries its last sign-in, then the kubeconfig token, then opens a dialog with the
+  browser (`openshift-cli-client`, PKCE, loopback; greyed out on clusters without that client,
+  e.g. 4.12), username and password (challenging client) or a pasted token from
+  `<oauth>/oauth/token/request`. Tokens are checked against the API server, then kept in the
+  keychain under `openshift/<server>/<kubeconfig user>`. Confirmed by the user on their
+  clusters; tested locally against a fake OAuth server (password and token paths).
+- The sign-in dialogs no longer close on Enter (gpui-component's Confirm binding aborted the
+  running sign-in).
+- CodeRabbit fixes: credentials only over HTTPS (or loopback); pod usage for a newly wanted
+  namespace is fetched on the next tick; every Prometheus answer resets the failure count; the
+  events feed falls back to core Events when the shared `events.k8s.io` store already failed;
+  the Events table drops a stale selection; throttled warning toasts are delivered when the
+  interval ends.
