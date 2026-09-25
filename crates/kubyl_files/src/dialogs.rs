@@ -1,6 +1,7 @@
 //! The name-conflict dialog of copies: overwrite, keep both or skip, optionally for every
 //! remaining conflict.
 
+use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui::{
@@ -33,12 +34,15 @@ pub fn conflict(
     window: &mut Window,
     cx: &mut App,
 ) {
+    let on_choice: OnChoice = Rc::new(on_choice);
+    let decided = Rc::new(Cell::new(false));
     let view = cx.new(|cx| ConflictDialog {
         name,
         destination,
         remaining,
         apply_to_all: false,
-        on_choice: Rc::new(on_choice),
+        on_choice: on_choice.clone(),
+        decided: decided.clone(),
         focus: cx.focus_handle(),
     });
     let colors = cx.colors().clone();
@@ -52,6 +56,15 @@ pub fn conflict(
             .close_button(false)
             // Enter is handled by the view; the dialog must not close itself on Confirm.
             .on_ok(|_, _, _| false)
+            // Escape or a click outside skips this item, so the rest of the copy goes on.
+            .on_close({
+                let (on_choice, decided) = (on_choice.clone(), decided.clone());
+                move |_, window, cx| {
+                    if !decided.replace(true) {
+                        on_choice(Resolution::Skip, false, window, cx);
+                    }
+                }
+            })
             .content({
                 let view = content.clone();
                 move |content, _, _| content.child(view.clone())
@@ -67,11 +80,16 @@ struct ConflictDialog {
     remaining: usize,
     apply_to_all: bool,
     on_choice: OnChoice,
+    /// Set once a choice (or a dismissal) continued the copy: it continues only once.
+    decided: Rc<Cell<bool>>,
     focus: FocusHandle,
 }
 
 impl ConflictDialog {
     fn choose(&mut self, resolution: Resolution, window: &mut Window, cx: &mut Context<Self>) {
+        if self.decided.replace(true) {
+            return;
+        }
         window.close_dialog(cx);
         (self.on_choice)(resolution, self.apply_to_all, window, cx);
     }

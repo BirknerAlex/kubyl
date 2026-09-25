@@ -405,9 +405,16 @@ pub struct FilesView {
     _subscriptions: Vec<Subscription>,
 }
 
+/// `checkout-api-7d9f8c6b5-x2kqp` → `x2kqp`. Only suffixes Kubernetes generates (no vowels,
+/// no 0/1/3), so `web-proxy` stays whole.
 fn short_pod(name: &str) -> String {
+    const GENERATED: &[u8] = b"bcdfghjklmnpqrstvwxz2456789";
     let short = match name.rsplit_once('-') {
-        Some((_, suffix)) if suffix.len() == 5 => suffix,
+        Some((_, suffix))
+            if suffix.len() == 5 && suffix.bytes().all(|b| GENERATED.contains(&b)) =>
+        {
+            suffix
+        }
         _ => name,
     };
     short.to_string()
@@ -3460,6 +3467,7 @@ mod tests {
     fn short_pod_names() {
         assert_eq!(short_pod("checkout-api-7d9f8c6b5-x2kqp"), "x2kqp");
         assert_eq!(short_pod("ledger-writer-0"), "ledger-writer-0");
+        assert_eq!(short_pod("web-proxy"), "web-proxy");
     }
 
     #[test]

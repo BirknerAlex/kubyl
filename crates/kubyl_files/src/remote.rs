@@ -176,15 +176,21 @@ pub async fn exec_capture(
         Some(status) => status.await,
         None => None,
     };
+    // No status means the stream ended before the command finished (the API always sends one),
+    // so partial output isn't mistaken for a result.
     let success = status
         .as_ref()
-        .is_none_or(|s| s.status.as_deref() == Some("Success"));
+        .is_some_and(|s| s.status.as_deref() == Some("Success"));
+    let message = match &status {
+        Some(status) => status.message.clone(),
+        None => Some("the connection closed before the command finished".into()),
+    };
     Ok(ExecOutput {
         stdout,
         stderr: String::from_utf8_lossy(&stderr).into_owned(),
         success,
         exit_code: status.as_ref().and_then(exit_code),
-        message: status.and_then(|s| s.message),
+        message,
     })
 }
 
@@ -370,7 +376,8 @@ impl RemoteTarget {
             anyhow::bail!("sha256sum isn't available");
         }
         let mut args = vec![self.real(base)];
-        args.extend(names.iter().map(|n| n.to_string()));
+        // `./`: `find` has no `--`, and reads a name like `-delete` as part of its expression.
+        args.extend(names.iter().map(|n| format!("./{n}")));
         let output = self
             .exec(
                 sh(

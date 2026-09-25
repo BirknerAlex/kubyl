@@ -219,6 +219,23 @@ async fn browse_upload_download_and_distroless() {
         String::from_utf8_lossy(&owners)
     );
 
+    // A name that looks like a `find` option: verifying it must not run `find -delete`.
+    let tricky = local.path().join("-delete");
+    std::fs::write(&tricky, b"not an option\n").unwrap();
+    let (result, _) = run(job(
+        &target,
+        Direction::Upload,
+        "/data/in/batch",
+        tricky.clone(),
+        "-delete",
+        false,
+        14,
+    ))
+    .await;
+    assert_eq!(result.expect("upload -delete"), Verification::Verified);
+    let after = target.list("/data/in/batch").await.unwrap();
+    assert_eq!(after.len(), 101, "nothing was deleted");
+
     // Download a 20 MB file in chunks, then resume a partial download.
     target
         .run(
@@ -276,9 +293,10 @@ async fn browse_upload_download_and_distroless() {
     ))
     .await;
     assert_eq!(result.expect("folder download"), Verification::Verified);
+    // The 100 files and `-delete`.
     assert_eq!(
         std::fs::read_dir(out.path().join("batch")).unwrap().count(),
-        100
+        101
     );
 
     // Distroless: no shell, reached through a debug container.
