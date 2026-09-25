@@ -1,11 +1,15 @@
 //! CPU and memory usage for list columns and the details dock.
 //!
-//! Phase 07 (metrics-server / Prometheus) implements [`MetricsProvider`] and installs it with
-//! [`Metrics::set_provider`]. Until then no provider is installed and usage cells stay empty.
+//! `kubyl_metrics` (Prometheus, metrics-server as fallback) implements [`MetricsProvider`] and
+//! installs it with [`Metrics::set_provider`]. Without a provider usage cells stay empty.
+//!
+//! The provider answers from a cache and fetches in the background; asking marks the data as
+//! wanted. When new data arrives it calls [`Metrics::changed`], so views that show usage observe
+//! the global (`cx.observe_global::<Metrics>`) to re-render or re-sort.
 
 use std::rc::Rc;
 
-use gpui::{App, Global, SharedString};
+use gpui::{App, BorrowAppContext as _, Global, SharedString};
 use kubyl_core::{CellValue, ClusterId};
 use serde_json::Value;
 
@@ -20,16 +24,31 @@ pub struct Usage {
     pub memory: f64,
 }
 
-/// A series of samples for sparklines (oldest first).
+/// A series of samples for sparklines (oldest first, evenly spaced).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct UsageHistory {
+    /// CPU in cores.
     pub cpu: Vec<f64>,
+    /// Memory in bytes.
     pub memory: Vec<f64>,
+    /// Time covered by the samples, e.g. `last 1h`.
+    pub window: SharedString,
     /// e.g. `Prometheus` or `metrics-server`.
     pub source: SharedString,
 }
 
-/// Supplies usage data. Implemented by phase 07.
+/// What a provider knows about a cluster's metrics source, for "why is there no usage" hints.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SourceStatus {
+    /// Still looking (or the cluster isn't connected).
+    Detecting,
+    /// Usage is available; the label names the source (`Prometheus`, `metrics-server`).
+    Ready(SharedString),
+    /// No source; the text says why and what to install.
+    Unavailable(SharedString),
+}
+
+/// Supplies usage data. Implemented by `kubyl_metrics`.
 pub trait MetricsProvider: 'static {
     fn pod_usage(
         &self,
@@ -49,12 +68,17 @@ pub trait MetricsProvider: 'static {
     ) -> Option<UsageHistory> {
         None
     }
+    /// The cluster's metrics source.
+    fn source_status(&self, _cluster: &ClusterId, _cx: &App) -> SourceStatus {
+        SourceStatus::Detecting
+    }
 }
 
 /// The installed provider, if any.
 #[derive(Default)]
 pub struct Metrics {
     provider: Option<Rc<dyn MetricsProvider>>,
+    revision: u64,
 }
 
 impl Global for Metrics {}
@@ -66,6 +90,16 @@ impl Metrics {
 
     pub fn provider(cx: &App) -> Option<Rc<dyn MetricsProvider>> {
         cx.try_global::<Self>()?.provider.clone()
+    }
+
+    /// Called by the provider when new usage data arrived. Notifies observers of the global.
+    pub fn changed(cx: &mut App) {
+        cx.update_default_global::<Self, _>(|metrics, _| metrics.revision += 1);
+    }
+
+    /// Bumped by every [`Self::changed`]; cheap change detection.
+    pub fn revision(cx: &App) -> u64 {
+        cx.try_global::<Self>().map_or(0, |m| m.revision)
     }
 }
 
@@ -121,5 +155,94 @@ pub fn usage_cell(
     CellValue::Usage {
         label: label.into(),
         percent,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use gpui::TestAppContext;
+    use serde_json::json;
+
+    use super::*;
+
+    struct Fixed;
+
+    impl MetricsProvider for Fixed {
+        fn pod_usage(&self, _: &ClusterId, _: &str, name: &str, _: &App) -> Option<Usage> {
+            (name == "web-0").then_some(Usage {
+                cpu: 0.125,
+                memory: 64.0 * 1024.0 * 1024.0,
+            })
+        }
+
+        fn node_usage(&self, _: &ClusterId, _: &str, _: &App) -> Option<Usage> {
+            Some(Usage {
+                cpu: 1.0,
+                memory: 0.0,
+            })
+        }
+    }
+
+    fn pod(name: &str) -> Value {
+        json!({
+            "metadata": {"name": name, "namespace": "default"},
+            "spec": {"containers": [
+                {"name": "a", "resources": {"limits": {"cpu": "250m", "memory": "128Mi"}}},
+                {"name": "b", "resources": {"requests": {"cpu": "100m"}}}
+            ]}
+        })
+    }
+
+    #[gpui::test]
+    fn usage_cells_come_from_the_provider(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let cluster = ClusterId::new("kind");
+            assert_eq!(
+                usage_cell(cx, &cluster, "Pod", &pod("web-0"), "cpu"),
+                CellValue::Empty
+            );
+            Metrics::set_provider(cx, Fixed);
+            assert_eq!(
+                usage_cell(cx, &cluster, "Pod", &pod("web-0"), "cpu"),
+                CellValue::Usage {
+                    label: "125m".into(),
+                    percent: 50.0,
+                }
+            );
+            assert_eq!(
+                usage_cell(cx, &cluster, "Pod", &pod("web-0"), "memory"),
+                CellValue::Usage {
+                    label: "64Mi".into(),
+                    percent: 50.0,
+                }
+            );
+            assert_eq!(
+                usage_cell(cx, &cluster, "Pod", &pod("web-1"), "cpu"),
+                CellValue::Empty
+            );
+            let node = json!({"metadata": {"name": "n1"}, "status": {"allocatable": {"cpu": "4"}}});
+            assert_eq!(
+                usage_cell(cx, &cluster, "Node", &node, "cpu"),
+                CellValue::Usage {
+                    label: "1".into(),
+                    percent: 25.0,
+                }
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn changed_notifies_observers(cx: &mut TestAppContext) {
+        let seen = std::rc::Rc::new(Cell::new(0));
+        let _subscription = cx.update(|cx| {
+            let seen = seen.clone();
+            cx.observe_global::<Metrics>(move |_| seen.set(seen.get() + 1))
+        });
+        cx.update(Metrics::changed);
+        cx.update(Metrics::changed);
+        assert_eq!(seen.get(), 2);
+        assert_eq!(cx.update(|cx| Metrics::revision(cx)), 2);
     }
 }

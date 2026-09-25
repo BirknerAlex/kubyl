@@ -48,15 +48,18 @@ cargo run -p kubyl
   `cargo run`, when overriding `HOME`) and `KUBYL_CREDENTIAL_STORE=memory`. A `state.json` in the
   config dir picks the open tabs (e.g. `{"kind":{"custom":"clusters"}}`) and `kube.active`.
   `KUBYL_SCREENSHOT_ACTIONS` takes comma-separated steps: `split`, `bottom`, `zoom`, `light`,
-  `about`, `toast`, `palette=:cert`, `action=pane::GoBack`, `keys=: p o enter` (typed through
-  GPUI's key dispatch), `mouse=640:380` (hover), `click=640:380` (logical window pixels) and
-  `wait=800`, which is enough to click through keyboard flows. Steps are comma-separated, so
-  `keys=` can't type commas; type `:`/`#` as themselves (not `shift-;`), and close completion
-  menus with `escape` before `enter` when typing into the YAML editor.
-- Local clusters: `script/dev-cluster.sh` (kind, sample workloads) and `script/oidc-dev.sh`
-  (Dex + an OIDC-enabled kind cluster). `script/load-pods.sh` adds 5,000 pods (and `--churn`)
-  for list performance checks. Point `KUBECONFIG` at a scratch file so the user's
-  `~/.kube/config` isn't modified.
+  `about`, `toast` (or `toast=<text>` for an error), `palette=:cert`, `action=pane::GoBack`,
+  `keys=: p o enter` (typed through GPUI's key dispatch), `mouse=640:380` (hover),
+  `click=640:380` (logical window pixels), `scroll=640:380:-600` (wheel delta at a point;
+  negative scrolls down) and `wait=800`, which is enough to click through keyboard flows. Steps
+  are comma-separated, so `keys=` can't type commas; type `:`/`#` as themselves (not
+  `shift-;`), and close completion menus with `escape` before `enter` when typing into the YAML
+  editor.
+- Local clusters: `script/dev-cluster.sh` (kind, sample workloads), `script/prometheus-dev.sh`
+  (metrics-server and kube-prometheus-stack on it; `--metrics-server-only` for the fallback) and
+  `script/oidc-dev.sh` (Dex + an OIDC-enabled kind cluster). `script/load-pods.sh` adds 5,000
+  pods (and `--churn`) for list performance checks. Point `KUBECONFIG` at a scratch file so the
+  user's `~/.kube/config` isn't modified.
 - Live tests against those clusters are ignored by default: see the header of
   `crates/kubyl_kube/tests/live.rs`.
 

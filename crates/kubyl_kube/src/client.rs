@@ -11,7 +11,11 @@ use tower::buffer::BufferLayer;
 use tower::filter::AsyncFilterLayer;
 
 use crate::auth::oidc::OidcSecrets;
-use crate::auth::{AuthError, AuthLayer, AuthMethod, CredentialSource, ExecAuth, OidcAuth, exec};
+use crate::auth::openshift::OpenShiftParams;
+use crate::auth::{
+    AuthError, AuthLayer, AuthMethod, BearerToken, CredentialSource, ExecAuth, OidcAuth,
+    OpenShiftAuth, exec,
+};
 use crate::kubeconfig::ContextInfo;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -100,6 +104,8 @@ pub(crate) fn error_chain(err: &(dyn std::error::Error + 'static)) -> String {
 pub struct BuiltClient {
     pub client: Client,
     pub credentials: Option<CredentialSource>,
+    /// The user's bearer token, when they authenticate with one (not client certificates).
+    pub bearer: Option<BearerToken>,
     pub default_namespace: String,
     /// The proxy in use (kubeconfig `proxy-url` or `HTTPS_PROXY`).
     pub proxy: Option<String>,
@@ -121,6 +127,9 @@ pub async fn build(
         .await
         .map_err(|err| ConnectError::Config(error_chain(&err)))?;
     config.connect_timeout = Some(CONNECT_TIMEOUT);
+    if config.proxy_url.is_none() {
+        config.proxy_url = env_proxy(&config.cluster_url);
+    }
 
     let mut credentials = None;
     let mut rebuild_at = None;
@@ -132,6 +141,23 @@ pub async fn build(
                 secrets,
             ))));
             strip_managed_auth(&mut config.auth_info);
+        }
+        AuthMethod::OpenShift => {
+            // The kubeconfig token is only the first one to try; see `auth::openshift`.
+            let token = config.auth_info.token.take();
+            credentials = Some(CredentialSource::OpenShift(OpenShiftAuth::shared(
+                OpenShiftParams {
+                    server: info
+                        .server
+                        .clone()
+                        .unwrap_or_else(|| config.cluster_url.to_string()),
+                    user: info.user.clone().unwrap_or_default(),
+                    roots: config.root_cert.clone().unwrap_or_default(),
+                    insecure: config.accept_invalid_certs,
+                    proxy: config.proxy_url.as_ref().map(|u| u.to_string()),
+                },
+                token,
+            )));
         }
         AuthMethod::Exec(_) => {
             let exec_config = config
@@ -162,9 +188,17 @@ pub async fn build(
         _ => {}
     }
 
-    if config.proxy_url.is_none() {
-        config.proxy_url = env_proxy(&config.cluster_url);
-    }
+    let bearer = match (
+        &credentials,
+        &config.auth_info.token,
+        &config.auth_info.token_file,
+    ) {
+        (Some(source), _, _) => Some(BearerToken::Managed(source.clone())),
+        (None, Some(token), _) => Some(BearerToken::Static(token.clone())),
+        (None, None, Some(file)) => Some(BearerToken::File(file.into())),
+        _ => None,
+    };
+
     let proxy = config
         .proxy_url
         .as_ref()
@@ -185,6 +219,7 @@ pub async fn build(
     Ok(BuiltClient {
         client,
         credentials,
+        bearer,
         default_namespace,
         proxy,
         rebuild_at,

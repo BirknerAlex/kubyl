@@ -4445,7 +4445,9 @@ name = "kubyl_charts"
 version = "0.1.1"
 dependencies = [
  "gpui-pre",
+ "jiff",
  "kubyl_core",
+ "kubyl_ui",
 ]
 
 [[package]]
@@ -4475,6 +4477,7 @@ dependencies = [
  "gpui-pre",
  "jiff",
  "kube",
+ "kubyl_charts",
  "kubyl_core",
  "kubyl_kube",
  "kubyl_resources",
@@ -4553,6 +4556,7 @@ dependencies = [
  "open",
  "openidconnect",
  "parking_lot",
+ "rustls-native-certs",
  "schemars 1.2.2",
  "secrecy",
  "serde",
@@ -4596,8 +4600,28 @@ dependencies = [
 name = "kubyl_metrics"
 version = "0.1.1"
 dependencies = [
+ "base64 0.22.1",
+ "futures",
+ "gpui-component",
  "gpui-pre",
+ "http",
+ "jiff",
+ "k8s-openapi",
+ "kube",
+ "kubyl_charts",
  "kubyl_core",
+ "kubyl_explorer",
+ "kubyl_kube",
+ "kubyl_resources",
+ "kubyl_settings",
+ "kubyl_ui",
+ "schemars 1.2.2",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]
@@ -4612,8 +4636,25 @@ dependencies = [
 name = "kubyl_overview"
 version = "0.1.1"
 dependencies = [
+ "futures",
+ "gpui-component",
  "gpui-pre",
+ "jiff",
+ "k8s-openapi",
+ "kube",
+ "kubyl_charts",
  "kubyl_core",
+ "kubyl_explorer",
+ "kubyl_kube",
+ "kubyl_metrics",
+ "kubyl_resources",
+ "kubyl_settings",
+ "kubyl_ui",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

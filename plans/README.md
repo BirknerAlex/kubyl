@@ -34,26 +34,26 @@ Each phase file is written so one Claude Code session can own it from start to f
 | 05 | [Logs, exec terminal, port-forwarding](05-logs-exec-portforward.md) | 02 | `kubyl_logs`, `kubyl_terminal`, `kubyl_portforward` | 2 · Logs |
 | 06 | [Pod file browser, drag and drop transfers](06-file-browser.md) | 05 (exec) | `kubyl_files` | 9 · Files |
 | 07 | [Overview, metrics (Prometheus), events](07-metrics-events-overview.md) | 02 | `kubyl_metrics`, `kubyl_charts`, `kubyl_overview` | 4 · Overview |
-| 08 | [Operators (OLM) and Helm releases](08-operators-olm.md) | 02, 04 | `kubyl_operators` | 7 · Operators |
-| 09 | [Cluster updates](09-cluster-updates.md) | 02, 07, 08 | `kubyl_updates` | 8 · Updates |
-| 10 | [Packaging, release, auto-update, hardening](10-packaging-release.md) | 00 (CI), then all | `script/`, `.github/`, `crates/kubyl` bundling | none |
-| 11 | [Service web views over temporary port-forwards](11-service-webview.md) | 02, 05 | `kubyl_webview` (new) | 10 · Web view |
-| 12 | [Argo CD: applications, sync, history, rollback](12-argocd.md) | 02, 04, 05 (11 optional) | `kubyl_argocd` (new) | none yet |
-| 13 | [Kubeconfig editor: clusters, credentials, contexts, connection test](13-kubeconfig-editor.md) | 01, 04 | `kubyl_kubeconfig` (new) | none yet (board 11) |
+| 08 | [Service web views over temporary port-forwards](08-service-webview.md) | 02, 05 | `kubyl_webview` (new) | 10 · Web view |
+| 09 | [Packaging, release, auto-update, hardening](09-packaging-release.md) | 00 (CI), then all | `script/`, `.github/`, `crates/kubyl` bundling | none |
+| 10 | [Argo CD: applications, sync, history, rollback](10-argocd.md) | 02, 04, 05 (08 optional) | `kubyl_argocd` (new) | none yet |
+| 11 | [Kubeconfig editor: clusters, credentials, contexts, connection test](11-kubeconfig-editor.md) | 01, 04 | `kubyl_kubeconfig` (new) | none yet (board 11) |
+| 12 | [Operators (OLM) and Helm releases](12-operators-olm.md) | 02, 04 | `kubyl_operators` | 7 · Operators |
+| 13 | [Cluster updates](13-cluster-updates.md) | 02, 07, 12 | `kubyl_updates` | 8 · Updates |
 
 ```
 00 ─▶ 01 ─▶ 02 ─┬─▶ 03
                 ├─▶ 04 ──────┐
                 ├─▶ 05 ─▶ 06 │
-                ├─▶ 07 ──────┼─▶ 09 (also needs 08)
-                └────────────┴─▶ 08 (needs 04 for install YAML/diff)
-05 ─▶ 11 (web views)        02 + 04 + 05 ─▶ 12 (Argo CD; uses 11 for "Open Argo CD UI" if present)
-01 + 04 ─▶ 13 (kubeconfig editor)
-10: CI part runs from 00 onward; packaging and release after the feature phases
+                ├─▶ 07 ──────┼─▶ 13 (also needs 12)
+                └────────────┴─▶ 12 (needs 04 for install YAML/diff)
+05 ─▶ 08 (web views)        02 + 04 + 05 ─▶ 10 (Argo CD; uses 08 for "Open Argo CD UI" if present)
+01 + 04 ─▶ 11 (kubeconfig editor)
+09: CI part runs from 00 onward; packaging and release after the feature phases
 ```
 
-After phase 02, phases 03, 04, 05 and 07 can run in parallel sessions. Phase 11 can start once 05 is done, phase 12 once 04 and 05 are done, and phase 13 once 04 is done.
-Phases 11, 12 and 13 add crates that phase 00 didn't stub (`kubyl_webview`, `kubyl_argocd`, `kubyl_kubeconfig`): their first commit adds the stub crate (workspace member plus the `init` line in `crates/kubyl/src/main.rs`) in a tiny PR that lands on `main` before the feature work, so parallel sessions don't conflict.
+After phase 02, phases 03, 04, 05 and 07 can run in parallel sessions. Phase 08 can start once 05 is done, phase 10 once 04 and 05 are done, and phase 11 once 04 is done.
+Phases 08, 10 and 11 add crates that phase 00 didn't stub (`kubyl_webview`, `kubyl_argocd`, `kubyl_kubeconfig`): their first commit adds the stub crate (workspace member plus the `init` line in `crates/kubyl/src/main.rs`) in a tiny PR that lands on `main` before the feature work, so parallel sessions don't conflict.
 Phase 00 must leave stub crates and registration traits so that parallel phases never edit
 the same files. See "Extension points" below.
 
@@ -84,9 +84,9 @@ crates/
   kubyl_overview/           # cluster overview dashboard + events stream
   kubyl_operators/          # OLM v0/v1, OperatorHub, InstallPlans, Helm releases
   kubyl_updates/            # cluster update providers + preflight checks
-  kubyl_webview/            # embedded web views over temporary port-forwards (phase 11)
-  kubyl_argocd/             # Argo CD applications, sync, history, rollback (phase 12)
-  kubyl_kubeconfig/         # kubeconfig editor, connection test, creation wizard (phase 13)
+  kubyl_webview/            # embedded web views over temporary port-forwards (phase 08)
+  kubyl_argocd/             # Argo CD applications, sync, history, rollback (phase 10)
+  kubyl_kubeconfig/         # kubeconfig editor, connection test, creation wizard (phase 11)
 assets/                     # logo, icons, fonts, keymaps, themes
 design/mockups/             # mockup generator (HTML design canvas)
 plans/                      # these plans
@@ -101,8 +101,9 @@ plans/                      # these plans
 | Kubernetes client | `kube` + `k8s-openapi` (latest), features `runtime`, `ws`, `oauth`, `oidc`, `gzip`, `rustls-tls` + `ring`, `http-proxy`, `socks5` | Dynamic API (`DynamicObject`, `discovery`) is the default path. Typed APIs only where needed. Get clients, discovery, namespaces and caps from `kubyl_kube::ConnectionManager::global(cx)` (phase 01), never build your own. Exec and OIDC credentials are injected by Kubyl's auth layer, not by kube. |
 | Async | Dedicated multi-thread **Tokio** runtime on background threads. GPUI's executor drives UI only. | Bridge in `kubyl_core::runtime`: `spawn_kube(fut) -> Task<T>` plus channels into `cx.spawn`. No Tokio calls on the UI thread. |
 | State model | Per-cluster **watch caches** (kube `reflector` stores) feed GPUI `Entity<…>` models via batched diffs (≤ 60 Hz) | Views never await network calls directly. |
-| Secrets | `keyring` 4 (macOS Keychain, Windows Credential Manager, Secret Service) | OIDC refresh/ID tokens (keyed by issuer + client id). Exec credentials are cached in memory only. Never written to disk in plain text, except the opt-in dev store `KUBYL_CREDENTIAL_STORE=file` (`memory` for tests). |
+| Secrets | `keyring` 4 (macOS Keychain, Windows Credential Manager, Secret Service) | OIDC refresh/ID tokens (keyed by issuer + client id), OpenShift OAuth tokens (keyed by API server + kubeconfig user). Exec credentials are cached in memory only. Never written to disk in plain text, except the opt-in dev store `KUBYL_CREDENTIAL_STORE=file` (`memory` for tests). |
 | OIDC | `openidconnect` crate: auth-code + PKCE with loopback redirect, device-code fallback | Compatible with kubelogin-style kubeconfigs: redirect `http://localhost:8000` (then `18000`), like kubelogin (decided in phase 01). `script/oidc-dev.sh` runs Dex + an OIDC kind cluster. |
+| OpenShift OAuth | `kubyl_kube::auth::openshift` on the `openidconnect` re-export of `reqwest` (phase 07) | Contexts with an `oc login` token (`sha256~…`) sign in like `oc login`: browser (`openshift-cli-client`, PKCE, loopback), username/password (challenging client) or a pasted token. Endpoints from `/.well-known/oauth-authorization-server`. |
 | YAML | `granit-parser` 1.3 (decided in phase 04): the saphyr-parser fork that `serde-saphyr` 1.3 uses, events with byte spans and comments. `kubyl_yaml::parse` builds a spanned tree on it; output goes through `serde-saphyr` (keys sorted like `kubectl get -o yaml`) | The editor never re-serializes the user's buffer: diagnostics, hover, completion, Secret masking and the managedFields toggle work on spans and text edits, so comments and key order survive. `serde_yaml` is unmaintained; `serde_yaml_ng` has no node spans. |
 | Syntax | `tree-sitter-yaml` through gpui-component's `tree-sitter-yaml` feature (phase 04) | Highlighting and folding in gpui-component's code editor (`EditorState`); editor colors come from `kubyl_ui` (One Dark). |
 | YAML editor | gpui-component `EditorState` (Apache-2.0), not Zed's GPL `editor` (phase 04) | Diagnostics, hover and completion use its LSP-style providers; gutter markers, code lenses and end-of-line messages are painted by `kubyl_yaml` over the editor. Diffs: `similar` 3 (line diff, three-way merge). |
@@ -111,8 +112,10 @@ plans/                      # these plans
 | Log view | `gpui::list` with `FollowMode::Tail`, spliced per batch (decided in phase 05) | Variable-height rows (wrap, pretty JSON). Timestamps are always requested from the API and split off each line; reconnects resume at `sinceTime`. Selector sources watch their pods. |
 | File transfers | Exec only: `tar` streams, `cat`, `dd` chunks with resume, `sha256sum` verification (decided in phase 06) | Works without `kubectl` and without anything installed in the image; distroless containers go through an ephemeral busybox container reading `/proc/1/root`. Uploads extract with `tar xof` (files belong to the container's user). |
 | Drag out to the OS | GPUI's `external_drag_payload` with files staged locally (decided in phase 06) | GPUI hands only existing local files to the OS (macOS, Wayland; no file promises, nothing on Windows/X11). Small pod files are downloaded when a drag starts and offered once complete; folders, large files and Secret mounts use "Download to…". |
-| Charts | Own GPUI `canvas`/path renderer in `kubyl_charts` | No webviews. |
-| Web views | `wry` (MIT/Apache-2.0) as a child view of the GPUI window; separate window or system browser as fallback (phase 11 spike decides per platform) | Only for phase 11 service web views, loaded lazily. |
+| Charts | Own GPUI `canvas`/path renderer in `kubyl_charts` | No webviews. Eight series colors: the theme's accent/orange/purple/cyan hues plus magenta/mint/indigo/amber, re-stepped in lightness per theme (adjacent CVD separation, 3:1 on the card surface). A chart shows at most four series plus a dashed "other". `ColorRegistry` keeps an entity's color on every chart of a scope (`<cluster>/namespace`…), filling the safest slots first (phase 07). |
+| Metrics | `kubyl_metrics::MetricsService`: one demand-driven cache per cluster (decided in phase 07). Prometheus through the API server's service proxy (discovered, or a settings override incl. an external URL whose Authorization header lives in the keychain), metrics-server as fallback | Reads mark data as wanted; a 1 s loop refreshes whatever is stale, so every view shares one fetch and unwatched clusters cost nothing. The PromQL library is versioned, prefers kube-prometheus recording rules when present, and is overridable (`metrics.queries`). Current usage: Prometheus instant queries (else metrics-server); history: Prometheus range queries only. Which exporters and rules exist comes from `/api/v1/label/__name__/values`; panels and charts whose metric is missing are left out. Node-exporter series are joined to node names through `node_uname_info`. |
+| Events | `events.k8s.io/v1` with core `v1` fallback, over shared `ResourceStores` watches; `OOMKilled` warnings derived from pod status (decided in phase 07) | Kubernetes records no Event for an OOM kill (only `BackOff` after the restart), so the stream derives one from `lastState.terminated.reason`, marked "pod status". Repeats fold into `×N`. |
+| Web views | `wry` (MIT/Apache-2.0) as a child view of the GPUI window; separate window or system browser as fallback (phase 08 spike decides per platform) | Only for phase 08 service web views, loaded lazily. |
 | File watching | `notify` | Kubeconfig hot reload. |
 | Settings | JSON (`serde_json`) in `dirs::config_dir()/kubyl/` (override with `$KUBYL_CONFIG_DIR`) | `settings.json` (user, hot-reloaded, with a generated `settings.schema.json`), `state.json` (UI state, favorites, tabs). Typed sections: `kubyl_settings::{SettingsSection, StateSection}`. |
 | UI units | Sizes use `kubyl_ui::u(px)` (rems); the window's rem size follows `ui_font_size` | Zoom (⌘+/⌘-) scales the whole UI. Colors come from `cx.colors()`. |
@@ -170,6 +173,25 @@ one list. That list is the only shared line, and it is append-only.
   lists). `kubyl_files::remote::open` probes a container and gives a `RemoteTarget` (list, read,
   write, stat, mkdir, rename, delete, chmod over exec); `kubyl_files::queue::TransferQueue`
   runs verified transfers for any crate (`enqueue(TransferJob)`).
+- Metrics (phase 07): `kubyl_resources::metrics::Metrics::provider(cx)` answers pod/node usage,
+  pod history (sparklines) and `source_status` from a cache; asking keeps the data fresh.
+  Observe the `Metrics` global (bumped by `Metrics::changed`) to re-render or re-sort. For
+  charts and totals use `kubyl_metrics::MetricsService::global(cx)`: `source`, `nodes`, `pods`,
+  `range(cluster, &RangeKey::new("namespace_cpu", TimeRange::H1).filter("namespace", ns))`
+  (query ids in `kubyl_metrics::queries::LIBRARY`); observe the entity for new results.
+- Charts (phase 07): `kubyl_charts::{LineChart, Sparkline, Meter, TimeRangePicker}`;
+  `ColorRegistry::assign(cx, "<cluster>/namespace", &names)` for entity colors that match the
+  other charts, `series_color(slot, colors)`, `data::{align, top_n}` for Prometheus data.
+- Details sections (phase 07): `ChromeRegistry::add_details_section(cx, impl DetailsSection)`
+  adds a view to the Summary of an object's details (built once per shown object). The Metrics
+  section (`kubyl_metrics::details`) is one; its panels per kind are in `kubyl_metrics::panels`.
+- Overview and events (phase 07): open `ViewKind::Overview` with
+  `ResourceRef::list(cluster, Gvr::new("", "", ""), namespace)` (a namespace gives the namespace
+  variant) and `ViewKind::Events` (namespace `None` follows the active one). The right-dock panel
+  id is `events`. `kubyl_overview::events::EventsFeed` is the live, groupable, pausable stream for
+  any scope.
+- Secrets typed by the user (phase 07): `kubyl_explorer::dialogs::prompt_secret` (masked); store
+  the value with `kubyl_kube::auth::store`, never in settings.
 - Port-forwards from anywhere (phase 05): dispatch `kubyl_core::actions::ForwardPort { target,
   port }` (one click: same local port when free, `80` → `8080`) and `StopForward(id)`; read the
   running ones from the `kubyl_core::forwards::ActiveForwards` global (observe it to update).

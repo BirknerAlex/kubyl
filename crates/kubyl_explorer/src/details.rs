@@ -22,11 +22,12 @@ use gpui::{
     Focusable, FontWeight, IntoElement, Render, SharedString, Subscription, Task, Window, div,
     prelude::*,
 };
+use kubyl_charts::Sparkline;
 use kubyl_core::actions::{ForwardPort, OpenView, StopForward};
 use kubyl_core::forwards::ActiveForwards;
 use kubyl_core::{
-    ClusterCaps, ClusterId, DockPanel, DockPosition, Gvr, Notification, NotificationCenter,
-    ResourceRef, TabHandle, TabView, Tone, ViewKind, ViewRegistry, ViewRequest,
+    ChromeRegistry, ClusterCaps, ClusterId, DockPanel, DockPosition, Gvr, Notification,
+    NotificationCenter, ResourceRef, TabHandle, TabView, Tone, ViewKind, ViewRegistry, ViewRequest,
 };
 use kubyl_kube::ConnectionManager;
 use kubyl_resources::columns::{
@@ -36,6 +37,7 @@ use kubyl_resources::format::{
     array_at, format_bytes, format_cpu, human_duration, int_at, map_pairs, object_age,
     parse_quantity, seconds_since, str_at, timestamp,
 };
+use kubyl_resources::metrics::{Metrics, SourceStatus};
 use kubyl_resources::{
     ResourceSelection, ResourceStore, ResourceStores, StoreHandle, StoreKey, object_key,
 };
@@ -187,6 +189,10 @@ pub struct DetailsContent {
     scale_pending: Option<PendingScale>,
     scale_task: Option<Task<()>>,
     _forwards_observer: Subscription,
+    _metrics_observer: Subscription,
+    /// Sections other crates contribute (`ChromeRegistry::add_details_section`), built once per
+    /// target.
+    sections: Option<(Target, Vec<AnyView>)>,
 }
 
 impl DetailsContent {
@@ -207,6 +213,9 @@ impl DetailsContent {
             scale_task: None,
             // Port rows show running forwards.
             _forwards_observer: cx.observe_global::<ActiveForwards>(|_, cx| cx.notify()),
+            // Usage numbers and sparklines.
+            _metrics_observer: cx.observe_global::<Metrics>(|_, cx| cx.notify()),
+            sections: None,
         }
     }
 
@@ -232,6 +241,7 @@ impl DetailsContent {
         if !same_object {
             self.related = Related::default();
             self.extra.clear();
+            self.sections = None;
             self.revealed.clear();
             self.scale_pending = None;
             self.scale_task = None;
@@ -304,6 +314,28 @@ impl DetailsContent {
             }));
         }
         cx.notify();
+    }
+
+    /// Sections from other crates for `target` (built when the target changes).
+    fn contributed_sections(&mut self, target: &Target, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        if self.sections.as_ref().map(|(t, _)| t) != Some(target) {
+            let reference = ResourceRef::object(
+                target.cluster.clone(),
+                target.gvr.clone(),
+                target.namespace.clone(),
+                target.name.clone(),
+            );
+            let builders: Vec<_> = ChromeRegistry::global(cx).details_sections().to_vec();
+            let views = builders
+                .iter()
+                .filter_map(|section| section.build(&reference, &target.kind, cx))
+                .collect();
+            self.sections = Some((target.clone(), views));
+        }
+        self.sections
+            .as_ref()
+            .map(|(_, views)| views.iter().map(|v| v.clone().into_any_element()).collect())
+            .unwrap_or_default()
     }
 
     fn set_mode(&mut self, mode: Mode, cx: &mut Context<Self>) {
@@ -959,13 +991,14 @@ impl DetailsContent {
         match target.kind.as_str() {
             "Pod" => out.extend(self.render_pod(object, target, &colors, cx)),
             "Deployment" => out.extend(self.render_deployment(object, target, &colors, cx)),
-            "Node" => out.extend(self.render_node(object, &colors)),
+            "Node" => out.extend(self.render_node(object, &colors, cx)),
             "Service" => out.extend(self.render_service(object, target, &colors, cx)),
             "PersistentVolumeClaim" => out.extend(self.render_pvc(object, target, &colors, cx)),
             "Ingress" => out.extend(self.render_ingress(object, target, &colors)),
             "Secret" => out.extend(self.render_secret(object, &colors, cx)),
             _ => {}
         }
+        out.extend(self.contributed_sections(target, cx));
 
         // Pods selected by workloads (not Deployments: their pods show via ReplicaSets too).
         if let (Some(selector), Some(pods), Some(ns)) = (
@@ -1265,57 +1298,7 @@ impl DetailsContent {
             );
         }
 
-        // Usage (phase 07 provides the data).
-        let target = self.target.as_ref();
-        let usage = target.and_then(|t| {
-            let provider = kubyl_resources::metrics::Metrics::provider(cx)?;
-            provider.pod_usage(
-                &t.cluster,
-                t.namespace.as_deref().unwrap_or_default(),
-                &t.name,
-                cx,
-            )
-        });
-        let limit = |resource: &str, kind: &str| {
-            kubyl_resources::metrics::pod_resource(pod, kind, resource)
-        };
-        let body = match usage {
-            Some(usage) => kv(
-                vec![
-                    (
-                        "CPU",
-                        format!(
-                            "{}{}{}",
-                            format_cpu(usage.cpu),
-                            limit("cpu", "requests")
-                                .map(|r| format!(" / req {}", format_cpu(r)))
-                                .unwrap_or_default(),
-                            limit("cpu", "limits")
-                                .map(|l| format!(" · lim {}", format_cpu(l)))
-                                .unwrap_or_default()
-                        ),
-                    ),
-                    (
-                        "Memory",
-                        format!(
-                            "{}{}",
-                            format_bytes(usage.memory),
-                            limit("memory", "limits")
-                                .map(|l| format!(" / lim {}", format_bytes(l)))
-                                .unwrap_or_default()
-                        ),
-                    ),
-                ],
-                colors,
-            )
-            .into_any_element(),
-            None => div()
-                .text_size(u(12.0))
-                .text_color(colors.text_dim)
-                .child("No metrics source yet (metrics-server or Prometheus, phase 07).")
-                .into_any_element(),
-        };
-        out.push(section("Usage", colors).child(body).into_any_element());
+        out.push(self.render_pod_usage(pod, colors, cx));
         out
     }
 
@@ -1458,7 +1441,202 @@ impl DetailsContent {
         out
     }
 
-    fn render_node(&self, node: &Value, colors: &Colors) -> Vec<AnyElement> {
+    /// Usage of the pod (board 1): current CPU and memory against requests and limits, with
+    /// sparklines when the provider has history.
+    fn render_pod_usage(&self, pod: &Value, colors: &Colors, cx: &App) -> AnyElement {
+        let Some(target) = self.target.as_ref() else {
+            return div().into_any_element();
+        };
+        let namespace = target.namespace.as_deref().unwrap_or_default();
+        let provider = Metrics::provider(cx);
+        let status = provider
+            .as_ref()
+            .map(|p| p.source_status(&target.cluster, cx));
+        let (usage, history) = match &provider {
+            Some(p) => (
+                p.pod_usage(&target.cluster, namespace, &target.name, cx),
+                p.pod_history(&target.cluster, namespace, &target.name, cx),
+            ),
+            None => (None, None),
+        };
+        let resource = |kind: &str, resource: &str| {
+            kubyl_resources::metrics::pod_resource(pod, kind, resource)
+        };
+        // `USAGE · LAST 1H · Prometheus`
+        let mut title = "Usage".to_string();
+        if let Some(window) = history
+            .as_ref()
+            .map(|h| h.window.clone())
+            .filter(|w| !w.is_empty())
+        {
+            title.push_str(&format!(" · {window}"));
+        }
+        let source = history
+            .as_ref()
+            .map(|h| h.source.clone())
+            .or_else(|| match &status {
+                Some(SourceStatus::Ready(label)) => Some(label.clone()),
+                _ => None,
+            });
+        let header = h_flex()
+            .gap(u(4.0))
+            .text_size(u(11.0))
+            .text_color(colors.text_dim)
+            .child(
+                div()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(title.to_uppercase()),
+            )
+            .when_some(source, |this, source| {
+                this.child(div().child(format!("· {source}")))
+            });
+        let body = match (usage, &status) {
+            (Some(usage), _) => {
+                let row = |label: &'static str,
+                           value: String,
+                           detail: String,
+                           samples: Option<Vec<f64>>,
+                           color| {
+                    v_flex()
+                        .gap(u(2.0))
+                        .child(
+                            h_flex()
+                                .justify_between()
+                                .text_size(u(12.0))
+                                .child(div().text_color(colors.text_muted).child(label))
+                                .child(
+                                    h_flex()
+                                        .font_family(fonts::MONO)
+                                        .text_size(u(11.5))
+                                        .child(value)
+                                        .child(div().text_color(colors.text_dim).child(detail)),
+                                ),
+                        )
+                        .when_some(samples.filter(|s| s.len() >= 2), |this, samples| {
+                            this.child(Sparkline::new(samples, color).height(34.0))
+                        })
+                };
+                let limits = |resource_name: &str, format: fn(f64) -> String| {
+                    let parts: Vec<String> = [("requests", "req"), ("limits", "lim")]
+                        .iter()
+                        .filter_map(|(kind, short)| {
+                            resource(kind, resource_name).map(|v| format!("{short} {}", format(v)))
+                        })
+                        .collect();
+                    if parts.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" / {}", parts.join(" · "))
+                    }
+                };
+                v_flex()
+                    .gap(u(10.0))
+                    .child(row(
+                        "CPU",
+                        format_cpu(usage.cpu),
+                        limits("cpu", format_cpu),
+                        history.as_ref().map(|h| h.cpu.clone()),
+                        colors.accent,
+                    ))
+                    .child(row(
+                        "Memory",
+                        format_bytes(usage.memory),
+                        limits("memory", format_bytes),
+                        history.as_ref().map(|h| h.memory.clone()),
+                        colors.purple,
+                    ))
+                    .into_any_element()
+            }
+            (None, status) => {
+                let running = str_at(pod, "/status/phase") == "Running";
+                let text: SharedString = match status {
+                    None => "No metrics provider.".into(),
+                    Some(SourceStatus::Detecting) => {
+                        "Looking for metrics-server or Prometheus…".into()
+                    }
+                    Some(SourceStatus::Unavailable(reason)) => reason.clone(),
+                    Some(SourceStatus::Ready(_)) if !running => "Not running.".into(),
+                    Some(SourceStatus::Ready(_)) => "Waiting for the first sample…".into(),
+                };
+                div()
+                    .text_size(u(12.0))
+                    .text_color(colors.text_dim)
+                    .child(text)
+                    .into_any_element()
+            }
+        };
+        v_flex()
+            .px(u(14.0))
+            .py(u(12.0))
+            .gap(u(8.0))
+            .border_b_1()
+            .border_color(colors.border_variant)
+            .child(header)
+            .child(body)
+            .into_any_element()
+    }
+
+    /// Current usage of a node against its allocatable capacity.
+    fn render_node_usage(&self, node: &Value, colors: &Colors, cx: &App) -> Option<AnyElement> {
+        let target = self.target.as_ref()?;
+        let usage = Metrics::provider(cx)?.node_usage(&target.cluster, &target.name, cx)?;
+        let row = |label: &'static str,
+                   used: f64,
+                   allocatable: Option<f64>,
+                   format: fn(f64) -> String| {
+            let percent = allocatable
+                .filter(|a| *a > 0.0)
+                .map(|a| (used / a * 100.0) as f32);
+            v_flex()
+                .gap(u(3.0))
+                .child(
+                    h_flex()
+                        .justify_between()
+                        .text_size(u(12.0))
+                        .child(div().text_color(colors.text_muted).child(label))
+                        .child(
+                            h_flex()
+                                .font_family(fonts::MONO)
+                                .text_size(u(11.5))
+                                .child(format(used))
+                                .when_some(allocatable, |this, a| {
+                                    this.child(
+                                        div()
+                                            .text_color(colors.text_dim)
+                                            .child(format!(" / {}", format(a))),
+                                    )
+                                })
+                                .when_some(percent, |this, p| {
+                                    this.child(
+                                        div()
+                                            .text_color(colors.text_dim)
+                                            .child(format!(" · {p:.0}%")),
+                                    )
+                                }),
+                        ),
+                )
+                .when_some(percent, |this, p| this.child(kubyl_ui::ProgressBar::new(p)))
+        };
+        let allocatable =
+            |key: &str| parse_quantity(str_at(node, &format!("/status/allocatable/{key}")));
+        Some(
+            section("Usage", colors)
+                .child(
+                    v_flex()
+                        .gap(u(10.0))
+                        .child(row("CPU", usage.cpu, allocatable("cpu"), format_cpu))
+                        .child(row(
+                            "Memory",
+                            usage.memory,
+                            allocatable("memory"),
+                            format_bytes,
+                        )),
+                )
+                .into_any_element(),
+        )
+    }
+
+    fn render_node(&self, node: &Value, colors: &Colors, cx: &App) -> Vec<AnyElement> {
         let quantity = |pointer: &str, cpu: bool| {
             let raw = str_at(node, pointer);
             match parse_quantity(raw) {
@@ -1493,11 +1671,15 @@ impl DetailsContent {
             ("OS", info("osImage")),
             ("Runtime", info("containerRuntimeVersion")),
         ];
-        let mut out = vec![
+        let mut out: Vec<AnyElement> = self
+            .render_node_usage(node, colors, cx)
+            .into_iter()
+            .collect();
+        out.push(
             section("Capacity", colors)
                 .child(kv(rows, colors))
                 .into_any_element(),
-        ];
+        );
         let taints: Vec<String> = array_at(node, "/spec/taints")
             .iter()
             .map(|t| match t["value"].as_str() {

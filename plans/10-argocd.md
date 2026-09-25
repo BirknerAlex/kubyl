@@ -1,7 +1,7 @@
-# Phase 12: Argo CD
+# Phase 10: Argo CD
 
 **Status:** not started
-**Depends on:** 02 (lists, details, actions), 04 (YAML/diff view), 05 (logs), optional 11 (open the Argo CD web UI)
+**Depends on:** 02 (lists, details, actions), 04 (YAML/diff view), 05 (logs), optional 08 (open the Argo CD web UI)
 **Owns:** `crates/kubyl_argocd`
 **Mockups:** none yet (add boards before building the UI: Applications list, Application details with resource tree and history)
 
@@ -21,7 +21,7 @@ cluster.
 
 ### Two access modes
 - [ ] **Kubernetes mode** (default, needs only the user's kube access): reads and patches the CRDs directly. Status, health, history, resources (`status.resources`), conditions, and all actions below that can be done by patching the Application
-- [ ] **API mode** (optional, richer): talks to `argocd-server` through the Kubernetes service proxy or a temporary forward (phase 11), and signs in with Argo CD SSO/local account (token kept in the keychain). Adds rendered manifests, live-vs-desired diff (`managed-resources`), full resource tree including child objects, and server-side rollback. The app shows which mode is active, and uses API mode for a feature only when it's connected
+- [ ] **API mode** (optional, richer): talks to `argocd-server` through the Kubernetes service proxy or a temporary forward (phase 08), and signs in with Argo CD SSO/local account (token kept in the keychain). Adds rendered manifests, live-vs-desired diff (`managed-resources`), full resource tree including child objects, and server-side rollback. The app shows which mode is active, and uses API mode for a feature only when it's connected
 
 ### Applications view
 - [ ] Sidebar: an "Argo CD" group under Administration with Applications, ApplicationSets, Projects (with counts). Also listed under Custom Resources as usual
@@ -53,7 +53,7 @@ cluster.
 ### Integration
 - [ ] Palette: `:apps` / `:app` / `:applications`, `:appsets`, `:appprojects`, and actions `> Argo CD: Sync…`, `Refresh`, `Rollback…`
 - [ ] Objects managed by Argo CD (label `app.kubernetes.io/instance` or the tracking annotation `argocd.argoproj.io/tracking-id`) show "Managed by Argo CD app X" in their details dock, with a link. Editing them warns that Argo CD may revert the change (self-heal)
-- [ ] "Open Argo CD UI" button that opens `argocd-server` in a web view (phase 11), when that phase exists
+- [ ] "Open Argo CD UI" button that opens `argocd-server` in a web view (phase 08), when that phase exists
 
 ## Acceptance criteria
 

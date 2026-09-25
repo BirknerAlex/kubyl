@@ -514,22 +514,39 @@ impl Workspace {
                     if recent.is_empty() {
                         modal = modal.child("No notifications yet.");
                     }
-                    for notification in recent.into_iter().rev() {
+                    // Long messages (errors with URLs and contexts) wrap inside the dialog, and a
+                    // long history scrolls instead of growing past the window.
+                    let rows = recent.into_iter().rev().map(|notification| {
                         let color = match notification.level {
                             kubyl_core::NotificationLevel::Info => colors.accent,
                             kubyl_core::NotificationLevel::Success => colors.green,
                             kubyl_core::NotificationLevel::Warning => colors.yellow,
                             kubyl_core::NotificationLevel::Error => colors.red,
                         };
-                        modal = modal.child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(u(8.0))
-                                .child(StatusDot::new(color))
-                                .child(notification.message),
-                        );
-                    }
+                        div()
+                            .flex()
+                            .items_start()
+                            .gap(u(8.0))
+                            // Centers the dot on the first line of text.
+                            .child(div().flex_none().pt(u(6.0)).child(StatusDot::new(color)))
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .when_some(notification.title, |this, title| {
+                                        this.child(div().text_color(colors.text).child(title))
+                                    })
+                                    .child(div().w_full().child(notification.message)),
+                            )
+                    });
+                    modal = modal.child(
+                        v_flex()
+                            .id("notification-history")
+                            .max_h(u(420.0))
+                            .overflow_y_scroll()
+                            .gap(u(8.0))
+                            .children(rows),
+                    );
                     modal.footer(close_button).on_dismiss(dismiss)
                 }
             }

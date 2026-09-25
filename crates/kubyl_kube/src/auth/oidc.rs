@@ -636,7 +636,7 @@ const SUCCESS_PAGE: &str = "<!doctype html><meta charset=utf-8><title>Kubyl</tit
 <div><h2 style=\"font-weight:600\">Signed in to Kubyl</h2><p>You can close this tab and return to the app.</p></div>";
 
 /// Serves the loopback redirect until a request carries `code` and the right `state`.
-async fn wait_for_code(
+pub(super) async fn wait_for_code(
     listener: &tokio::net::TcpListener,
     state: &str,
 ) -> Result<String, AuthError> {

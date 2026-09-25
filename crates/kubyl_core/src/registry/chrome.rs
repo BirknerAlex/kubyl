@@ -3,6 +3,7 @@ use std::sync::Arc;
 use gpui::{AnyView, App, Global, SharedString, Window};
 
 use super::views::TabHandle;
+use crate::types::ResourceRef;
 
 /// Which side of the status bar an item sits on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,12 +57,27 @@ pub trait SidebarSection: 'static {
     fn build(&self, window: &mut Window, cx: &mut App) -> AnyView;
 }
 
+/// A section other crates add to the Summary of an object's details (metrics charts…).
+///
+/// `build` runs once per shown object; the view lives while the details show it, so it can
+/// keep its own state and subscriptions.
+pub trait DetailsSection: 'static {
+    fn id(&self) -> &'static str;
+    /// Lower comes first.
+    fn order(&self) -> i32 {
+        0
+    }
+    /// The section for an object of `kind` (`Pod`, `Node`…), or `None` when it doesn't apply.
+    fn build(&self, target: &ResourceRef, kind: &str, cx: &mut App) -> Option<AnyView>;
+}
+
 /// Contributions to the window chrome.
 #[derive(Default)]
 pub struct ChromeRegistry {
     status_items: Vec<Arc<dyn StatusBarItem>>,
     dock_panels: Vec<Arc<dyn DockPanel>>,
     sidebar_sections: Vec<Arc<dyn SidebarSection>>,
+    details_sections: Vec<Arc<dyn DetailsSection>>,
 }
 
 impl Global for ChromeRegistry {}
@@ -87,6 +103,16 @@ impl ChromeRegistry {
         let sections = &mut cx.default_global::<Self>().sidebar_sections;
         sections.push(Arc::new(section));
         sections.sort_by_key(|s| s.order());
+    }
+
+    pub fn add_details_section(cx: &mut App, section: impl DetailsSection) {
+        let sections = &mut cx.default_global::<Self>().details_sections;
+        sections.push(Arc::new(section));
+        sections.sort_by_key(|s| s.order());
+    }
+
+    pub fn details_sections(&self) -> &[Arc<dyn DetailsSection>] {
+        &self.details_sections
     }
 
     pub fn status_items(

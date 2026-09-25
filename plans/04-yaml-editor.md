@@ -152,7 +152,7 @@ confirmed (phase 02/03 had not clicked them). Now `.content(..)`.
   platform-specific in the crate. `secondary-*` is Ctrl there. Editor keys avoid gpui-component's input
   bindings (`secondary-shift-f` is Replace, `secondary-shift-z` Redo, `ctrl-f`/`ctrl-h` search).
 
-**API for later phases (08 Operators: install YAML and diffs).**
+**API for later phases (12 Operators: install YAML and diffs).**
 - Open an editor: `OpenView(ViewRequest::for_resource(ViewKind::Yaml, object_ref))`, or a new
   resource with `ResourceRef::list(cluster, gvr, Some(ns))` / `ViewRequest::new(ViewKind::Yaml)`.
 - Without the view: `parse::parse(text)` → `Parsed { docs, error }`; `apply::prepare(&parsed,

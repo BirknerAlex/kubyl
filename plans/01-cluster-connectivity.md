@@ -38,7 +38,7 @@ clusters can be connected at once.
 ### Discovery
 - [x] Aggregated discovery (`/apis` with `apidiscovery.k8s.io/v2`), falling back to legacy discovery. Result: every GVK/GVR, scope, verbs, short names, categories, preferred version
 - [x] CRD awareness: watch `CustomResourceDefinitions` and re-run discovery when they change (new CRDs appear in the sidebar live)
-- [x] OpenAPI v3 fetcher (`/openapi/v3`) with an on-disk cache keyed by the server's ETag. Used by phases 04 and 08
+- [x] OpenAPI v3 fetcher (`/openapi/v3`) with an on-disk cache keyed by the server's ETag. Used by phases 04 and 12
 - [x] Cluster capabilities probe (`ClusterCaps`): version, distribution guess (EKS/GKE/AKS/OpenShift/k3s/kind), metrics-server present, Prometheus candidates (phase 07 finishes this), OLM present, Gateway API present
 
 ### Clusters and kubeconfigs view
@@ -75,7 +75,7 @@ because phase 00's `dispatch_or_explain` only saw element action handlers, not t
   confirmation). Toggles "Load ~/.kube/config" and "Load $KUBECONFIG" turn them back on.
 - `ConnectionManager::set_load_default_kubeconfig`, `set_load_kubeconfig_env` and
   `delete_pasted` (refuses paths outside the pasted folder), with a test.
-- Editing kubeconfigs is planned as phase 13 (`plans/13-kubeconfig-editor.md`).
+- Editing kubeconfigs is planned as phase 11 (`plans/11-kubeconfig-editor.md`).
 
 ### 2026-09-24: phase 01 implemented
 

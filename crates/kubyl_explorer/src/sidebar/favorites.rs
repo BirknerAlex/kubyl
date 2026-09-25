@@ -8,7 +8,8 @@ use gpui::{
 use gpui_component::menu::{ContextMenuExt as _, PopupMenuItem};
 use kubyl_core::actions::OpenView;
 use kubyl_core::{
-    ActiveContext, Notification, NotificationCenter, ResourceRef, ViewKind, ViewRequest,
+    ActiveContext, Notification, NotificationCenter, ResourceRef, ViewKind, ViewRegistry,
+    ViewRequest,
 };
 use kubyl_kube::{ConnectionEvent, ConnectionManager};
 use kubyl_settings::State;
@@ -87,31 +88,9 @@ impl FavoritesSection {
 /// Opens a favorite: connects its cluster, makes it active, selects the namespace and opens the
 /// list (with the favorite's label selector as the filter).
 pub fn open_favorite(favorite: &Favorite, window: &mut Window, cx: &mut App) {
-    let Some(cluster) = favorites::cluster_of(favorite, cx) else {
-        NotificationCenter::push(
-            cx,
-            Notification::warning(format!(
-                "Context {} isn't in any loaded kubeconfig ({}).",
-                favorite.context,
-                favorite.file.display()
-            )),
-        );
+    let Some(cluster) = activate_favorite(favorite, cx) else {
         return;
     };
-    let manager = ConnectionManager::global(cx);
-    if manager.read(cx).active() != Some(&cluster) {
-        manager.update(cx, |m, cx| m.activate(&cluster, cx));
-    } else {
-        manager.update(cx, |m, cx| m.ensure_connected(&cluster, cx));
-    }
-    let active = ActiveContext::global(cx).clone();
-    ActiveContext::set(
-        cx,
-        ActiveContext {
-            namespace: Some(favorite.namespace.clone().into()),
-            ..active
-        },
-    );
     let gvr = favorite.gvr();
     if let Some(selector) = &favorite.selector {
         cx.set_global(PendingFilter(Some((
@@ -127,6 +106,54 @@ pub fn open_favorite(favorite: &Favorite, window: &mut Window, cx: &mut App) {
         ))),
         cx,
     );
+}
+
+/// Opens the namespace variant of the Overview for a favorite.
+pub fn open_favorite_overview(favorite: &Favorite, window: &mut Window, cx: &mut App) {
+    let Some(cluster) = activate_favorite(favorite, cx) else {
+        return;
+    };
+    window.dispatch_action(
+        Box::new(OpenView(ViewRequest::for_resource(
+            ViewKind::Overview,
+            ResourceRef::list(
+                cluster,
+                kubyl_core::Gvr::new("", "", ""),
+                Some(favorite.namespace.clone()),
+            ),
+        ))),
+        cx,
+    );
+}
+
+/// Connects the favorite's cluster, makes it active and selects its namespace.
+fn activate_favorite(favorite: &Favorite, cx: &mut App) -> Option<kubyl_core::ClusterId> {
+    let Some(cluster) = favorites::cluster_of(favorite, cx) else {
+        NotificationCenter::push(
+            cx,
+            Notification::warning(format!(
+                "Context {} isn't in any loaded kubeconfig ({}).",
+                favorite.context,
+                favorite.file.display()
+            )),
+        );
+        return None;
+    };
+    let manager = ConnectionManager::global(cx);
+    if manager.read(cx).active() != Some(&cluster) {
+        manager.update(cx, |m, cx| m.activate(&cluster, cx));
+    } else {
+        manager.update(cx, |m, cx| m.ensure_connected(&cluster, cx));
+    }
+    let active = ActiveContext::global(cx).clone();
+    ActiveContext::set(
+        cx,
+        ActiveContext {
+            namespace: Some(favorite.namespace.clone().into()),
+            ..active
+        },
+    );
+    Some(cluster)
 }
 
 impl Focusable for FavoritesSection {
@@ -305,10 +332,17 @@ impl Render for FavoritesSection {
                         .read(cx)
                         .is_excluded_from_workspace(index);
                     let alias = menu_favorite.alias.clone().unwrap_or_default();
+                    let overview = open.clone();
+                    let has_overview = ViewRegistry::is_registered(cx, &ViewKind::Overview);
                     menu.item(
                         PopupMenuItem::new("Open")
                             .on_click(move |_, window, cx| open_favorite(&open, window, cx)),
                     )
+                    .when(has_overview, |menu| {
+                        menu.item(PopupMenuItem::new("Open Namespace Overview").on_click(
+                            move |_, window, cx| open_favorite_overview(&overview, window, cx),
+                        ))
+                    })
                     .item(PopupMenuItem::new("Open Favorites Workspace").on_click(
                         |_, window, cx| {
                             window.dispatch_action(Box::new(crate::OpenFavoritesWorkspace), cx)

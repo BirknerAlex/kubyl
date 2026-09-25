@@ -73,11 +73,11 @@ fn describe(kind: &ViewKind) -> (&str, IconName, &'static str) {
             "metrics and overview (phase 07)",
         ),
         ViewKind::Events => ("Events", IconName::Bell, "metrics and overview (phase 07)"),
-        ViewKind::Operators => ("Operators", IconName::Blocks, "operators (phase 08)"),
+        ViewKind::Operators => ("Operators", IconName::Blocks, "operators (phase 12)"),
         ViewKind::Updates => (
             "Cluster Updates",
             IconName::ArrowUp,
-            "cluster updates (phase 09)",
+            "cluster updates (phase 13)",
         ),
         ViewKind::Settings => ("Settings", IconName::Settings, "a settings editor"),
         ViewKind::Custom(name) => (name.as_str(), IconName::File, "a later phase"),

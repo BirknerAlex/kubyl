@@ -1,4 +1,4 @@
-# Phase 11: Service web views (embedded browser over temporary port-forwards)
+# Phase 08: Service web views (embedded browser over temporary port-forwards)
 
 **Status:** not started
 **Depends on:** 05 (port-forward manager), 02 (Services/Pods/Ingress lists and details)
@@ -62,6 +62,6 @@ running `kubectl port-forward` by hand.
 
 - Embedding a native webview inside GPUI isn't officially supported by GPUI. Keep it isolated in `kubyl_webview` behind a trait, so the separate-window or system-browser fallbacks stay possible.
 - Wayland will probably need the separate-window or system-browser fallback.
-- WebView2 must be present on Windows 10 (bundle the bootstrapper in phase 10).
+- WebView2 must be present on Windows 10 (bundle the bootstrapper in phase 09).
 
 ## Handoff log

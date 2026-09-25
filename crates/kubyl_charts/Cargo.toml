@@ -14,4 +14,9 @@ workspace = true
 
 [dependencies]
 gpui.workspace = true
+jiff.workspace = true
 kubyl_core.workspace = true
+kubyl_ui.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }

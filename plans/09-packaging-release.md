@@ -1,4 +1,4 @@
-# Phase 10: Packaging, release, auto-update, hardening
+# Phase 09: Packaging, release, auto-update, hardening
 
 **Status:** in progress (manual release pipeline landed 2026-09-24; auto-update, hardening, docs
 site still open)

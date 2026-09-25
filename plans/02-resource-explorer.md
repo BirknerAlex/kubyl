@@ -139,7 +139,7 @@ backbone the other feature phases plug into.
 - Default pod column widths follow the mockup; names truncate at the default window size, as
   in the mockup.
 
-**API for phases 03–08.**
+**API for phases 03 and later.**
 - Selection: `kubyl_resources::ResourceSelection::global(cx)`: `primary()`, `items` (each has
   `target: ResourceRef`, `kind`, `object: Option<Arc<Value>>`, `store`), `caps`. Register your
   action with `ActionSpec::bind(keys, Some("ResourceList"))` (or `"ResourceList && kind == Pod"`)
