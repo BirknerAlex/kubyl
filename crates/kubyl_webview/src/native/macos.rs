@@ -174,6 +174,29 @@ fn hit(
     }
 }
 
+/// The page's URL, `None` until a page commits (after a failed first load, too). wry's
+/// `url()` unwraps WKWebView's nullable `URL` and aborts the app then.
+pub fn url(webview: &wry::WebView) -> Option<String> {
+    let view = webview.webview();
+    // SAFETY: `URL` and `absoluteString` are nullable properties, checked before use.
+    unsafe {
+        let url: *mut AnyObject = msg_send![&*view, URL];
+        let url = url.as_ref()?;
+        let string: *mut NSString = msg_send![url, absoluteString];
+        string.as_ref().map(|s| s.to_string())
+    }
+}
+
+/// Whether the web view is in a window: wry's `set_bounds` and `focus` unwrap it.
+pub fn in_window(webview: &wry::WebView) -> bool {
+    let view = webview.webview();
+    // SAFETY: `window` is a nullable NSView property.
+    unsafe {
+        let window: *mut AnyObject = msg_send![&*view, window];
+        !window.is_null()
+    }
+}
+
 /// Sends an editing action straight to the web view (never up the responder chain: an
 /// unhandled action would reach GPUI's app delegate, which is busy dispatching this key).
 pub fn edit(webview: &wry::WebView, command: EditCommand) {
