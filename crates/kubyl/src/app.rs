@@ -483,11 +483,29 @@ mod screenshot {
         }
     }
 
+    /// App Nap throttles the timers of a window that isn't in front (another app, or a Kubyl
+    /// the user runs), and the steps below never run. Screenshot runs opt out.
+    #[cfg(target_os = "macos")]
+    fn keep_awake() {
+        use objc2_foundation::{NSActivityOptions, NSProcessInfo, NSString};
+        let activity = NSProcessInfo::processInfo().beginActivityWithOptions_reason(
+            NSActivityOptions::UserInitiatedAllowingIdleSystemSleep
+                | NSActivityOptions::LatencyCritical,
+            &NSString::from_str("Kubyl screenshot"),
+        );
+        // For the rest of this short-lived process.
+        std::mem::forget(activity);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn keep_awake() {}
+
     pub fn schedule(window: AnyWindowHandle, cx: &mut App) {
         let Some(path) = std::env::var_os("KUBYL_SCREENSHOT") else {
             return;
         };
         let actions = std::env::var("KUBYL_SCREENSHOT_ACTIONS").unwrap_or_default();
+        keep_awake();
         cx.spawn(async move |cx| {
             let executor = cx.background_executor().clone();
             let settle = || executor.timer(Duration::from_millis(1500));
