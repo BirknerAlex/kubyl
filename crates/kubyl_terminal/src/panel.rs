@@ -129,8 +129,12 @@ impl TerminalPanel {
         };
         let current = active.read(cx).spec().clone();
         let spec = match current.mode {
-            // A node shell's pod belongs to its session: `+` starts another node shell.
-            SessionMode::NodeShell { .. } => current,
+            // A node shell's pod belongs to its session: `+` starts another node shell, through
+            // the same confirmation (typed on production) and read-only check as the action.
+            SessionMode::NodeShell { .. } => {
+                crate::node_shell(current.target, cx);
+                return;
+            }
             _ => TerminalSpec {
                 mode: SessionMode::Exec { shell: None },
                 ..current

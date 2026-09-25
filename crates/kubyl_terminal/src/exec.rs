@@ -433,7 +433,7 @@ pub async fn create_node_shell(
     namespace: &str,
     node: &str,
     image: &str,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<NodeShellPod> {
     let api: Api<Pod> = Api::namespaced(client.clone(), namespace);
     let pod: Pod = serde_json::from_value(node_shell_pod(node, image))?;
     let created = api
@@ -444,11 +444,51 @@ pub async fn create_node_shell(
         .metadata
         .name
         .ok_or_else(|| anyhow::anyhow!("the node-shell pod has no name"))?;
-    if let Err(err) = wait_running(&api, &name, "shell", Duration::from_secs(180)).await {
-        delete_pod(client, namespace, &name).await;
-        return Err(err);
+    // From here on the pod is deleted if anything goes wrong, including the task being
+    // cancelled while it waits.
+    let pod = NodeShellPod {
+        client: client.clone(),
+        namespace: namespace.to_string(),
+        name: Some(name),
+    };
+    wait_running(&api, pod.name(), "shell", Duration::from_secs(180)).await?;
+    Ok(pod)
+}
+
+/// A node-shell pod that is deleted when dropped, until [`NodeShellPod::keep`] hands it over.
+/// Privileged pods must not outlive their session, even when a task is cancelled or its
+/// result never arrives.
+pub struct NodeShellPod {
+    client: kube::Client,
+    namespace: String,
+    name: Option<String>,
+}
+
+impl NodeShellPod {
+    pub fn name(&self) -> &str {
+        self.name.as_deref().unwrap_or_default()
     }
-    Ok(name)
+
+    pub fn namespace(&self) -> &str {
+        &self.namespace
+    }
+
+    /// Hands the pod over: `(client, namespace, name)`. The caller deletes it now.
+    pub fn keep(mut self) -> (kube::Client, String, String) {
+        let name = self.name.take().unwrap_or_default();
+        (self.client.clone(), self.namespace.clone(), name)
+    }
+}
+
+impl Drop for NodeShellPod {
+    fn drop(&mut self) {
+        if let Some(name) = self.name.take() {
+            let (client, namespace) = (self.client.clone(), self.namespace.clone());
+            kubyl_core::runtime::handle().spawn(async move {
+                delete_pod(&client, &namespace, &name).await;
+            });
+        }
+    }
 }
 
 /// Deletes a pod right away (node-shell cleanup). Errors are logged, not returned.

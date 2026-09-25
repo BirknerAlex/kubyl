@@ -167,11 +167,12 @@ async fn exec_debug_container_and_node_shell() {
     let shell_pod = exec::create_node_shell(&client, "kube-system", &node, "busybox:1.37")
         .await
         .expect("node shell pod");
+    let shell_pod_name = shell_pod.name().to_string();
     let output = session_output(
         client.clone(),
         ExecTarget {
             namespace: "kube-system".into(),
-            pod: shell_pod.clone(),
+            pod: shell_pod_name.clone(),
             container: Some("shell".into()),
             mode: Mode::Exec {
                 command: exec::node_shell_command(),
@@ -182,7 +183,26 @@ async fn exec_debug_container_and_node_shell() {
         &node,
     )
     .await;
-    exec::delete_pod(&client, "kube-system", &shell_pod).await;
+    // Dropping the guard deletes the pod; wait until it's gone.
+    drop(shell_pod);
+    let pods: Api<Pod> = Api::namespaced(client.clone(), "kube-system");
+    for _ in 0..30 {
+        if pods
+            .get_opt(&shell_pod_name)
+            .await
+            .ok()
+            .flatten()
+            .is_none_or(|p| p.metadata.deletion_timestamp.is_some())
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let left = pods.get_opt(&shell_pod_name).await.ok().flatten();
+    assert!(
+        left.is_none_or(|p| p.metadata.deletion_timestamp.is_some()),
+        "the node-shell pod is deleted with its guard"
+    );
     teardown(&client).await;
     assert!(output.contains(&node), "node shell on {node}: {output:?}");
 }

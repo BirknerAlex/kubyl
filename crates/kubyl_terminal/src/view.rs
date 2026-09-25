@@ -380,6 +380,10 @@ impl TerminalView {
             return;
         };
         self.connect_subscription = None;
+        // A reconnect or restart after a failed node shell: its pod goes first.
+        if let Some(pod) = self.node_pod.take() {
+            pod.delete();
+        }
         self.ensure_session(cx);
         let settings = kubyl_settings::Settings::get::<TerminalSettings>(cx).clone();
         let spec = self.spec.clone();
@@ -415,21 +419,29 @@ impl TerminalView {
                         kubyl_core::spawn_kube(cx, async move {
                             exec::create_node_shell(&setup_client, &pod_namespace, &node, &image)
                                 .await
-                                .map(|pod| (pod_namespace, pod))
                         })
                     });
                     match task.await {
-                        Ok((pod_namespace, pod)) => {
-                            this.update(cx, |this, _| {
-                                this.node_pod = Some(NodePod {
-                                    client: client.clone(),
-                                    namespace: pod_namespace.clone(),
-                                    name: pod.clone(),
-                                });
+                        Ok(shell_pod) => {
+                            let pod_namespace = shell_pod.namespace().to_string();
+                            let pod = shell_pod.name().to_string();
+                            // The view owns the pod from here. If it's gone, the unused guard
+                            // deletes the pod when the closure is dropped.
+                            let recorded = this.update(cx, move |this, _| {
+                                let (client, namespace, name) = shell_pod.keep();
+                                if let Some(old) = this.node_pod.replace(NodePod {
+                                    client,
+                                    namespace,
+                                    name,
+                                }) {
+                                    old.delete();
+                                }
                                 this.container = Some("shell".into());
                                 this.command = Some("nsenter".into());
-                            })
-                            .ok();
+                            });
+                            if recorded.is_err() {
+                                return;
+                            }
                             Ok(ExecTarget {
                                 namespace: pod_namespace,
                                 pod,
@@ -1411,6 +1423,14 @@ impl Render for TerminalView {
             .size_full()
             .bg(colors.background)
             .on_action(cx.listener(|this, action: &SendKeystroke, _, cx| {
+                // Option-letters compose characters (∫, ƒ, ∂, ≥) unless Option is Meta: then
+                // let the key event through to `handle_key`, it carries the composed one.
+                let composes = matches!(action.0.as_str(), "alt-b" | "alt-f" | "alt-d" | "alt-.");
+                if composes && !kubyl_settings::Settings::get::<TerminalSettings>(cx).option_as_meta
+                {
+                    cx.propagate();
+                    return;
+                }
                 this.type_key(KeyInput::parse(&action.0), cx)
             }))
             .on_action(cx.listener(|this, _: &Copy, _, cx| this.copy(cx)))

@@ -249,9 +249,15 @@ fn debug_container(target: ResourceRef, cx: &mut App) {
     });
 }
 
-fn node_shell(target: ResourceRef, cx: &mut App) {
+/// Asks, then opens a node shell. Also used by the Terminal panel's `+` on a node-shell tab.
+pub(crate) fn node_shell(target: ResourceRef, cx: &mut App) {
     let node = target.name.clone().unwrap_or_default();
     let manager = ConnectionManager::global(cx);
+    if manager.read(cx).caps(&target.cluster).read_only {
+        let name = manager.read(cx).display_name(&target.cluster);
+        notify_error(cx, format!("{name} is read-only."));
+        return;
+    }
     let production = manager.read(cx).caps(&target.cluster).production;
     let settings = Settings::get::<TerminalSettings>(cx).clone();
     let mut spec = ConfirmSpec::new(format!("Open a shell on node {node}?"), "Start Node Shell");
