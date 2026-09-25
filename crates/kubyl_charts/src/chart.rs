@@ -10,7 +10,7 @@ use gpui::{
 };
 use kubyl_ui::{ActiveColors, Colors, fonts, h_flex, u, v_flex};
 
-use crate::data::{ChartData, Series, max_value, nearest_index, nice_max, stack};
+use crate::data::{ChartData, Series, max_value, nearest_index, nice_max, nice_max_binary, stack};
 use crate::paint::{fill_between, scaled, stroke, x_at, y_at};
 
 /// How series are drawn.
@@ -39,6 +39,7 @@ pub struct LineChart {
     plot: Rc<Cell<Option<Bounds<Pixels>>>>,
     height: f32,
     placeholder: SharedString,
+    binary: bool,
 }
 
 impl LineChart {
@@ -52,7 +53,14 @@ impl LineChart {
             plot: Rc::default(),
             height: 150.0,
             placeholder: "Loading…".into(),
+            binary: false,
         }
+    }
+
+    /// Scales the value axis in binary steps (bytes).
+    pub fn binary_scale(mut self) -> Self {
+        self.binary = true;
+        self
     }
 
     /// Plot height in unscaled pixels (default 150).
@@ -261,7 +269,12 @@ impl Render for LineChart {
         let len = self.data.times.len();
         let stacked = self.kind == ChartKind::StackedArea;
         let refs: Vec<&Series> = visible.iter().collect();
-        let max = nice_max(max_value(&refs, len, stacked) * 1.05);
+        let top = max_value(&refs, len, stacked) * 1.05;
+        let max = if self.binary {
+            nice_max_binary(top)
+        } else {
+            nice_max(top)
+        };
         let empty = self.data.is_empty();
         let hover_index = self
             .hover

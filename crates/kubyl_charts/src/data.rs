@@ -102,6 +102,16 @@ pub fn nice_max(max: f64) -> f64 {
         .unwrap_or(10.0 * magnitude)
 }
 
+/// Like [`nice_max`], in binary units (1, 2, 2.5, 5 × 1024ⁿ…), so byte axes read `512Mi`,
+/// `1Gi`, `1.5Gi` instead of `954Mi`.
+pub fn nice_max_binary(max: f64) -> f64 {
+    if !max.is_finite() || max <= 0.0 {
+        return 1.0;
+    }
+    let unit = 1024f64.powf(max.log(1024.0).floor().max(0.0));
+    nice_max(max / unit) * unit
+}
+
 /// Running sums of the visible series, bottom to top, for stacked areas. Gaps count as zero.
 pub fn stack(series: &[&Series], len: usize) -> Vec<Vec<f64>> {
     let mut totals = vec![0.0; len];
@@ -212,6 +222,10 @@ mod tests {
         assert_eq!(nice_max(7.5), 10.0);
         assert_eq!(nice_max(250.0), 250.0);
         assert_eq!(nice_max(1.5e9), 2e9);
+        let gi = 1024.0 * 1024.0 * 1024.0;
+        assert_eq!(nice_max_binary(1.4 * gi), 2.0 * gi);
+        assert_eq!(nice_max_binary(0.3 * gi), 512.0 * 1024.0 * 1024.0);
+        assert_eq!(nice_max_binary(0.5), 0.5);
     }
 
     #[test]
