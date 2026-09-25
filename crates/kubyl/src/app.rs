@@ -448,6 +448,41 @@ mod screenshot {
         }
     }
 
+    /// Pastes web-view snapshots (PNG, logical bounds) into a screenshot of `scale` pixels per
+    /// logical pixel.
+    fn composite(
+        image: &mut image::RgbaImage,
+        snapshots: Vec<(gpui::Bounds<gpui::Pixels>, Vec<u8>)>,
+        scale: f32,
+    ) {
+        for (bounds, png) in snapshots {
+            let snapshot = match image::load_from_memory(&png) {
+                Ok(snapshot) => snapshot.to_rgba8(),
+                Err(err) => {
+                    tracing::error!("web view snapshot: {err}");
+                    continue;
+                }
+            };
+            let to_px = |v: gpui::Pixels| (f32::from(v) * scale).round().max(0.0) as u32;
+            let (width, height) = (to_px(bounds.size.width), to_px(bounds.size.height));
+            if width == 0 || height == 0 {
+                continue;
+            }
+            let resized = image::imageops::resize(
+                &snapshot,
+                width,
+                height,
+                image::imageops::FilterType::Triangle,
+            );
+            image::imageops::replace(
+                image,
+                &resized,
+                i64::from(to_px(bounds.origin.x)),
+                i64::from(to_px(bounds.origin.y)),
+            );
+        }
+    }
+
     pub fn schedule(window: AnyWindowHandle, cx: &mut App) {
         let Some(path) = std::env::var_os("KUBYL_SCREENSHOT") else {
             return;
@@ -504,6 +539,18 @@ mod screenshot {
                 window.draw(cx).clear(cx);
                 window.render_to_image()
             });
+            // Native web views aren't part of GPUI's scene: paste their snapshots in.
+            let image = match image {
+                Ok(Ok(mut image)) => {
+                    if let Ok((snapshots, scale)) = window.update(cx, |_, window, _| {
+                        (kubyl_webview::snapshots(window), window.scale_factor())
+                    }) {
+                        composite(&mut image, snapshots.await, scale);
+                    }
+                    Ok(Ok(image))
+                }
+                other => other,
+            };
             match image {
                 Ok(Ok(image)) => match image.save(&path) {
                     Ok(()) => tracing::info!("screenshot saved to {}", path.display()),

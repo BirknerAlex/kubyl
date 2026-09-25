@@ -19,7 +19,8 @@ pub use chrome::{
     StatusBarPosition,
 };
 pub use columns::{
-    Align, CellValue, ColumnDef, ColumnProvider, ColumnWidth, ResourceColumns, Tone,
+    Align, CellAction, CellButton, CellValue, ColumnDef, ColumnProvider, ColumnWidth,
+    ResourceColumns, Tone,
 };
 pub use views::{TabHandle, TabView, ViewFactory, ViewRegistry, ViewRequest, new_tab};
 

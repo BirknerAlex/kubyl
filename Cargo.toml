@@ -31,6 +31,7 @@ kubyl_settings = { path = "crates/kubyl_settings" }
 kubyl_terminal = { path = "crates/kubyl_terminal" }
 kubyl_ui = { path = "crates/kubyl_ui" }
 kubyl_updates = { path = "crates/kubyl_updates" }
+kubyl_webview = { path = "crates/kubyl_webview" }
 kubyl_yaml = { path = "crates/kubyl_yaml" }
 
 # GPUI. `gpui-pre-*` are crates.io snapshots of zed-industries/zed (0.3.6 = zed@bcf6582),
@@ -59,9 +60,20 @@ rustls-native-certs = "0.8.4"
 gpui-kit-assets = "=0.6.6"
 
 # macOS integration (already in the tree through GPUI)
+block2 = "0.6.2"
 objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSImage", "NSResponder"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSData"] }
+
+# Web views (phase 08): WKWebView on macOS, WebView2 on Windows, WebKitGTK on Linux.
+wry = { version = "0.57.0", default-features = false, features = ["devtools"] }
+raw-window-handle = "0.6.2"
+webview2-com = "0.39.1"
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse"] }
+x509-cert = { version = "0.3.0", default-features = false, features = ["std"] }
+# The GTK/WebKitGTK bindings wry uses (webkit2gtk pinned like wry pins it).
+gtk = "0.18.2"
+webkit2gtk = { version = "=2.0.2", features = ["v2_38"] }
 
 # Terminal backend (Apache-2.0, same approach as Zed without Zed's GPL view code).
 alacritty_terminal = "0.26.0"

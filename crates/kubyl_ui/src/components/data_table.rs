@@ -316,6 +316,16 @@ fn render_cell(value: CellValue, def: &ColumnDef, colors: &crate::Colors) -> Any
             .child(text(label))
             .child(ProgressBar::new(percent))
             .into_any_element(),
+        // Buttons need the row's object; this table only shows their labels.
+        CellValue::Buttons(buttons) => text(
+            buttons
+                .iter()
+                .map(|b| b.label.to_string())
+                .collect::<Vec<_>>()
+                .join(" ")
+                .into(),
+        )
+        .into_any_element(),
         CellValue::Empty => div()
             .font_family(fonts::MONO)
             .text_color(colors.text_faint)

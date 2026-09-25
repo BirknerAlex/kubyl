@@ -9,7 +9,7 @@ use gpui::{
 use gpui_component::button::{Button as MenuButton, ButtonVariants as _};
 use gpui_component::input::Input;
 use gpui_component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem};
-use kubyl_core::{ActionRegistry, Align, CellValue, ColumnDef, ColumnWidth};
+use kubyl_core::{ActionRegistry, Align, CellButton, CellValue, ColumnDef, ColumnWidth};
 use kubyl_kube::ConnectionManager;
 use kubyl_ui::{
     ActiveColors, Chip, Colors, Icon, IconName, KeyHints, ProgressBar, StatusPill, fonts, h_flex,
@@ -550,7 +550,14 @@ fn render_rows(
                     })
                     .children(columns.iter().map(|def| {
                         let value = view.cell(&row, def, cx);
-                        column_cell(def).child(render_cell(value, def, &colors))
+                        let element = match value {
+                            CellValue::Buttons(buttons) => {
+                                let target = view.row_ref(&row);
+                                render_buttons(index, def, buttons, target, &colors)
+                            }
+                            value => render_cell(value, def, &colors),
+                        };
+                        column_cell(def).child(element)
                     }))
                     .on_mouse_down(
                         MouseButton::Right,
@@ -576,6 +583,61 @@ fn render_rows(
         .collect()
 }
 
+/// Small buttons in a cell; each dispatches its action for the row's object.
+fn render_buttons(
+    row: usize,
+    def: &ColumnDef,
+    buttons: Vec<CellButton>,
+    target: kubyl_core::ResourceRef,
+    colors: &Colors,
+) -> AnyElement {
+    h_flex()
+        .gap(u(4.0))
+        .overflow_hidden()
+        .children(buttons.into_iter().enumerate().map(|(ix, button)| {
+            let action = (button.action)(&target);
+            let tooltip = button.tooltip.clone();
+            div()
+                .id(SharedString::from(format!("cell-{row}-{}-{ix}", def.id)))
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(u(4.0))
+                .h(u(20.0))
+                .px(u(6.0))
+                .rounded(u(4.0))
+                .border_1()
+                .border_color(if button.active {
+                    colors.accent
+                } else {
+                    colors.border
+                })
+                .font_family(fonts::MONO)
+                .text_size(u(11.5))
+                .text_color(colors.text)
+                .cursor_pointer()
+                .hover(|s| s.bg(colors.hover))
+                .when_some(button.icon.clone(), |this, icon| {
+                    this.child(Icon::from_path(icon).size(12.0).color(if button.active {
+                        colors.accent
+                    } else {
+                        colors.text_dim
+                    }))
+                })
+                .child(button.label.clone())
+                .when_some(tooltip, |this, tooltip| {
+                    this.tooltip(move |window, cx| {
+                        gpui_component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx)
+                    })
+                })
+                .on_click(move |_, window, cx| {
+                    cx.stop_propagation();
+                    window.dispatch_action(action.boxed_clone(), cx);
+                })
+        }))
+        .into_any_element()
+}
+
 fn render_cell(value: CellValue, def: &ColumnDef, colors: &Colors) -> AnyElement {
     let text = |content: SharedString| {
         div()
@@ -597,6 +659,15 @@ fn render_cell(value: CellValue, def: &ColumnDef, colors: &Colors) -> AnyElement
             .child(text(label))
             .child(ProgressBar::new(percent))
             .into_any_element(),
+        CellValue::Buttons(buttons) => text(
+            buttons
+                .iter()
+                .map(|b| b.label.to_string())
+                .collect::<Vec<_>>()
+                .join(" ")
+                .into(),
+        )
+        .into_any_element(),
         CellValue::Empty => div()
             .font_family(fonts::MONO)
             .text_size(u(12.0))

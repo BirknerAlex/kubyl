@@ -1,6 +1,6 @@
 use gpui::{
-    AnyElement, App, ClickEvent, ElementId, IntoElement, MouseButton, RenderOnce, SharedString,
-    Window, div, prelude::*,
+    AnyElement, App, ClickEvent, ElementId, Hsla, IntoElement, MouseButton, RenderOnce,
+    SharedString, Window, div, prelude::*,
 };
 use gpui_component::h_flex;
 use smallvec::SmallVec;
@@ -15,6 +15,7 @@ pub struct Tab {
     id: ElementId,
     label: SharedString,
     icon: Option<SharedString>,
+    dot: Option<Hsla>,
     active: bool,
     dirty: bool,
     on_click: Option<ClickHandler>,
@@ -29,6 +30,7 @@ impl Tab {
             id: id.into(),
             label: label.into(),
             icon: None,
+            dot: None,
             active: false,
             dirty: false,
             on_click: None,
@@ -39,6 +41,12 @@ impl Tab {
     /// Icon asset path (see [`crate::IconName::path`]).
     pub fn icon(mut self, path: Option<SharedString>) -> Self {
         self.icon = path;
+        self
+    }
+
+    /// A colored dot before the icon (e.g. the cluster color).
+    pub fn dot(mut self, color: Option<Hsla>) -> Self {
+        self.dot = color;
         self
     }
 
@@ -145,6 +153,7 @@ impl RenderOnce for Tab {
                         .hover(|style| style.bg(colors.hover))
                 }
             })
+            .when_some(self.dot, |this, color| this.child(StatusDot::new(color)))
             .when_some(self.icon, |this, path| {
                 this.child(Icon::from_path(path).size(13.0).color(icon_color))
             })

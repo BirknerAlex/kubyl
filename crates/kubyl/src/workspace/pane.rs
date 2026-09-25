@@ -58,6 +58,8 @@ pub struct Pane {
     history_pos: usize,
     /// Set while going back or forward, so that activation doesn't record history.
     navigating: bool,
+    /// A close of tabs that asked for it ([`kubyl_core::TabView::wants_close`]) is scheduled.
+    closing_wanted: bool,
     item_subscriptions: HashMap<EntityId, Subscription>,
     _subscriptions: Vec<Subscription>,
 }
@@ -82,6 +84,7 @@ impl Pane {
             history: Vec::new(),
             history_pos: 0,
             navigating: false,
+            closing_wanted: false,
             item_subscriptions: HashMap::new(),
             _subscriptions: vec![focus_sub],
         }
@@ -247,6 +250,14 @@ impl Pane {
         PaneLayout::Pane { tabs, active }
     }
 
+    /// Closes the tabs whose views asked for it.
+    fn close_wanted(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.closing_wanted = false;
+        while let Some(index) = self.items.iter().position(|item| item.wants_close(cx)) {
+            self.close(index, window, cx);
+        }
+    }
+
     fn close_active_tab(
         &mut self,
         _: &CloseActiveTab,
@@ -293,6 +304,7 @@ impl Pane {
                 item.title(cx),
             )
             .icon(item.icon(cx))
+            .dot(item.dot(cx))
             .active(index == self.active)
             .dirty(item.is_dirty(cx))
             .on_click(
@@ -330,7 +342,12 @@ impl Pane {
 }
 
 impl Render for Pane {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Items notify the pane when they change; one may have asked to be closed.
+        if !self.closing_wanted && self.items.iter().any(|item| item.wants_close(cx)) {
+            self.closing_wanted = true;
+            cx.defer_in(window, |this, window, cx| this.close_wanted(window, cx));
+        }
         let colors = cx.colors().clone();
         let content = match self.items.get(self.active) {
             Some(item) => div()

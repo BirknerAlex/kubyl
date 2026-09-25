@@ -22,10 +22,18 @@ const MAX_ACCEPT_BACKOFF: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Debug)]
 pub enum ForwardEvent {
-    Listening { local_port: u16 },
-    ConnectionOpened,
+    Listening {
+        local_port: u16,
+    },
+    /// A local connection reached `pod`.
+    ConnectionOpened {
+        pod: String,
+    },
     ConnectionClosed,
-    BytesTransferred { sent: u64, received: u64 },
+    BytesTransferred {
+        sent: u64,
+        received: u64,
+    },
     Error(String),
 }
 
@@ -109,7 +117,11 @@ async fn handle_connection(
         .take_stream(resolved.port)
         .ok_or_else(|| anyhow::anyhow!("no stream for port {}", resolved.port))?;
 
-    events.unbounded_send(ForwardEvent::ConnectionOpened).ok();
+    events
+        .unbounded_send(ForwardEvent::ConnectionOpened {
+            pod: resolved.pod.clone(),
+        })
+        .ok();
     let mut local = local;
     let mut remote = remote;
     let copy = tokio::io::copy_bidirectional(&mut local, &mut remote).await;

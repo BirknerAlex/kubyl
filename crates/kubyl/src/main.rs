@@ -38,6 +38,7 @@ fn main() {
             kubyl_overview::init(cx);
             kubyl_operators::init(cx);
             kubyl_updates::init(cx);
+            kubyl_webview::init(cx);
 
             kubyl_settings::Settings::write_schema(cx);
             app::open_window(cx);
