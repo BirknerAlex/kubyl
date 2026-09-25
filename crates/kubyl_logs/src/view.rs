@@ -13,7 +13,7 @@
 //! matches") are seq lists maintained per pushed/evicted line, and the list state is spliced to
 //! match, so a 100k-line buffer never rescans on new data.
 
-use std::collections::{BTreeSet, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::ops::Range;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -44,7 +44,7 @@ use kubyl_kube::{ConnectionEvent, ConnectionManager};
 use kubyl_ui::{ActiveColors, Chip, Colors, Icon, IconButton, IconName, fonts, h_flex, u, v_flex};
 
 use crate::json::{self, FieldFilter, Token};
-use crate::level::{LogLevel, detect_level};
+use crate::level::{LogLevel, detect_level, is_continuation};
 use crate::line::{LogLine, color_index, pod_color, short_pod_name};
 use crate::ring::LogRingBuffer;
 use crate::search::{MatchCursor, Search};
@@ -385,6 +385,8 @@ pub struct LogsView {
     field_filters: Vec<FieldFilter>,
     /// Per-level line counts over the whole buffer, kept incrementally.
     level_counts: [usize; LogLevel::ALL.len()],
+    /// The last detected level per pod and container: stack-trace lines take it over.
+    last_levels: HashMap<(SharedString, SharedString), LogLevel>,
     /// Seqs of lines passing the level and field filters, in ring order.
     visible: VecDeque<u64>,
     /// `visible` narrowed by "filter to matches": the rows of the list.
@@ -489,6 +491,7 @@ impl LogsView {
             active_levels: [true; LogLevel::ALL.len()],
             field_filters: Vec::new(),
             level_counts: [0; LogLevel::ALL.len()],
+            last_levels: HashMap::new(),
             visible: VecDeque::new(),
             rendered: VecDeque::new(),
             pending_appended: 0,
@@ -539,6 +542,7 @@ impl LogsView {
         let capacity = kubyl_settings::Settings::get::<LogsSettings>(cx).ring_buffer_lines;
         self.ring = LogRingBuffer::new(capacity);
         self.level_counts = [0; LogLevel::ALL.len()];
+        self.last_levels.clear();
         self.visible.clear();
         self.rendered.clear();
         self.pending_appended = 0;
@@ -884,7 +888,19 @@ impl LogsView {
     fn push_raw(&mut self, raw: RawLine) {
         let pod: SharedString = raw.pod.into();
         let container: SharedString = raw.container.into();
-        let level = detect_level(&raw.text);
+        let level = match detect_level(&raw.text) {
+            // A stack trace belongs to the line before it (ERROR filters keep the trace).
+            LogLevel::Unknown if is_continuation(&raw.text) => self
+                .last_levels
+                .get(&(pod.clone(), container.clone()))
+                .copied()
+                .unwrap_or(LogLevel::Unknown),
+            level => {
+                self.last_levels
+                    .insert((pod.clone(), container.clone()), level);
+                level
+            }
+        };
         let search_match = self.search.as_ref().is_some_and(|s| s.matches(&raw.text));
         let passes_fields = self.field_filters.iter().all(|f| f.matches(&raw.text));
         let (timestamp, text) = (raw.timestamp, raw.text);
@@ -2695,6 +2711,39 @@ mod tests {
                 assert_eq!(total, 5);
                 assert_eq!(view.level_counts[level_index(LogLevel::Warn)], 5);
                 assert_eq!(view.ring.evicted(), 14);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn stack_traces_take_the_level_of_their_line(cx: &mut gpui::TestAppContext) {
+        let (_dir, window) = open_view(cx);
+        window
+            .update(cx, |view, _, cx| {
+                view.apply_events(
+                    vec![StreamEvent::Lines(vec![
+                        raw(
+                            "kc-0",
+                            "2026-09-25 10:25:16,400 ERROR [org.keycloak.Broker] (t-97) failed",
+                        ),
+                        raw("kc-0", "\tat org.keycloak.Broker.login(Broker.java:120)"),
+                        raw(
+                            "kc-1",
+                            "2026-09-25 10:25:16,401 INFO  [org.keycloak] (t-1) other pod",
+                        ),
+                        raw("kc-0", "Caused by: java.io.IOException: closed"),
+                        raw("kc-0", "\t... 12 more"),
+                        raw(
+                            "kc-0",
+                            "2026-09-25 10:25:17,443 WARN  [org.keycloak.services] (t-97) next",
+                        ),
+                    ])],
+                    cx,
+                );
+                assert_eq!(view.level_counts[level_index(LogLevel::Error)], 4);
+                assert_eq!(view.level_counts[level_index(LogLevel::Info)], 1);
+                assert_eq!(view.level_counts[level_index(LogLevel::Warn)], 1);
+                assert_eq!(view.level_counts[level_index(LogLevel::Unknown)], 0);
             })
             .unwrap();
     }
