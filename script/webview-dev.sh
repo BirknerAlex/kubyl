@@ -7,7 +7,7 @@
 # - `payments/tls-web`: nginx behind HTTPS with a self-signed certificate (port 443, name
 #   https), for the certificate interstitial.
 # - `payments/admin-console`: a page on a port that doesn't look like HTTP (7000, name
-#   tcp-mgmt), for "Open as web view…".
+#   tcp-mgmt), for "Open as web view…", with a download and a file input.
 #
 # Usage:
 #   script/webview-dev.sh           install
@@ -154,9 +154,14 @@ data:
   default.conf: |
     server {
       listen 7000;
+      location = /report.csv {
+        default_type text/csv;
+        add_header Content-Disposition 'attachment; filename="report.csv"';
+        return 200 'service,port\ngrafana,80\n';
+      }
       location / {
         default_type text/html;
-        return 200 '<!doctype html><title>admin console</title><h1>An HTTP page on a port that does not look like HTTP</h1>';
+        return 200 '<!doctype html><title>admin console</title><h1>An HTTP page on a port that does not look like HTTP</h1><p><a href="/report.csv">Download report.csv</a></p><p><input type="file"></p>';
       }
     }
 ---

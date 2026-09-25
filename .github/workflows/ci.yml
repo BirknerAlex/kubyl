@@ -69,6 +69,22 @@ jobs:
       - name: Build
         run: cargo build --workspace --locked
 
+      # A real window with real web views (WKWebView, WebView2, WebKitGTK under Xvfb): pages
+      # load, and a login on one cluster's data store isn't seen by another's.
+      - name: Web view smoke test
+        shell: bash
+        timeout-minutes: 10
+        env:
+          KUBYL_TEST_WEBVIEW: "1"
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get install -y --no-install-recommends xvfb mesa-vulkan-drivers dbus-x11
+            xvfb-run -a -s "-screen 0 1440x900x24" dbus-run-session -- \
+              cargo test -p kubyl_webview --locked --test live_webview
+          else
+            cargo test -p kubyl_webview --locked --test live_webview
+          fi
+
   deny:
     name: cargo-deny (${{ matrix.checks }})
     runs-on: ubuntu-latest
