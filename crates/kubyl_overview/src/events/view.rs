@@ -254,8 +254,11 @@ impl EventsView {
             .and_then(|key| rows.iter().position(|r| &r.key == key));
         *self.rows.borrow_mut() = rows;
         *self.now.borrow_mut() = jiff::Timestamp::now();
+        let selected = self.selected.is_some();
         self.table.update(cx, |table, cx| {
-            if index.is_some() {
+            // Follow the selected event; clear the selection when it's gone, or the old index
+            // would point at another event.
+            if index.is_some() || selected {
                 table.select(index, cx);
             }
             cx.notify();

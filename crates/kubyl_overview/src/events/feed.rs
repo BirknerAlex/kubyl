@@ -126,6 +126,12 @@ impl EventsFeed {
         self._observers
             .push(cx.observe(events.entity(), |this, _, cx| this.events_changed(cx)));
         self.events = Some(events);
+        // A store shared with another view may have failed already; it won't notify again.
+        if self.should_fall_back(cx) {
+            self.core = true;
+            self.acquire(cx);
+            return;
+        }
         if Settings::get::<OverviewSettings>(cx).derived_events {
             let pods = ResourceStores::acquire(
                 cx,
@@ -139,19 +145,23 @@ impl EventsFeed {
     }
 
     fn events_changed(&mut self, cx: &mut Context<Self>) {
-        let status = self.events.as_ref().map(|e| e.read(cx).status().clone());
-        // The events.k8s.io group isn't served or allowed: use core v1 Events.
-        if !self.core
-            && matches!(
-                status,
-                Some(StoreStatus::Unsupported | StoreStatus::Forbidden)
-            )
-        {
+        if self.should_fall_back(cx) {
             self.core = true;
             self.acquire(cx);
             return;
         }
         self.schedule_rebuild(cx);
+    }
+
+    /// The events.k8s.io group isn't served or allowed: use core v1 Events.
+    fn should_fall_back(&self, cx: &App) -> bool {
+        !self.core
+            && self.events.as_ref().is_some_and(|e| {
+                matches!(
+                    e.read(cx).status(),
+                    StoreStatus::Unsupported | StoreStatus::Forbidden
+                )
+            })
     }
 
     fn schedule_rebuild(&mut self, cx: &mut Context<Self>) {

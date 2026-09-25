@@ -26,6 +26,8 @@ struct Watch {
     primed: bool,
     last_notified: Option<Instant>,
     pending: Vec<String>,
+    /// A delayed flush of `pending` is scheduled (the interval wasn't over yet).
+    flush_scheduled: bool,
     _observer: Subscription,
 }
 
@@ -114,6 +116,7 @@ impl WarningNotifier {
                     primed: false,
                     last_notified: None,
                     pending: Vec::new(),
+                    flush_scheduled: false,
                     _observer: observer,
                 },
             );
@@ -121,7 +124,6 @@ impl WarningNotifier {
     }
 
     fn changed(&mut self, key: &(ClusterId, String), cx: &mut Context<Self>) {
-        let interval = Duration::from_secs(Settings::get::<OverviewSettings>(cx).notify_interval);
         let Some(watch) = self.watches.get_mut(key) else {
             return;
         };
@@ -143,7 +145,39 @@ impl WarningNotifier {
         watch.seen.retain(|uid, _| present.contains(uid));
         watch.primed = true;
         watch.pending.extend(fresh);
-        if watch.pending.is_empty() || watch.last_notified.is_some_and(|t| t.elapsed() < interval) {
+        self.flush(key, cx);
+    }
+
+    /// Shows the pending warnings of a watch, or schedules that for when the interval is over,
+    /// so a warning isn't held back until the next one arrives.
+    fn flush(&mut self, key: &(ClusterId, String), cx: &mut Context<Self>) {
+        let interval = Duration::from_secs(Settings::get::<OverviewSettings>(cx).notify_interval);
+        let Some(watch) = self.watches.get_mut(key) else {
+            return;
+        };
+        if watch.pending.is_empty() {
+            return;
+        }
+        let wait = watch
+            .last_notified
+            .map(|t| interval.saturating_sub(t.elapsed()))
+            .filter(|wait| !wait.is_zero());
+        if let Some(wait) = wait {
+            if !watch.flush_scheduled {
+                watch.flush_scheduled = true;
+                let key = key.clone();
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(wait).await;
+                    this.update(cx, |this, cx| {
+                        if let Some(watch) = this.watches.get_mut(&key) {
+                            watch.flush_scheduled = false;
+                        }
+                        this.flush(&key, cx);
+                    })
+                    .ok();
+                })
+                .detach();
+            }
             return;
         }
         let first = watch.pending[0].clone();
