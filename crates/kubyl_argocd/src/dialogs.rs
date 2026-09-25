@@ -1608,14 +1608,7 @@ impl SignInDialog {
             this.update_in(cx, |this, window, cx| {
                 this.busy = false;
                 match result {
-                    Ok(info) => {
-                        NotificationCenter::push(
-                            cx,
-                            Notification::info(format!(
-                                "Signed in to Argo CD as {}",
-                                info.username
-                            )),
-                        );
+                    Ok(_) => {
                         // Clear the secret inputs before the view goes.
                         this.password
                             .update(cx, |i, cx| i.set_value("", window, cx));
@@ -1660,7 +1653,9 @@ impl SignInDialog {
                 h_flex()
                     .gap(u(8.0))
                     .child(Icon::new(IconName::Globe).size(13.0).color(colors.accent))
-                    .child(div().flex_1().child("Finish signing in in your browser."))
+                    .child(div().flex_1().child(
+                        "Finish signing in in your browser. You can close this dialog: the sign-in completes in the background.",
+                    ))
                     .when_some(self.sso_url.clone(), |this, url| {
                         this.child(
                             div()

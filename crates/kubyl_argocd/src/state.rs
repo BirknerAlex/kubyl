@@ -122,6 +122,9 @@ struct ClusterArgo {
     detect_retries: u32,
     _retry_task: Option<Task<()>>,
     api: Option<ApiSession>,
+    /// A sign-in in progress. Owned here, not by the dialog: an SSO sign-in waits for the
+    /// browser and must survive the dialog closing.
+    _sign_in: Option<Task<()>>,
 }
 
 /// Argo CD state of every cluster. One per app: [`ArgoCd::global`].
@@ -199,6 +202,7 @@ impl ArgoCd {
             entry.detection = Detection::Idle;
             entry._detect_task = None;
             entry._retry_task = None;
+            entry._sign_in = None;
             if had || changed {
                 kubyl_explorer::catalog::tree_groups_changed(cx);
                 cx.notify();
@@ -557,7 +561,8 @@ impl ArgoCd {
         }
         cx.notify();
         let id = cluster.clone();
-        cx.spawn(async move |this, cx| {
+        let (done, result) = futures::channel::oneshot::channel();
+        let work = cx.spawn(async move |this, cx| {
             let result = async {
                 let (api, forward) = match reuse {
                     Some(reused) => reused,
@@ -641,16 +646,31 @@ impl ArgoCd {
                 Ok::<_, String>(info)
             }
             .await;
-            if let Err(err) = &result {
-                this.update(cx, |this, cx| {
-                    if let Some(session) = this.session_mut(&id) {
-                        session.state = ApiState::SignInRequired(Some(err.clone()));
+            this.update(cx, |this, cx| {
+                match &result {
+                    Ok(info) => NotificationCenter::push(
+                        cx,
+                        Notification::info(format!("Signed in to Argo CD as {}", info.username)),
+                    ),
+                    Err(err) => {
+                        if let Some(session) = this.session_mut(&id) {
+                            session.state = ApiState::SignInRequired(Some(err.clone()));
+                        }
                     }
-                    cx.notify();
-                })
-                .ok();
-            }
+                }
+                cx.notify();
+            })
+            .ok();
+            done.send(result).ok();
+        });
+        // Replaces (cancels) a sign-in still waiting for the browser.
+        if let Some(entry) = self.clusters.get_mut(cluster) {
+            entry._sign_in = Some(work);
+        }
+        cx.spawn(async move |_, _| {
             result
+                .await
+                .unwrap_or_else(|_| Err("The sign-in was cancelled.".into()))
         })
     }
 

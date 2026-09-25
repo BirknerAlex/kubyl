@@ -105,6 +105,13 @@ async fn sso_sign_in_and_renewal_through_dex() {
         assert!(url.starts_with("http://localhost:8080/api/dex/auth?"));
         assert!(url.contains("code_challenge_method=S256"));
         assert!(url.contains("offline_access"));
+        // Browsers may try either loopback address for `localhost`: both listen.
+        for address in ["127.0.0.1", "::1"] {
+            assert!(
+                std::net::TcpStream::connect((address, sso::CALLBACK_PORT)).is_ok(),
+                "nothing listens on {address}"
+            );
+        }
         tokio::spawn(async move {
             // The browser: Dex's redirects end at Kubyl's loopback callback.
             let response = reqwest::Client::new().get(url).send().await;

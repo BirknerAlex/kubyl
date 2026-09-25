@@ -24,7 +24,7 @@ pub const CALLBACK_PORT: u16 = 8085;
 pub const REDIRECT_URI: &str = "http://localhost:8085/auth/callback";
 /// The Dex client Argo CD registers for its CLI.
 const DEX_CLI_CLIENT: &str = "argo-cd-cli";
-const TIMEOUT: Duration = Duration::from_secs(300);
+const TIMEOUT: Duration = Duration::from_secs(600);
 
 /// Where and how to sign in.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -35,6 +35,9 @@ pub struct SsoConfig {
     pub scopes: Vec<String>,
     /// "Dex (GitHub)", "Okta"…
     pub provider: String,
+    /// A client meant for the CLI (public: no secret). Without `cliClientID`, it's Argo CD's
+    /// web client, which providers usually only accept with argocd-server's secret.
+    pub cli_client: bool,
 }
 
 impl SsoConfig {
@@ -53,6 +56,7 @@ impl SsoConfig {
         let text = |value: &Value| value.as_str().filter(|s| !s.is_empty()).map(String::from);
         let oidc = &settings["oidcConfig"];
         if let Some(issuer) = text(&oidc["issuer"]) {
+            let cli_client = text(&oidc["cliClientID"]).is_some();
             let client_id = text(&oidc["cliClientID"])
                 .or_else(|| text(&oidc["clientID"]))
                 .ok_or("Argo CD's OIDC config has no client ID.")?;
@@ -66,6 +70,7 @@ impl SsoConfig {
                 client_id,
                 scopes: without_openid(scopes),
                 provider,
+                cli_client,
             });
         }
         let connectors: Vec<String> = settings["dexConfig"]["connectors"]
@@ -90,6 +95,7 @@ impl SsoConfig {
                 } else {
                     format!("Dex ({})", connectors.join(", "))
                 },
+                cli_client: true,
             });
         }
         Err("This Argo CD has no SSO configured.".into())
@@ -166,9 +172,7 @@ pub async fn sign_in(
     if offline && !scopes.iter().any(|s| s == "offline_access") {
         scopes.push("offline_access".into());
     }
-    let (listener, _) = bind_loopback(&[CALLBACK_PORT])
-        .await
-        .map_err(|e| format!("{e} (is `argocd login --sso` running?)"))?;
+    let (v4, v6) = listen().await?;
     let client =
         CoreClient::from_provider_metadata(metadata, ClientId::new(config.client_id.clone()), None)
             .set_redirect_uri(RedirectUrl::new(REDIRECT_URI.into()).map_err(|e| e.to_string())?);
@@ -183,7 +187,19 @@ pub async fn sign_in(
         .set_pkce_challenge(challenge)
         .url();
     open(url.to_string());
-    let code = tokio::time::timeout(TIMEOUT, wait_for_code(&listener, csrf.secret()))
+    let code = async {
+        let on_v4 = wait_for_code(&v4, csrf.secret());
+        let Some(v6) = &v6 else {
+            return on_v4.await;
+        };
+        let on_v6 = wait_for_code(v6, csrf.secret());
+        futures::pin_mut!(on_v4, on_v6);
+        match futures::future::select(on_v4, on_v6).await {
+            futures::future::Either::Left((code, _))
+            | futures::future::Either::Right((code, _)) => code,
+        }
+    };
+    let code = tokio::time::timeout(TIMEOUT, code)
         .await
         .map_err(|_| "Timed out waiting for the browser.".to_string())?
         .map_err(|e| e.to_string())?;
@@ -193,7 +209,7 @@ pub async fn sign_in(
         .set_pkce_verifier(verifier)
         .request_async(&http)
         .await
-        .map_err(|e| format!("code exchange failed: {}", chain(&e)))?;
+        .map_err(|e| exchange_error(config, &chain(&e)))?;
     let id_token = response
         .id_token()
         .ok_or("The provider returned no ID token.")?;
@@ -206,6 +222,42 @@ pub async fn sign_in(
             .refresh_token()
             .map(|t| SecretString::from(t.secret().clone())),
     })
+}
+
+/// A rejected code exchange, explained: without `cliClientID`, the web client needs a secret.
+fn exchange_error(config: &SsoConfig, error: &str) -> String {
+    let rejected = error.contains("unauthorized_client") || error.contains("invalid_client");
+    if rejected && !config.cli_client {
+        format!(
+            "{provider} didn't accept the client `{client}` without its secret: it's Argo CD's web \
+             client, and only argocd-server has its secret. Like `argocd login --sso`, Kubyl needs \
+             a public client for the CLI: add one in {provider} with the redirect URI {REDIRECT_URI} \
+             and set it as `cliClientID` in Argo CD's oidc.config. Until then, sign in with a token.",
+            provider = config.provider,
+            client = config.client_id,
+        )
+    } else {
+        format!("code exchange failed: {error}")
+    }
+}
+
+/// The redirect's listeners: 127.0.0.1, and ::1 where there's IPv6 (browsers may try either
+/// for `localhost`). Retries a moment while an earlier, cancelled sign-in lets go of the port.
+async fn listen() -> Result<(tokio::net::TcpListener, Option<tokio::net::TcpListener>), String> {
+    let mut last = String::new();
+    for _ in 0..20 {
+        match bind_loopback(&[CALLBACK_PORT]).await {
+            Ok((v4, _)) => {
+                let v6 = tokio::net::TcpListener::bind(("::1", CALLBACK_PORT))
+                    .await
+                    .ok();
+                return Ok((v4, v6));
+            }
+            Err(err) => last = err.to_string(),
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Err(format!("{last} (is `argocd login --sso` running?)"))
 }
 
 /// Renews the session with the refresh token. Providers that rotate refresh tokens return a
@@ -294,6 +346,7 @@ mod tests {
         let config = SsoConfig::from_settings(&settings).unwrap();
         assert_eq!(config.issuer, "https://example.okta.com");
         assert_eq!(config.client_id, "argocd-cli");
+        assert!(config.cli_client);
         assert_eq!(config.scopes, ["groups"]);
         assert_eq!(config.provider, "Okta");
 
@@ -301,6 +354,13 @@ mod tests {
             json!({"oidcConfig": {"issuer": "https://idp.example.com", "clientID": "argocd"}});
         let config = SsoConfig::from_settings(&web_client_only).unwrap();
         assert_eq!(config.client_id, "argocd");
+        assert!(!config.cli_client);
+        let error = exchange_error(
+            &config,
+            "Server returned error response: unauthorized_client: Invalid client or Invalid client credentials",
+        );
+        assert!(error.contains("cliClientID"), "{error}");
+        assert!(error.contains(REDIRECT_URI));
         assert_eq!(config.scopes, ["profile", "email", "groups"]);
         assert_eq!(config.provider, "idp.example.com");
     }
