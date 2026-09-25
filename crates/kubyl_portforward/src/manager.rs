@@ -1,22 +1,33 @@
-//! The port-forward manager: starts/stops forwards and tracks their connection/byte counters,
-//! surfaced through `kubyl_logs`'s shared active-sessions registry (list, status, stop) and its
-//! status-bar counters.
+//! The port-forward manager: starts/stops forwards, tracks their state (listening, reconnecting,
+//! failed), connections and bytes, and shows them in `kubyl_logs`'s Active Sessions panel with
+//! buttons to open the forward in a browser, copy its address and save it.
+//!
+//! A forward whose target stops resolving (the pod died, the Service has no ready endpoints) is
+//! "reconnecting": the local port stays open and a probe re-resolves the target every few
+//! seconds until a pod answers again. New connections always resolve afresh, so a Service
+//! forward survives pod restarts.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use futures::StreamExt as _;
 use futures::channel::mpsc;
-use gpui::{App, AppContext as _, Context, Entity, EventEmitter, Global, Task};
-use kubyl_core::{ClusterId, Tone};
-use kubyl_logs::sessions::{SessionId, SessionKind, SessionRegistry};
+use gpui::{App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, Global, Task};
+use kubyl_core::{ClusterId, Notification, NotificationCenter, ResourceRef, Tone};
+use kubyl_logs::sessions::{SessionButton, SessionId, SessionKind, SessionRegistry};
+use kubyl_ui::IconName;
 
+use crate::favorites::{SavedForward, SavedForwards, short_kind};
 use crate::listener::{self, ForwardEvent};
-use crate::resolve::{ForwardKind, RemotePort};
+use crate::resolve::{self, ForwardKind, RemotePort};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// How often a reconnecting forward re-resolves its target.
+const PROBE_INTERVAL: Duration = Duration::from_secs(4);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ForwardId(u64);
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ForwardSpec {
     pub cluster: ClusterId,
     pub namespace: String,
@@ -25,19 +36,100 @@ pub struct ForwardSpec {
     pub bind_address: String,
     /// `0` = pick a free port.
     pub local_port: u16,
-    pub label: String,
+    /// What was forwarded (Pod, Service or workload), for labels and saving.
+    pub target: ResourceRef,
+    /// The port as the user picked it (`None` = the first one), for labels and saving.
+    pub remote_port: Option<u16>,
+    /// Offer "Open in browser" (and `https` when set).
+    pub http: bool,
+    pub https: bool,
+    /// Open the browser once the port listens.
+    pub open_browser: bool,
+}
+
+impl ForwardSpec {
+    /// `svc/ledger :5432`.
+    pub fn target_label(&self) -> String {
+        let kind = short_kind(&self.target.gvr.resource);
+        let name = self.target.name.clone().unwrap_or_default();
+        match self.remote_port {
+            Some(port) => format!("{kind}/{name} :{port}"),
+            None => format!("{kind}/{name}"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ForwardState {
+    Starting,
+    Listening,
+    /// The target doesn't resolve (or connections fail); probing until it does.
+    Reconnecting(String),
+    /// Binding the local port failed.
+    Failed(String),
 }
 
 struct Forward {
-    label: String,
-    bind_address: String,
+    spec: ForwardSpec,
+    state: ForwardState,
     local_port: u16,
-    listening: bool,
+    /// The remote port of the last resolution.
+    resolved_port: Option<u16>,
     connections: u64,
     bytes_sent: u64,
     bytes_received: u64,
     session_id: SessionId,
+    saved: bool,
     _task: Task<()>,
+    probe: Option<Task<()>>,
+}
+
+impl Forward {
+    fn url(&self) -> String {
+        let scheme = if self.spec.https { "https" } else { "http" };
+        let host = match self.spec.bind_address.as_str() {
+            "0.0.0.0" | "::" | "" => "localhost",
+            other => other,
+        };
+        format!("{scheme}://{host}:{}", self.local_port)
+    }
+
+    fn address(&self) -> String {
+        format!("{}:{}", self.spec.bind_address, self.local_port)
+    }
+
+    /// `svc/ledger :5432 → :15432`.
+    fn title(&self) -> String {
+        let target = self.spec.target_label();
+        if self.local_port == 0 {
+            target
+        } else {
+            format!("{target} → :{}", self.local_port)
+        }
+    }
+
+    fn status(&self) -> (String, Tone) {
+        match &self.state {
+            ForwardState::Starting => ("starting…".into(), Tone::Info),
+            ForwardState::Failed(err) => (format!("error: {err}"), Tone::Bad),
+            ForwardState::Reconnecting(err) => (format!("reconnecting… {err}"), Tone::Warning),
+            ForwardState::Listening => {
+                let conns = match self.connections {
+                    1 => "1 conn".to_string(),
+                    n => format!("{n} conns"),
+                };
+                let mut status = format!("port-forward · {} · {conns}", self.address());
+                if self.bytes_sent + self.bytes_received > 0 {
+                    status.push_str(&format!(
+                        " · {} ↑ {} ↓",
+                        human_bytes(self.bytes_sent),
+                        human_bytes(self.bytes_received)
+                    ));
+                }
+                (status, Tone::Good)
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -72,18 +164,21 @@ impl PortForwardManager {
             id
         });
 
-        let (events_tx, events_rx) = mpsc::unbounded();
-        let namespace = spec.namespace.clone();
-        let kind = spec.kind.clone();
-        let port = spec.port.clone();
-        let bind_address = spec.bind_address.clone();
-        let local_port = spec.local_port;
+        let (events_tx, mut events_rx) = mpsc::unbounded();
+        let (namespace, kind, port, bind_address, local_port) = (
+            spec.namespace.clone(),
+            spec.kind.clone(),
+            spec.port.clone(),
+            spec.bind_address.clone(),
+            spec.local_port,
+        );
+        let listen_client = client.clone();
         let task_manager = manager.clone();
         let task = cx.spawn(async move |cx| {
-            let run_task = cx.update(|cx| {
+            let run = cx.update(|cx| {
                 kubyl_core::spawn_kube(cx, async move {
                     listener::run(
-                        client,
+                        listen_client,
                         namespace,
                         kind,
                         port,
@@ -94,11 +189,8 @@ impl PortForwardManager {
                     .await
                 })
             });
-            let mut events_rx = events_rx;
             while let Some(mut event) = events_rx.next().await {
-                // Drain any other events already sitting in the channel (a connection burst can
-                // queue many before we get scheduled again) so throughput isn't capped by the
-                // post-batch sleep below.
+                // Drain what's already queued (a connection burst) before the pause below.
                 loop {
                     let alive = cx.update(|cx| {
                         task_manager.update(cx, |this, cx| this.apply_event(id, &event, cx))
@@ -111,71 +203,150 @@ impl PortForwardManager {
                         Err(_) => break,
                     }
                 }
-                // Batches status-bar updates so a busy forward doesn't re-render per byte.
                 cx.background_executor()
-                    .timer(std::time::Duration::from_millis(100))
+                    .timer(Duration::from_millis(100))
                     .await;
             }
-            // The events channel closed because `listener::run` returned — normally only when
-            // binding the local port failed, since its accept loop otherwise runs forever.
-            // Surface that error instead of leaving the session stuck at "starting" forever.
-            if let Err(err) = run_task.await {
+            // The listener returned: binding the local port failed.
+            if let Err(err) = run.await {
                 cx.update(|cx| {
                     task_manager.update(cx, |this, cx| {
-                        this.apply_event(id, &ForwardEvent::Error(err.to_string()), cx)
+                        this.set_state(id, ForwardState::Failed(format!("{err:#}")), cx)
                     });
+                    NotificationCenter::push(
+                        cx,
+                        Notification::error(format!("Port-forward failed: {err:#}")),
+                    );
                 });
             }
         });
 
+        let saved = SavedForwards::global(cx)
+            .read(cx)
+            .state()
+            .contains(&saved_forward(&spec, cx));
         manager.update(cx, |this, cx| {
             let session_id = SessionRegistry::add(
                 cx,
                 SessionKind::PortForward,
-                spec.label.clone(),
-                format!("{}:{} → starting…", spec.bind_address, spec.local_port),
-                "starting",
-                Tone::Neutral,
+                spec.target_label(),
+                spec.namespace.clone(),
+                "starting…",
+                Tone::Info,
                 move |cx| {
-                    let manager = Self::global(cx);
-                    manager.update(cx, |this, cx| this.stop_without_session(id, cx));
+                    Self::global(cx).update(cx, |this, cx| this.remove(id, cx));
                 },
             );
             this.forwards.insert(
                 id,
                 Forward {
-                    label: spec.label,
-                    bind_address: spec.bind_address,
-                    local_port: spec.local_port,
-                    listening: false,
+                    spec,
+                    state: ForwardState::Starting,
+                    local_port,
+                    resolved_port: None,
                     connections: 0,
                     bytes_sent: 0,
                     bytes_received: 0,
                     session_id,
+                    saved,
                     _task: task,
+                    probe: None,
                 },
             );
+            this.check_target(id, client, cx);
+            this.refresh_row(id, cx);
             cx.emit(());
             cx.notify();
         });
         ForwardId(id)
     }
 
-    /// Stops a forward and removes its session row (for the "stop" button in the panel).
+    /// Stops a forward and removes its session row.
     pub fn stop(&mut self, id: ForwardId, cx: &mut Context<Self>) {
-        if let Some(forward) = self.forwards.remove(&id.0) {
+        if let Some(forward) = self.forwards.get(&id.0) {
             SessionRegistry::remove(cx, forward.session_id);
+        }
+        self.remove(id.0, cx);
+    }
+
+    /// Drops a forward (its session row was removed already).
+    fn remove(&mut self, id: u64, cx: &mut Context<Self>) {
+        if self.forwards.remove(&id).is_some() {
             cx.emit(());
             cx.notify();
         }
     }
 
-    /// Like [`Self::stop`], but called from the session's own `on_stop` (which already removed
-    /// the session row), so it must not remove it again.
-    fn stop_without_session(&mut self, id: u64, cx: &mut Context<Self>) {
-        if self.forwards.remove(&id).is_some() {
-            cx.emit(());
-            cx.notify();
+    /// Whether a forward to the same target and ports is running.
+    pub fn is_running(&self, saved: &SavedForward, cx: &App) -> bool {
+        self.forwards
+            .values()
+            .any(|f| saved_forward(&f.spec, cx).same_target(saved))
+    }
+
+    /// Resolves the target once (off the UI thread), to show the remote port and to report a
+    /// target that doesn't resolve before the first connection. Failing resolutions put the
+    /// forward into "reconnecting" and keep probing.
+    fn check_target(&mut self, id: u64, client: kube::Client, cx: &mut Context<Self>) {
+        let Some(forward) = self.forwards.get_mut(&id) else {
+            return;
+        };
+        let (namespace, kind, port) = (
+            forward.spec.namespace.clone(),
+            forward.spec.kind.clone(),
+            forward.spec.port.clone(),
+        );
+        forward.probe = Some(cx.spawn(async move |this, cx| {
+            loop {
+                let (namespace, kind, port, client) = (
+                    namespace.clone(),
+                    kind.clone(),
+                    port.clone(),
+                    client.clone(),
+                );
+                let result = cx
+                    .update(|cx| {
+                        kubyl_core::spawn_kube(cx, async move {
+                            resolve::resolve(client, &namespace, &kind, port).await
+                        })
+                    })
+                    .await;
+                let resolved = this
+                    .update(cx, |this, cx| {
+                        let Some(forward) = this.forwards.get_mut(&id) else {
+                            return true;
+                        };
+                        match result {
+                            Ok(resolved) => {
+                                forward.resolved_port = Some(resolved.port);
+                                if matches!(forward.state, ForwardState::Reconnecting(_)) {
+                                    forward.state = ForwardState::Listening;
+                                }
+                                this.refresh_row(id, cx);
+                                true
+                            }
+                            Err(err) => {
+                                if !matches!(forward.state, ForwardState::Failed(_)) {
+                                    forward.state = ForwardState::Reconnecting(format!("{err:#}"));
+                                }
+                                this.refresh_row(id, cx);
+                                false
+                            }
+                        }
+                    })
+                    .unwrap_or(true);
+                if resolved {
+                    break;
+                }
+                cx.background_executor().timer(PROBE_INTERVAL).await;
+            }
+        }));
+    }
+
+    fn set_state(&mut self, id: u64, state: ForwardState, cx: &mut Context<Self>) {
+        if let Some(forward) = self.forwards.get_mut(&id) {
+            forward.state = state;
+            self.refresh_row(id, cx);
         }
     }
 
@@ -186,10 +357,20 @@ impl PortForwardManager {
         match event {
             ForwardEvent::Listening { local_port } => {
                 forward.local_port = *local_port;
-                forward.listening = true;
+                if forward.state == ForwardState::Starting {
+                    forward.state = ForwardState::Listening;
+                }
+                if forward.spec.open_browser && forward.spec.http {
+                    cx.open_url(&forward.url());
+                }
             }
             ForwardEvent::ConnectionOpened => {
                 forward.connections += 1;
+                // A connection reached a pod: the target resolves again.
+                if matches!(forward.state, ForwardState::Reconnecting(_)) {
+                    forward.state = ForwardState::Listening;
+                    forward.probe = None;
+                }
             }
             ForwardEvent::ConnectionClosed => {
                 forward.connections = forward.connections.saturating_sub(1);
@@ -199,49 +380,130 @@ impl PortForwardManager {
                 forward.bytes_received += received;
             }
             ForwardEvent::Error(message) => {
-                SessionRegistry::set_status(
-                    cx,
-                    forward.session_id,
-                    format!("error: {message}"),
-                    Tone::Bad,
-                );
-                tracing::debug!(forward = %forward.label, "port-forward error: {message}");
-                cx.notify();
-                return true;
+                tracing::debug!(forward = %forward.spec.target_label(), "port-forward error: {message}");
+                if !matches!(forward.state, ForwardState::Failed(_)) {
+                    forward.state = ForwardState::Reconnecting(message.clone());
+                    if forward.probe.is_none() {
+                        let client = kubyl_kube::ConnectionManager::global(cx)
+                            .read(cx)
+                            .client(&forward.spec.cluster);
+                        if let Some(client) = client {
+                            self.check_target(id, client, cx);
+                        }
+                    }
+                }
             }
         }
-        let status = format!(
-            "{}:{} · {} conns · {} sent / {} recv",
-            forward.bind_address,
-            forward.local_port,
-            forward.connections,
-            human_bytes(forward.bytes_sent),
-            human_bytes(forward.bytes_received)
-        );
-        SessionRegistry::set_status(cx, forward.session_id, status, Tone::Good);
-        cx.notify();
+        self.refresh_row(id, cx);
         true
     }
 
-    pub fn local_url(&self, id: ForwardId) -> Option<String> {
-        self.forwards
-            .get(&id.0)
-            .map(|f| format!("http://{}:{}", f.bind_address, f.local_port))
+    /// Pushes title, status and buttons to the Active Sessions row.
+    fn refresh_row(&mut self, id: u64, cx: &mut Context<Self>) {
+        let Some(forward) = self.forwards.get(&id) else {
+            return;
+        };
+        let (status, tone) = forward.status();
+        let session = forward.session_id;
+        let title = forward.title();
+        let mut buttons = Vec::new();
+        if matches!(
+            forward.state,
+            ForwardState::Listening | ForwardState::Reconnecting(_)
+        ) {
+            if forward.spec.http {
+                let url = forward.url();
+                buttons.push(SessionButton::new(
+                    "open",
+                    IconName::Globe,
+                    format!("Open {url}"),
+                    move |_, cx| cx.open_url(&url),
+                ));
+            }
+            let address = forward.address();
+            buttons.push(SessionButton::new(
+                "copy",
+                IconName::Copy,
+                format!("Copy {address}"),
+                move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(address.clone())),
+            ));
+        }
+        let saved = forward.saved;
+        buttons.push(SessionButton::new(
+            "save",
+            if saved {
+                IconName::StarFilled
+            } else {
+                IconName::Star
+            },
+            if saved {
+                "Forget this forward"
+            } else {
+                "Save this forward"
+            },
+            move |_, cx| {
+                Self::global(cx).update(cx, |this, cx| this.toggle_saved(id, cx));
+            },
+        ));
+        SessionRegistry::set_title(cx, session, title);
+        SessionRegistry::set_status(cx, session, status, tone);
+        SessionRegistry::set_buttons(cx, session, buttons);
+        cx.notify();
     }
 
-    /// The most recently started forward's local URL, for the "open last forward" action.
-    /// Only considers forwards that reached `Listening`, so a bind failure never yields
-    /// `http://127.0.0.1:0`.
+    fn toggle_saved(&mut self, id: u64, cx: &mut Context<Self>) {
+        let Some(forward) = self.forwards.get_mut(&id) else {
+            return;
+        };
+        let saved = saved_forward(&forward.spec, cx);
+        forward.saved = !forward.saved;
+        let keep = forward.saved;
+        SavedForwards::global(cx).update(cx, |this, cx| {
+            this.update_state(cx, |state| {
+                if keep {
+                    state.upsert(saved);
+                } else {
+                    state.remove(&saved);
+                }
+            })
+        });
+        self.refresh_row(id, cx);
+    }
+
+    /// The most recently started listening forward's URL, for "open last forward".
     pub fn last_url(&self) -> Option<String> {
         self.forwards
             .iter()
-            .filter(|(_, forward)| forward.listening)
+            .filter(|(_, f)| f.local_port != 0 && f.state != ForwardState::Starting)
             .max_by_key(|(id, _)| **id)
-            .map(|(_, forward)| format!("http://{}:{}", forward.bind_address, forward.local_port))
+            .map(|(_, f)| f.url())
     }
 }
 
-fn human_bytes(bytes: u64) -> String {
+/// The saved-forward form of a spec (its context resolved through the connection manager).
+pub fn saved_forward(spec: &ForwardSpec, cx: &App) -> SavedForward {
+    let context = kubyl_kube::ConnectionManager::global(cx)
+        .read(cx)
+        .context(&spec.cluster)
+        .cloned();
+    SavedForward {
+        context: context
+            .as_ref()
+            .map(|c| c.context.clone())
+            .unwrap_or_default(),
+        server: context.as_ref().and_then(|c| c.server.clone()),
+        file: context.map(|c| c.file).unwrap_or_default(),
+        namespace: spec.namespace.clone(),
+        resource: spec.target.gvr.resource.clone(),
+        name: spec.target.name.clone().unwrap_or_default(),
+        remote_port: spec.remote_port,
+        local_port: spec.local_port,
+        bind_address: spec.bind_address.clone(),
+        auto_start: false,
+    }
+}
+
+pub fn human_bytes(bytes: u64) -> String {
     const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
     let mut value = bytes as f64;
     let mut unit = 0;
