@@ -253,8 +253,8 @@ impl ClusterMetrics {
 #[derive(Default)]
 struct Demand {
     source: HashMap<ClusterId, Instant>,
-    /// Pod usage, plus the namespaces asked about (for per-namespace fetching).
-    pods: HashMap<ClusterId, (Instant, HashSet<String>)>,
+    /// Pod usage per namespace asked about; `None` = every namespace.
+    pods: HashMap<ClusterId, HashMap<Option<String>, Instant>>,
     nodes: HashMap<ClusterId, Instant>,
     histories: HashMap<(ClusterId, ObjectKey), Instant>,
     ranges: HashMap<(ClusterId, RangeKey), Instant>,
@@ -270,7 +270,7 @@ impl Demand {
             .chain(
                 self.pods
                     .iter()
-                    .filter(|(_, (t, _))| fresh(t))
+                    .filter(|(_, scopes)| scopes.values().any(fresh))
                     .map(|(c, _)| c.clone()),
             )
             .chain(
@@ -297,7 +297,10 @@ impl Demand {
     fn prune(&mut self) {
         let keep = |t: &Instant| t.elapsed() < KEEP;
         self.source.retain(|_, t| keep(t));
-        self.pods.retain(|_, (t, _)| keep(t));
+        self.pods.retain(|_, scopes| {
+            scopes.retain(|_, t| keep(t));
+            !scopes.is_empty()
+        });
         self.nodes.retain(|_, t| keep(t));
         self.histories.retain(|_, t| keep(t));
         self.ranges.retain(|_, t| keep(t));
@@ -403,23 +406,29 @@ impl MetricsService {
 
     /// Current usage of every pod (`namespace/name`), if known.
     pub fn pods(&self, cluster: &ClusterId) -> Option<&HashMap<ObjectKey, Usage>> {
-        self.want_pods(cluster, None);
+        self.pods_in(cluster, None)
+    }
+
+    /// Current pod usage, asking only for `namespace` (`None`: every namespace). The map may
+    /// hold other namespaces too; filter by the `namespace/` key prefix.
+    pub fn pods_in(
+        &self,
+        cluster: &ClusterId,
+        namespace: Option<&str>,
+    ) -> Option<&HashMap<ObjectKey, Usage>> {
+        self.want_pods(cluster, namespace);
         let state = self.clusters.get(cluster)?;
         state.pods_fetch.last.map(|_| &state.pods)
     }
 
+    /// Marks pod usage in `namespace` (`None`: every namespace) as wanted.
     fn want_pods(&self, cluster: &ClusterId, namespace: Option<&str>) {
-        let mut demand = self.demand.borrow_mut();
-        let entry = demand
+        self.demand
+            .borrow_mut()
             .pods
             .entry(cluster.clone())
-            .or_insert_with(|| (Instant::now(), HashSet::new()));
-        entry.0 = Instant::now();
-        if let Some(ns) = namespace
-            && !entry.1.contains(ns)
-        {
-            entry.1.insert(ns.to_string());
-        }
+            .or_default()
+            .insert(namespace.map(str::to_string), Instant::now());
     }
 
     /// Current usage of one node.
@@ -700,11 +709,27 @@ impl MetricsService {
         let every = Duration::from_secs(self.settings.refresh_interval.max(5));
         let demand = self.demand.borrow();
         let fresh = |t: &Instant| t.elapsed() < DEMAND_TTL;
-        let pods_wanted = demand
-            .pods
-            .get(cluster)
-            .filter(|(t, _)| fresh(t))
-            .map(|(_, ns)| ns.clone());
+        // Only the namespaces views look at, unless something wants them all (the overview)
+        // or there are too many to list.
+        let pods_wanted: Option<PodScope> = demand.pods.get(cluster).and_then(|scopes| {
+            let fresh_scopes: Vec<&Option<String>> = scopes
+                .iter()
+                .filter(|(_, t)| fresh(t))
+                .map(|(scope, _)| scope)
+                .collect();
+            let mut namespaces: Vec<String> =
+                fresh_scopes.iter().copied().flatten().cloned().collect();
+            namespaces.sort();
+            if fresh_scopes.is_empty() {
+                None
+            } else if fresh_scopes.iter().any(|s| s.is_none()) || namespaces.len() > MAX_NAMESPACES
+            {
+                namespaces.truncate(MAX_NAMESPACES);
+                Some(PodScope::All(namespaces))
+            } else {
+                Some(PodScope::Namespaces(namespaces))
+            }
+        });
         let nodes_wanted = demand.nodes.get(cluster).is_some_and(fresh);
         let histories: Vec<ObjectKey> = demand
             .histories
@@ -751,8 +776,18 @@ impl MetricsService {
             Some(prom) => {
                 if pods_due {
                     let (prom, queries) = (prom.clone(), queries.clone());
+                    let filter = match &pods_wanted {
+                        Some(PodScope::Namespaces(namespaces)) => {
+                            Some(("namespace=~".to_string(), namespaces.join("|")))
+                        }
+                        _ => None,
+                    };
                     let task = spawn_kube(cx, async move {
-                        prom_usage(&prom, &queries, "pod_cpu", "pod_memory", |s| {
+                        let filters: Vec<(&str, &str)> = filter
+                            .iter()
+                            .map(|(k, v)| (k.as_str(), v.as_str()))
+                            .collect();
+                        prom_usage(&prom, &queries, "pod_cpu", "pod_memory", &filters, |s| {
                             let ns = s.labels.get("namespace")?;
                             let pod = s.labels.get("pod")?;
                             Some(object_key(Some(ns), pod))
@@ -763,7 +798,7 @@ impl MetricsService {
                 }
                 if nodes_due {
                     let task = spawn_kube(cx, async move {
-                        prom_usage(&prom, &queries, "node_cpu", "node_memory", |s| {
+                        prom_usage(&prom, &queries, "node_cpu", "node_memory", &[], |s| {
                             s.labels.get("node").cloned()
                         })
                         .await
@@ -780,12 +815,9 @@ impl MetricsService {
             None => {
                 if pods_due {
                     let client = client.clone();
-                    let mut namespaces: Vec<String> =
-                        pods_wanted.unwrap_or_default().into_iter().collect();
-                    namespaces.sort();
-                    namespaces.truncate(MAX_NAMESPACES);
+                    let scope = pods_wanted.clone().unwrap_or(PodScope::All(Vec::new()));
                     let task = spawn_kube(cx, async move {
-                        server_pods(&client, per_namespace, namespaces).await
+                        server_pods(&client, per_namespace, scope).await
                     });
                     self.finish_server_pods(cluster, generation, task, cx);
                 }
@@ -1109,8 +1141,17 @@ fn human_span(seconds: f64) -> String {
     }
 }
 
-/// Pod usage from metrics-server, and whether it was fetched per namespace.
+/// Pod usage from metrics-server, and whether listing across namespaces is forbidden.
 type ServerPods = (HashMap<ObjectKey, Usage>, bool);
+
+/// Which pods' usage views want.
+#[derive(Clone, Debug, PartialEq)]
+enum PodScope {
+    /// Every namespace; the ones views named are kept for fetching per namespace when listing
+    /// across namespaces is forbidden.
+    All(Vec<String>),
+    Namespaces(Vec<String>),
+}
 
 /// The result of looking for a source.
 enum Detected {
@@ -1239,9 +1280,13 @@ async fn prom_usage<K: std::hash::Hash + Eq>(
     queries: &Queries,
     cpu: &str,
     memory: &str,
+    filters: &[(&str, &str)],
     key: impl Fn(&Sample) -> Option<K>,
 ) -> Result<HashMap<K, Usage>, PromError> {
-    let (Some(cpu), Some(memory)) = (queries.render(cpu, &[]), queries.render(memory, &[])) else {
+    let (Some(cpu), Some(memory)) = (
+        queries.render(cpu, filters),
+        queries.render(memory, filters),
+    ) else {
         return Err(PromError::Query("unknown query".into()));
     };
     let (cpu, memory) = futures::join!(prom.query(&cpu), prom.query(&memory));
@@ -1259,20 +1304,28 @@ async fn prom_usage<K: std::hash::Hash + Eq>(
     Ok(out)
 }
 
-/// Pod usage from metrics-server: across namespaces, or per namespace when that's forbidden.
-/// Returns whether it had to go per namespace.
+/// Pod usage from metrics-server for `scope`: across namespaces in one request, or per
+/// namespace (asked for, or when listing across namespaces is forbidden). Returns whether that
+/// is forbidden, so later fetches go per namespace right away.
 async fn server_pods(
     client: &kube::Client,
-    per_namespace: bool,
-    namespaces: Vec<String>,
+    forbidden_before: bool,
+    scope: PodScope,
 ) -> Result<ServerPods, metrics_server::FetchError> {
-    if !per_namespace {
-        match metrics_server::pods(client, None).await {
+    // A few namespaces: one small request each. More: one request across namespaces is cheaper.
+    let scope = match scope {
+        PodScope::Namespaces(namespaces) if namespaces.len() > 5 => PodScope::All(namespaces),
+        scope => scope,
+    };
+    let (namespaces, forbidden) = match scope {
+        PodScope::Namespaces(namespaces) => (namespaces, forbidden_before),
+        PodScope::All(namespaces) if forbidden_before => (namespaces, true),
+        PodScope::All(namespaces) => match metrics_server::pods(client, None).await {
             Ok(pods) => return Ok((pods, false)),
-            Err(err) if !err.forbidden => return Err(err),
-            Err(_) => {}
-        }
-    }
+            Err(err) if err.forbidden && !namespaces.is_empty() => (namespaces, true),
+            Err(err) => return Err(err),
+        },
+    };
     let mut out = HashMap::new();
     let mut last_error = None;
     for ns in &namespaces {
@@ -1282,8 +1335,8 @@ async fn server_pods(
         }
     }
     match last_error {
-        Some(err) if out.is_empty() && !namespaces.is_empty() => Err(err),
-        _ => Ok((out, true)),
+        Some(err) if out.is_empty() => Err(err),
+        _ => Ok((out, forbidden)),
     }
 }
 

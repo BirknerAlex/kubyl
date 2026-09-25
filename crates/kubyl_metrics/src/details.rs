@@ -17,6 +17,9 @@ use kubyl_ui::{ActiveColors, Colors, fonts, h_flex, u, v_flex};
 use crate::panels::{self, PanelDef};
 use crate::service::{MetricsService, RangeKey, RangeState, Source};
 
+/// How long an object must stay selected before its charts are fetched.
+const SETTLE: Duration = Duration::from_millis(400);
+
 /// The time range of every Metrics section (one choice for all objects).
 #[derive(Clone, Copy, Default)]
 struct DetailsRange(TimeRange);
@@ -55,6 +58,8 @@ pub struct MetricsSection {
     cluster: ClusterId,
     filters: Vec<(String, String)>,
     panels: Vec<Panel>,
+    /// Shown long enough to fetch for (see [`SETTLE`]).
+    settled: bool,
     _ticker: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -88,24 +93,31 @@ impl MetricsSection {
         if let Some(service) = MetricsService::global(cx) {
             subscriptions.push(cx.observe(&service, |this, _, cx| this.refresh(cx)));
         }
-        // Keeps asking for the data (the cache drops what nobody reads).
+        // Asks for the data only once the selection has settled (arrowing through a list
+        // builds a section per row), then keeps asking (the cache drops what nobody reads).
         let ticker = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SETTLE).await;
             loop {
-                cx.background_executor().timer(Duration::from_secs(5)).await;
-                if this.update(cx, |this, cx| this.refresh(cx)).is_err() {
+                if this
+                    .update(cx, |this, cx| {
+                        this.settled = true;
+                        this.refresh(cx)
+                    })
+                    .is_err()
+                {
                     break;
                 }
+                cx.background_executor().timer(Duration::from_secs(5)).await;
             }
         });
-        let mut this = Self {
+        Self {
             cluster,
             filters,
             panels,
+            settled: false,
             _ticker: ticker,
             _subscriptions: subscriptions,
-        };
-        this.refresh(cx);
-        this
+        }
     }
 
     fn range(cx: &App) -> TimeRange {
@@ -117,6 +129,9 @@ impl MetricsSection {
 
     /// Reads (and so requests) every visible panel's series and pushes them into the charts.
     fn refresh(&mut self, cx: &mut Context<Self>) {
+        if !self.settled {
+            return;
+        }
         let Some(service) = MetricsService::global(cx) else {
             return;
         };

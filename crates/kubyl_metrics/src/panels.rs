@@ -404,10 +404,15 @@ pub fn for_object(target: &ResourceRef, kind: &str) -> Option<(&'static [PanelDe
         "Node" => (NODE, vec![filter("nodename", name)]),
         "Namespace" => (GROUP, vec![filter("namespace", name)]),
         // A workload's pods by their generated names (no dependency on recording rules or on
-        // listing the pods): Deployment → ReplicaSet hash → pod suffix, StatefulSet → ordinal.
-        "Deployment" => (GROUP, pods(format!("{escaped}-[a-z0-9]+-[a-z0-9]+"))?),
+        // listing the pods): Deployment → pod-template-hash (6–10 chars) → 5-char suffix,
+        // StatefulSet → ordinal, DaemonSet/ReplicaSet/Job → 5-char suffix. The fixed lengths
+        // keep `web` from matching the pods of a `web-api` Job or DaemonSet.
+        "Deployment" => (
+            GROUP,
+            pods(format!("{escaped}-[a-z0-9]{{6,10}}-[a-z0-9]{{5}}"))?,
+        ),
         "StatefulSet" => (GROUP, pods(format!("{escaped}-[0-9]+"))?),
-        "DaemonSet" | "ReplicaSet" | "Job" => (GROUP, pods(format!("{escaped}-[a-z0-9]+"))?),
+        "DaemonSet" | "ReplicaSet" | "Job" => (GROUP, pods(format!("{escaped}-[a-z0-9]{{5}}"))?),
         "PersistentVolumeClaim" => (
             VOLUME,
             vec![
@@ -483,7 +488,10 @@ mod tests {
         .unwrap();
         assert_eq!(
             filters[1],
-            ("pod=~".into(), "checkout-api-[a-z0-9]+-[a-z0-9]+".into())
+            (
+                "pod=~".into(),
+                "checkout-api-[a-z0-9]{6,10}-[a-z0-9]{5}".into()
+            )
         );
         let (panels, filters) = for_object(&object("nodes", None, "worker"), "Node").unwrap();
         assert_eq!(panels.len(), NODE.len());
