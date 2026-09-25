@@ -7,7 +7,7 @@ use gpui::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::types::{ResourceRef, ViewKind};
+use crate::types::{Gvr, ResourceRef, ViewKind};
 
 /// What to open: a view kind, optionally for a resource. Persisted to restore tabs.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -140,6 +140,10 @@ pub type ViewFactory =
 #[derive(Default)]
 pub struct ViewRegistry {
     factories: HashMap<ViewKind, ViewFactory>,
+    /// Views that replace the generic table for a kind, by (group, plural resource).
+    list_views: HashMap<(String, String), ViewKind>,
+    /// Views that replace the generic details for an object of a kind.
+    object_views: HashMap<(String, String), ViewKind>,
 }
 
 impl Global for ViewRegistry {}
@@ -166,6 +170,42 @@ impl ViewRegistry {
             .is_some_and(|r| r.factories.contains_key(kind))
     }
 
+    /// Opens lists of `group`/`resource` (plural) in `kind` instead of the generic table, e.g.
+    /// Argo CD Applications in their own view. The palette's `:apps` and the view's tree
+    /// entries use it; the Custom Resources tree still opens the generic table.
+    pub fn register_list_view(cx: &mut App, group: &str, resource: &str, kind: ViewKind) {
+        cx.default_global::<Self>()
+            .list_views
+            .insert((group.to_string(), resource.to_string()), kind);
+    }
+
+    /// The view for a list of `gvr`: a registered one, else [`ViewKind::Table`].
+    pub fn list_view(cx: &App, gvr: &Gvr) -> ViewKind {
+        cx.try_global::<Self>()
+            .and_then(|r| r.list_views.get(&(gvr.group.clone(), gvr.resource.clone())))
+            .cloned()
+            .unwrap_or(ViewKind::Table)
+    }
+
+    /// Opens single objects of `group`/`resource` in `kind` instead of the generic details
+    /// (Enter in a list, objects found in the palette).
+    pub fn register_object_view(cx: &mut App, group: &str, resource: &str, kind: ViewKind) {
+        cx.default_global::<Self>()
+            .object_views
+            .insert((group.to_string(), resource.to_string()), kind);
+    }
+
+    /// The view for one object of `gvr`: a registered one, else [`ViewKind::Details`].
+    pub fn object_view(cx: &App, gvr: &Gvr) -> ViewKind {
+        cx.try_global::<Self>()
+            .and_then(|r| {
+                r.object_views
+                    .get(&(gvr.group.clone(), gvr.resource.clone()))
+            })
+            .cloned()
+            .unwrap_or(ViewKind::Details)
+    }
+
     /// Builds a view for `request`, or `None` if no crate handles its kind.
     pub fn build(
         request: &ViewRequest,
@@ -187,4 +227,42 @@ pub fn new_tab<T: TabView>(
     build: impl FnOnce(&mut gpui::Context<T>) -> T,
 ) -> Box<dyn TabHandle> {
     Box::new(cx.new(build))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[gpui::test]
+    fn list_and_object_views_fall_back_to_the_generic_ones(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            let apps = Gvr::new("argoproj.io", "v1alpha1", "applications");
+            let pods = Gvr::new("", "v1", "pods");
+            assert_eq!(ViewRegistry::list_view(cx, &apps), ViewKind::Table);
+            ViewRegistry::register_list_view(
+                cx,
+                "argoproj.io",
+                "applications",
+                ViewKind::Custom("argocd_apps".into()),
+            );
+            ViewRegistry::register_object_view(
+                cx,
+                "argoproj.io",
+                "applications",
+                ViewKind::Custom("argocd_app".into()),
+            );
+            // Any version of the kind.
+            let v1 = Gvr::new("argoproj.io", "v1", "applications");
+            assert_eq!(
+                ViewRegistry::list_view(cx, &v1),
+                ViewKind::Custom("argocd_apps".into())
+            );
+            assert_eq!(
+                ViewRegistry::object_view(cx, &apps),
+                ViewKind::Custom("argocd_app".into())
+            );
+            assert_eq!(ViewRegistry::list_view(cx, &pods), ViewKind::Table);
+            assert_eq!(ViewRegistry::object_view(cx, &pods), ViewKind::Details);
+        });
+    }
 }
