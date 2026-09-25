@@ -4445,7 +4445,9 @@ name = "kubyl_charts"
 version = "0.1.1"
 dependencies = [
  "gpui-pre",
+ "jiff",
  "kubyl_core",
+ "kubyl_ui",
 ]
 
 [[package]]
@@ -4475,6 +4477,7 @@ dependencies = [
  "gpui-pre",
  "jiff",
  "kube",
+ "kubyl_charts",
  "kubyl_core",
  "kubyl_kube",
  "kubyl_resources",
@@ -4596,8 +4599,26 @@ dependencies = [
 name = "kubyl_metrics"
 version = "0.1.1"
 dependencies = [
+ "futures",
+ "gpui-component",
  "gpui-pre",
+ "http",
+ "jiff",
+ "kube",
+ "kubyl_charts",
  "kubyl_core",
+ "kubyl_explorer",
+ "kubyl_kube",
+ "kubyl_resources",
+ "kubyl_settings",
+ "kubyl_ui",
+ "schemars 1.2.2",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]
