@@ -4549,9 +4549,11 @@ name = "kubyl_logs"
 version = "0.1.1"
 dependencies = [
  "anyhow",
+ "dirs 7.0.0",
  "futures",
  "gpui-component",
  "gpui-pre",
+ "jiff",
  "k8s-openapi",
  "kube",
  "kubyl_core",
@@ -4563,6 +4565,7 @@ dependencies = [
  "schemars 1.2.2",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
 ]

@@ -61,7 +61,7 @@ pub fn detect_level(line: &str) -> LogLevel {
     if trimmed.starts_with('{')
         && let Ok(Value::Object(map)) = serde_json::from_str::<Value>(trimmed)
     {
-        for key in ["level", "severity", "loglevel", "log_level"] {
+        for key in ["level", "severity", "loglevel", "log_level", "lvl", "@l"] {
             if let Some(Value::String(s)) = map.get(key)
                 && let Some(level) = LogLevel::from_word(s)
             {
@@ -83,6 +83,21 @@ pub fn detect_level(line: &str) -> LogLevel {
                 return level;
             }
         }
+    }
+
+    // klog (Kubernetes components): `I0925 10:42:17.902123 ...`.
+    let bytes = trimmed.as_bytes();
+    if bytes.len() > 5
+        && matches!(bytes[0], b'I' | b'W' | b'E' | b'F')
+        && bytes[1..5].iter().all(u8::is_ascii_digit)
+        && bytes[5] == b' '
+    {
+        return match bytes[0] {
+            b'I' => LogLevel::Info,
+            b'W' => LogLevel::Warn,
+            b'E' => LogLevel::Error,
+            _ => LogLevel::Fatal,
+        };
     }
 
     // Bracketed or prefixed text: `[ERROR]`, `ERROR:`, `WARN  `.
@@ -133,6 +148,18 @@ mod tests {
         assert_eq!(detect_level("[ERROR] connection refused"), LogLevel::Error);
         assert_eq!(detect_level("WARN: retrying in 5s"), LogLevel::Warn);
         assert_eq!(detect_level("FATAL could not bind port"), LogLevel::Fatal);
+    }
+
+    #[test]
+    fn detects_klog_prefixes() {
+        assert_eq!(
+            detect_level("E0925 10:42:17.902123       1 reflector.go:123] failed"),
+            LogLevel::Error
+        );
+        assert_eq!(
+            detect_level("I0925 10:42:17.902123 1 main.go:1] ok"),
+            LogLevel::Info
+        );
     }
 
     #[test]

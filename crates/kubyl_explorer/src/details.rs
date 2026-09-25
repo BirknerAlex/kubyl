@@ -95,12 +95,18 @@ fn extra_view_kind(mode: Mode) -> Option<ViewKind> {
     }
 }
 
-/// Mirrors `kubyl_logs`'s `ShowLogs` availability: pods and the workloads whose pod-template
-/// selector logs can follow.
+/// Mirrors `kubyl_logs::logs_applicable` (`ShowLogs`): pods, and the workloads and Services
+/// whose pod selector logs can follow.
 fn logs_applicable(resource: &str) -> bool {
     matches!(
         resource,
-        "pods" | "deployments" | "statefulsets" | "daemonsets" | "jobs"
+        "pods"
+            | "deployments"
+            | "statefulsets"
+            | "daemonsets"
+            | "replicasets"
+            | "jobs"
+            | "services"
     )
 }
 
@@ -2002,8 +2008,9 @@ mod tests {
         assert!(logs_applicable("statefulsets"));
         assert!(logs_applicable("daemonsets"));
         assert!(logs_applicable("jobs"));
+        assert!(logs_applicable("replicasets"));
+        assert!(logs_applicable("services"));
         assert!(!logs_applicable("configmaps"));
-        assert!(!logs_applicable("services"));
 
         let writable = ClusterCaps::default();
         let read_only = ClusterCaps {

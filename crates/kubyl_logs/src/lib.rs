@@ -1,10 +1,10 @@
 //! Log streaming, search and level parsing (board 2 · Live logs).
 //!
-//! - [`view::LogsView`]: `ViewKind::Logs`, opened for a Pod (all containers) or a
-//!   Deployment/StatefulSet/DaemonSet/Job (its pod-template selector, so new/killed pods join
-//!   and leave live).
-//! - [`stream`]: the kube-side log streaming, with per-container reconnect and a gap marker on
-//!   reconnect.
+//! - [`view::LogsView`]: `ViewKind::Logs`, opened for a Pod, a workload
+//!   (Deployment/StatefulSet/DaemonSet/ReplicaSet/Job) or a Service. Workloads and Services
+//!   stream every pod of their selector (editable in the view); pods join and leave live.
+//! - [`stream`]: the kube-side log streaming: a pod watch for selector sources, the initial
+//!   backlog merged by timestamp, per-container reconnect with backoff.
 //! - [`ring`], [`level`], [`search`], [`json`]: the ring buffer, level detection, search and
 //!   JSON helpers, all pure and unit-tested without a cluster.
 //! - [`sessions`]: the active-sessions registry shared with `kubyl_terminal` and
@@ -42,10 +42,26 @@ actions!(
     ]
 );
 
+/// Kinds the log view can stream: pods, and the workloads and Services that select pods.
+pub fn logs_applicable(resource: &str) -> bool {
+    matches!(
+        resource,
+        "pods"
+            | "deployments"
+            | "statefulsets"
+            | "daemonsets"
+            | "replicasets"
+            | "jobs"
+            | "services"
+    )
+}
+
 /// Registers this crate's views, actions and chrome contributions.
 pub fn init(cx: &mut App) {
     Settings::register::<LogsSettings>(cx);
     SessionRegistry::install(cx);
+    view::init(cx);
+    dock::init(cx);
 
     ViewRegistry::register(cx, ViewKind::Logs, |request, window, cx| {
         let target = request.target.clone();
@@ -60,19 +76,14 @@ pub fn init(cx: &mut App) {
         ActionSpec::new("Resource: Show Logs", ShowLogs)
             .hint("Logs")
             .bind("l", Some("ResourceList"))
-            .available_when(|target, _| {
-                matches!(
-                    target.gvr.resource.as_str(),
-                    "pods" | "deployments" | "statefulsets" | "daemonsets" | "jobs"
-                )
-            }),
+            .available_when(|target, _| logs_applicable(&target.gvr.resource)),
     );
 
     cx.on_action(|_: &ShowLogs, cx| {
         let Some(target) = ResourceSelection::global(cx)
             .primary()
             .map(|s| s.target.clone())
-            .filter(|t| t.is_object())
+            .filter(|t| t.is_object() && logs_applicable(&t.gvr.resource))
         else {
             return;
         };

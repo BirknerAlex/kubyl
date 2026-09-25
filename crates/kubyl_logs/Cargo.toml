@@ -23,7 +23,9 @@ kubyl_ui.workspace = true
 kube.workspace = true
 k8s-openapi.workspace = true
 anyhow.workspace = true
+dirs.workspace = true
 futures.workspace = true
+jiff.workspace = true
 regex.workspace = true
 schemars.workspace = true
 serde.workspace = true
@@ -33,3 +35,5 @@ tracing.workspace = true
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
