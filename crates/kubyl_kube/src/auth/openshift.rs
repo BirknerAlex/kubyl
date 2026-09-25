@@ -56,7 +56,7 @@ pub fn username_hint(kubeconfig_user: &str) -> String {
 }
 
 /// Where and how to reach the cluster (from the built kube config).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct OpenShiftParams {
     /// The API server URL.
     pub server: String,
@@ -133,19 +133,26 @@ static SHARED: LazyLock<Mutex<HashMap<String, Arc<OpenShiftAuth>>>> =
 
 impl OpenShiftAuth {
     /// The auth for these params, shared by key. A changed kubeconfig token (a new `oc login`)
-    /// replaces the old one and gets another chance.
+    /// replaces the old one and gets another chance. Changed TLS or proxy settings replace the
+    /// whole entry, so the OAuth client never keeps trusting what the kubeconfig no longer does.
     pub fn shared(params: OpenShiftParams, kubeconfig_token: Option<SecretString>) -> Arc<Self> {
-        let auth = SHARED
-            .lock()
-            .entry(params.store_key())
-            .or_insert_with(|| {
-                Arc::new(Self {
-                    params,
-                    tokens: Mutex::new(Tokens::default()),
-                    loaded: tokio::sync::OnceCell::new(),
+        let auth = {
+            let mut shared = SHARED.lock();
+            let key = params.store_key();
+            if shared.get(&key).is_some_and(|auth| auth.params != params) {
+                shared.remove(&key);
+            }
+            shared
+                .entry(key)
+                .or_insert_with(|| {
+                    Arc::new(Self {
+                        params,
+                        tokens: Mutex::new(Tokens::default()),
+                        loaded: tokio::sync::OnceCell::new(),
+                    })
                 })
-            })
-            .clone();
+                .clone()
+        };
         if let Some(token) = kubeconfig_token {
             let mut tokens = auth.tokens.lock();
             let changed = tokens
@@ -448,7 +455,7 @@ impl OpenShiftAuth {
         .map_err(|_| AuthError::Failed("timed out waiting for the browser".into()))??;
         let response = self
             .http_client()?
-            .post(&metadata.token_endpoint)
+            .post(require_https(&metadata.token_endpoint)?)
             // A public client: its id with an empty secret.
             .basic_auth(CLI_CLIENT, Some(""))
             .form(&[
@@ -495,7 +502,7 @@ impl OpenShiftAuth {
         let metadata = self.metadata().await?;
         let url = format!(
             "{}?response_type=token&client_id={CHALLENGING_CLIENT}",
-            metadata.authorization_endpoint
+            require_https(&metadata.authorization_endpoint)?
         );
         let basic = base64::engine::general_purpose::STANDARD
             .encode(format!("{username}:{}", password.expose_secret()));
@@ -602,6 +609,25 @@ fn token_from_paste(pasted: &str) -> Option<String> {
     (!token.is_empty() && !token.contains(char::is_whitespace)).then(|| token.to_string())
 }
 
+/// Passwords and tokens only go to an HTTPS endpoint, or plain HTTP on this machine.
+fn require_https(endpoint: &str) -> Result<&str, AuthError> {
+    let url = url::Url::parse(endpoint)
+        .map_err(|_| AuthError::Failed(format!("invalid OAuth endpoint {endpoint}")))?;
+    let loopback = match url.host() {
+        Some(url::Host::Domain(host)) => host == "localhost",
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    };
+    if url.scheme() == "https" || loopback {
+        Ok(endpoint)
+    } else {
+        Err(AuthError::Failed(format!(
+            "the OAuth endpoint {endpoint} isn't HTTPS; not sending credentials to it"
+        )))
+    }
+}
+
 /// A request to the OAuth server (on the cluster's ingress) failed. An untrusted certificate gets
 /// a hint: the token method only talks to the API server.
 fn oauth_unreachable(what: &str, err: &reqwest::Error) -> AuthError {
@@ -679,6 +705,37 @@ mod tests {
         );
         assert_eq!(token_from_paste("two words"), None);
         assert_eq!(token_from_paste(""), None);
+    }
+
+    #[test]
+    fn credentials_only_go_over_https() {
+        assert!(require_https("https://oauth-openshift.apps.lab/oauth/token").is_ok());
+        assert!(require_https("http://127.0.0.1:8443/oauth/token").is_ok());
+        assert!(require_https("http://localhost/oauth/authorize").is_ok());
+        assert!(require_https("http://oauth-openshift.apps.lab/oauth/authorize").is_err());
+        assert!(require_https("not a url").is_err());
+    }
+
+    #[test]
+    fn changed_tls_settings_replace_the_shared_auth() {
+        let first = OpenShiftAuth::shared(
+            OpenShiftParams {
+                insecure: true,
+                ..params("tls/api-lab:6443")
+            },
+            None,
+        );
+        let same = OpenShiftAuth::shared(
+            OpenShiftParams {
+                insecure: true,
+                ..params("tls/api-lab:6443")
+            },
+            None,
+        );
+        assert!(Arc::ptr_eq(&first, &same));
+        let verified = OpenShiftAuth::shared(params("tls/api-lab:6443"), None);
+        assert!(!Arc::ptr_eq(&first, &verified));
+        assert!(!verified.params.insecure);
     }
 
     #[test]
