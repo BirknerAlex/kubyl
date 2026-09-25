@@ -4858,6 +4858,7 @@ dependencies = [
  "gpui-pre",
  "gpui-pre-platform",
  "image",
+ "kubyl_argocd",
  "kubyl_charts",
  "kubyl_core",
  "kubyl_explorer",
@@ -4887,6 +4888,14 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "winresource",
+]
+
+[[package]]
+name = "kubyl_argocd"
+version = "0.1.2"
+dependencies = [
+ "gpui-pre",
+ "kubyl_core",
 ]
 
 [[package]]

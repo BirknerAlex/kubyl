@@ -1,0 +1,17 @@
+[package]
+name = "kubyl_argocd"
+description = "Argo CD applications, sync, history and rollback."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+gpui.workspace = true
+kubyl_core.workspace = true

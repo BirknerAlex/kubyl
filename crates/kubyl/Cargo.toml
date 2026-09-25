@@ -38,6 +38,7 @@ tracing.workspace = true
 tracing-appender.workspace = true
 tracing-subscriber.workspace = true
 
+kubyl_argocd.workspace = true
 kubyl_charts.workspace = true
 kubyl_core.workspace = true
 kubyl_explorer.workspace = true
