@@ -81,6 +81,8 @@ fn show(view: Entity<SignInView>, window: &mut Window, cx: &mut App) {
             .p_0()
             .bg(colors.panel)
             .close_button(false)
+            // Enter would close the dialog and abort the running sign-in.
+            .on_ok(|_, _, _| false)
             .child(view.clone())
     });
 }
