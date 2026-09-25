@@ -55,11 +55,11 @@ fn columns() -> Vec<ColumnDef> {
     let flex = |weight: f32, min: f32| ColumnWidth::Flex { weight, min };
     // Fits next to the details dock at 1440 px.
     vec![
-        ColumnDef::new("name", "Name", flex(1.3, 120.0)),
+        ColumnDef::new("name", "Name", flex(1.3, 112.0)),
         ColumnDef::new("project", "Project", ColumnWidth::Fixed(84.0)),
         ColumnDef::new("sync", "Sync", ColumnWidth::Fixed(110.0)),
         ColumnDef::new("health", "Health", ColumnWidth::Fixed(102.0)),
-        ColumnDef::new("auto", "Auto", ColumnWidth::Fixed(42.0)),
+        ColumnDef::new("auto", "Auto", ColumnWidth::Fixed(50.0)),
         ColumnDef::new("source", "Source @ Target", flex(1.5, 120.0)),
         ColumnDef::new("revision", "Revision", ColumnWidth::Fixed(68.0)),
         ColumnDef::new("destination", "Destination", flex(1.0, 100.0)),
@@ -716,11 +716,19 @@ impl AppsView {
                     .gap(u(4.0))
                     .font_family(fonts::MONO)
                     .text_size(u(12.0))
-                    .child(div().truncate().child(row.name().to_string()))
+                    // The name wins; the namespace gives way.
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .max_w_full()
+                            .truncate()
+                            .child(row.name().to_string()),
+                    )
                     .when(foreign, |this| {
                         this.child(
                             div()
-                                .flex_none()
+                                .min_w_0()
+                                .truncate()
                                 .text_color(colors.text_dim)
                                 .child(format!("· {}", row.namespace())),
                         )
@@ -762,7 +770,7 @@ impl AppsView {
                         .into_any_element()
                 } else {
                     div()
-                        .text_size(u(12.0))
+                        .text_size(u(11.0))
                         .text_color(colors.text_faint)
                         .child("manual")
                         .into_any_element()

@@ -592,7 +592,7 @@ impl Render for AppDock {
         });
         v_flex()
             .child(status)
-            .when(!app.status.resources.is_empty(), |this| this.child(drift))
+            .when(!out_of_sync.is_empty(), |this| this.child(drift))
             .child(source_section)
             .child(policy_section)
             .children(last)

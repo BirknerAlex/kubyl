@@ -285,8 +285,8 @@ pub fn check_box(checked: bool, colors: &Colors) -> impl IntoElement {
         .map(|this| {
             if checked {
                 this.bg(colors.accent).child(
-                    Icon::new(IconName::CircleCheck)
-                        .size(10.0)
+                    Icon::new(IconName::Check)
+                        .size(11.0)
                         .color(colors.on_accent),
                 )
             } else {

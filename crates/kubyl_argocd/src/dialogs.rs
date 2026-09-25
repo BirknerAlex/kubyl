@@ -32,7 +32,13 @@ use crate::state::{self, ApiState, ArgoCd, Credentials};
 use crate::widgets;
 use crate::windows::{self, Verdict};
 
-fn open<V: Render>(view: Entity<V>, width: f32, window: &mut Window, cx: &mut App) {
+fn open<V: Render>(
+    view: Entity<V>,
+    width: f32,
+    focus: Option<FocusHandle>,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let colors = cx.colors().clone();
     window.open_dialog(cx, move |dialog, _, _| {
         dialog
@@ -49,6 +55,10 @@ fn open<V: Render>(view: Entity<V>, width: f32, window: &mut Window, cx: &mut Ap
                 move |content, _, _| content.child(view.clone())
             })
     });
+    // After opening: the dialog takes focus when it opens.
+    if let Some(focus) = focus {
+        window.focus(&focus, cx);
+    }
 }
 
 fn header(
@@ -192,7 +202,8 @@ pub fn open_sync(target: ResourceRef, window: &mut Window, cx: &mut App) {
         return;
     };
     let view = cx.new(|cx| SyncDialog::new(target, app, window, cx));
-    open(view, 580.0, window, cx);
+    let focus = view.read(cx).focus.clone();
+    open(view, 580.0, Some(focus), window, cx);
 }
 
 struct SyncDialog {
@@ -729,7 +740,15 @@ pub fn open_rollback(target: ResourceRef, id: Option<i64>, window: &mut Window, 
         return;
     };
     let view = cx.new(|cx| RollbackDialog::new(target, app, entry, window, cx));
-    open(view, 560.0, window, cx);
+    let focus = {
+        let dialog = view.read(cx);
+        if dialog.production {
+            dialog.typed.read(cx).focus_handle(cx)
+        } else {
+            dialog.focus.clone()
+        }
+    };
+    open(view, 560.0, Some(focus), window, cx);
 }
 
 struct RollbackDialog {
@@ -768,10 +787,6 @@ impl RollbackDialog {
                 }),
             ];
         let production = production(&target.cluster, cx);
-        if production {
-            let focus = typed.read(cx).focus_handle(cx);
-            focus.focus(window, cx);
-        }
         Self {
             target,
             app,
@@ -1131,14 +1146,19 @@ impl Render for RollbackDialog {
                     .gap(u(14.0))
                     .child(
                         h_flex()
-                            .flex_wrap()
-                            .gap(u(4.0))
+                            .gap(u(6.0))
                             .text_size(u(12.5))
-                            .text_color(colors.text_muted)
-                            .child("Deploys history entry")
+                            .child(div().text_color(colors.text_muted).child("History entry"))
                             .child(picker)
-                            .child(format!("again: the revision and source it was synced with, {} ago by {}.", ago(&entry), by(&entry))),
+                            .child(div().text_color(colors.text_dim).child(format!(
+                                "synced {} ago by {}",
+                                ago(&entry),
+                                by(&entry)
+                            ))),
                     )
+                    .child(div().text_size(u(12.5)).text_color(colors.text_muted).child(
+                        "Rollback syncs the revision and source this entry deployed, like argocd app rollback.",
+                    ))
                     .child(card)
                     .children(auto_warning)
                     .when(blocked, |this| {
@@ -1171,7 +1191,8 @@ pub fn open_delete(target: ResourceRef, window: &mut Window, cx: &mut App) {
         return;
     };
     let view = cx.new(|cx| DeleteDialog::new(target, app, window, cx));
-    open(view, 540.0, window, cx);
+    let focus = view.read(cx).typed.read(cx).focus_handle(cx);
+    open(view, 540.0, Some(focus), window, cx);
 }
 
 struct DeleteDialog {
@@ -1204,8 +1225,6 @@ impl DeleteDialog {
                     }
                 }),
             ];
-        let focus = typed.read(cx).focus_handle(cx);
-        focus.focus(window, cx);
         // Argo CD's default: cascade when the finalizer is set (the API's default too).
         let cascade = if app.cascades() || app.metadata.finalizers.is_empty() {
             Cascade::Foreground
@@ -1389,7 +1408,8 @@ pub fn open_sign_in(cluster: ClusterId, window: &mut Window, cx: &mut App) {
         argo.update(cx, |argo, cx| argo.redetect(&cluster, cx));
     }
     let view = cx.new(|cx| SignInDialog::new(cluster, window, cx));
-    open(view, 540.0, window, cx);
+    let focus = view.read(cx).password.read(cx).focus_handle(cx);
+    open(view, 540.0, Some(focus), window, cx);
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1452,8 +1472,6 @@ impl SignInDialog {
                 cx.notify();
             }));
         }
-        let focus = password.read(cx).focus_handle(cx);
-        focus.focus(window, cx);
         let mut this = Self {
             cluster,
             install: None,

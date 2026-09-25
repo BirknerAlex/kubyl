@@ -610,14 +610,11 @@ impl AppView {
     }
 
     fn node_diff(&mut self, cx: &mut Context<Self>) {
-        let Some((_, node)) = self.selected_row() else {
-            return;
-        };
-        let id = node.id.clone();
+        let id = self.selected_row().map(|(_, node)| node.id.clone());
         self.tab = Tab::Diff;
-        if let Some(Ok(diffs)) = &self.diffs
+        if let (Some(id), Some(Ok(diffs))) = (&id, &self.diffs)
             && let Some(index) = diffs.iter().position(|(item, _)| {
-                tree::node_id(&item.group, &item.kind, &item.namespace, &item.name) == id
+                &tree::node_id(&item.group, &item.kind, &item.namespace, &item.name) == id
             })
         {
             self.diff_selected = index;
