@@ -40,6 +40,9 @@ pub struct LineChart {
     height: f32,
     placeholder: SharedString,
     binary: bool,
+    /// Small multiples in the details dock: no legend (the caller shows the latest values) and
+    /// only the top gridline labelled.
+    compact: bool,
 }
 
 impl LineChart {
@@ -54,7 +57,14 @@ impl LineChart {
             height: 150.0,
             placeholder: "Loading…".into(),
             binary: false,
+            compact: false,
         }
+    }
+
+    /// No legend, one axis label; for small charts next to their own value readout.
+    pub fn compact(mut self) -> Self {
+        self.compact = true;
+        self
     }
 
     /// Scales the value axis in binary steps (bytes).
@@ -269,7 +279,8 @@ impl Render for LineChart {
         let len = self.data.times.len();
         let stacked = self.kind == ChartKind::StackedArea;
         let refs: Vec<&Series> = visible.iter().collect();
-        let top = max_value(&refs, len, stacked) * 1.05;
+        let peak = max_value(&refs, len, stacked);
+        let top = peak * 1.05;
         let max = if self.binary {
             nice_max_binary(top)
         } else {
@@ -399,7 +410,12 @@ impl Render for LineChart {
         )
         .size_full();
 
-        let axis_labels = [0.75, 0.5, 0.25].map(|f| {
+        let label_at: &[f32] = if self.compact {
+            &[0.75]
+        } else {
+            &[0.75, 0.5, 0.25]
+        };
+        let axis_labels = label_at.iter().map(|&f| {
             div()
                 .absolute()
                 .left(u(2.0))
@@ -420,7 +436,8 @@ impl Render for LineChart {
                     .w_full()
                     .h(u(self.height))
                     .child(chart)
-                    .when(!empty, |this| this.children(axis_labels))
+                    // All zeros (no drops, no errors): a flat line needs no scale.
+                    .when(!empty && peak > 0.0, |this| this.children(axis_labels))
                     .when(empty, |this| {
                         this.child(
                             div()
@@ -455,7 +472,7 @@ impl Render for LineChart {
                         }
                     })),
             )
-            .when(!self.data.series.is_empty(), |this| {
+            .when(!self.data.series.is_empty() && !self.compact, |this| {
                 this.child(self.legend(cx))
             })
     }

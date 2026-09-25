@@ -87,6 +87,7 @@ pub struct TimeRangePicker {
     id: SharedString,
     selected: TimeRange,
     disabled: bool,
+    compact: bool,
     on_change: Option<OnChange>,
 }
 
@@ -96,8 +97,15 @@ impl TimeRangePicker {
             id: id.into(),
             selected,
             disabled: false,
+            compact: false,
             on_change: None,
         }
+    }
+
+    /// Smaller, for section headers in the details dock.
+    pub fn compact(mut self) -> Self {
+        self.compact = true;
+        self
     }
 
     /// Greyed out (no history source).
@@ -121,14 +129,14 @@ impl RenderOnce for TimeRangePicker {
             .border_color(colors.border)
             .rounded(u(5.0))
             .overflow_hidden()
-            .text_size(u(12.0))
+            .text_size(u(if self.compact { 11.0 } else { 12.0 }))
             .children(TimeRange::ALL.into_iter().map(|range| {
                 let selected = range == self.selected && !self.disabled;
                 let on_change = self.on_change.clone();
                 div()
                     .id(SharedString::from(format!("{}-{}", self.id, range.label())))
-                    .px(u(9.0))
-                    .py(u(3.0))
+                    .px(u(if self.compact { 5.0 } else { 9.0 }))
+                    .py(u(if self.compact { 1.0 } else { 3.0 }))
                     .map(|this| {
                         if selected {
                             this.bg(colors.chip_selected_background)
