@@ -5307,6 +5307,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "raw-window-handle",
  "schemars 1.2.2",
+ "secrecy",
  "serde",
  "serde_json",
  "sha2 0.11.0",

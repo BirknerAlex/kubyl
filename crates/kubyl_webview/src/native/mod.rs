@@ -102,6 +102,8 @@ pub struct NativeOptions {
     /// Keystrokes that belong to Kubyl while the page has focus (⌘K, ⌘W…), on platforms where
     /// the page would otherwise swallow them (Windows, Linux).
     pub shortcuts: Rc<RefCell<Vec<Keystroke>>>,
+    /// Session cookies set before the first load ([`crate::session`]).
+    pub cookies: Vec<crate::session::SessionCookie>,
 }
 
 /// The GPUI window's native handle, for `wry` (which needs [`HasWindowHandle`]).
@@ -223,8 +225,13 @@ impl NativeWebView {
             };
             #[cfg(target_os = "macos")]
             let builder = WebViewBuilder::new();
+            // With session cookies, the page loads once they're set (below).
+            let builder = if options.cookies.is_empty() {
+                builder.with_url(options.url.clone())
+            } else {
+                builder
+            };
             let builder = builder
-                .with_url(options.url.clone())
                 .with_visible(placement == Placement::Window)
                 .with_bounds(Rect {
                     position: wry::dpi::LogicalPosition::new(0.0, 0.0).into(),
@@ -310,6 +317,18 @@ impl NativeWebView {
             let platform = windows::attach(&webview, &options, events)?;
             #[cfg(target_os = "linux")]
             let platform = linux::attach(&webview, platform, &options, events)?;
+            if !options.cookies.is_empty() {
+                // After `attach`: the certificate hooks must be in place for the first load.
+                for cookie in crate::session::wry_cookies(&options.url, &options.cookies) {
+                    if let Err(err) = webview.set_cookie(&cookie) {
+                        tracing::warn!(
+                            name = cookie.name(),
+                            "couldn't set a session cookie: {err}"
+                        );
+                    }
+                }
+                webview.load_url(&options.url).ok();
+            }
             Ok(Self {
                 webview,
                 placement,

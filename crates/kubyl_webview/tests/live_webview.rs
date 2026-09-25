@@ -8,7 +8,9 @@
 //! Opens a GPUI window with three embedded views on the data stores Kubyl gives Grafana on two
 //! clusters (`kind-a` twice, `kind-b` once) and a local HTTP server: a login on cluster A sets a
 //! cookie; a second tab on cluster A sees it, a tab on cluster B doesn't. (The forwards don't
-//! matter here: cookies ignore ports, which is why each cluster needs its own store.)
+//! matter here: cookies ignore ports, which is why each cluster needs its own store.) A fourth
+//! view gets a session cookie from Kubyl (Argo CD's sign-in): the server sees it on the first
+//! request, the page's scripts don't (HttpOnly).
 
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::net::TcpListener;
@@ -20,11 +22,13 @@ use gpui::{
     App, AppContext as _, Bounds, Context, IntoElement, Render, Window, WindowBounds,
     WindowOptions, div, point, px, size,
 };
+use kubyl_webview::SessionCookie;
 use kubyl_webview::native::{NativeEvent, NativeOptions, NativeWebView, ParentWindow, Storage};
 use kubyl_webview::store::storage_id;
 use kubyl_webview::target::TargetKind;
 
-/// Serves `/set` (sets a session cookie) and `/get` (shows `document.cookie` as the title).
+/// Serves `/set` (sets a session cookie), `/get` (shows `document.cookie` as the title) and
+/// `/echo` (shows the request's `Cookie` header as the title).
 fn serve() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -38,10 +42,18 @@ fn serve() -> u16 {
                 }
                 // Drain the headers.
                 let mut line = String::new();
+                let mut sent = String::new();
                 while reader.read_line(&mut line).is_ok_and(|n| n > 2) {
+                    if let Some((name, value)) = line.split_once(':')
+                        && name.eq_ignore_ascii_case("cookie")
+                    {
+                        sent = value.trim().to_string();
+                    }
                     line.clear();
                 }
-                let (cookie, body) = if request.starts_with("GET /set") {
+                let (cookie, body) = if request.starts_with("GET /echo") {
+                    ("", format!("<!doctype html><title>echo:{sent}</title>"))
+                } else if request.starts_with("GET /set") {
                     (
                         "Set-Cookie: grafana_session=signed-in; Path=/; SameSite=Lax\r\n",
                         "<!doctype html><title>set</title>".to_string(),
@@ -78,7 +90,13 @@ struct View {
     events: UnboundedReceiver<NativeEvent>,
 }
 
-fn view(parent: &ParentWindow, id: [u8; 16], url: String, index: usize) -> View {
+fn view(
+    parent: &ParentWindow,
+    id: [u8; 16],
+    url: String,
+    index: usize,
+    cookies: Vec<SessionCookie>,
+) -> View {
     let (tx, rx) = mpsc::unbounded();
     let dir = std::env::temp_dir().join("kubyl-live-webview");
     let native = NativeWebView::create(
@@ -93,6 +111,7 @@ fn view(parent: &ParentWindow, id: [u8; 16], url: String, index: usize) -> View 
             zoom: 1.0,
             accepted_certs: Default::default(),
             shortcuts: Default::default(),
+            cookies,
         },
         tx,
     )
@@ -143,6 +162,13 @@ fn main() {
     };
     let (cluster_a, cluster_b) = (store("kind-a"), store("kind-b"));
     assert_ne!(cluster_a, cluster_b);
+    let argo_store = storage_id(
+        &format!("kind-a-{nonce}"),
+        Some("https://127.0.0.1:6443"),
+        "argocd",
+        TargetKind::Service,
+        "argocd-server",
+    );
 
     gpui_platform::application().run(move |cx: &mut App| {
         let window = cx
@@ -150,7 +176,7 @@ fn main() {
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(Bounds::new(
                         point(px(100.0), px(100.0)),
-                        size(px(680.0), px(280.0)),
+                        size(px(890.0), px(280.0)),
                     ))),
                     ..Default::default()
                 },
@@ -177,7 +203,7 @@ fn main() {
         cx.spawn(async move |cx| {
             // Web view creation pumps the Win32 message loop: outside of any App update.
             let started = std::time::Instant::now();
-            let mut signed_in = view(&parent, cluster_a, format!("{base}/set"), 0);
+            let mut signed_in = view(&parent, cluster_a, format!("{base}/set"), 0, Vec::new());
             println!("first web view created in {:?}", started.elapsed());
             let test = async {
                 let set = title(&mut signed_in).await;
@@ -186,9 +212,11 @@ fn main() {
                 }
                 signed_in.native.load_url(&format!("{base}/get"));
                 let own = title(&mut signed_in).await;
-                let mut same_cluster = view(&parent, cluster_a, format!("{base}/get"), 1);
+                let mut same_cluster =
+                    view(&parent, cluster_a, format!("{base}/get"), 1, Vec::new());
                 let shared = title(&mut same_cluster).await;
-                let mut other_cluster = view(&parent, cluster_b, format!("{base}/get"), 2);
+                let mut other_cluster =
+                    view(&parent, cluster_b, format!("{base}/get"), 2, Vec::new());
                 let isolated = title(&mut other_cluster).await;
                 println!("cluster A, signed in:  {own}");
                 println!("cluster A, second tab: {shared}");
@@ -202,6 +230,22 @@ fn main() {
                 if isolated != "cookie:" {
                     fail(format!("the other cluster's store saw {isolated:?}"));
                 }
+                let session = vec![SessionCookie {
+                    name: "argocd.token".into(),
+                    value: "t0ken".to_string().into(),
+                }];
+                let mut argo = view(&parent, argo_store, format!("{base}/echo"), 3, session);
+                let first = title(&mut argo).await;
+                argo.native.load_url(&format!("{base}/get"));
+                let script = title(&mut argo).await;
+                println!("session cookie, first request: {first}");
+                println!("session cookie, page script:   {script}");
+                if first != "echo:argocd.token=t0ken" {
+                    fail(format!("the first request carried {first:?}"));
+                }
+                if script != "cookie:" {
+                    fail(format!("the page's scripts saw {script:?} (not HttpOnly)"));
+                }
             };
             let deadline = timeout.timer(Duration::from_secs(60));
             futures::pin_mut!(test, deadline);
@@ -209,7 +253,9 @@ fn main() {
             {
                 fail("timed out".into());
             }
-            println!("live_webview: ok: cookies are isolated per cluster");
+            println!(
+                "live_webview: ok: cookies are isolated per cluster; session cookies reach the first request"
+            );
             cx.update(|cx| cx.quit());
         })
         .detach();
