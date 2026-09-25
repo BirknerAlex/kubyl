@@ -142,3 +142,40 @@ from the nodes table.
   (App Nap). Run screenshots while the machine is otherwise idle.
 - Views that show usage observe the `Metrics` global; don't cache usage in sort keys without
   clearing them on `Metrics::changed` (the list clears its sort cache when sorted by CPU/memory).
+
+### 2026-09-25, later (same branch): network, disk and troubleshooting metrics
+
+Asked for after the first round: network and I/O graphs in the details, more troubleshooting
+metrics, and one color per namespace across all graphs.
+
+- **Details "Metrics" section** (`kubyl_metrics::details`, via the new
+  `DetailsSection` extension point in `kubyl_core`, rendered by the explorer after the
+  kind-specific sections). Compact hover charts with the latest values in the header and a shared
+  15m–7d range:
+  - Pods: network bandwidth, packets, dropped packets, network errors, disk IOPS and throughput,
+    CPU throttling (CFS), PSI pressure (cpu/memory/io), OOM kills and restarts. CPU/memory stay
+    in the Usage section above.
+  - Namespaces and workloads (Deployment, StatefulSet, DaemonSet, ReplicaSet, Job; pods matched
+    by their generated names, no recording rule needed): CPU and memory plus all of the above
+    (pressure = the highest pod).
+  - Nodes (node-exporter, joined via `node_uname_info`): CPU, memory, network, packets, drops,
+    errors, TCP retransmits, conntrack table use, disk IOPS/throughput/busy, pressure, fullest
+    filesystem.
+  - PVCs: volume used vs capacity, inodes (kubelet volume stats; not reported by kind's
+    local-path storage, so unverified).
+- **Overview**: network and CPU throttling by namespace, disk IOPS and dropped packets by node
+  (node-exporter); the namespace variant adds network and throttling by pod.
+- **Colors**: `kubyl_charts::ColorRegistry` gives a namespace (pod, node) one color on every chart
+  of its cluster; the palette grew to eight validated slots and fills the safest first.
+- **Queries**: library v2 (`LIBRARY_VERSION = 2`); availability from the metric-name index
+  instead of the recording-rule probe. Pod network excludes host-network pods (their sandbox
+  reports the node's interfaces); fs I/O and throttling use container-level series; PSI uses the
+  pod cgroup (pressure isn't additive).
+- Verified on kind with Prometheus: every panel query returns data for a pod, a deployment, a
+  namespace and a node (live test `detail_panels_have_data`); screenshots of the overview (all
+  charts), pod, node and deployment details. The harness has a new `scroll=x:y:dy` step.
+
+Ideas not done yet: ingress-nginx request rate/latency/5xx on Ingress details (when its metrics
+exist), per-container breakdowns in multi-container pods, Service details through their
+endpoints' pods.
+
