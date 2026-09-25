@@ -225,6 +225,14 @@ impl AppsView {
         cx.notify();
     }
 
+    /// `namespace/name` of the rows shown, in order.
+    pub fn row_names(&self) -> Vec<String> {
+        self.rows
+            .iter()
+            .map(|r| format!("{}/{}", r.namespace(), r.name()))
+            .collect()
+    }
+
     fn selected_index(&self) -> Option<usize> {
         let key = self.selected.as_ref()?;
         self.rows.iter().position(|r| &r.key == key)

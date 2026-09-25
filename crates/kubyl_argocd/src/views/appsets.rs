@@ -67,10 +67,19 @@ pub struct AppSetsView {
     focus: FocusHandle,
     scroll: UniformListScrollHandle,
     _observers: Vec<Subscription>,
+    _subscription: Option<Subscription>,
 }
 
 impl AppSetsView {
     pub fn new(target: ResourceRef, _: &mut Window, cx: &mut Context<Self>) -> Self {
+        let subscription = kubyl_kube::ConnectionManager::try_global(cx).map(|manager| {
+            let cluster = target.cluster.clone();
+            cx.subscribe(&manager, move |this: &mut Self, _, event: &kubyl_kube::ConnectionEvent, cx| {
+                if matches!(event, kubyl_kube::ConnectionEvent::DiscoveryChanged(id) if *id == cluster) {
+                    this.sync_stores(cx);
+                }
+            })
+        });
         let mut this = Self {
             cluster: target.cluster.clone(),
             namespace: target.namespace.clone(),
@@ -82,15 +91,8 @@ impl AppSetsView {
             focus: cx.focus_handle(),
             scroll: UniformListScrollHandle::new(),
             _observers: Vec::new(),
+            _subscription: subscription,
         };
-        if let Some(manager) = kubyl_kube::ConnectionManager::try_global(cx) {
-            let cluster = this.cluster.clone();
-            this._observers.push(cx.subscribe(&manager, move |this, _, event: &kubyl_kube::ConnectionEvent, cx| {
-                if matches!(event, kubyl_kube::ConnectionEvent::DiscoveryChanged(id) if *id == cluster) {
-                    this.sync_stores(cx);
-                }
-            }));
-        }
         this.sync_stores(cx);
         this
     }
@@ -113,13 +115,11 @@ impl AppSetsView {
                 StoreKey::new(self.cluster.clone(), gvr, self.namespace.clone()),
             )
         });
-        let mut observers: Vec<Subscription> = [&self.sets, &self.apps]
+        self._observers = [&self.sets, &self.apps]
             .into_iter()
             .flatten()
             .map(|h| cx.observe(h.entity(), |this, _, cx| this.refresh(cx)))
             .collect();
-        observers.extend(self._observers.drain(..1.min(self._observers.len())));
-        self._observers = observers;
         self.refresh(cx);
     }
 

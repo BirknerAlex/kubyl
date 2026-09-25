@@ -36,6 +36,16 @@ command -v kubectl >/dev/null 2>&1 || die "kubectl is not installed"
 k() { kubectl --context "$CONTEXT" "$@"; }
 k get --raw /version >/dev/null 2>&1 || die "context $CONTEXT isn't reachable (run script/dev-cluster.sh first)"
 
+# Waits (3 min at most) until none of the named objects exist.
+wait_gone() {
+  local kind="$1"; shift
+  for _ in $(seq 90); do
+    [[ -z "$(k get "$kind" "$@" -o name --ignore-not-found 2>/dev/null)" ]] && return 0
+    sleep 2
+  done
+  die "$kind $* still there after 3 minutes"
+}
+
 uninstall() {
   if k get crd applications.argoproj.io >/dev/null 2>&1; then
     log "Deleting Applications (cascading, 60 s at most)"
@@ -52,6 +62,10 @@ uninstall() {
     guestbook-dev guestbook-staging --ignore-not-found --wait=false >/dev/null
   k delete clusterrole,clusterrolebinding -l app.kubernetes.io/part-of=argocd --ignore-not-found >/dev/null
   k delete crd "${CRDS[@]}" --ignore-not-found >/dev/null
+  log "Waiting for the namespaces and CRDs to go"
+  wait_gone namespace "$NAMESPACE" "$APPS_NAMESPACE" guestbook guestbook-multi guestbook-team \
+    guestbook-dev guestbook-staging
+  wait_gone crd "${CRDS[@]}"
   log "Argo CD removed"
 }
 
@@ -67,6 +81,10 @@ VERSION="${1:-${ARGOCD_VERSION:-v3.5.3}}"
 [[ "$VERSION" == v* ]] || VERSION="v$VERSION"
 
 log "Installing Argo CD $VERSION in namespace $NAMESPACE"
+# Right after --delete the namespaces may still be terminating.
+if [[ "$(k get namespace "$NAMESPACE" -o jsonpath='{.status.phase}' --ignore-not-found)" == Terminating ]]; then
+  wait_gone namespace "$NAMESPACE"
+fi
 k create namespace "$NAMESPACE" --dry-run=client -o yaml | k apply -f - >/dev/null
 # Server-side: the ApplicationSet CRD is too large for kubectl's last-applied annotation.
 k apply -n "$NAMESPACE" --server-side --force-conflicts \

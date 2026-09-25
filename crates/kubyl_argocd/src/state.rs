@@ -32,6 +32,10 @@ use crate::settings::{self, ApiTransport, ContextKey};
 
 /// How long a temporary forward may take to listen.
 const FORWARD_TIMEOUT: Duration = Duration::from_secs(20);
+/// While Argo CD is being installed (CRDs first, workloads later), detection finds nothing or
+/// no version. It runs again: 3 s doubling, 5 times.
+const DETECT_RETRY: Duration = Duration::from_secs(3);
+const DETECT_RETRIES: u32 = 5;
 
 /// Where detection of a cluster's installs stands.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -103,6 +107,8 @@ struct ClusterArgo {
     caps: ArgoCdCaps,
     detection: Detection,
     _detect_task: Option<Task<()>>,
+    detect_retries: u32,
+    _retry_task: Option<Task<()>>,
     api: Option<ApiSession>,
 }
 
@@ -180,6 +186,7 @@ impl ArgoCd {
             }
             entry.detection = Detection::Idle;
             entry._detect_task = None;
+            entry._retry_task = None;
             if had || changed {
                 kubyl_explorer::catalog::tree_groups_changed(cx);
                 cx.notify();
@@ -188,9 +195,8 @@ impl ArgoCd {
         }
         if changed {
             // CRDs came or went: look again.
-            if !matches!(entry.detection, Detection::Running) {
-                entry.detection = Detection::Idle;
-            }
+            entry.detection = Detection::Idle;
+            entry.detect_retries = 0;
             kubyl_explorer::catalog::tree_groups_changed(cx);
             cx.notify();
         }
@@ -230,6 +236,7 @@ impl ArgoCd {
     pub fn redetect(&mut self, cluster: &ClusterId, cx: &mut Context<Self>) {
         if let Some(entry) = self.clusters.get_mut(cluster) {
             entry.detection = Detection::Idle;
+            entry.detect_retries = 0;
         }
         self.detect(cluster, cx);
     }
@@ -244,7 +251,11 @@ impl ArgoCd {
         let Some(entry) = self.clusters.get_mut(cluster) else {
             return;
         };
-        entry.detection = Detection::Running;
+        // A retry keeps showing what the last run found.
+        if !matches!(entry.detection, Detection::Done(_)) {
+            entry.detection = Detection::Running;
+        }
+        entry._retry_task = None;
         let task = spawn_kube(cx, detect::detect(client, hints));
         let id = cluster.clone();
         entry._detect_task = Some(cx.spawn(async move |this, cx| {
@@ -253,6 +264,10 @@ impl ArgoCd {
                 let Some(entry) = this.clusters.get_mut(&id) else {
                     return;
                 };
+                let unfinished = match &result {
+                    Ok(installs) => installs.iter().all(|i| i.version.is_none()),
+                    Err(_) => true,
+                };
                 entry.detection = match result {
                     Ok(installs) => Detection::Done(Arc::new(installs)),
                     Err(err) => {
@@ -260,6 +275,15 @@ impl ArgoCd {
                         Detection::Failed(err)
                     }
                 };
+                if unfinished && entry.detect_retries < DETECT_RETRIES {
+                    let delay = DETECT_RETRY * 2u32.pow(entry.detect_retries);
+                    entry.detect_retries += 1;
+                    let retry = id.clone();
+                    entry._retry_task = Some(cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(delay).await;
+                        this.update(cx, |this, cx| this.detect(&retry, cx)).ok();
+                    }));
+                }
                 kubyl_explorer::catalog::tree_groups_changed(cx);
                 cx.notify();
                 this.auto_connect(&id, cx);
