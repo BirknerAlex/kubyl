@@ -6,8 +6,6 @@ use kubyl_core::actions::{AddKubeconfig, OpenSettings};
 use kubyl_core::{TabView, ViewKind, ViewRequest};
 use kubyl_ui::{ActiveColors, Button, IconName, Kbd, h_flex, u, v_flex};
 
-use super::dispatch_or_explain;
-
 /// The empty state: "Add a kubeconfig". Replaced by a cluster list in phase 01.
 pub struct WelcomeView {
     focus: FocusHandle,
@@ -94,12 +92,7 @@ impl Render for WelcomeView {
                             .icon(IconName::FilePlus)
                             .label("Add kubeconfig…")
                             .on_click(|_, window, cx| {
-                                dispatch_or_explain(
-                                    Box::new(AddKubeconfig),
-                                    "Adding kubeconfigs",
-                                    window,
-                                    cx,
-                                )
+                                window.dispatch_action(Box::new(AddKubeconfig), cx)
                             }),
                     )
                     .child(

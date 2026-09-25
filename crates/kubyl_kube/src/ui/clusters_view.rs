@@ -1,16 +1,17 @@
 //! The Clusters & kubeconfigs tab (mockup board 5): kubeconfig sources on the left, the merged
 //! context table, safety settings and connection details on the right.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, ExternalPaths, FocusHandle, Focusable,
     FontWeight, Hsla, IntoElement, Render, SharedString, Styled, Subscription, Window, div,
     prelude::*, px, relative,
 };
+use gpui_component::WindowExt as _;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::switch::Switch;
-use kubyl_core::{ClusterId, TabView, ViewRequest};
+use kubyl_core::{ClusterId, Notification, NotificationCenter, TabView, ViewRequest};
 use kubyl_ui::{
     ActiveColors, Button, Colors, Icon, IconButton, IconName, StatusDot, fonts, h_flex, u, v_flex,
 };
@@ -126,31 +127,37 @@ impl ClustersView {
         let colors = cx.colors().clone();
         let manager = ConnectionManager::global(cx);
         let manager = manager.read(cx);
-        let selected_source = self
+        let selected_file = self
             .selected
             .as_ref()
             .and_then(|id| manager.context(id))
-            .map(|c| c.source_path.clone());
-        let sources: Vec<Source> = manager
-            .sources()
-            .iter()
-            .filter(|s| s.spec.kind != SourceKind::Pasted || !s.files.is_empty())
-            .cloned()
-            .collect();
-        let first_context = |source: &Source| {
+            .map(|c| (c.source_path.clone(), c.file.clone()));
+        let rows = source_rows(manager.sources());
+        let first_context = |row: &SourceRow| {
             manager
                 .all_contexts()
                 .iter()
-                .find(|c| c.source_path == source.spec.path)
+                .find(|c| row.contains(&c.source_path, &c.file))
                 .map(|c| c.id.clone())
         };
-        let rows: Vec<AnyElement> = sources
+        let settings = kubyl_settings::Settings::get::<crate::settings::KubeSettings>(cx).clone();
+        let env_files = std::env::var_os("KUBECONFIG")
+            .map(|v| {
+                std::env::split_paths(&v)
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .count()
+            })
+            .unwrap_or(0);
+        let loading = manager.is_loading();
+        let elements: Vec<AnyElement> = rows
             .iter()
             .enumerate()
-            .map(|(ix, source)| {
-                let selected = selected_source.as_ref() == Some(&source.spec.path);
-                let target = first_context(source);
-                source_row(ix, source, selected, &colors)
+            .map(|(ix, row)| {
+                let selected = selected_file
+                    .as_ref()
+                    .is_some_and(|(source, file)| row.contains(source, file));
+                let target = first_context(row);
+                source_row(ix, row, selected, &colors)
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                         if let Some(id) = target.clone() {
                             this.select(id, window, cx);
@@ -159,6 +166,37 @@ impl ClustersView {
                     .into_any_element()
             })
             .collect();
+
+        let load_toggle =
+            |id: &'static str,
+             title: &'static str,
+             sub: String,
+             on: bool,
+             set: fn(&mut ConnectionManager, bool, &mut Context<ConnectionManager>),
+             cx: &mut Context<Self>| {
+                h_flex()
+                    .gap(u(12.0))
+                    .px(u(4.0))
+                    .py(u(6.0))
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .child(div().text_size(u(12.5)).child(title))
+                            .child(
+                                div()
+                                    .text_size(u(11.5))
+                                    .text_color(colors.text_dim)
+                                    .child(sub),
+                            ),
+                    )
+                    .child(Switch::new(id).checked(on).on_click(cx.listener(
+                        move |_, checked: &bool, _, cx| {
+                            let checked = *checked;
+                            ConnectionManager::global(cx).update(cx, |m, cx| set(m, checked, cx));
+                        },
+                    )))
+            };
 
         v_flex()
             .id("kubeconfig-sources")
@@ -189,15 +227,15 @@ impl ClustersView {
                             .on_click(|_, _, cx| browse_kubeconfigs(cx)),
                     ),
             )
-            .children(rows)
-            .when(sources.is_empty(), |this| {
+            .children(elements)
+            .when(rows.is_empty(), |this| {
                 this.child(
                     div()
                         .px(u(12.0))
                         .py(u(10.0))
                         .text_size(u(12.0))
                         .text_color(colors.text_dim)
-                        .child(if manager.is_loading() {
+                        .child(if loading {
                             "Loading kubeconfigs…"
                         } else {
                             "No kubeconfigs yet."
@@ -205,6 +243,33 @@ impl ClustersView {
                 )
             })
             .child(drop_zone(&colors, cx))
+            .child(
+                v_flex()
+                    .mt(u(12.0))
+                    .pt(u(6.0))
+                    .border_t_1()
+                    .border_color(colors.border_variant)
+                    .child(load_toggle(
+                        "load-default-kubeconfig",
+                        "Load ~/.kube/config",
+                        "The default kubeconfig of kubectl".into(),
+                        settings.load_default_kubeconfig,
+                        |m, on, cx| m.set_load_default_kubeconfig(on, cx),
+                        cx,
+                    ))
+                    .child(load_toggle(
+                        "load-kubeconfig-env",
+                        "Load $KUBECONFIG",
+                        match env_files {
+                            0 => "Not set in Kubyl's environment".into(),
+                            1 => "1 file from the environment".into(),
+                            n => format!("{n} files from the environment, merged"),
+                        },
+                        settings.load_kubeconfig_env,
+                        |m, on, cx| m.set_load_kubeconfig_env(on, cx),
+                        cx,
+                    )),
+            )
             .child(div().flex_1().min_h(u(12.0)))
             .child(
                 div()
@@ -213,8 +278,9 @@ impl ClustersView {
                     .line_height(u(17.0))
                     .text_color(colors.text_dim)
                     .child(
-                        "Files are never modified. Contexts from every source are merged; \
-                         name collisions get the file name as suffix.",
+                        "Files are never modified: removing a source only stops loading it. \
+                         Pasted kubeconfigs are Kubyl's own copies. Contexts from every source \
+                         are merged; name collisions get the file name as suffix.",
                     ),
             )
     }
@@ -783,33 +849,111 @@ fn option_row(title: &'static str, sub: &'static str, colors: &Colors) -> gpui::
         )
 }
 
+/// What a source row's button does.
+#[derive(Clone)]
+enum RowAction {
+    /// Stop loading a user-added file or folder.
+    Remove(PathBuf),
+    /// Turn off loading `~/.kube/config`.
+    StopDefault,
+    /// Turn off loading `$KUBECONFIG`.
+    StopEnv,
+    /// Delete a pasted kubeconfig (Kubyl's own copy).
+    DeletePasted(PathBuf),
+}
+
+/// One row of the sources list: a source, or one pasted kubeconfig of the pasted folder.
+struct SourceRow {
+    label: String,
+    sub: String,
+    icon: IconName,
+    errors: Vec<String>,
+    oidc: bool,
+    source: PathBuf,
+    /// Set for pasted kubeconfigs, which share the pasted folder as their source.
+    file: Option<PathBuf>,
+    action: RowAction,
+}
+
+impl SourceRow {
+    /// The row shows the context defined in `file` of `source`.
+    fn contains(&self, source: &Path, file: &Path) -> bool {
+        self.source == source && self.file.as_deref().is_none_or(|f| f == file)
+    }
+}
+
+fn contexts_label(count: usize) -> String {
+    format!("{count} context{}", if count == 1 { "" } else { "s" })
+}
+
+fn source_rows(sources: &[Source]) -> Vec<SourceRow> {
+    let mut rows = Vec::new();
+    for source in sources {
+        let spec = &source.spec;
+        if spec.kind == SourceKind::Pasted {
+            for file in &source.files {
+                rows.push(SourceRow {
+                    label: file
+                        .path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                    sub: format!("{} · pasted into Kubyl", contexts_label(file.contexts)),
+                    icon: IconName::Copy,
+                    errors: file.error.iter().cloned().collect(),
+                    oidc: file.oidc,
+                    source: spec.path.clone(),
+                    file: Some(file.path.clone()),
+                    action: RowAction::DeletePasted(file.path.clone()),
+                });
+            }
+            continue;
+        }
+        let contexts = contexts_label(source.context_count());
+        rows.push(SourceRow {
+            label: spec.label(),
+            sub: match spec.kind {
+                SourceKind::Env => format!("merged · {} files · {contexts}", spec.files.len()),
+                _ if spec.is_dir => format!("{} files · {contexts} · watched", source.files.len()),
+                _ if source.has_oidc() => format!("{contexts} · OIDC"),
+                _ => format!("{contexts} · watched for changes"),
+            },
+            icon: match spec.kind {
+                SourceKind::Env => IconName::Zap,
+                _ if spec.is_dir => IconName::Folder,
+                _ => IconName::File,
+            },
+            errors: source.errors().map(str::to_string).collect(),
+            oidc: source.has_oidc(),
+            source: spec.path.clone(),
+            file: None,
+            action: match spec.kind {
+                SourceKind::Default => RowAction::StopDefault,
+                SourceKind::Env => RowAction::StopEnv,
+                _ => RowAction::Remove(spec.path.clone()),
+            },
+        });
+    }
+    rows
+}
+
 fn source_row(
     ix: usize,
-    source: &Source,
+    row: &SourceRow,
     selected: bool,
     colors: &Colors,
 ) -> gpui::Stateful<gpui::Div> {
-    let icon = match source.spec.kind {
-        SourceKind::Env => IconName::Zap,
-        SourceKind::Pasted => IconName::Copy,
-        _ if source.spec.is_dir => IconName::Folder,
-        _ => IconName::File,
-    };
-    let errors: Vec<&str> = source.errors().collect();
-    let count = source.context_count();
-    let contexts = format!("{count} context{}", if count == 1 { "" } else { "s" });
-    let sub = match source.spec.kind {
-        SourceKind::Env => format!("merged · {} files · {contexts}", source.spec.files.len()),
-        _ if source.spec.is_dir => format!("{} files · {contexts} · watched", source.files.len()),
-        _ if source.has_oidc() => format!("{contexts} · OIDC"),
-        _ => format!("{contexts} · watched for changes"),
-    };
-    let user_source = source.spec.kind == SourceKind::User;
-    let path = source.spec.path.clone();
     let hover = colors.hover;
+    let (button_icon, tooltip): (IconName, SharedString) = match &row.action {
+        RowAction::Remove(_) => (IconName::X, "Remove from Kubyl (the file stays)".into()),
+        RowAction::StopDefault => (IconName::X, "Stop loading ~/.kube/config".into()),
+        RowAction::StopEnv => (IconName::X, "Stop loading $KUBECONFIG".into()),
+        RowAction::DeletePasted(_) => (IconName::Trash, "Delete this pasted kubeconfig…".into()),
+    };
+    let action = row.action.clone();
+    let label = row.label.clone();
     h_flex()
         .id(("source", ix))
-        .group("source")
         .items_start()
         .gap(u(10.0))
         .px(u(12.0))
@@ -825,7 +969,7 @@ fn source_row(
         .child(
             div()
                 .pt(u(1.0))
-                .child(Icon::new(icon).size(15.0).color(if selected {
+                .child(Icon::new(row.icon).size(15.0).color(if selected {
                     colors.accent
                 } else {
                     colors.text_dim
@@ -841,57 +985,171 @@ fn source_row(
                         .font_family(fonts::MONO)
                         .text_size(u(12.0))
                         .text_color(colors.text)
-                        .child(source.spec.label()),
+                        .child(row.label.clone()),
                 )
                 .child(
                     div()
                         .truncate()
                         .text_size(u(11.5))
                         .text_color(colors.text_dim)
-                        .child(sub),
+                        .child(row.sub.clone()),
                 )
-                .children(errors.first().map(|err| {
+                .children(row.errors.first().map(|err| {
                     div()
                         .text_size(u(11.5))
                         .text_color(colors.red)
                         .child(format!(
                             "{}{}",
                             err,
-                            if errors.len() > 1 {
-                                format!(" (+{} more)", errors.len() - 1)
+                            if row.errors.len() > 1 {
+                                format!(" (+{} more)", row.errors.len() - 1)
                             } else {
                                 String::new()
                             }
                         ))
                 })),
         )
-        .when(!errors.is_empty(), |this| {
+        .when(!row.errors.is_empty(), |this| {
             this.child(
-                Icon::new(IconName::TriangleAlert)
-                    .size(13.0)
-                    .color(colors.red),
+                div().pt(u(2.0)).child(
+                    Icon::new(IconName::TriangleAlert)
+                        .size(13.0)
+                        .color(colors.red),
+                ),
             )
         })
-        .when(errors.is_empty() && source.has_oidc(), |this| {
-            this.child(Icon::new(IconName::Key).size(13.0).color(colors.yellow))
-        })
-        .when(user_source, |this| {
+        .when(row.errors.is_empty() && row.oidc, |this| {
             this.child(
                 div()
-                    .invisible()
-                    .group_hover("source", |s| s.visible())
-                    .child(
-                        IconButton::new(("remove-source", ix), IconName::X)
-                            .icon_size(12.0)
-                            .on_click(move |_, _, cx| {
-                                cx.stop_propagation();
-                                let path: PathBuf = path.clone();
-                                ConnectionManager::global(cx)
-                                    .update(cx, |m, cx| m.remove_source(&path, cx));
-                            }),
-                    ),
+                    .pt(u(2.0))
+                    .child(Icon::new(IconName::Key).size(13.0).color(colors.yellow)),
             )
         })
+        .child(
+            div()
+                .id(("source-action-tip", ix))
+                .tooltip(move |window, cx| {
+                    gpui_component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx)
+                })
+                .child(
+                    IconButton::new(("source-action", ix), button_icon)
+                        .icon_size(12.0)
+                        .on_click(move |_, window, cx| {
+                            cx.stop_propagation();
+                            run_row_action(&action, &label, window, cx);
+                        }),
+                ),
+        )
+}
+
+fn run_row_action(action: &RowAction, label: &str, window: &mut Window, cx: &mut App) {
+    let manager = ConnectionManager::global(cx);
+    match action {
+        RowAction::Remove(path) => {
+            manager.update(cx, |m, cx| m.remove_source(path, cx));
+            NotificationCenter::push(
+                cx,
+                Notification::info(format!(
+                    "Removed {label} from Kubyl. The file wasn't changed."
+                )),
+            );
+        }
+        RowAction::StopDefault => {
+            manager.update(cx, |m, cx| m.set_load_default_kubeconfig(false, cx))
+        }
+        RowAction::StopEnv => manager.update(cx, |m, cx| m.set_load_kubeconfig_env(false, cx)),
+        RowAction::DeletePasted(path) => {
+            confirm_delete_pasted(path.clone(), label.to_string(), window, cx)
+        }
+    }
+}
+
+/// Asks before deleting a pasted kubeconfig: unlike removing a source, it deletes a file.
+fn confirm_delete_pasted(path: PathBuf, label: String, window: &mut Window, cx: &mut App) {
+    let colors = cx.colors().clone();
+    window.open_dialog(cx, move |dialog, _, _| {
+        let (path, label, colors) = (path.clone(), label.clone(), colors.clone());
+        dialog
+            .w(px(460.))
+            .margin_top(px(90.))
+            .p_0()
+            .bg(colors.panel)
+            .close_button(false)
+            // As content, not a child: see `kubyl_explorer::dialogs::open`.
+            .content(move |content, _, _| {
+                content.child(delete_pasted_body(path.clone(), &label, &colors))
+            })
+    });
+}
+
+fn delete_pasted_body(path: PathBuf, label: &str, colors: &Colors) -> impl IntoElement {
+    v_flex()
+        .text_color(colors.text)
+        .text_size(u(13.0))
+        .child(
+            div()
+                .px(u(16.0))
+                .py(u(14.0))
+                .border_b_1()
+                .border_color(colors.border_variant)
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(format!("Delete {label}?")),
+        )
+        .child(
+            v_flex()
+                .p(u(16.0))
+                .gap(u(8.0))
+                .text_color(colors.text_muted)
+                .child(
+                    div()
+                        .font_family(fonts::MONO)
+                        .text_size(u(12.0))
+                        .text_color(colors.text)
+                        .child(display_path(&path)),
+                )
+                .child(
+                    "The pasted kubeconfig and the credentials in it are deleted. \
+                     Its contexts disappear from Kubyl.",
+                ),
+        )
+        .child(
+            h_flex()
+                .justify_end()
+                .gap(u(8.0))
+                .px(u(16.0))
+                .py(u(12.0))
+                .border_t_1()
+                .border_color(colors.border_variant)
+                .child(
+                    Button::new("cancel-delete-pasted")
+                        .ghost()
+                        .label("Cancel")
+                        .on_click(|_, window, cx| window.close_dialog(cx)),
+                )
+                .child(
+                    Button::new("delete-pasted")
+                        .danger()
+                        .label("Delete")
+                        .on_click(move |_, window, cx| {
+                            window.close_dialog(cx);
+                            let task = ConnectionManager::global(cx)
+                                .update(cx, |m, cx| m.delete_pasted(&path, cx));
+                            cx.spawn(async move |cx| {
+                                if let Err(err) = task.await {
+                                    cx.update(|cx| {
+                                        NotificationCenter::push(
+                                            cx,
+                                            Notification::error(format!(
+                                                "Couldn't delete the kubeconfig: {err}"
+                                            )),
+                                        )
+                                    });
+                                }
+                            })
+                            .detach();
+                        }),
+                ),
+        )
 }
 
 fn drop_zone(colors: &Colors, cx: &mut Context<ClustersView>) -> impl IntoElement {
