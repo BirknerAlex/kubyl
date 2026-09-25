@@ -199,7 +199,13 @@ impl WebViewTab {
                 &address,
                 window,
                 |this, _, event: &InputEvent, window, cx| match event {
-                    InputEvent::Focus => this.editing_address = true,
+                    InputEvent::Focus => {
+                        this.editing_address = true;
+                        // Like a browser: focusing the address selects it, so typing `/metrics`
+                        // replaces the path instead of appending to it.
+                        this.address
+                            .update(cx, |input, cx| input.select_all(window, cx));
+                    }
                     InputEvent::Blur => {
                         this.editing_address = false;
                         this.sync_address(window, cx);
@@ -539,7 +545,7 @@ impl WebViewTab {
                 parsed
                     .map(|u| {
                         let mut path = u.path().to_string();
-                        if let Some(query) = u.query() {
+                        if let Some(query) = u.query().filter(|q| !q.is_empty()) {
                             path.push('?');
                             path.push_str(query);
                         }
@@ -772,7 +778,7 @@ impl WebViewTab {
             })
             .filter(|page| page != &self.target.name);
         match page {
-            Some(page) => format!("{} · {page}", self.target.name),
+            Some(page) => format!("{} · {}", self.target.name, clip(&page, 32)),
             None => self.target.name.clone(),
         }
     }
@@ -1674,6 +1680,15 @@ fn short_label(target: &WebTarget) -> String {
     format!("{}/{name}:{}", target.kind.short(), target.port)
 }
 
+/// `text` cut to `max` characters, with `…` when it was longer (page titles in tab titles).
+fn clip(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let head: String = text.chars().take(max - 1).collect();
+    format!("{}…", head.trim_end())
+}
+
 fn cluster_name(target: &WebTarget, cx: &App) -> String {
     ConnectionManager::try_global(cx)
         .map(|m| m.read(cx).display_name(&target.cluster).to_string())
@@ -1852,6 +1867,18 @@ mod tests {
         assert_eq!(
             short_label(&target("kube-prometheus-stack-grafana")),
             "svc/kube-promet…ack-grafana:80"
+        );
+    }
+
+    #[test]
+    fn long_page_titles_are_clipped() {
+        assert_eq!(clip("Home - Dashboards", 32), "Home - Dashboards");
+        assert_eq!(
+            clip(
+                "Prometheus Time Series Collection and Processing Server",
+                32
+            ),
+            "Prometheus Time Series Collecti…"
         );
     }
 }

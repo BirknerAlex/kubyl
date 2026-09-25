@@ -215,13 +215,15 @@ impl WebForwards {
             .unwrap_or_default()
     }
 
-    /// The open tabs of `target`.
-    pub fn tabs(&self, target: &WebTarget) -> Vec<Entity<WebViewTab>> {
+    /// The open tabs of `target`. Weak, so that keeping them (in an element, a closure) doesn't
+    /// keep a closed tab alive, and with it its native view and forward.
+    pub fn tabs(&self, target: &WebTarget) -> Vec<WeakEntity<WebViewTab>> {
         self.entries
             .get(target)
             .map(|e| {
                 e.live_holders()
                     .filter_map(|h| h.tab.upgrade()?.downcast::<WebViewTab>().ok())
+                    .map(|tab| tab.downgrade())
                     .collect()
             })
             .unwrap_or_default()

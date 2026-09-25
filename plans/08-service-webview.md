@@ -170,8 +170,10 @@ Live tests, all passing:
   service and not by cluster B's store.
 - In the app (harness, `script/webview-dev.sh`): Grafana and Prometheus from the Services list
   (`w`, the Web column, details buttons, the palette picker), login and dashboards, the
-  interstitial and Proceed, "Open as web view…" on a non-HTTP port, a download through the save
-  dialog, the redirect banner, `window.open` → second tab, the "…" menu over the page, ⌘K/⌘W/
+  interstitial and Proceed, "Open as web view…" on a non-HTTP port, typing a path (`/metrics`)
+  into the address bar (it selects its path on focus, like browsers), closing one of two tabs
+  (the details button goes from "Open · 2 tabs" to "Open · 1 tab"; the last one stops the
+  forward), a download through the save dialog, the redirect banner, `window.open` → second tab, the "…" menu over the page, ⌘K/⌘W/
   ctrl-tab and copy/paste with the page focused, idle stop after 1 min (setting) and restart,
   PROD/read-only badges. Screenshots: `design/screenshots/phase-08-*.png`.
 
@@ -192,6 +194,9 @@ Live tests, all passing:
   AppKit events and emulates the key-window routing for tests.
 
 **Gotchas for later sessions.**
+- Never keep a strong `Entity<WebViewTab>` in an element or a click handler: GPUI keeps the
+  last frame's listeners, so a closed tab stays alive (each frame re-captures it), with its
+  native view and its forward. `WebForwards::tabs` returns weak handles for that reason.
 - Anything GPUI draws over the center pane (menus, popovers, tooltips) is hidden under a native
   web view. Cover the page first (`Embedded::set_covered`) or keep overlays outside its bounds.
 - Never send AppKit actions with a nil target from a GPUI action handler: if nothing in the

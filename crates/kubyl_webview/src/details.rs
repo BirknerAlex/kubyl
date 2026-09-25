@@ -401,16 +401,18 @@ impl WebSection {
         let private = key.as_ref().is_some_and(|k| store::get(cx).port(k).private)
             || WebViewSettings::get(cx).private_by_default;
         let idle = WebViewSettings::get(cx).idle_stop_minutes;
-        let tabs: Vec<_> = WebForwards::try_global(cx)
-            .map(|f| {
-                let f = f.read(cx);
-                ports_of(target.kind, &self.object(cx).unwrap_or_default())
-                    .iter()
-                    .filter_map(|p| WebTarget::new(&self.target, p.port))
-                    .flat_map(|t| f.tabs(&t))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let object_ports: Vec<u16> = ports_of(target.kind, &self.object(cx).unwrap_or_default())
+            .iter()
+            .map(|p| p.port)
+            .collect();
+        let targets: Vec<WebTarget> = object_ports
+            .iter()
+            .filter_map(|p| WebTarget::new(&self.target, *p))
+            .collect();
+        let has_tabs = WebForwards::try_global(cx).is_some_and(|f| {
+            let f = f.read(cx);
+            targets.iter().any(|t| f.tab_count(t) > 0)
+        });
         let kv = |label: &'static str, value: String| {
             h_flex()
                 .gap(u(10.0))
@@ -432,11 +434,6 @@ impl WebSection {
                 target.namespace, target.name
             )
         };
-        let clear_tabs = tabs.clone();
-        let object_ports: Vec<u16> = ports_of(target.kind, &self.object(cx).unwrap_or_default())
-            .iter()
-            .map(|p| p.port)
-            .collect();
         let toggle_target = self.target.clone();
         section("Session", colors)
             .child(kv("Storage", storage))
@@ -464,11 +461,16 @@ impl WebSection {
                         Button::new("web-clear")
                             .ghost()
                             .label("Clear site data")
-                            .disabled(clear_tabs.is_empty())
+                            .disabled(!has_tabs)
                             .on_click(move |_, _, cx| {
                                 // The store belongs to the open page; the first tab clears it.
-                                if let Some(tab) = clear_tabs.first() {
-                                    tab.update(cx, |tab, cx| tab.clear_site_data_from_details(cx));
+                                let tab = WebForwards::try_global(cx).and_then(|f| {
+                                    let f = f.read(cx);
+                                    targets.iter().find_map(|t| f.tabs(t).into_iter().next())
+                                });
+                                if let Some(tab) = tab {
+                                    tab.update(cx, |tab, cx| tab.clear_site_data_from_details(cx))
+                                        .ok();
                                 }
                             }),
                     )
@@ -665,7 +667,8 @@ fn set_private(
         })
         .unwrap_or_default();
     for tab in tabs {
-        tab.update(cx, |tab, cx| tab.set_private(private, window, cx));
+        tab.update(cx, |tab, cx| tab.set_private(private, window, cx))
+            .ok();
     }
 }
 
