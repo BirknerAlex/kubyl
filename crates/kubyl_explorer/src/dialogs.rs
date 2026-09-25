@@ -76,6 +76,10 @@ fn open<V: Render>(view: Entity<V>, width: f32, window: &mut Window, cx: &mut Ap
             .p_0()
             .bg(colors.panel)
             .close_button(false)
+            // Enter in an input propagates to the dialog's Confirm binding, which would close
+            // the dialog (dropping the view) before the input's `PressEnter` reaches it. The
+            // views submit on `PressEnter` themselves.
+            .on_ok(|_, _, _| false)
             // As content, not a child: children go into a scroll body whose height collapses,
             // which clipped the hitboxes of the footer (presses on the confirm buttons reached
             // the backdrop and closed the dialog).

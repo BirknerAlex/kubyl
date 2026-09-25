@@ -90,6 +90,14 @@ spec:
             limits: { cpu: 250m, memory: 128Mi }
           readinessProbe:
             httpGet: { path: /, port: http }
+          volumeMounts:
+            - { name: config, mountPath: /app/config/flags }
+            - { name: db, mountPath: /app/config/secrets, readOnly: true }
+            - { name: cache, mountPath: /var/cache/checkout }
+      volumes:
+        - { name: config, configMap: { name: checkout-config } }
+        - { name: db, secret: { secretName: checkout-db } }
+        - { name: cache, emptyDir: {} }
 ---
 apiVersion: v1
 kind: Service
