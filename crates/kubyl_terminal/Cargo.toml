@@ -17,6 +17,7 @@ alacritty_terminal.workspace = true
 gpui.workspace = true
 gpui-component.workspace = true
 kubyl_core.workspace = true
+kubyl_explorer.workspace = true
 kubyl_kube.workspace = true
 kubyl_logs.workspace = true
 kubyl_resources.workspace = true
@@ -26,6 +27,7 @@ kube.workspace = true
 k8s-openapi.workspace = true
 anyhow.workspace = true
 futures.workspace = true
+regex.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -34,3 +36,4 @@ tracing.workspace = true
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
