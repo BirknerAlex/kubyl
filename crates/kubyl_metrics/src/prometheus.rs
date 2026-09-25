@@ -14,6 +14,8 @@ use http::header::{AUTHORIZATION, HeaderValue};
 use secrecy::{ExposeSecret as _, SecretString};
 use serde_json::Value;
 
+use crate::openshift::Bearer;
+
 /// Where a Prometheus-compatible API lives.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Target {
@@ -30,6 +32,12 @@ pub enum Target {
     },
     /// An external URL (may include a path prefix).
     Url { url: String, insecure: bool },
+    /// A Service reached through its OpenShift Route (the service proxy strips credentials).
+    Route {
+        namespace: String,
+        service: String,
+        url: String,
+    },
 }
 
 impl Target {
@@ -53,6 +61,9 @@ impl Target {
                 .ok()
                 .and_then(|u| u.host_str().map(str::to_string))
                 .unwrap_or_else(|| url.clone()),
+            Target::Route {
+                namespace, service, ..
+            } => format!("{namespace}/{service} (route)"),
         }
     }
 
@@ -73,7 +84,7 @@ impl Target {
                 )
             }
             // The client's base URL carries the host and any prefix.
-            Target::Url { .. } => String::new(),
+            Target::Url { .. } | Target::Route { .. } => String::new(),
         }
     }
 }
@@ -154,6 +165,8 @@ pub struct PromClient {
     client: kube::Client,
     base: String,
     target: Target,
+    /// Sent as `Authorization: Bearer …` on every request (direct calls only).
+    bearer: Option<Bearer>,
 }
 
 impl fmt::Debug for PromClient {
@@ -173,7 +186,36 @@ impl PromClient {
             client: cluster,
             base: target.base_path(),
             target,
+            bearer: None,
         }
+    }
+
+    /// A direct HTTPS client for `url` that authenticates with `bearer` on every request.
+    /// `roots` (DER) replaces the OS trust store when given. TLS is always verified: a bearer
+    /// token must not go to an unverified server.
+    pub fn direct(
+        url: &str,
+        target: Target,
+        roots: Option<Vec<Vec<u8>>>,
+        bearer: Bearer,
+    ) -> Result<Self, PromError> {
+        let uri: http::Uri = url
+            .trim()
+            .trim_end_matches('/')
+            .parse()
+            .map_err(|e| PromError::Transport(format!("invalid URL: {e}")))?;
+        let mut config = kube::Config::new(uri);
+        config.root_cert = roots;
+        config.connect_timeout = Some(Duration::from_secs(10));
+        config.read_timeout = Some(QUERY_TIMEOUT);
+        let client = kube::Client::try_from(config)
+            .map_err(|e| PromError::Transport(format!("client: {e}")))?;
+        Ok(Self {
+            client,
+            base: String::new(),
+            target,
+            bearer: Some(bearer),
+        })
     }
 
     /// A direct client for [`Target::Url`]. `authorization` is the full header value, e.g.
@@ -208,6 +250,7 @@ impl PromClient {
             client,
             base: String::new(),
             target,
+            bearer: None,
         })
     }
 
@@ -269,10 +312,17 @@ impl PromClient {
         } else {
             format!("{}{path}?{query}", self.base)
         };
-        let request = http::Request::get(uri)
+        let mut request = http::Request::get(uri)
             .header(http::header::ACCEPT, "application/json")
             .body(Vec::new())
             .map_err(|e| PromError::Transport(e.to_string()))?;
+        if let Some(bearer) = &self.bearer {
+            let token = bearer.get().await.map_err(PromError::Transport)?;
+            let mut value = HeaderValue::from_str(&format!("Bearer {}", token.expose_secret()))
+                .map_err(|_| PromError::Transport("invalid token".into()))?;
+            value.set_sensitive(true);
+            request.headers_mut().insert(AUTHORIZATION, value);
+        }
         let text =
             match tokio::time::timeout(QUERY_TIMEOUT, self.client.request_text(request)).await {
                 Err(_) => return Err(PromError::Timeout),
@@ -427,6 +477,13 @@ mod tests {
             insecure: false,
         };
         assert_eq!(url.label(), "prom.example.com");
+        let route = Target::Route {
+            namespace: "openshift-monitoring".into(),
+            service: "thanos-querier".into(),
+            url: "https://thanos.apps.example".into(),
+        };
+        assert_eq!(route.label(), "openshift-monitoring/thanos-querier (route)");
+        assert_eq!(route.base_path(), "");
     }
 
     #[test]
@@ -451,6 +508,50 @@ mod tests {
         assert_eq!(series[0].values, vec![(10.0, 1.0), (20.0, 2.0)]);
         assert_eq!(series[0].label("namespace"), "a");
         assert_eq!(series[0].label("missing"), "");
+    }
+
+    /// Direct calls carry the bearer token (a local server stands in for the Route).
+    #[tokio::test]
+    async fn direct_calls_send_the_bearer_token() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = vec![0; 4096];
+            let n = socket.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..n]).to_string();
+            let body = r#"{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[1,"1"]}]}}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+            request
+        });
+        let bearer = Bearer::User(kubyl_kube::auth::BearerToken::Static(SecretString::from(
+            "s3cr3t".to_string(),
+        )));
+        let target = Target::Route {
+            namespace: "openshift-monitoring".into(),
+            service: "thanos-querier".into(),
+            url: format!("http://{address}"),
+        };
+        let prom = PromClient::direct(&format!("http://{address}"), target, None, bearer).unwrap();
+        let samples = prom.query("vector(1)").await.unwrap();
+        assert_eq!(samples[0].value, 1.0);
+        let request = server.await.unwrap().to_lowercase();
+        assert!(
+            request.starts_with("get /api/v1/query?query=vector%281%29"),
+            "{request}"
+        );
+        assert!(
+            request.contains("authorization: bearer s3cr3t"),
+            "{request}"
+        );
+        // The token never shows up in debug output.
+        assert!(!format!("{prom:?}").contains("s3cr3t"));
     }
 
     #[test]

@@ -48,6 +48,12 @@ pub struct PrometheusOverride {
     /// Prometheus Authorization Header…"), never in this file.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// `namespace/name` of a service account whose short-lived token (TokenRequest) is used when
+    /// the Prometheus sits behind an auth proxy and your own token can't be used (you sign in
+    /// with a client certificate, or you may not query). Default on OpenShift:
+    /// `openshift-monitoring/prometheus-k8s`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_account: Option<String>,
     /// Accept a self-signed certificate from `url`.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub insecure_skip_tls_verify: bool,

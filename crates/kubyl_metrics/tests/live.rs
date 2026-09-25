@@ -240,3 +240,32 @@ async fn metrics_server_answers() {
     let all = metrics_server::pods(&client, None).await.unwrap();
     assert!(all.len() >= pods.len());
 }
+
+/// The pieces of the OpenShift path that work on any cluster: short-lived service-account
+/// tokens, and a clean failure where there are no Routes.
+#[tokio::test]
+#[ignore]
+async fn service_account_tokens_and_missing_routes() {
+    use kubyl_metrics::openshift::{ServiceAccountToken, route_url, through_route};
+    use secrecy::ExposeSecret as _;
+
+    let client = client().await;
+    let sa = ServiceAccountToken::new(client.clone(), "kube-system", "default");
+    let token = sa.get().await.unwrap();
+    assert!(token.expose_secret().split('.').count() == 3, "a JWT");
+    // Cached until renewal.
+    assert_eq!(
+        sa.get().await.unwrap().expose_secret(),
+        token.expose_secret()
+    );
+
+    assert_eq!(
+        route_url(&client, "monitoring", "kube-prometheus-stack-prometheus").await,
+        None
+    );
+    let target = Target::service("monitoring", "kube-prometheus-stack-prometheus", "9090");
+    let err = through_route(&client, &target, None, None)
+        .await
+        .unwrap_err();
+    assert!(err.contains("has no Route"), "{err}");
+}

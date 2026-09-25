@@ -4599,6 +4599,7 @@ dependencies = [
 name = "kubyl_metrics"
 version = "0.1.1"
 dependencies = [
+ "base64 0.22.1",
  "futures",
  "gpui-component",
  "gpui-pre",

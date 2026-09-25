@@ -31,6 +31,7 @@ use secrecy::SecretString;
 
 use crate::discover::{self, Found};
 use crate::metrics_server;
+use crate::openshift;
 use crate::prometheus::{PromClient, PromError, RangeSeries, Sample, Target};
 use crate::queries::Queries;
 use crate::settings::{MetricsSettings, PrometheusOverride, SourcePreference};
@@ -628,7 +629,7 @@ impl MetricsService {
             return;
         };
         let manager = ConnectionManager::global(cx);
-        let (context, metrics_server) = {
+        let (context, metrics_server, user_token) = {
             let manager = manager.read(cx);
             (
                 manager
@@ -636,6 +637,7 @@ impl MetricsService {
                     .map(|c| c.context.clone())
                     .unwrap_or_default(),
                 manager.caps(cluster).metrics_server,
+                manager.bearer_token(cluster),
             )
         };
         let settings = self.settings.clone();
@@ -653,7 +655,11 @@ impl MetricsService {
         state.detected_at = Some(Instant::now());
         let auth_key = auth_key(cluster);
         let task = spawn_kube(cx, async move {
-            detect(client, settings, override_, auth_key, metrics_server).await
+            let auth = Credentials {
+                keychain_key: auth_key,
+                user_token,
+            };
+            detect(client, settings, override_, auth, metrics_server).await
         });
         let cluster = cluster.clone();
         cx.spawn(async move |this, cx| {
@@ -1160,11 +1166,19 @@ enum Detected {
     None(String),
 }
 
+/// What detection may authenticate with. Never logged.
+struct Credentials {
+    /// Keychain entry of the Authorization header for an external URL.
+    keychain_key: String,
+    /// The user's own bearer token, for Services behind an auth proxy (OpenShift).
+    user_token: Option<kubyl_kube::auth::BearerToken>,
+}
+
 async fn detect(
     client: kube::Client,
     settings: MetricsSettings,
     override_: PrometheusOverride,
-    auth_key: String,
+    auth: Credentials,
     metrics_server: bool,
 ) -> Detected {
     if settings.source == SourcePreference::Off {
@@ -1173,7 +1187,7 @@ async fn detect(
     let want_prometheus = settings.source != SourcePreference::MetricsServer && !override_.disabled;
     let mut why = String::from("No Prometheus found.");
     if want_prometheus {
-        match find_prometheus(&client, &settings, &override_, auth_key).await {
+        match find_prometheus(&client, &settings, &override_, auth).await {
             Ok(prom) => {
                 // Which recording rules and optional exporters (node-exporter, PSI, volume
                 // stats…) exist decides which queries and panels are used.
@@ -1202,9 +1216,29 @@ async fn find_prometheus(
     client: &kube::Client,
     settings: &MetricsSettings,
     override_: &PrometheusOverride,
-    auth_key: String,
+    auth: Credentials,
 ) -> Result<PromClient, String> {
+    let service_account = override_
+        .service_account
+        .as_deref()
+        .and_then(|sa| sa.split_once('/'))
+        .map(|(ns, name)| (ns.to_string(), name.to_string()));
+    // Behind an auth proxy (OpenShift): the service proxy strips credentials, so call the
+    // Service's Route with a token instead.
+    let through_route = |target: Target, err: PromError| {
+        let user = auth.user_token.clone();
+        let service_account = service_account.clone();
+        async move {
+            if !matches!(err, PromError::Http(401 | 403, _)) {
+                return Err(err.to_string());
+            }
+            openshift::through_route(client, &target, user, service_account)
+                .await
+                .map_err(|route| format!("{err} through the API server ({route})"))
+        }
+    };
     if let Some(url) = &override_.url {
+        let auth_key = auth.keychain_key.clone();
         let header = tokio::task::spawn_blocking(move || kubyl_kube::auth::store::get(&auth_key))
             .await
             .ok()
@@ -1237,10 +1271,14 @@ async fn find_prometheus(
         };
         return match discover::probe(client, vec![target.clone()]).await {
             Found::Prometheus(prom) => Ok(prom),
-            Found::Nothing { best } => Err(format!(
-                "Prometheus {} (from settings): {}",
-                target.label(),
-                best.map(|(_, e)| e.to_string()).unwrap_or_default()
+            Found::Nothing {
+                best: Some((target, err)),
+            } => through_route(target.clone(), err)
+                .await
+                .map_err(|why| format!("Prometheus {} (from settings): {why}", target.label())),
+            Found::Nothing { best: None } => Err(format!(
+                "Prometheus {} (from settings) didn't answer.",
+                target.label()
             )),
         };
     }
@@ -1251,10 +1289,9 @@ async fn find_prometheus(
         Found::Prometheus(prom) => Ok(prom),
         Found::Nothing {
             best: Some((target, err)),
-        } => Err(format!(
-            "Found {} but it didn't answer: {err}.",
-            target.label()
-        )),
+        } => through_route(target.clone(), err)
+            .await
+            .map_err(|why| format!("Found {} but it didn't answer: {why}.", target.label())),
         Found::Nothing { best: None } => Err("No Prometheus found.".into()),
     }
 }

@@ -9,6 +9,8 @@
 //!   OpenShift thanos-querier, VictoriaMetrics…) and probes them through the API server's
 //!   service proxy.
 //! - [`prometheus`]: the HTTP API client (service proxy or an external URL).
+//! - [`openshift`]: monitoring behind an auth proxy (OpenShift): its Route, called with the
+//!   user's token or a short-lived service-account token.
 //! - [`queries`]: the versioned PromQL library, recording-rule aware, overridable in settings.
 //! - [`metrics_server`]: `metrics.k8s.io` (current values only).
 //! - [`panels`] and [`details`]: the Metrics section of the details (network, disk, throttling,
@@ -18,6 +20,7 @@
 pub mod details;
 pub mod discover;
 pub mod metrics_server;
+pub mod openshift;
 pub mod panels;
 pub mod prometheus;
 pub mod provider;
