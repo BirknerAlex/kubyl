@@ -726,6 +726,67 @@ mod tests {
             .unwrap();
     }
 
+    /// A tab that asks to be closed once `close` is set.
+    struct Closable {
+        focus: gpui::FocusHandle,
+        close: bool,
+    }
+
+    impl Render for Closable {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+
+    impl gpui::Focusable for Closable {
+        fn focus_handle(&self, _: &App) -> gpui::FocusHandle {
+            self.focus.clone()
+        }
+    }
+
+    impl kubyl_core::TabView for Closable {
+        fn tab_title(&self, _: &App) -> SharedString {
+            "closable".into()
+        }
+
+        fn wants_close(&self, _: &App) -> bool {
+            self.close
+        }
+    }
+
+    #[gpui::test]
+    fn tabs_that_want_to_close_are_closed(cx: &mut TestAppContext) {
+        let _dir = init(cx);
+        let window = open(cx, WorkspaceLayout::default());
+        let tab = window
+            .update(cx, |workspace, window, cx| {
+                let tab = cx.new(|cx| Closable {
+                    focus: cx.focus_handle(),
+                    close: false,
+                });
+                workspace.active_pane.update(cx, |pane, cx| {
+                    pane.add_item(Box::new(tab.clone()), true, window, cx)
+                });
+                tab
+            })
+            .unwrap();
+        let count = |cx: &mut TestAppContext| {
+            window
+                .update(cx, |workspace, _, cx| {
+                    workspace.active_pane.read(cx).items().len()
+                })
+                .unwrap()
+        };
+        cx.run_until_parked();
+        let before = count(cx);
+        tab.update(cx, |tab, cx| {
+            tab.close = true;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert_eq!(count(cx), before - 1);
+    }
+
     #[gpui::test]
     fn opening_the_same_view_twice_reuses_the_tab(cx: &mut TestAppContext) {
         let _dir = init(cx);
