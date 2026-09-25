@@ -14,7 +14,7 @@ clusters can be connected at once.
 ## Tasks
 
 ### Kubeconfig sources
-- [x] Source types: default `~/.kube/config`, every file in `$KUBECONFIG` (merged), and user-added files and folders. Stored in `settings.json` as paths; kubeconfig files are never copied or modified
+- [x] Source types: default `~/.kube/config`, every file in `$KUBECONFIG` (merged), and user-added files and folders. Stored in `settings.json` as paths; kubeconfig files are never copied or modified (since phase 11 only the kubeconfig editor writes them, see the README's decision table)
 - [x] Add a source via file picker, drag and drop of files onto the window, or "Paste YAML" (saved to `config_dir/kubyl/kubeconfigs/<name>.yaml` with permissions 0600)
 - [x] Hot reload with `notify`: context list updates without a restart. Parse errors show on the source row
 - [x] Merge rules: contexts from all sources in one list. A name collision gets a `@<file-stem>` suffix. Each context remembers its source file (shown in the UI and in Favorites)

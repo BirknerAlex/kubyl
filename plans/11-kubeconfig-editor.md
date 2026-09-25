@@ -1,9 +1,9 @@
 # Phase 11: Kubeconfig editor
 
-**Status:** not started
+**Status:** in progress (branch `phase/11-kubeconfig-editor`)
 **Depends on:** 01 (sources, auth, client building, file watching), 04 (YAML editor, schema validation and diff for the raw view and the save preview)
 **Owns:** `crates/kubyl_kubeconfig` (new)
-**Mockups:** none yet. Add board 11 · Kubeconfig editor (editor tab, "Test connection" results, "New kubeconfig" wizard) to `design/mockups/generate.py` before building the UI.
+**Mockups:** board 11 · Kubeconfig editor in `design/mockups/generate.py` (editor tab, YAML tab and "Test connection" results, "New kubeconfig" wizard, save preview and exec consent).
 
 ## Goal
 
