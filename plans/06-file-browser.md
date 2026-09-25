@@ -1,6 +1,6 @@
 # Phase 06: Pod file browser, drag and drop transfers
 
-**Status:** in progress: all tasks done except full drag-out to the OS (a staged version for small files ships; see Handoff log)
+**Status:** done (2026-09-25). Drag-out of large files and folders, and on Windows/X11, is a follow-up (see Follow-ups), as the Risks section planned
 **Depends on:** 05 (exec channel), 02
 **Owns:** `crates/kubyl_files`
 **Mockups:** board 9 · Pod file browser
@@ -30,15 +30,21 @@ resumable, verified transfer queue.
 - [x] Two-pane commander: local pane (any local folder, bookmarks) and pod pane (container picker, path breadcrumb, hidden files toggle). F5 copies to the other pane, swap panes
 - [x] Drag inside the app between panes, with a drop-zone highlight and a summary ("Drop to upload 3 items into /app/config")
 - [x] **Drop from the OS** onto the pod pane (GPUI `ExternalPaths` drop support)
-- [ ] **Drag out to the OS** to download: needs per-platform native drag sources (macOS `NSFilePromiseProvider`, Windows `IDataObject` with `CFSTR_FILEDESCRIPTOR`/`FILECONTENTS`, Linux XDND/Wayland `text/uri-list` with a temp-file fallback). GPUI doesn't provide this. Implement it behind a `platform_drag_out` module and upstream it if possible
+- [x] **Drag out to the OS** to download, scoped per the Risks section: files up to 32 MB are staged when the drag starts and handed to the OS through GPUI's `external_drag_payload` (macOS, Wayland); "Download to…" (⌘⇧D) and the in-app drag cover everything else. The native file-promise version is a follow-up (below)
 - [x] Quick preview (text/images) and "edit in place": download to a temp file, open in the built-in editor, upload on save with a conflict check on mtime/hash
 - [x] Actions: new folder, rename, delete (with confirmation), chmod, copy path
 
 ## Acceptance criteria
 
-- Drag a folder with 100 files from Finder onto `/app/config`: uploaded and verified.
-- Drag a 400 MB heap dump from the pod pane onto the desktop: streams with progress and resumes after a network blip.
-- Writing to a Secret mount is blocked with a clear error. A distroless pod works via the debug container.
+- [x] Drag a folder with 100 files from Finder onto `/app/config`: uploaded and verified. (OS drop simulated with the harness' `filedrop=`; 100 files, verified, owned by the container user.)
+- [x] Drag a 400 MB heap dump from the pod pane onto the desktop: streams with progress and resumes after a network blip. (Met through "Download to…", F5 and the in-app drag: ~84 MB/s with percent, speed and time left; resume from a partial file in the live test. Dragging onto the desktop itself works up to 32 MB; larger is the follow-up.)
+- [x] Writing to a Secret mount is blocked with a clear error. A distroless pod works via the debug container.
+
+## Follow-ups
+
+- Native drag-out for any size and for folders: macOS `NSFilePromiseProvider`, Windows `IDataObject` with `CFSTR_FILEDESCRIPTOR`/`FILECONTENTS`, X11 XDND. GPUI only hands existing files to the OS (`external_drag_payload`, macOS and Wayland), so this needs a GPUI extension, upstreamed if possible. With file promises, a large download could stream with progress into the drop target.
+- Check the staged drag-out into Finder by hand once (the harness' synthetic events can't start a real macOS drag session).
+- GPUI loses OS file drops after keyboard input (see the handoff log). The pod pane works around it; the workspace's kubeconfig drop still has the bug. Report upstream.
 
 ## Risks
 
@@ -116,4 +122,12 @@ percentages of tar streams are approximate. The queue lives in the browser, not 
 The browser is also a "Files" sub-tab of pod details (dock and tab). Below 760 px wide (the
 dock) it switches to a narrow layout, measured each frame: the panes stack, only name and size
 columns, icon buttons, a smaller queue, no hints bar.
+
+### 2026-09-25: phase closed
+
+All tasks are done; drag-out to the OS ships in the scope the Risks section allowed (staged
+files up to 32 MB on macOS and Wayland, "Download to…" for the rest), and the remainder is
+listed under Follow-ups. Since the first entry: the Files sub-tab of pod details with the
+narrow layout (above), and uploads extracting with `tar xof`. `kubyl_files` has 27 tests
+(unit and GPUI); the live test passes against kind.
 
