@@ -162,6 +162,18 @@ fn main() {
             .expect("window")
             .expect("window handle");
         let timeout = cx.background_executor().clone();
+        // WebKitGTK runs in GTK's main loop (Kubyl pumps it the same way).
+        if kubyl_webview::native::NEEDS_PUMP {
+            cx.spawn(async move |cx| {
+                loop {
+                    kubyl_webview::native::pump();
+                    cx.background_executor()
+                        .timer(Duration::from_millis(8))
+                        .await;
+                }
+            })
+            .detach();
+        }
         cx.spawn(async move |cx| {
             // Web view creation pumps the Win32 message loop: outside of any App update.
             let mut signed_in = view(&parent, cluster_a, format!("{base}/set"), 0);

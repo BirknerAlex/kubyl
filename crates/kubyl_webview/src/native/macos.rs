@@ -23,7 +23,7 @@ use futures::channel::mpsc::UnboundedSender;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
 use objc2::{MainThreadMarker, msg_send, sel};
-use objc2_app_kit::{NSApplication, NSEvent, NSEventMask};
+use objc2_app_kit::{NSEvent, NSEventMask};
 use objc2_foundation::{NSOperatingSystemVersion, NSProcessInfo, NSString};
 use sha2::{Digest as _, Sha256};
 use wry::{WebViewBuilder, WebViewBuilderExtDarwin as _, WebViewExtMacOS as _};
@@ -82,6 +82,19 @@ pub fn attach(
         )
     });
     install_monitor();
+    // The screenshot harness runs behind other windows; WebKit stops painting occluded
+    // windows, so its snapshots would be stale. (WebKit SPI, only for the harness.)
+    if std::env::var_os("KUBYL_SCREENSHOT").is_some() {
+        // SAFETY: a BOOL setter, only called when the view has it.
+        unsafe {
+            let view = webview.webview();
+            let setter = sel!(_setWindowOcclusionDetectionEnabled:);
+            let responds: bool = msg_send![&*view, respondsToSelector: setter];
+            if responds {
+                let _: () = msg_send![&*view, _setWindowOcclusionDetectionEnabled: false];
+            }
+        }
+    }
     // wry's navigation delegate class (its name is mangled per wry version) exists once a
     // view does. WebKit reads which methods a delegate has when it's set: set it again.
     // SAFETY: plain WKWebView / NSObject calls on the view's own navigation delegate.
@@ -161,11 +174,9 @@ fn hit(
     }
 }
 
-/// Sends an editing action to the page (it's the first responder while it has focus).
+/// Sends an editing action straight to the web view (never up the responder chain: an
+/// unhandled action would reach GPUI's app delegate, which is busy dispatching this key).
 pub fn edit(webview: &wry::WebView, command: EditCommand) {
-    let Some(mtm) = MainThreadMarker::new() else {
-        return;
-    };
     let action = match command {
         EditCommand::Cut => sel!(cut:),
         EditCommand::Copy => sel!(copy:),
@@ -174,11 +185,15 @@ pub fn edit(webview: &wry::WebView, command: EditCommand) {
         EditCommand::Undo => sel!(undo:),
         EditCommand::Redo => sel!(redo:),
     };
-    let target = webview.webview();
-    let target: &AnyObject = &target;
-    // SAFETY: standard responder actions, sent up the responder chain from the web view.
+    let view = webview.webview();
+    // SAFETY: standard NSResponder actions, sent only when the view implements them.
     unsafe {
-        NSApplication::sharedApplication(mtm).sendAction_to_from(action, None, Some(target));
+        let responds: bool = msg_send![&*view, respondsToSelector: action];
+        if responds {
+            let _: () = msg_send![&*view, performSelector: action, withObject: std::ptr::null::<AnyObject>()];
+        } else {
+            tracing::debug!(?command, "the web view doesn't handle this editing action");
+        }
     }
 }
 
@@ -375,7 +390,8 @@ unsafe extern "C-unwind" fn did_receive_challenge(
 
 /// Test driver: posts real AppKit events (clicks at view-relative fractions, typed text,
 /// shortcuts) so the key routing between GPUI and the page can be checked end to end.
-/// `script`: `click:0.3:0.2;type:hello;key:cmd-k` (steps run 300 ms apart).
+/// `script`: `click:0.3:0.2;type:hello;key:cmd-k;eval:document.title=…` (steps run 300 ms
+/// apart; `eval` runs JavaScript in the page, e.g. to report a field through the title).
 #[cfg(debug_assertions)]
 pub fn post_test_input(webview: &wry::WebView, script: &str) {
     let view = webview.webview();
@@ -433,6 +449,15 @@ unsafe fn post_step(view: &AnyObject, step: &str) {
         let post = |event: *mut AnyObject| {
             let _: () = msg_send![app, postEvent: event, atStart: false];
         };
+        if let Some(script) = step.strip_prefix("eval:") {
+            let script = NSString::from_str(script);
+            let _: () = msg_send![
+                view,
+                evaluateJavaScript: &*script,
+                completionHandler: std::ptr::null::<AnyObject>()
+            ];
+            return;
+        }
         let mut parts = step.split(':');
         match parts.next() {
             Some("click") => {
@@ -480,6 +505,7 @@ unsafe fn post_step(view: &AnyObject, step: &str) {
                 }
                 let (chars, code) = match key {
                     "tab" => ("\t".to_string(), 0x30),
+                    "enter" => ("\r".to_string(), 0x24),
                     other => (
                         other.to_string(),
                         other.chars().next().map(key_code).unwrap_or(0),

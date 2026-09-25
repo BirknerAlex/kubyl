@@ -89,6 +89,11 @@ impl Drop for Embedded {
     }
 }
 
+/// Whether any web view exists (the platform pump runs while one does).
+pub fn any_views() -> bool {
+    EMBEDDED.with_borrow(|views| views.iter().any(|v| v.strong_count() > 0))
+}
+
 /// Whether any web view lives in `window` (the status bar item skips its work otherwise).
 pub fn has_views(window: &Window) -> bool {
     let handle = window.window_handle();

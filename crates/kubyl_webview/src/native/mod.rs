@@ -143,6 +143,16 @@ impl HasWindowHandle for ParentWindow {
     }
 }
 
+/// Runs the platform's pending web view work: WebKitGTK lives in GTK's main loop, which
+/// Kubyl's event loop doesn't run. A no-op elsewhere.
+pub fn pump() {
+    #[cfg(target_os = "linux")]
+    linux::pump();
+}
+
+/// Whether the platform needs [`pump`] called regularly while web views exist.
+pub const NEEDS_PUMP: bool = cfg!(target_os = "linux");
+
 /// Whether web views can be shown in this build.
 pub fn supported() -> Result<(), String> {
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -166,6 +176,11 @@ pub struct NativeWebView {
     _platform: windows::Attached,
     #[cfg(target_os = "linux")]
     platform: linux::Attached,
+    /// Keeps the service's WebKitGTK context alive while its views exist.
+    #[cfg(target_os = "linux")]
+    _context: Option<Rc<RefCell<wry::WebContext>>>,
+    #[cfg(target_os = "linux")]
+    bounds: std::cell::Cell<Option<Bounds<Pixels>>>,
 }
 
 impl NativeWebView {
@@ -186,13 +201,23 @@ impl NativeWebView {
 
             use wry::{NewWindowResponse, PageLoadEvent, Rect, WebViewBuilder};
 
+            // WebKitGTK contexts need GTK: started with the first web view, not with Kubyl.
+            #[cfg(target_os = "linux")]
+            linux::ensure_gtk()?;
             let placement = parent.placement();
             let downloads = Rc::new(RefCell::new(HashMap::<String, Vec<PathBuf>>::new()));
             let staging_dir = options.staging_dir.clone();
-            #[cfg(any(target_os = "windows", target_os = "linux"))]
-            let mut context = platform_context(&options);
-            #[cfg(any(target_os = "windows", target_os = "linux"))]
-            let builder = match context.as_mut() {
+            // WebView2: one user data folder, a profile per service (`windows::configure`).
+            #[cfg(target_os = "windows")]
+            let mut context = wry::WebContext::new(Some(options.data_dir.join("webview2")));
+            #[cfg(target_os = "windows")]
+            let builder = WebViewBuilder::new_with_web_context(&mut context);
+            #[cfg(target_os = "linux")]
+            let shared_context = linux_context(&options);
+            #[cfg(target_os = "linux")]
+            let mut context = shared_context.as_ref().map(|c| c.borrow_mut());
+            #[cfg(target_os = "linux")]
+            let builder = match context.as_deref_mut() {
                 Some(context) => WebViewBuilder::new_with_web_context(context),
                 None => WebViewBuilder::new(),
             };
@@ -288,6 +313,10 @@ impl NativeWebView {
             Ok(Self {
                 webview,
                 placement,
+                #[cfg(target_os = "linux")]
+                _context: shared_context,
+                #[cfg(target_os = "linux")]
+                bounds: std::cell::Cell::new(None),
                 #[cfg(not(target_os = "linux"))]
                 _platform: platform,
                 #[cfg(target_os = "linux")]
@@ -306,6 +335,8 @@ impl NativeWebView {
         if self.placement == Placement::Window {
             return;
         }
+        #[cfg(target_os = "linux")]
+        self.bounds.set(Some(bounds));
         with_wry! {{
             let rect = wry::Rect {
                 position: wry::dpi::LogicalPosition::new(
@@ -335,6 +366,12 @@ impl NativeWebView {
                 self.webview.focus_parent().ok();
             }
             self.webview.set_visible(visible).ok();
+            // Showing a WebKitGTK child re-runs GTK's size negotiation, which a foreign X11
+            // window never finishes (no frame clock): allocate the bounds again.
+            #[cfg(target_os = "linux")]
+            if visible && let Some(bounds) = self.bounds.get() {
+                self.set_bounds(bounds);
+            }
         }}
     }
 
@@ -438,21 +475,31 @@ impl NativeWebView {
     }
 }
 
-/// The WebContext of a view: WebView2 keeps all profiles in one user data folder; WebKitGTK
-/// needs a context (with its own data directory) per service.
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-fn platform_context(options: &NativeOptions) -> Option<wry::WebContext> {
-    #[cfg(target_os = "windows")]
-    return Some(wry::WebContext::new(Some(
-        options.data_dir.join("webview2"),
-    )));
-    #[cfg(target_os = "linux")]
-    return match &options.storage {
-        Storage::Isolated { id } => Some(wry::WebContext::new(Some(
-            options.data_dir.join(storage_name(id)),
-        ))),
-        Storage::Private => None,
+/// The WebKitGTK context of a data store, shared by its views: two contexts on one data
+/// directory don't see each other's cookies until they're written.
+#[cfg(target_os = "linux")]
+fn linux_context(options: &NativeOptions) -> Option<Rc<RefCell<wry::WebContext>>> {
+    use std::collections::HashMap;
+    use std::rc::Weak;
+
+    thread_local! {
+        static CONTEXTS: RefCell<HashMap<[u8; 16], Weak<RefCell<wry::WebContext>>>> =
+            RefCell::new(HashMap::new());
+    }
+    let Storage::Isolated { id } = &options.storage else {
+        return None;
     };
+    CONTEXTS.with_borrow_mut(|contexts| {
+        contexts.retain(|_, context| context.strong_count() > 0);
+        if let Some(context) = contexts.get(id).and_then(Weak::upgrade) {
+            return Some(context);
+        }
+        let context = Rc::new(RefCell::new(wry::WebContext::new(Some(
+            options.data_dir.join(storage_name(id)),
+        ))));
+        contexts.insert(*id, Rc::downgrade(&context));
+        Some(context)
+    })
 }
 
 /// Editing commands Kubyl routes to the page.

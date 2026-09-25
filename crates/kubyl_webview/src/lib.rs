@@ -194,6 +194,34 @@ fn register_in_view(cx: &mut App, name: &'static str, action: impl Action, keys:
     ActionRegistry::register(cx, spec);
 }
 
+/// The platform pump runs (see [`native::pump`]).
+struct Pumping;
+
+impl gpui::Global for Pumping {}
+
+/// Keeps pumping the platform's web view work while any web view exists (Linux).
+pub(crate) fn start_pump(cx: &mut App) {
+    if !native::NEEDS_PUMP || cx.has_global::<Pumping>() {
+        return;
+    }
+    cx.set_global(Pumping);
+    cx.spawn(async move |cx| {
+        loop {
+            native::pump();
+            if !host::any_views() {
+                break;
+            }
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(8))
+                .await;
+        }
+        // Let the last views' teardown finish, then stop until a view is created again.
+        native::pump();
+        cx.update(|cx| cx.remove_global::<Pumping>());
+    })
+    .detach();
+}
+
 /// Runs `f` in the active window, after the dispatching window's update.
 pub(crate) fn with_window(cx: &mut App, f: impl FnOnce(&mut Window, &mut App) + 'static) {
     cx.defer(move |cx| {

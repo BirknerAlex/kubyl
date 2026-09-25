@@ -43,6 +43,8 @@ wry.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 wry = { workspace = true, features = ["os-webview", "x11"] }
+gtk.workspace = true
+webkit2gtk.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
 webview2-com.workspace = true

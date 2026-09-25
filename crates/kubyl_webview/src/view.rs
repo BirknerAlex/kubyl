@@ -143,6 +143,8 @@ pub struct WebViewTab {
     allowed_hosts: HashSet<String>,
     accepted: Rc<RefCell<Vec<[u8; 32]>>>,
     shortcuts: Rc<RefCell<Vec<Keystroke>>>,
+    /// The keymap the shortcuts were read from.
+    shortcuts_version: Option<gpui::KeymapVersion>,
     downloads: Vec<Download>,
     closing: bool,
     /// When the page was last seen on screen (idle stop).
@@ -276,6 +278,7 @@ impl WebViewTab {
             allowed_hosts: HashSet::new(),
             accepted,
             shortcuts: Rc::default(),
+            shortcuts_version: None,
             downloads: Vec::new(),
             closing: false,
             last_seen: Instant::now(),
@@ -428,6 +431,7 @@ impl WebViewTab {
                 match result {
                     Ok(native) => {
                         let embedded = Embedded::new(native, window.window_handle());
+                        crate::start_pump(cx);
                         embedded.set_covered(this.covers_page());
                         if this.content_focus.is_focused(window) {
                             embedded.native.focus();
@@ -451,6 +455,7 @@ impl WebViewTab {
     fn on_native(&mut self, event: NativeEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
             NativeEvent::TitleChanged(title) => {
+                tracing::debug!(target = %self.target, title, "page title");
                 let title = title.trim().to_string();
                 self.title = (!title.is_empty()).then_some(title);
                 if let Some(embedded) = &self.embedded {
@@ -687,7 +692,7 @@ impl WebViewTab {
         if let Some(embedded) = &self.embedded {
             embedded.native.focus();
         }
-        *self.shortcuts.borrow_mut() = kubyl_shortcuts(window, cx);
+        self.refresh_shortcuts(window, cx);
         let caps = self.caps(cx);
         let kind = match self.target.kind {
             TargetKind::Service => "Service",
@@ -710,6 +715,20 @@ impl WebViewTab {
                 },
             );
         }
+    }
+
+    /// Learns which keystrokes Kubyl binds in the page's key context (while it's focused, so
+    /// the context stack is the page's), again whenever the keymap changes.
+    fn refresh_shortcuts(&mut self, window: &Window, cx: &App) {
+        if !self.content_focus.is_focused(window) {
+            return;
+        }
+        let version = cx.key_bindings().borrow().version();
+        if self.shortcuts_version == Some(version) && !self.shortcuts.borrow().is_empty() {
+            return;
+        }
+        self.shortcuts_version = Some(version);
+        *self.shortcuts.borrow_mut() = kubyl_shortcuts(window, cx);
     }
 
     /// Stops the forward of a tab that stayed in the background (setting), and restarts it
@@ -947,10 +966,16 @@ impl WebViewTab {
             (IconName::Lock, "isolated session")
         };
         let zoom_label = format!("{}%", (self.zoom * 100.0).round() as i64);
-        // Narrow address bars drop the session label, then the origin.
+        // Narrow address bars drop the session label, then the origin, so the path keeps
+        // room (widths estimated from the monospace text: ~0.6 em per character).
         let width = self.address_width.get();
-        let show_session = width > 560.0;
-        let show_origin = width > 420.0;
+        let chip = short_label(&self.target).chars().count() as f32 * 6.6 + 40.0;
+        let origin_width = origin.chars().count() as f32 * 7.2 + 8.0;
+        let badges =
+            if caps.production { 44.0 } else { 0.0 } + if caps.read_only { 90.0 } else { 0.0 };
+        let room = width - chip - badges - 16.0 - 180.0;
+        let show_origin = room > origin_width + 24.0;
+        let show_session = room > origin_width + 24.0 + 120.0;
         let measured = self.address_width.clone();
         let entity = cx.entity().downgrade();
         h_flex()
@@ -990,8 +1015,7 @@ impl WebViewTab {
                             move |bounds, _, cx| {
                                 let width = f32::from(bounds.size.width);
                                 let old = measured.replace(width);
-                                let crossed = |limit: f32| (old > limit) != (width > limit);
-                                if crossed(560.0) || crossed(420.0) {
+                                if (old - width).abs() > 8.0 {
                                     entity.update(cx, |_, cx| cx.notify()).ok();
                                 }
                             },
@@ -1366,7 +1390,7 @@ impl WebViewTab {
                     Some(embedded) => div()
                         .size_full()
                         .flex()
-                        .bg(gpui::white())
+                        .bg(colors.background)
                         .child(WebContent::new(embedded.clone()))
                         .into_any_element(),
                     None => {
@@ -1724,6 +1748,7 @@ impl TabView for WebViewTab {
 impl Render for WebViewTab {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.wake_if_idle(cx);
+        self.refresh_shortcuts(window, cx);
         if let Some(embedded) = &self.embedded {
             embedded.set_covered(self.covers_page());
             if embedded.is_shown() {
