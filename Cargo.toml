@@ -71,6 +71,9 @@ raw-window-handle = "0.6.2"
 webview2-com = "0.39.1"
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse"] }
 x509-cert = { version = "0.3.0", default-features = false, features = ["std"] }
+# The GTK/WebKitGTK bindings wry uses (webkit2gtk pinned like wry pins it).
+gtk = "0.18.2"
+webkit2gtk = { version = "=2.0.2", features = ["v2_38"] }
 
 # Terminal backend (Apache-2.0, same approach as Zed without Zed's GPL view code).
 alacritty_terminal = "0.26.0"
