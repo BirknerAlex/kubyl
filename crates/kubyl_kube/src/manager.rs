@@ -489,6 +489,40 @@ impl ConnectionManager {
         });
     }
 
+    /// Turns loading `~/.kube/config` on or off (settings.json). The file itself is untouched.
+    pub fn set_load_default_kubeconfig(&mut self, load: bool, cx: &mut Context<Self>) {
+        Settings::update::<KubeSettings>(cx, |settings| settings.load_default_kubeconfig = load);
+    }
+
+    /// Turns loading the files in `$KUBECONFIG` on or off (settings.json).
+    pub fn set_load_kubeconfig_env(&mut self, load: bool, cx: &mut Context<Self>) {
+        Settings::update::<KubeSettings>(cx, |settings| settings.load_kubeconfig_env = load);
+    }
+
+    /// Deletes a pasted kubeconfig: the copy Kubyl keeps in [`Self::pasted_dir`]. Refuses any
+    /// other path, since Kubyl never deletes the user's own kubeconfig files.
+    pub fn delete_pasted(
+        &mut self,
+        path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<(), String>> {
+        if path.parent() != Some(self.pasted_dir.as_path()) {
+            return Task::ready(Err(format!(
+                "{} isn't a pasted kubeconfig",
+                display_path(path)
+            )));
+        }
+        let path = path.to_path_buf();
+        let delete = cx
+            .background_executor()
+            .spawn(async move { std::fs::remove_file(&path).map_err(|e| e.to_string()) });
+        cx.spawn(async move |this, cx| {
+            delete.await?;
+            this.update(cx, |this, cx| this.reload(cx)).ok();
+            Ok(())
+        })
+    }
+
     /// Validates pasted kubeconfig YAML and saves it under the pasted kubeconfigs folder (0600).
     pub fn paste_kubeconfig(
         &mut self,
@@ -1537,6 +1571,52 @@ mod tests {
             m.paste_kubeconfig("x".into(), "nope: [".into(), cx)
         });
         assert!(err.await.is_err());
+    }
+
+    #[gpui::test]
+    async fn sources_can_be_removed_and_pasted_files_deleted(cx: &mut TestAppContext) {
+        let (dir, manager) = setup(cx);
+        let other = dir.path().join("kube/other.yaml");
+        manager.update(cx, |m, cx| m.remove_source(&other, cx));
+        cx.run_until_parked();
+        manager.read_with(cx, |m, _| {
+            assert_eq!(m.sources().len(), 2);
+            assert!(!m.contexts().any(|c| c.name == "prod@other"));
+        });
+        // Removing a source leaves the file alone.
+        assert!(other.exists());
+
+        // The default kubeconfig is a setting, not a file operation.
+        manager.update(cx, |m, cx| m.set_load_default_kubeconfig(true, cx));
+        cx.run_until_parked();
+        cx.update(|cx| assert!(Settings::get::<KubeSettings>(cx).load_default_kubeconfig));
+        manager.update(cx, |m, cx| m.set_load_default_kubeconfig(false, cx));
+
+        let pasted = manager
+            .update(cx, |m, cx| {
+                m.paste_kubeconfig("team".into(), OTHER.into(), cx)
+            })
+            .await
+            .unwrap();
+        cx.run_until_parked();
+        manager.read_with(cx, |m, _| {
+            assert!(m.contexts().any(|c| c.name == "prod@team"));
+        });
+        manager
+            .update(cx, |m, cx| m.delete_pasted(&pasted, cx))
+            .await
+            .unwrap();
+        cx.run_until_parked();
+        assert!(!pasted.exists());
+        manager.read_with(cx, |m, _| {
+            assert!(!m.contexts().any(|c| c.name == "prod@team"));
+        });
+        // Only files in the pasted folder can be deleted.
+        let refused = manager
+            .update(cx, |m, cx| m.delete_pasted(&other, cx))
+            .await;
+        assert!(refused.is_err());
+        assert!(other.exists());
     }
 
     #[test]

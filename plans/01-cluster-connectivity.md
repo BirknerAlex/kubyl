@@ -62,6 +62,21 @@ clusters can be connected at once.
 
 ## Handoff log
 
+### 2026-09-25: managing sources (branch `phase/01-kubeconfig-sources`)
+
+Gaps found in use: the Explorer's "+" (and its search button) said "not available in this build"
+because phase 00's `dispatch_or_explain` only saw element action handlers, not the global ones
+`kubyl_kube` and `kubyl_explorer` register; and sources could hardly be removed.
+- The Explorer "+" is a menu: add a kubeconfig file or folder, paste YAML, manage kubeconfigs.
+  Both header buttons dispatch directly; `dispatch_or_explain` is gone (every action exists now).
+- Sources list: every row has a visible button. User-added files and folders are removed from
+  Kubyl (the file stays); `~/.kube/config` and `$KUBECONFIG` stop loading; each pasted
+  kubeconfig is its own row and can be deleted (the only files Kubyl deletes, after a
+  confirmation). Toggles "Load ~/.kube/config" and "Load $KUBECONFIG" turn them back on.
+- `ConnectionManager::set_load_default_kubeconfig`, `set_load_kubeconfig_env` and
+  `delete_pasted` (refuses paths outside the pasted folder), with a test.
+- Editing kubeconfigs is planned as phase 13 (`plans/13-kubeconfig-editor.md`).
+
 ### 2026-09-24: phase 01 implemented
 
 **Auth methods verified.**
