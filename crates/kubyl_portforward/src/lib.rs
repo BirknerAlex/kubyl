@@ -18,6 +18,8 @@ pub mod manager;
 pub mod resolve;
 
 use gpui::{App, Window, actions};
+use kubyl_core::actions::{ForwardPort, StopForward};
+use kubyl_core::forwards::ActiveForwards;
 use kubyl_core::{
     ActionRegistry, ActionSpec, ClusterId, Gvr, Notification, NotificationCenter, ResourceRef,
 };
@@ -54,8 +56,14 @@ const FORWARDABLE: &[&str] = &[
 
 /// Registers the manager, saved forwards and actions.
 pub fn init(cx: &mut App) {
-    PortForwardManager::install(cx);
+    let manager = PortForwardManager::install(cx);
     SavedForwards::install(cx);
+    // Other crates show running forwards next to their ports.
+    cx.observe(&manager, |manager, cx| {
+        let forwards = manager.read(cx).active();
+        ActiveForwards::set(cx, forwards);
+    })
+    .detach();
 
     let available = |target: &ResourceRef, caps: &kubyl_core::ClusterCaps| {
         !caps.read_only && FORWARDABLE.contains(&target.gvr.resource.as_str())
@@ -123,6 +131,11 @@ pub fn init(cx: &mut App) {
                 cx,
             );
         }
+    });
+    cx.on_action(|action: &ForwardPort, cx| forward_port(action.target.clone(), action.port, cx));
+    cx.on_action(|action: &StopForward, cx| {
+        let id = action.0;
+        PortForwardManager::global(cx).update(cx, |m, cx| m.stop_raw(id, cx));
     });
     cx.on_action(|_: &OpenLastInBrowser, cx| {
         let url = PortForwardManager::global(cx).read(cx).last_url();
@@ -204,6 +217,53 @@ fn gvr_for(resource: &str) -> Gvr {
     match resource {
         "deployments" | "statefulsets" | "daemonsets" => Gvr::new("apps", "v1", resource),
         other => Gvr::new("", "v1", other),
+    }
+}
+
+/// One-click forward of `port` (the details pane's port rows): the same local port when it's
+/// free and not privileged (`80` → `8080` for privileged ones), else any free one.
+fn forward_port(target: ResourceRef, port: u16, cx: &mut App) {
+    let manager = ConnectionManager::global(cx);
+    if manager.read(cx).caps(&target.cluster).read_only {
+        let name = manager.read(cx).display_name(&target.cluster);
+        error(cx, format!("{name} is read-only."));
+        return;
+    }
+    if let Some(existing) = ActiveForwards::find(cx, &target, port) {
+        let message = match &existing.local {
+            Some(local) => format!("Port {port} is already forwarded to {local}."),
+            None => format!("Port {port} is already being forwarded."),
+        };
+        NotificationCenter::push(cx, Notification::info(message));
+        return;
+    }
+    let local_port = preferred_local_port(port)
+        .filter(|&local| std::net::TcpListener::bind(("127.0.0.1", local)).is_ok())
+        .unwrap_or(0);
+    let (http, https) = resolve::http_kind(port, None, None);
+    start_target_forward(
+        target,
+        ForwardChoice {
+            remote_port: Some(port),
+            local_port,
+            bind_address: "127.0.0.1".into(),
+            http,
+            https,
+            open_browser: false,
+            save: false,
+            auto_start: false,
+        },
+        cx,
+    );
+}
+
+/// The local port a one-click forward tries first: the remote port, or `+ 8000` for
+/// privileged ones (`80` → `8080`, `443` → `8443`).
+fn preferred_local_port(remote: u16) -> Option<u16> {
+    if remote >= 1024 {
+        Some(remote)
+    } else {
+        remote.checked_add(8000)
     }
 }
 
@@ -336,4 +396,17 @@ fn start_and_save(
 /// Starts a forward with an already resolved spec (other crates, tests).
 pub fn start_forward(client: kube::Client, spec: ForwardSpec, cx: &mut App) -> ForwardId {
     PortForwardManager::start(client, spec, cx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn one_click_forwards_prefer_memorable_local_ports() {
+        assert_eq!(preferred_local_port(8080), Some(8080));
+        assert_eq!(preferred_local_port(80), Some(8080));
+        assert_eq!(preferred_local_port(443), Some(8443));
+        assert_eq!(preferred_local_port(5432), Some(5432));
+    }
 }

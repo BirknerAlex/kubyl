@@ -13,6 +13,7 @@ use std::time::Duration;
 use futures::StreamExt as _;
 use futures::channel::mpsc;
 use gpui::{App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, Global, Task};
+use kubyl_core::forwards::ActiveForward;
 use kubyl_core::{ClusterId, Notification, NotificationCenter, ResourceRef, Tone};
 use kubyl_logs::sessions::{SessionButton, SessionId, SessionKind, SessionRegistry};
 use kubyl_ui::IconName;
@@ -275,6 +276,32 @@ impl PortForwardManager {
             cx.emit(());
             cx.notify();
         }
+    }
+
+    /// Stops the forward with a raw id from [`kubyl_core::forwards::ActiveForward::id`].
+    pub fn stop_raw(&mut self, id: u64, cx: &mut Context<Self>) {
+        self.stop(ForwardId(id), cx);
+    }
+
+    /// The running forwards as other crates see them
+    /// ([`kubyl_core::forwards::ActiveForwards`]).
+    pub fn active(&self) -> Vec<ActiveForward> {
+        let mut forwards: Vec<ActiveForward> = self
+            .forwards
+            .iter()
+            .map(|(id, forward)| {
+                let listening = forward.state == ForwardState::Listening && forward.local_port != 0;
+                ActiveForward {
+                    id: *id,
+                    target: forward.spec.target.clone(),
+                    remote_port: forward.spec.remote_port,
+                    local: listening.then(|| format!("localhost:{}", forward.local_port)),
+                    url: (listening && forward.spec.http).then(|| forward.url()),
+                }
+            })
+            .collect();
+        forwards.sort_by_key(|f| f.id);
+        forwards
     }
 
     /// Whether a forward to the same target and ports is running.
