@@ -21,7 +21,7 @@ cluster.
 
 ### Two access modes
 - [x] **Kubernetes mode** (default, needs only the user's kube access): reads and patches the CRDs directly. Status, health, history, resources (`status.resources`), conditions, and all actions below that can be done by patching the Application
-- [x] **API mode** (optional, richer): talks to `argocd-server` through the Kubernetes service proxy or a temporary forward (phase 08), and signs in with Argo CD SSO/local account (token kept in the keychain). Adds rendered manifests, live-vs-desired diff (`managed-resources`), full resource tree including child objects, and server-side rollback. The app shows which mode is active, and uses API mode for a feature only when it's connected. *(SSO users sign in with a token; the browser SSO flow and a separate rendered-manifests view are deferred, see the handoff log.)*
+- [x] **API mode** (optional, richer): talks to `argocd-server` through the Kubernetes service proxy or a temporary forward (phase 08), and signs in with Argo CD SSO/local account (token kept in the keychain). Adds rendered manifests, live-vs-desired diff (`managed-resources`), full resource tree including child objects, and server-side rollback. The app shows which mode is active, and uses API mode for a feature only when it's connected. *(A separate rendered-manifests view is deferred, see the handoff log.)*
 
 ### Applications view
 - [x] Sidebar: an "Argo CD" group under Administration with Applications, ApplicationSets, Projects (with counts). Also listed under Custom Resources as usual
@@ -132,10 +132,30 @@ send credentials to a host derived from objects anyone could create.
   header. Over the forward the server's (by default self-signed) certificate isn't verified:
   the tunnel is the authenticated API server connection and the client only talks to
   127.0.0.1.
-- Sign-in methods: username and password (local accounts, `POST /api/v1/session`) or a pasted
-  token. Browser SSO isn't implemented (deferred): SSO users paste a token
-  (`argocd account generate-token`, or the UI's `argocd.token` cookie). The dialog says so
-  when `argocd-cm` has Dex or OIDC configured.
+- Sign-in methods: SSO, username and password (local accounts, `POST /api/v1/session`), or a
+  pasted token.
+- **SSO** (`sso`) runs in the system browser (WebAuthn and passkeys work), like
+  `argocd login --sso`: where to sign in comes from `/api/v1/settings` of the confirmed
+  install: Argo CD's Dex at `<url>/api/dex` with the client `argo-cd-cli`, or the external
+  OIDC provider's `cliClientID`. Authorization code with PKCE, redirect
+  `http://localhost:8085/auth/callback` (the CLI's, which Dex allows and admins register for
+  the CLI client), listening on 127.0.0.1 and ::1. The ID token is the session; the refresh
+  token sits in the keychain next to it and renews the session before it expires and once
+  when argocd-server rejects it. The sign-in belongs to the Argo CD state, not the dialog:
+  closing the dialog doesn't cancel it. Without a `cliClientID`, providers usually only
+  accept Argo CD's web client with argocd-server's secret (Keycloak: "unauthorized_client"):
+  the SSO tab says how to add a public client and points to the Token tab. (A web-view
+  fallback through Argo CD's own login page was tried and dropped: embedded web views can't
+  do WebAuthn.) `script/argocd-dev.sh --sso` sets up Dex with a mock connector at
+  http://localhost:8080; `tests/live_sso.rs` signs in through it and renews the session.
+- **Argo CD's web UI** ("Open Argo CD UI"): SSO can't work through the loopback forward
+  (Argo CD only redirects to its own `url`). Signed in to API mode, the embedded page gets
+  the session as its `argocd.token` cookie (split like argocd-server does for long tokens):
+  session only, HttpOnly, only for the confirmed install's argocd-server Service
+  (`kubyl_webview::add_session_provider`). This is the one exception to phase 08's "no
+  credentials in web content", and it's the same token Kubyl already sends that Service. Not
+  signed in (or with web views set to the system browser), SSO installs open at Argo CD's
+  own URL in the browser, where SSO works.
 
 **How it fits together** (`crates/kubyl_argocd`).
 - Data, no UI: `model` (Application, ApplicationSet, AppProject, history, operation state,
@@ -172,7 +192,14 @@ install showed only some kinds), `kubyl_explorer` (contributed tree groups with 
 and objects open their kind's registered view), `kubyl_palette` (same for `:kind`/objects),
 `kubyl_yaml` (`diff_view` usable by other crates; edit notices as a banner), `kubyl_logs`
 (`open_filtered` with a search, optionally regex), `kubyl_ui` (icons), `kubyl` (screenshot
-harness: App Nap opt-out and thread-based waits, it stalled when another app was frontmost).
+harness: App Nap opt-out and thread-based waits, it stalled when another app was frontmost),
+`kubyl_webview` (session cookies from crates that hold a session for a target, set before
+the first load; on macOS without blocking, since WebKit's cookie store answers on the main
+queue), `kubyl_kube` (the OIDC loopback helpers and `jwt_expiry` are public for Argo CD's SSO).
+
+**Also on this branch** (asked for during the phase): PVC details list the pods that mount
+the claim (by `claimName`, or as a generic ephemeral volume), with their status and a link;
+the claim's `Unused` condition counts as healthy when False (`kubyl_explorer`).
 
 **Tests.**
 - 49 unit tests (model, health, sync windows, links, tree, diff, rows and filters, operation
@@ -181,6 +208,11 @@ harness: App Nap opt-out and thread-based waits, it stalled when another app was
   auto-sync policy round trip; API mode through the proxy and through a forward (tree shows
   the pods); API-mode diff after an out-of-band edit; delete cascading vs non-cascading;
   computed health vs Argo CD's.
+- `tests/live_sso.rs` (1, ignored, switches the dev install to SSO and back): SSO sign-in
+  through Dex (the "browser" follows the redirects to Kubyl's loopback callback) and renewal
+  with the refresh token.
+- `kubyl_webview`'s `live_webview` (CI, all three OSes): a session cookie reaches the page's
+  first request and its scripts can't read it.
 - `tests/live_ui.rs` (1, ignored, reinstalls Argo CD): one app and an open Applications tab
   live through `script/argocd-dev.sh --delete` and a reinstall; the sidebar group, its version
   badge, detection and the rows disappear and come back. It found the discovery race above.
@@ -189,14 +221,15 @@ harness: App Nap opt-out and thread-based waits, it stalled when another app was
 - Screenshots (`design/screenshots/phase-10-*.png`, screenshot harness on kind, v3.5.3):
   `applications` (Kubernetes mode, details dock), `app-resource-tree` (API mode), `app-diff`
   (after `kubectl scale`), `app-history`, `sync-dialog`, `rollback-dialog` (PROD, typed
-  confirmation), `applicationsets`, `projects`.
+  confirmation), `applicationsets`, `projects`, `argo-ui-signed-in` (Argo CD's own UI in a
+  web view, signed in with API mode's session), `pvc-pods` (the pods using a claim).
 
 **Mockups.** Boards 12–15 are in `design/mockups/generate.py`. **The published mockup artifact
 still needs these new boards.**
 
 **Deferred.**
-- Browser SSO sign-in (Dex/OIDC through argocd-server, like `argocd login --sso`); SSO users
-  sign in with a token.
+- SSO for OIDC installs without a `cliClientID`: they need one (like `argocd login --sso`),
+  or sign in with a token.
 - A separate rendered-manifests view of a whole app (`ArgoApi::manifests` exists); the Diff
   tab shows desired vs live per resource.
 - Per-resource health in Kubernetes mode for kinds without a built-in check (CRDs with Lua
