@@ -2679,10 +2679,16 @@ mod tests {
             ]}
         });
         assert!(uses_claim(&pod, "data-web-0"));
-        assert!(uses_claim(&pod, "web-0-scratch"), "generic ephemeral volume");
+        assert!(
+            uses_claim(&pod, "web-0-scratch"),
+            "generic ephemeral volume"
+        );
         assert!(!uses_claim(&pod, "web-0-config"), "not an ephemeral volume");
         assert!(!uses_claim(&pod, "data-web-1"));
-        assert!(!uses_claim(&json!({"metadata": {"name": "x"}}), "data-web-0"));
+        assert!(!uses_claim(
+            &json!({"metadata": {"name": "x"}}),
+            "data-web-0"
+        ));
     }
 
     #[test]
