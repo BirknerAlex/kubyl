@@ -320,22 +320,11 @@ impl NativeWebView {
             if !options.cookies.is_empty() {
                 // After `attach`: the certificate hooks must be in place for the first load.
                 let cookies = crate::session::wry_cookies(&options.url, &options.cookies);
-                // wry's `set_cookie` waits (1 s at most) for WebKit's cookie store. That works
-                // when the main queue is free; inside a GPUI task while a new data store starts
-                // it times out, and then the cookies are set without blocking and the page
-                // loads once they're in.
+                // Not wry's `set_cookie` on macOS: it blocks on the cookie store (which answers
+                // on the main queue a GPUI task holds) and marks every cookie secure on some
+                // macOS versions.
                 #[cfg(target_os = "macos")]
-                {
-                    let pending: Vec<_> = cookies
-                        .into_iter()
-                        .filter(|cookie| webview.set_cookie(cookie).is_err())
-                        .collect();
-                    if pending.is_empty() {
-                        webview.load_url(&options.url).ok();
-                    } else {
-                        macos::set_cookies_then_load(&webview, &pending, &options.url);
-                    }
-                }
+                macos::set_cookies_then_load(&webview, &cookies, &options.url);
                 #[cfg(not(target_os = "macos"))]
                 {
                     for cookie in cookies {

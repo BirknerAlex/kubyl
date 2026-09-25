@@ -301,10 +301,7 @@ fn ns_cookie(cookie: &wry::cookie::Cookie<'_>) -> Option<Retained<objc2_foundati
     let value = NSString::from_str(cookie.value());
     let domain = NSString::from_str(cookie.domain()?);
     let path = NSString::from_str(cookie.path().unwrap_or("/"));
-    let flag =
-        |on: Option<bool>| NSString::from_str(if on == Some(true) { "TRUE" } else { "FALSE" });
-    let secure = flag(cookie.secure());
-    let http_only = flag(cookie.http_only());
+    let on = NSString::from_str("TRUE");
     // Plain strings for HttpOnly and SameSite, like wry: with the SameSite constants,
     // `cookieWithProperties:` fails on some macOS versions (wry#1616).
     let http_only_key = NSString::from_str("HttpOnly");
@@ -313,18 +310,45 @@ fn ns_cookie(cookie: &wry::cookie::Cookie<'_>) -> Option<Retained<objc2_foundati
     // SAFETY: the property keys are Foundation's constants and plain strings; the values are
     // NSStrings, as `cookieWithProperties:` expects.
     unsafe {
-        let keys: [&NSString; 7] = [
+        let mut keys: Vec<&NSString> = vec![
             NSHTTPCookieName,
             NSHTTPCookieValue,
             NSHTTPCookieDomain,
             NSHTTPCookiePath,
-            NSHTTPCookieSecure,
-            &http_only_key,
             &same_site_key,
         ];
-        let values: [&AnyObject; 7] = [&name, &value, &domain, &path, &secure, &http_only, &lax];
+        let mut values: Vec<&AnyObject> = vec![&name, &value, &domain, &path, &lax];
+        // Only when set: some macOS versions (26) make any `Secure` value secure, "FALSE"
+        // included, and a secure cookie never reaches an http:// forward (wry has this bug).
+        if cookie.secure() == Some(true) {
+            keys.push(NSHTTPCookieSecure);
+            values.push(&on);
+        }
+        if cookie.http_only() == Some(true) {
+            keys.push(&http_only_key);
+            values.push(&on);
+        }
         let properties = NSDictionary::from_slices(&keys, &values);
         NSHTTPCookie::cookieWithProperties(&properties)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_cookies_are_secure_only_for_https() {
+        let cookies = [crate::session::SessionCookie {
+            name: "argocd.token".into(),
+            value: "t0ken".to_string().into(),
+        }];
+        let http = crate::session::wry_cookies("http://127.0.0.1:8080/", &cookies);
+        let cookie = ns_cookie(&http[0]).expect("a cookie");
+        assert!(!cookie.isSecure(), "an http:// page must get the cookie");
+        assert!(cookie.isHTTPOnly());
+        let https = crate::session::wry_cookies("https://127.0.0.1:8443/", &cookies);
+        assert!(ns_cookie(&https[0]).expect("a cookie").isSecure());
     }
 }
 
