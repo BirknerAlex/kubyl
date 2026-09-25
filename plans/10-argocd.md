@@ -121,8 +121,9 @@ send credentials to a host derived from objects anyone could create.
   to a confirmed install with a stored token.
 - The token goes to the OS keychain (`kubyl_kube::auth::store`, key
   `argocd/<server>/<context>/<namespace>/<service>`), never to settings or state; it's only
-  ever sent to that Service. Sign out deletes it; "Sign Out and Forget This Install" also
-  drops the confirmation. The user's kube credentials never reach Argo CD: in proxy mode they
+  ever sent to that Service. Sign out revokes it on the server (argocd-server's web logout;
+  `DELETE /api/v1/session` doesn't revoke anything), so a web view's copy stops working too,
+  then deletes it; "Sign Out and Forget This Install" also drops the confirmation. The user's kube credentials never reach Argo CD: in proxy mode they
   authenticate the request to the API server, which strips `Authorization` before proxying
   (verified: Argo CD's `/api/v1/session/userinfo` answered `{}` for a bearer token sent that
   way), so the Argo CD token travels as the `argocd.token` cookie, which the proxy passes
