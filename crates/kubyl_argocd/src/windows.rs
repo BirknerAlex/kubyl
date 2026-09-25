@@ -3,15 +3,13 @@
 //! one of them must be active; `manualSync` lets manual syncs through).
 //!
 //! Schedules are 5-field cron expressions (`0 22 * * *`) with a Go duration (`8h`). A window is
-//! active when a scheduled start lies within the last `duration`, checked minute by minute.
+//! active when a scheduled start lies within the last `duration`, however long (Argo CD:
+//! `schedule.Next(now - duration) < now`). The search skips days and hours that can't match.
 
 use jiff::tz::TimeZone;
 use jiff::{Timestamp, ToSpan as _, Zoned};
 
 use crate::model::{Application, SyncWindow};
-
-/// Longest window checked (a week).
-const MAX_MINUTES: i64 = 7 * 24 * 60;
 
 /// A parsed cron field: allowed values.
 #[derive(Clone, Debug, PartialEq)]
@@ -105,8 +103,8 @@ impl Schedule {
         })
     }
 
-    /// Whether the schedule fires at this minute.
-    fn matches(&self, time: &Zoned) -> bool {
+    /// Whether the schedule fires on this day (month and day fields).
+    fn day_matches(&self, time: &Zoned) -> bool {
         let day_of_month = self.day.has(time.day() as u32);
         let day_of_week = self
             .weekday
@@ -117,10 +115,7 @@ impl Schedule {
             (false, true) => day_of_month,
             (false, false) => day_of_month || day_of_week,
         };
-        self.minute.has(time.minute() as u32)
-            && self.hour.has(time.hour() as u32)
-            && self.month.has(time.month() as u32)
-            && day
+        self.month.has(time.month() as u32) && day
     }
 }
 
@@ -179,13 +174,29 @@ pub fn is_active(window: &SyncWindow, now: Timestamp) -> bool {
     else {
         return false;
     };
-    // A start at minute t covers [t, t + duration).
-    for back in 0..minutes.min(MAX_MINUTES) {
-        let Ok(time) = start.checked_sub(back.minutes()) else {
-            return false;
-        };
-        if schedule.matches(&time) {
+    // A start at minute t covers [t, t + duration): look for one in (start - duration, start].
+    let Ok(earliest) = start.checked_sub(minutes.minutes()) else {
+        return false;
+    };
+    let mut time = start;
+    while time > earliest {
+        let previous = if !schedule.day_matches(&time) {
+            // The last minute of the day before (DST-safe: from the start of this day).
+            time.start_of_day().and_then(|t| t.checked_sub(1.minute()))
+        } else if !schedule.hour.has(time.hour() as u32) {
+            // The last minute of the hour before.
+            time.with()
+                .minute(0)
+                .build()
+                .and_then(|t| t.checked_sub(1.minute()))
+        } else if schedule.minute.has(time.minute() as u32) {
             return true;
+        } else {
+            time.checked_sub(1.minute())
+        };
+        match previous {
+            Ok(previous) if previous < time => time = previous,
+            _ => return false,
         }
     }
     false
@@ -316,6 +327,24 @@ mod tests {
         };
         assert!(is_active(&berlin, at("2026-09-25T20:30:00Z")));
         assert!(!is_active(&berlin, at("2026-09-25T22:30:00Z")));
+        // Longer than a week: a monthly window open for 30 days.
+        let monthly = window("allow", "0 0 1 * *", "720h");
+        assert!(is_active(&monthly, at("2026-09-20T12:00:00Z")));
+        assert!(!is_active(&monthly, at("2026-10-31T12:00:00Z")));
+        assert!(!is_active(
+            &window("allow", "0 0 1 * *", "24h"),
+            at("2026-09-20T12:00:00Z")
+        ));
+        // Across a DST change (Berlin skips 02:00-03:00 on 2026-03-29).
+        let late = SyncWindow {
+            time_zone: Some("Europe/Berlin".into()),
+            ..window("deny", "30 23 * * *", "5h")
+        };
+        assert!(is_active(&late, at("2026-03-29T01:30:00Z")));
+        assert!(!is_active(&late, at("2026-03-29T03:30:00Z")));
+        // Rare schedules with long durations stay cheap: Feb 29 within ten years.
+        let leap = window("allow", "0 0 29 2 *", "87600h");
+        assert!(is_active(&leap, at("2026-09-25T00:00:00Z")));
     }
 
     #[test]

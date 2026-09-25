@@ -971,7 +971,9 @@ fn forward_spec(
 
 /// Controller namespaces the loaded Applications report (detection hints).
 fn controller_namespaces(cluster: &ClusterId, cx: &App) -> Vec<String> {
-    let mut out: Vec<String> = vec!["argocd".into()];
+    // Only namespaces Applications report; detection tries the usual ones itself when it
+    // can't list argocd-cm.
+    let mut out: Vec<String> = Vec::new();
     for store in ResourceStores::all(cx) {
         let store = store.read(cx);
         let key = store.key();

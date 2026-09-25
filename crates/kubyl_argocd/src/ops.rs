@@ -491,22 +491,26 @@ pub enum Cascade {
 }
 
 /// The finalizers after choosing `cascade`, or `None` if they stay as they are (Argo CD's
-/// `Server.Delete`).
+/// `Server.Delete`). Argo CD deletes with the first propagation finalizer it finds, so there's
+/// only ever one, like its `SetCascadedDeletion` (the plain one and `/foreground` both mean
+/// foreground).
 pub fn finalizers_for(current: &[String], cascade: Cascade, deleting: bool) -> Option<Vec<String>> {
     let cascading =
         |f: &String| f == FINALIZER || f == FINALIZER_BACKGROUND || f == FINALIZER_FOREGROUND;
     match cascade {
         Cascade::Foreground | Cascade::Background => {
-            let wanted = if cascade == Cascade::Background {
-                FINALIZER_BACKGROUND
+            let (wanted, accepted): (&str, &[&str]) = if cascade == Cascade::Background {
+                (FINALIZER_BACKGROUND, &[FINALIZER_BACKGROUND])
             } else {
-                FINALIZER
+                (FINALIZER, &[FINALIZER, FINALIZER_FOREGROUND])
             };
+            let policies: Vec<&String> = current.iter().filter(|f| cascading(f)).collect();
+            let already = policies.len() == 1 && accepted.contains(&policies[0].as_str());
             // Kubernetes forbids adding finalizers to an object that is being deleted.
-            if deleting || current.iter().any(|f| f == wanted) {
+            if already || deleting {
                 return None;
             }
-            let mut next = current.to_vec();
+            let mut next: Vec<String> = current.iter().filter(|f| !cascading(f)).cloned().collect();
             next.push(wanted.to_string());
             Some(next)
         }
@@ -725,6 +729,34 @@ mod tests {
             Some(vec!["other/finalizer".to_string()])
         );
         assert_eq!(finalizers_for(&none, Cascade::None, false), None);
+
+        // One propagation finalizer: switching replaces it (Argo CD uses the first it finds).
+        assert_eq!(
+            finalizers_for(&mixed, Cascade::Background, false),
+            Some(vec![
+                "other/finalizer".to_string(),
+                FINALIZER_BACKGROUND.to_string()
+            ])
+        );
+        let background = vec![FINALIZER_BACKGROUND.to_string()];
+        assert_eq!(
+            finalizers_for(&background, Cascade::Background, false),
+            None
+        );
+        assert_eq!(
+            finalizers_for(&background, Cascade::Foreground, false),
+            Some(vec![FINALIZER.to_string()])
+        );
+        let foreground = vec![FINALIZER_FOREGROUND.to_string()];
+        assert_eq!(
+            finalizers_for(&foreground, Cascade::Foreground, false),
+            None
+        );
+        let both = vec![FINALIZER.to_string(), FINALIZER_BACKGROUND.to_string()];
+        assert_eq!(
+            finalizers_for(&both, Cascade::Foreground, false),
+            Some(vec![FINALIZER.to_string()])
+        );
     }
 
     #[test]

@@ -151,9 +151,14 @@ async fn inspect(client: Client, namespace: &str, hinted: bool) -> Option<Instal
         admin_enabled: true,
         ..Default::default()
     };
+    let mut no_cm = false;
     match configmaps.get("argocd-cm").await {
         Ok(cm) => apply_cm(&mut install, &cm),
         Err(err) if not_found(&err) && !hinted => return None,
+        Err(err) if not_found(&err) => {
+            no_cm = true;
+            install.partial = true;
+        }
         Err(err) if forbidden(&err) || not_found(&err) => {
             if !hinted {
                 return None;
@@ -193,6 +198,10 @@ async fn inspect(client: Client, namespace: &str, hinted: bool) -> Option<Instal
     });
     install.controller = pick_controller(&deployments, &stateful_sets);
     install.version = version_of(&deployments, &stateful_sets);
+    // A hinted namespace with nothing of Argo CD in it isn't an install.
+    if no_cm && install.server.is_none() && install.controller.is_none() {
+        return None;
+    }
     Some(install)
 }
 

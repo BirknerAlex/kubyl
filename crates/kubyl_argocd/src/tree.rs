@@ -535,9 +535,17 @@ pub fn build_api(app: &Application, tree: &ResourceTree) -> Vec<Node> {
     for node in tops {
         push(&mut out, node, 1, &managed, &children, &mut seen);
     }
-    // Managed resources Argo CD didn't put in the tree (missing ones).
-    for (id, resource) in &managed {
-        if !out.iter().any(|n| &n.id == id) {
+    // Managed resources Argo CD didn't put in the tree (missing ones), in status order: the
+    // rows keep their place between refreshes.
+    let present: std::collections::HashSet<String> = out.iter().map(|n| n.id.clone()).collect();
+    for resource in &app.status.resources {
+        let id = node_id(
+            &resource.group,
+            &resource.kind,
+            &resource.namespace,
+            &resource.name,
+        );
+        if !present.contains(&id) {
             let mut row = managed_node(resource, &Live::default());
             row.health = row.health.or(Some((Health::Missing, None)));
             out.push(row);

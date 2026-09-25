@@ -1226,8 +1226,19 @@ impl DeleteDialog {
                     }
                 }),
             ];
-        // Argo CD's default: cascade when the finalizer is set (the API's default too).
-        let cascade = if app.cascades() || app.metadata.finalizers.is_empty() {
+        // Argo CD's default: cascade as the app's finalizer says (the API's default too).
+        let background = app
+            .metadata
+            .finalizers
+            .iter()
+            .find(|f| {
+                *f == crate::model::FINALIZER
+                    || f.starts_with(&format!("{}/", crate::model::FINALIZER))
+            })
+            .is_some_and(|f| f == crate::model::FINALIZER_BACKGROUND);
+        let cascade = if background {
+            Cascade::Background
+        } else if app.cascades() || app.metadata.finalizers.is_empty() {
             Cascade::Foreground
         } else {
             Cascade::None
