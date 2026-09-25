@@ -111,7 +111,9 @@ async fn teardown(client: &kube::Client) {
 
 /// One HTTP GET through the forward; returns the status line.
 async fn get(port: u16) -> Option<String> {
-    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.ok()?;
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .ok()?;
     stream
         .write_all(b"GET / HTTP/1.0\r\nHost: web\r\n\r\n")
         .await
@@ -150,7 +152,11 @@ async fn service_forward_survives_a_pod_restart() {
         }
     };
     let status = get(port).await;
-    assert_eq!(status.as_deref(), Some("HTTP/1.1 200 OK"), "before the restart");
+    assert_eq!(
+        status.as_deref(),
+        Some("HTTP/1.1 200 OK"),
+        "before the restart"
+    );
 
     // Kill the only pod; the Deployment replaces it.
     let old = ready_pods(&client).await;
