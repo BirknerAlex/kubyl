@@ -4894,8 +4894,37 @@ dependencies = [
 name = "kubyl_argocd"
 version = "0.1.2"
 dependencies = [
+ "anyhow",
+ "futures",
+ "gpui-component",
  "gpui-pre",
+ "http",
+ "http-body-util",
+ "jiff",
+ "k8s-openapi",
+ "kube",
  "kubyl_core",
+ "kubyl_explorer",
+ "kubyl_kube",
+ "kubyl_logs",
+ "kubyl_portforward",
+ "kubyl_resources",
+ "kubyl_settings",
+ "kubyl_ui",
+ "kubyl_webview",
+ "kubyl_yaml",
+ "open",
+ "openidconnect",
+ "parking_lot",
+ "schemars 1.2.2",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]
