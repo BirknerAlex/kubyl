@@ -1,0 +1,14 @@
+// Zed run configurations for this project.
+// See: https://zed.dev/docs/tasks
+[
+  {
+    "label": "Run kubyl (memory credential store)",
+    "command": "cargo run -p kubyl",
+    "env": {
+      "KUBYL_CREDENTIAL_STORE": "memory"
+    },
+    "use_new_terminal": false,
+    "allow_concurrent_runs": false,
+    "reveal": "always"
+  }
+]

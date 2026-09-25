@@ -185,3 +185,52 @@ plans/03-command-palette.md):
 - Fixed: confirm buttons of the explorer dialogs closed the dialog instead of confirming (the view
   is now passed as dialog content). Verified by clicking Force apply/Apply in the YAML editor's
   dialogs, which use the same `dialogs::confirm`.
+
+### 2026-09-25: inline YAML/Logs/Terminal sub-tabs and Secret value reveal (owner request, out of phase order)
+
+Done on `phase/05-logs-exec-portforward` (PR #1) at the repo owner's explicit request, crossing
+phase boundaries: `kubyl_explorer` (phase 02) now also reaches into the `ViewRegistry` entries
+that phases 04/05 register (`kubyl_yaml`, `kubyl_logs`, `kubyl_terminal`), and this note is the
+one-time "intentional exception" AGENTS.md/plans/README.md ask for when a session touches a
+crate outside its own phase.
+
+- `DetailsContent`'s `Mode` enum (`crates/kubyl_explorer/src/details.rs`) grew three variants —
+  `Yaml`, `Logs`, `Terminal` — alongside the existing `Summary`/`Describe`. The Details pane
+  (both the right-dock `DetailsPanel` and the `DetailsView` pane tab, since both wrap
+  `DetailsContent`) now shows extra tab buttons for them next to Summary/Describe. Selecting one
+  builds the corresponding view inline via `ViewRegistry::build(&ViewRequest::for_resource(kind,
+  target), window, cx)` (kind `ViewKind::Yaml`/`Logs`/`Terminal`) — **not** `OpenView`, which
+  still opens a separate top-level pane tab via the existing context-menu actions and is
+  untouched. The built `Box<dyn TabHandle>` is cached per `Mode` in a new `extra:
+  HashMap<Mode, ExtraTab>` field so switching tabs back and forth doesn't rebuild/reconnect the
+  underlying kube watch/log-stream/exec session; the cache (and the current mode, if it's no
+  longer applicable) is cleared when the target resource changes, and dropped along with
+  `DetailsContent` when the pane closes, relying on each view's existing
+  Drop/on-release cleanup (same as `kubyl_logs`/`kubyl_terminal`'s session teardown elsewhere).
+- Tab visibility mirrors the exact predicates the equivalent context-menu `ActionSpec`s use
+  (`kubyl_yaml::EditYaml`, `kubyl_logs::ShowLogs`, `kubyl_terminal::ShowShell`), reimplemented
+  locally as `logs_applicable`/`terminal_applicable` in `details.rs` rather than adding
+  `kubyl_explorer` as a dependency of those crates (or vice versa): YAML always applies (every
+  Details target is an object), Logs applies to
+  `pods`/`deployments`/`statefulsets`/`daemonsets`/`jobs`, Terminal applies to `pods` on a
+  non-read-only cluster (`ClusterCaps::read_only`, read via `ConnectionManager`). Kinds a tab
+  doesn't apply to simply don't get the button — no disabled state.
+- Secret Summary: a new "Data" section (`DetailsContent::render_secret`) lists every
+  `data`/`stringData` key, decoded to plain text (`data` is base64-decoded; a decode that isn't
+  valid UTF-8, or isn't valid base64 at all, shows `<binary, N bytes>` / `<invalid base64>`
+  instead of mojibake — never raw base64). Values are masked by default behind a local
+  `SECRET_MASK` constant (`"••••••••"`, the same shape as `kubyl_yaml::render::MASK` but not
+  imported — not worth a cross-crate dependency for one constant) with a per-key `IconButton`
+  reveal toggle (new `IconName::EyeOff`, `crates/kubyl_ui/src/icon.rs` +
+  `assets/icons/lucide/eye-off.svg`); revealed keys are tracked in a `revealed:
+  HashSet<String>` on `DetailsContent`, reset when the target changes. A copy button
+  (`IconName::Copy`) next to each key copies the decoded plain text (never the mask or raw
+  base64) via `cx.write_to_clipboard`, with the same `NotificationCenter::push(Notification::info(..))`
+  toast as `kubyl_explorer::actions::copy_name`/`copy_yaml`.
+- `kubyl_explorer/Cargo.toml` gained `base64.workspace = true` (already a workspace dependency
+  via `kubyl_yaml`, version not redeclared).
+- Not done: no attempt to sync `DetailsView`'s own top-level tab title/kind with which extra
+  sub-tab is active inside its `DetailsContent` — `DetailsView::mode` (used for the pane tab's
+  title/`view_request`, i.e. `ViewKind::Details` vs. the `describe` custom kind) still only
+  distinguishes Summary vs. Describe, same as before; the new sub-tabs are pane-internal state
+  that isn't persisted/restored across restarts.

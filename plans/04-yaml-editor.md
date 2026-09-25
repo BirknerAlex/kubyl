@@ -167,3 +167,12 @@ confirmed (phase 02/03 had not clicked them). Now `.content(..)`.
   `Schema::for_gvk(&doc, &gvk)`, `validate::validate(root, &schema)`.
 - Confirmations: `kubyl_explorer::dialogs::confirm(ConfirmSpec { typed, lines, note, .. })`.
 - Rollout history: `kubyl_resources::ops::workload_history/workload_undo`.
+
+#### 2026-09-25: Details pane grew an inline YAML sub-tab (owner request, out of phase order)
+
+At the repo owner's explicit request, `kubyl_explorer`'s Details pane
+(`crates/kubyl_explorer/src/details.rs`) now offers a YAML sub-tab next to Summary/Describe,
+building this crate's `ViewKind::Yaml` view inline via `ViewRegistry::build` rather than
+`OpenView`. `kubyl_yaml` itself (this file's crate) is unchanged. See
+plans/02-resource-explorer.md's 2026-09-25 entry for the full description, including the new
+Secret value reveal/copy UI added alongside it (unrelated to YAML, same commit range).

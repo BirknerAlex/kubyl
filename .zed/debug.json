@@ -1,0 +1,16 @@
+// Zed debug configurations for this project.
+// See: https://zed.dev/docs/debugger
+[
+  {
+    "label": "Debug kubyl (memory credential store)",
+    "adapter": "CodeLLDB",
+    "request": "launch",
+    "cargo": {
+      "args": ["build", "-p", "kubyl"]
+    },
+    "program": "target/debug/kubyl",
+    "env": {
+      "KUBYL_CREDENTIAL_STORE": "memory"
+    }
+  }
+]

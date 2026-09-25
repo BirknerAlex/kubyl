@@ -83,12 +83,18 @@ pub(crate) fn init(cx: &mut App) {
     .detach();
 }
 
-/// Runs `f` in the focused window, if any.
-fn with_active_window(cx: &mut App, f: impl FnOnce(&mut Window, &mut App)) {
-    let window = cx.active_window().or_else(|| cx.windows().first().copied());
-    if let Some(window) = window {
-        window.update(cx, |_, window, cx| f(window, cx)).ok();
-    }
+/// Runs `f` in the focused window, if any. Deferred: these handlers are called from a global
+/// `cx.on_action` while the dispatching window is already mid-update, and `window.update` on it
+/// would fail right there (see AGENTS.md's gotcha on this).
+fn with_active_window(cx: &mut App, f: impl FnOnce(&mut Window, &mut App) + 'static) {
+    cx.defer(move |cx| {
+        let window = cx.active_window().or_else(|| cx.windows().first().copied());
+        if let Some(window) = window
+            && let Err(err) = window.update(cx, |_, window, cx| f(window, cx))
+        {
+            tracing::warn!("no window for the action: {err:#}");
+        }
+    });
 }
 
 /// Opens (or focuses) the Clusters tab.
