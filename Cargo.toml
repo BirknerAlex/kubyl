@@ -82,8 +82,10 @@ schemars = "1.2.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 serde-saphyr = "1.3.0"
+sha2 = "0.11.0"
 similar = "3.2.0"
 smallvec = "1.15.2" # kube 4.2 (serde-saphyr 0.0.29) needs < 1.16
+tar = "0.4.46"
 tempfile = "3.27.0"
 thiserror = "2.0.21"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "net", "io-util", "fs"] }
