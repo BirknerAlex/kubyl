@@ -7,6 +7,9 @@
 //! sent only to that Service; a re-created Service needs a new confirmation. The user's
 //! Kubernetes credentials never reach Argo CD: through the service proxy they authenticate to the
 //! API server (which strips them), through a forward they aren't sent at all.
+//!
+//! SSO sessions ([`crate::sso`]) keep their refresh token in the keychain next to the session
+//! token and renew themselves when the token expires or the server rejects it.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -29,6 +32,7 @@ use crate::api::{ApiError, ArgoApi, Transport, UserInfo};
 use crate::detect::{self, Install};
 use crate::model::GROUP;
 use crate::settings::{self, ApiTransport, ContextKey};
+use crate::sso::{self, SsoConfig, SsoTokens};
 
 /// How long a temporary forward may take to listen.
 const FORWARD_TIMEOUT: Duration = Duration::from_secs(20);
@@ -79,6 +83,8 @@ pub enum Credentials {
     },
     /// An API token (from `argocd account generate-token`) or an SSO session token.
     Token(SecretString),
+    /// Sign in through the browser (SSO). The sign-in URL is sent to the channel too.
+    Sso(Option<futures::channel::mpsc::UnboundedSender<String>>),
 }
 
 struct ApiSession {
@@ -87,6 +93,10 @@ struct ApiSession {
     /// The transport (with the token once connected).
     api: Option<ArgoApi>,
     forward: Option<ForwardId>,
+    /// An SSO session with a refresh token: a rejected token renews it.
+    renewable: bool,
+    /// When the session last reconnected after a rejected token.
+    renewed_at: Option<Instant>,
     _task: Option<Task<()>>,
 }
 
@@ -97,6 +107,8 @@ impl ApiSession {
             install,
             api: None,
             forward: None,
+            renewable: false,
+            renewed_at: None,
             _task: None,
         }
     }
@@ -399,36 +411,70 @@ impl ArgoCd {
                     .as_ref()
                     .map(|s| s.name.clone())
                     .unwrap_or_default();
-                let token =
-                    read_token(cx, settings::token_key(&key, &install.namespace, &service)).await;
-                let Some(token) = token else {
+                let token_key = settings::token_key(&key, &install.namespace, &service);
+                let mut token = read_token(cx, token_key.clone()).await;
+                let refresh = read_token(cx, refresh_key(&token_key)).await;
+                this.update(cx, |this, _| {
+                    if let Some(session) = this.session_mut(&id) {
+                        session.renewable = refresh.is_some();
+                    }
+                })
+                .ok();
+                // An SSO session renews itself before it expires, and once if it's rejected.
+                let mut renewed = false;
+                if let Some(refresh) = &refresh
+                    && token.as_ref().is_none_or(sso::expiring)
+                {
+                    renewed = true;
+                    match renew(cx, &api, &token_key, refresh).await {
+                        Ok(fresh) => token = Some(fresh),
+                        Err(err) => tracing::info!("Argo CD session renewal failed: {err}"),
+                    }
+                }
+                let Some(mut token) = token else {
                     return Ok::<_, String>(ApiState::SignInRequired(None));
                 };
-                let signed = api.with_token(token);
-                let check = run(cx, {
-                    let signed = signed.clone();
-                    async move { signed.user_info().await }
-                })
-                .await;
-                match check {
-                    Ok(info) => {
-                        let via = api.transport().describe();
-                        this.update(cx, |this, _| {
-                            if let Some(session) = this.session_mut(&id) {
-                                session.api = Some(signed);
+                loop {
+                    let signed = api.with_token(token.clone());
+                    let check = run(cx, {
+                        let signed = signed.clone();
+                        async move { signed.user_info().await }
+                    })
+                    .await;
+                    match check {
+                        Ok(info) => {
+                            let via = api.transport().describe();
+                            this.update(cx, |this, _| {
+                                if let Some(session) = this.session_mut(&id) {
+                                    session.api = Some(signed);
+                                }
+                            })
+                            .ok();
+                            return Ok(ApiState::Connected {
+                                user: info.username,
+                                version,
+                                via,
+                            });
+                        }
+                        Err(ApiError::Unauthorized) if !renewed && refresh.is_some() => {
+                            renewed = true;
+                            let refresh = refresh.as_ref().expect("checked");
+                            match renew(cx, &api, &token_key, refresh).await {
+                                Ok(fresh) => token = fresh,
+                                Err(err) => {
+                                    return Ok(ApiState::SignInRequired(Some(format!(
+                                        "The SSO session couldn't be renewed ({err}). Sign in again."
+                                    ))));
+                                }
                             }
-                        })
-                        .ok();
-                        Ok(ApiState::Connected {
-                            user: info.username,
-                            version,
-                            via,
-                        })
+                        }
+                        Err(ApiError::Unauthorized) => {
+                            return Ok(ApiState::SignInRequired(Some(
+                                "The session expired. Sign in again.".into(),
+                            )));
+                        }
+                        Err(err) => return Err(err.to_string()),
                     }
-                    Err(ApiError::Unauthorized) => Ok(ApiState::SignInRequired(Some(
-                        "The session expired. Sign in again.".into(),
-                    ))),
-                    Err(err) => Err(err.to_string()),
                 }
             }
             .await;
@@ -445,6 +491,30 @@ impl ArgoCd {
         }));
         entry.api = Some(session);
         cx.notify();
+    }
+
+    /// The session token for a web view of `namespace/service`: only for the argocd-server
+    /// Service of the confirmed install, and only while API mode is signed in there.
+    pub fn web_session_token(
+        &self,
+        cluster: &ClusterId,
+        namespace: &str,
+        service: &str,
+        cx: &App,
+    ) -> Option<SecretString> {
+        let session = self.clusters.get(cluster)?.api.as_ref()?;
+        if !session.state.is_connected() {
+            return None;
+        }
+        let trusted = self.trusted_install(cluster, cx)?;
+        let server = trusted.server.as_ref()?;
+        let ours = trusted.namespace == namespace
+            && server.name == service
+            && session.install.namespace == namespace;
+        if !ours {
+            return None;
+        }
+        session.api.as_ref()?.token().cloned()
     }
 
     fn session_mut(&mut self, cluster: &ClusterId) -> Option<&mut ApiSession> {
@@ -500,14 +570,37 @@ impl ArgoCd {
                     }
                 })
                 .ok();
-                let token = match credentials {
-                    Credentials::Token(token) => token,
-                    Credentials::Password { username, password } => run(cx, {
-                        let api = api.clone();
-                        async move { api.login(&username, &password).await }
-                    })
-                    .await
-                    .map_err(|e| e.to_string())?,
+                let (token, session) = match credentials {
+                    Credentials::Token(token) => (token, None),
+                    Credentials::Password { username, password } => (
+                        run(cx, {
+                            let api = api.clone();
+                            async move { api.login(&username, &password).await }
+                        })
+                        .await
+                        .map_err(|e| e.to_string())?,
+                        None,
+                    ),
+                    Credentials::Sso(urls) => {
+                        let tokens = run(cx, {
+                            let api = api.clone();
+                            async move {
+                                let settings = api.settings().await.map_err(|e| e.to_string())?;
+                                let config = SsoConfig::from_settings(&settings)?;
+                                sso::sign_in(&config, move |url| {
+                                    if let Err(err) = open::that_detached(&url) {
+                                        tracing::warn!("couldn't open the browser: {err}");
+                                    }
+                                    if let Some(urls) = urls {
+                                        urls.unbounded_send(url).ok();
+                                    }
+                                })
+                                .await
+                            }
+                        })
+                        .await?;
+                        (tokens.id_token.clone(), Some(tokens))
+                    }
                 };
                 let signed = api.with_token(token.clone());
                 let (info, version) = run(cx, {
@@ -520,16 +613,21 @@ impl ArgoCd {
                 })
                 .await
                 .map_err(|e| e.to_string())?;
-                write_token(
-                    cx,
-                    settings::token_key(&key, &install.namespace, &service),
-                    token,
-                )
-                .await?;
+                let token_key = settings::token_key(&key, &install.namespace, &service);
+                let renewable = session.as_ref().is_some_and(|s| s.refresh_token.is_some());
+                match &session {
+                    Some(session) => store_session(cx, &token_key, session).await?,
+                    None => {
+                        write_token(cx, token_key.clone(), token).await?;
+                        // A refresh token of an earlier SSO session would renew the wrong one.
+                        delete_token(cx, refresh_key(&token_key)).await;
+                    }
+                }
                 let via = api.transport().describe();
                 this.update(cx, |this, cx| {
                     settings::trust(&id, &install, Some(info.username.clone()), cx);
                     if let Some(session) = this.session_mut(&id) {
+                        session.renewable = renewable;
                         session.api = Some(signed);
                         session.state = ApiState::Connected {
                             user: info.username.clone(),
@@ -565,9 +663,12 @@ impl ArgoCd {
         {
             let token_key = settings::token_key(&key, &session.install.namespace, &server.name);
             spawn_kube(cx, async move {
-                tokio::task::spawn_blocking(move || kubyl_kube::auth::store::delete(&token_key))
-                    .await
-                    .ok();
+                tokio::task::spawn_blocking(move || {
+                    kubyl_kube::auth::store::delete(&refresh_key(&token_key)).ok();
+                    kubyl_kube::auth::store::delete(&token_key)
+                })
+                .await
+                .ok();
             })
             .detach();
         }
@@ -580,8 +681,21 @@ impl ArgoCd {
         cx.notify();
     }
 
-    /// An API call said the token is no longer valid.
+    /// An API call said the token is no longer valid. An SSO session renews itself (once a
+    /// minute at most); otherwise the user signs in again.
     pub fn unauthorized(&mut self, cluster: &ClusterId, cx: &mut Context<Self>) {
+        let renew = self.session_mut(cluster).is_some_and(|s| {
+            s.renewable
+                && s.renewed_at
+                    .is_none_or(|t| t.elapsed() > Duration::from_secs(60))
+        });
+        if renew {
+            self.connect(cluster, cx);
+            if let Some(session) = self.session_mut(cluster) {
+                session.renewed_at = Some(Instant::now());
+            }
+            return;
+        }
         if let Some(session) = self.session_mut(cluster) {
             session.state = ApiState::SignInRequired(Some(
                 "The Argo CD session expired. Sign in again.".into(),
@@ -627,6 +741,60 @@ async fn read_token(cx: &mut AsyncApp, key: String) -> Option<SecretString> {
             .flatten()
     })
     .await
+}
+
+/// Where an SSO session's refresh token is kept, next to its session token.
+fn refresh_key(token_key: &str) -> String {
+    format!("{token_key}/refresh")
+}
+
+async fn delete_token(cx: &mut AsyncApp, key: String) {
+    run(cx, async move {
+        tokio::task::spawn_blocking(move || kubyl_kube::auth::store::delete(&key))
+            .await
+            .ok();
+    })
+    .await;
+}
+
+/// Stores an SSO session: the refresh token, and the session token when the keychain takes it
+/// (Windows Credential Manager holds 2.5 KB; without it the next start renews the session).
+async fn store_session(
+    cx: &mut AsyncApp,
+    token_key: &str,
+    tokens: &SsoTokens,
+) -> Result<(), String> {
+    let Some(refresh) = &tokens.refresh_token else {
+        delete_token(cx, refresh_key(token_key)).await;
+        return write_token(cx, token_key.to_string(), tokens.id_token.clone()).await;
+    };
+    write_token(cx, refresh_key(token_key), refresh.clone()).await?;
+    if let Err(err) = write_token(cx, token_key.to_string(), tokens.id_token.clone()).await {
+        tracing::info!("Argo CD session token not stored: {err}");
+    }
+    Ok(())
+}
+
+/// Renews an SSO session with its refresh token (settings from the confirmed server say where)
+/// and stores the new tokens.
+async fn renew(
+    cx: &mut AsyncApp,
+    api: &ArgoApi,
+    token_key: &str,
+    refresh: &SecretString,
+) -> Result<SecretString, String> {
+    let tokens = run(cx, {
+        let api = api.clone();
+        let refresh = refresh.clone();
+        async move {
+            let settings = api.settings().await.map_err(|e| e.to_string())?;
+            let config = SsoConfig::from_settings(&settings)?;
+            sso::refresh(&config, &refresh).await
+        }
+    })
+    .await?;
+    store_session(cx, token_key, &tokens).await?;
+    Ok(tokens.id_token)
 }
 
 async fn write_token(cx: &mut AsyncApp, key: String, token: SecretString) -> Result<(), String> {

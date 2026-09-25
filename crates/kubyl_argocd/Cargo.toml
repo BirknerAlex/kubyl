@@ -45,5 +45,6 @@ tracing.workspace = true
 url.workspace = true
 
 [dev-dependencies]
+base64.workspace = true
 gpui = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true

@@ -356,6 +356,11 @@ impl ArgoApi {
         &self.transport
     }
 
+    /// The session token (for the web UI's cookie).
+    pub(crate) fn token(&self) -> Option<&SecretString> {
+        self.token.as_ref()
+    }
+
     pub fn with_token(&self, token: SecretString) -> Self {
         Self {
             transport: self.transport.clone(),

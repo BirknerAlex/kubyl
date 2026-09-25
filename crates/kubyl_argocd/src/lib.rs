@@ -30,9 +30,11 @@ pub mod nav;
 pub mod ops;
 pub mod run;
 pub mod settings;
+pub mod sso;
 pub mod state;
 pub mod tree;
 pub mod views;
+pub mod web;
 pub mod widgets;
 pub mod windows;
 
@@ -56,6 +58,7 @@ pub fn init(cx: &mut App) {
     views::app::init(cx);
     actions::init(cx);
     columns::init(cx);
+    web::init(cx);
     ChromeRegistry::add_details_section(cx, dock::ArgoDetails);
     ChromeRegistry::add_edit_notice(cx, dock::ArgoNotice);
     catalog::register_tree_group(

@@ -4896,6 +4896,7 @@ name = "kubyl_argocd"
 version = "0.1.2"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "futures",
  "gpui-component",
  "gpui-pre",

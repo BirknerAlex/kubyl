@@ -16,6 +16,12 @@
 #                                    two latest minors are v3.5 and v3.4, e.g. v3.4.9)
 #   script/argocd-dev.sh --delete    uninstall everything, including the CRDs (Kubyl's Argo CD
 #                                    views disappear without a restart)
+#   script/argocd-dev.sh --sso       SSO through Argo CD's Dex with a mock connector (signs in as
+#                                    kilgore@kilgore.trout without a password, read-only). Argo
+#                                    CD's URL becomes http://localhost:8080: keep
+#                                    `kubectl -n argocd port-forward svc/argocd-server 8080:80`
+#                                    running so the browser (and Kubyl) reach its Dex there.
+#   script/argocd-dev.sh --no-sso    back to no SSO (HTTPS, no URL)
 #
 # The admin password is printed at the end (from argocd-initial-admin-secret). Needs: kubectl,
 # network access to GitHub from the cluster. Respects $KUBECONFIG and $CONTEXT.
@@ -69,12 +75,55 @@ uninstall() {
   log "Argo CD removed"
 }
 
+restart_server() {
+  k -n "$NAMESPACE" rollout restart deployment/argocd-server deployment/argocd-dex-server >/dev/null
+  k -n "$NAMESPACE" rollout status deployment/argocd-server --timeout=300s >/dev/null
+  k -n "$NAMESPACE" rollout status deployment/argocd-dex-server --timeout=300s >/dev/null
+}
+
+# Dex SSO with the mock connector: argocd-server on plain HTTP (the issuer is
+# http://localhost:8080/api/dex, through a port-forward), SSO users read-only.
+sso_on() {
+  k get crd applications.argoproj.io >/dev/null 2>&1 || die "Argo CD isn't installed"
+  log "Enabling SSO (Dex, mock connector) at http://localhost:8080"
+  k -n "$NAMESPACE" patch configmap argocd-cmd-params-cm --type merge \
+    -p '{"data":{"server.insecure":"true"}}' >/dev/null
+  k -n "$NAMESPACE" patch configmap argocd-cm --type merge -p '{"data":{
+    "url":"http://localhost:8080",
+    "dex.config":"connectors:\n- type: mockCallback\n  id: mock\n  name: Mock\n"}}' >/dev/null
+  k -n "$NAMESPACE" patch configmap argocd-rbac-cm --type merge \
+    -p '{"data":{"policy.default":"role:readonly"}}' >/dev/null
+  restart_server
+  log "SSO is on. Keep this running while you sign in:"
+  echo "    kubectl --context $CONTEXT -n $NAMESPACE port-forward svc/argocd-server 8080:80"
+}
+
+sso_off() {
+  log "Disabling SSO"
+  k -n "$NAMESPACE" patch configmap argocd-cmd-params-cm --type json \
+    -p '[{"op":"remove","path":"/data/server.insecure"}]' >/dev/null 2>&1 || true
+  k -n "$NAMESPACE" patch configmap argocd-cm --type json \
+    -p '[{"op":"remove","path":"/data/url"},{"op":"remove","path":"/data/dex.config"}]' >/dev/null 2>&1 || true
+  k -n "$NAMESPACE" patch configmap argocd-rbac-cm --type json \
+    -p '[{"op":"remove","path":"/data/policy.default"}]' >/dev/null 2>&1 || true
+  restart_server
+  log "SSO is off"
+}
+
 case "${1:-}" in
   --delete)
     uninstall
     exit 0
     ;;
-  -*) die "unknown argument: $1 (use a version like v3.4.9, or --delete)" ;;
+  --sso)
+    sso_on
+    exit 0
+    ;;
+  --no-sso)
+    sso_off
+    exit 0
+    ;;
+  -*) die "unknown argument: $1 (use a version like v3.4.9, --delete, --sso or --no-sso)" ;;
 esac
 
 VERSION="${1:-${ARGOCD_VERSION:-v3.5.3}}"

@@ -1401,6 +1401,16 @@ impl Render for DeleteDialog {
 /// Opens the API-mode sign-in for a cluster: it shows which install (namespace, Service, URL)
 /// the credentials go to; signing in confirms it.
 pub fn open_sign_in(cluster: ClusterId, window: &mut Window, cx: &mut App) {
+    open_sign_in_with(cluster, false, window, cx);
+}
+
+/// The sign-in dialog; with `then_open_ui`, the Argo CD UI opens (signed in) afterwards.
+pub fn open_sign_in_with(
+    cluster: ClusterId,
+    then_open_ui: bool,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let Some(argo) = ArgoCd::try_global(cx) else {
         return;
     };
@@ -1408,13 +1418,25 @@ pub fn open_sign_in(cluster: ClusterId, window: &mut Window, cx: &mut App) {
     if installs.is_empty() {
         argo.update(cx, |argo, cx| argo.redetect(&cluster, cx));
     }
-    let view = cx.new(|cx| SignInDialog::new(cluster, window, cx));
-    let focus = view.read(cx).password.read(cx).focus_handle(cx);
+    let view = cx.new(|cx| {
+        let mut dialog = SignInDialog::new(cluster, window, cx);
+        dialog.then_open_ui = then_open_ui;
+        dialog
+    });
+    let focus = {
+        let dialog = view.read(cx);
+        match dialog.method {
+            Method::Token => dialog.token.read(cx).focus_handle(cx),
+            Method::Password => dialog.password.read(cx).focus_handle(cx),
+            Method::Sso => dialog.focus.clone(),
+        }
+    };
     open(view, 540.0, Some(focus), window, cx);
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Method {
+    Sso,
     Password,
     Token,
 }
@@ -1428,8 +1450,12 @@ struct SignInDialog {
     token: Entity<InputState>,
     error: Option<String>,
     busy: bool,
+    /// The SSO sign-in page, while the browser is at it.
+    sso_url: Option<String>,
+    then_open_ui: bool,
     focus: FocusHandle,
     _task: Option<Task<()>>,
+    _sso_urls: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -1482,8 +1508,11 @@ impl SignInDialog {
             token,
             error: None,
             busy: false,
+            sso_url: None,
+            then_open_ui: false,
             focus: cx.focus_handle(),
             _task: None,
+            _sso_urls: None,
             _subscriptions: subscriptions,
         };
         this.pick_default(cx);
@@ -1508,11 +1537,13 @@ impl SignInDialog {
             .or_else(|| installs.iter().find(|i| i.server.is_some()).cloned())
             .or_else(|| installs.first().cloned());
         if let Some(install) = &self.install
-            && !install.admin_enabled
             && self.method == Method::Password
         {
-            // Without the admin account, SSO users sign in with a token.
-            self.method = Method::Token;
+            if install.sso.dex || install.sso.oidc_issuer.is_some() {
+                self.method = Method::Sso;
+            } else if !install.admin_enabled {
+                self.method = Method::Token;
+            }
         }
     }
 
@@ -1548,6 +1579,20 @@ impl SignInDialog {
                 }
                 Credentials::Token(SecretString::from(token))
             }
+            Method::Sso => {
+                let (urls, mut received) = futures::channel::mpsc::unbounded::<String>();
+                self.sso_url = None;
+                self._sso_urls = Some(cx.spawn(async move |this, cx| {
+                    while let Some(url) = futures::StreamExt::next(&mut received).await {
+                        this.update(cx, |this, cx| {
+                            this.sso_url = Some(url);
+                            cx.notify();
+                        })
+                        .ok();
+                    }
+                }));
+                Credentials::Sso(Some(urls))
+            }
         };
         let Some(argo) = ArgoCd::try_global(cx) else {
             return;
@@ -1576,14 +1621,62 @@ impl SignInDialog {
                             .update(cx, |i, cx| i.set_value("", window, cx));
                         this.token.update(cx, |i, cx| i.set_value("", window, cx));
                         window.close_dialog(cx);
+                        if this.then_open_ui {
+                            crate::actions::open_argo_ui(&this.cluster, window, cx);
+                        }
                     }
                     Err(err) => this.error = Some(err),
                 }
+                this.sso_url = None;
                 cx.notify();
             })
             .ok();
         }));
         cx.notify();
+    }
+}
+
+impl SignInDialog {
+    fn sso_body(&self, colors: &Colors) -> AnyElement {
+        let configured = self.install.as_ref().and_then(|i| {
+            i.sso
+                .oidc_issuer
+                .clone()
+                .or_else(|| i.sso.dex.then(|| "Argo CD's Dex".to_string()))
+        });
+        let intro = match &configured {
+            Some(provider) => format!(
+                "Opens {provider} in your browser, like `argocd login --sso`. After you sign in there, the browser comes back to {}.",
+                crate::sso::REDIRECT_URI
+            ),
+            None => "This Argo CD has no SSO configured in argocd-cm (dex.config or oidc.config). Sign in with a username and password or a token.".into(),
+        };
+        let mut body = v_flex()
+            .gap(u(8.0))
+            .text_size(u(12.0))
+            .child(div().text_color(colors.text_muted).child(intro));
+        if self.busy {
+            body = body.child(
+                h_flex()
+                    .gap(u(8.0))
+                    .child(Icon::new(IconName::Globe).size(13.0).color(colors.accent))
+                    .child(div().flex_1().child("Finish signing in in your browser."))
+                    .when_some(self.sso_url.clone(), |this, url| {
+                        this.child(
+                            div()
+                                .id("sso-open-again")
+                                .cursor_pointer()
+                                .text_color(colors.accent)
+                                .hover(|s| s.underline())
+                                .on_click(move |_, _, _| {
+                                    open::that_detached(&url).ok();
+                                })
+                                .child("Open the page again"),
+                        )
+                    }),
+            );
+        }
+        body.into_any_element()
     }
 }
 
@@ -1644,7 +1737,8 @@ impl Render for SignInDialog {
                     ("Through", widgets::text(transport)),
                 ];
                 if let Some(url) = &install.url {
-                    facts.push(("Argo CD URL", widgets::mono(format!("{url} (not used)"))));
+                    let used = if install.sso.dex { "SSO signs in there" } else { "not used" };
+                    facts.push(("Argo CD URL", widgets::mono(format!("{url} ({used})"))));
                 }
                 if let Some(version) = &install.version {
                     facts.push(("Version", widgets::mono(version.clone())));
@@ -1683,14 +1777,7 @@ impl Render for SignInDialog {
                             .child(div().flex_1().text_size(u(12.0)).child(problem.clone())),
                     );
                 }
-                if install.sso.dex || install.sso.oidc_issuer.is_some() {
-                    let issuer = install.sso.oidc_issuer.clone().unwrap_or_else(|| "Dex".into());
-                    body = body.child(
-                        div().text_size(u(12.0)).text_color(colors.text_dim).child(format!(
-                            "This Argo CD uses SSO ({issuer}). SSO users sign in with a token: `argocd account generate-token`, or the argocd.token cookie of a browser session."
-                        )),
-                    );
-                }
+
             }
         }
         let method_tab =
@@ -1709,6 +1796,7 @@ impl Render for SignInDialog {
                         let focus = match method {
                             Method::Password => this.password.read(cx).focus_handle(cx),
                             Method::Token => this.token.read(cx).focus_handle(cx),
+                            Method::Sso => this.focus.clone(),
                         };
                         focus.focus(window, cx);
                         cx.notify();
@@ -1721,6 +1809,7 @@ impl Render for SignInDialog {
                     .gap(u(4.0))
                     .border_b_1()
                     .border_color(colors.border_variant)
+                    .child(method_tab("sign-in-sso", Method::Sso, "SSO", cx))
                     .child(method_tab("sign-in-password", Method::Password, "Username & password", cx))
                     .child(method_tab("sign-in-token", Method::Token, "Token", cx)),
             )
@@ -1731,6 +1820,7 @@ impl Render for SignInDialog {
                     .child(field("Password", &self.password, true, &colors))
                     .into_any_element(),
                 Method::Token => field("API token", &self.token, true, &colors).into_any_element(),
+                Method::Sso => self.sso_body(&colors),
             })
             .child(
                 h_flex()
@@ -1748,10 +1838,11 @@ impl Render for SignInDialog {
         let submit = Button::new("sign-in-submit")
             .primary()
             .icon(IconName::Key)
-            .label(if self.busy {
-                "Signing in…"
-            } else {
-                "Sign in"
+            .label(match (self.busy, self.method) {
+                (true, Method::Sso) => "Waiting for the browser…",
+                (true, _) => "Signing in…",
+                (false, Method::Sso) => "Sign in with SSO",
+                (false, _) => "Sign in",
             })
             .disabled(self.busy || self.install.as_ref().is_none_or(|i| i.server.is_none()))
             .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx)));
