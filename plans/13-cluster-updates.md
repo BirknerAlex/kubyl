@@ -1,7 +1,7 @@
-# Phase 09: Cluster updates
+# Phase 13: Cluster updates
 
 **Status:** not started
-**Depends on:** 02, 07 (metrics for deprecated-API usage), 08 (operator compatibility check)
+**Depends on:** 02, 07 (metrics for deprecated-API usage), 12 (operator compatibility check)
 **Owns:** `crates/kubyl_updates`
 **Mockups:** board 8 · Cluster updates, OpenShift-style
 

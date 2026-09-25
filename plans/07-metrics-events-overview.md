@@ -211,7 +211,8 @@ endpoints' pods.
 - The sign-in dialogs no longer close on Enter (gpui-component's Confirm binding aborted the
   running sign-in).
 - CodeRabbit fixes: credentials only over HTTPS (or loopback); pod usage for a newly wanted
-  namespace is fetched on the next tick; every Prometheus answer resets the failure count; the
+  namespace is fetched on the next tick; every Prometheus answer resets the failure count and a
+  timed-out range query doesn't count toward it; the
   events feed falls back to core Events when the shared `events.k8s.io` store already failed;
   the Events table drops a stale selection; throttled warning toasts are delivered when the
   interval ends.

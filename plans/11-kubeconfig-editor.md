@@ -1,4 +1,4 @@
-# Phase 13: Kubeconfig editor
+# Phase 11: Kubeconfig editor
 
 **Status:** not started
 **Depends on:** 01 (sources, auth, client building, file watching), 04 (YAML editor, schema validation and diff for the raw view and the save preview)

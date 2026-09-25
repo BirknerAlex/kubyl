@@ -137,10 +137,10 @@ this session; check it when phase 02 puts real data in it.
 - Windows: the icon and version info are embedded by `crates/kubyl/build.rs` (winresource); GPUI
   embeds its own manifest. Release builds use the `windows` subsystem (no console). Only compiled
   and unit-tested on Windows in CI, not run interactively yet: check title bar controls
-  (gpui-component draws min/max/close), HiDPI and IME in phase 10 at the latest.
+  (gpui-component draws min/max/close), HiDPI and IME in phase 09 at the latest.
 - Linux: client-side decorations are requested (`WindowDecorations::Client`); gpui-component's
   `Root` draws the border/shadow and resize areas. X11 gets the window icon from the PNG, Wayland
-  needs a `.desktop` file with `app_id` `io.github.birkneralex.Kubyl` (phase 10). CI installs
+  needs a `.desktop` file with `app_id` `io.github.birkneralex.Kubyl` (phase 09). CI installs
   wayland/xkbcommon/x11-xcb/fontconfig/freetype/vulkan/alsa dev packages. Only compiled and
   unit-tested in CI, not run on a real desktop yet.
 - macOS: `cargo run` sets the Dock icon at runtime (unbundled binary); `[package.metadata.bundle]`

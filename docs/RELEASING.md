@@ -28,7 +28,7 @@ Artifacts published: macOS universal (arm64+x86_64) notarized `.dmg`; Windows `x
   show a SmartScreen warning. Get an EV code-signing cert or set up Azure Trusted Signing, then
   add a signing step to the `build-windows` job.
 - No AppImage, Flatpak, MSI/MSIX, winget manifest, or Homebrew cask yet — see
-  `plans/10-packaging-release.md` for the full packaging backlog.
+  `plans/09-packaging-release.md` for the full packaging backlog.
 - No auto-update mechanism; users update by re-downloading.
 
 ## One-time setup: pushing the version-bump commit to a protected `main`

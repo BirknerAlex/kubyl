@@ -1,6 +1,6 @@
 //! Cluster update providers and preflight checks.
 //!
-//! Stub created in phase 00. Implemented in `plans/09-cluster-updates.md`.
+//! Stub created in phase 00. Implemented in `plans/13-cluster-updates.md`.
 
 use gpui::App;
 

@@ -1,4 +1,4 @@
-# Phase 08: Operators (OLM) and Helm releases
+# Phase 12: Operators (OLM) and Helm releases
 
 **Status:** not started
 **Depends on:** 02, 04 (YAML view/diff for InstallPlans and CR creation)
