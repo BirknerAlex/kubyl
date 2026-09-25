@@ -20,7 +20,7 @@ use gpui_component::button::{Button as MenuButton, ButtonVariants as _};
 use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 use kubyl_charts::data::top_n;
 use kubyl_charts::{
-    ChartData, ChartKind, LineChart, Meter, SERIES_COLORS, Series, Sparkline, TimeRange,
+    ChartData, ChartKind, ColorRegistry, LineChart, Meter, Series, Sparkline, TimeRange,
     TimeRangePicker, other_color, series_color,
 };
 use kubyl_core::actions::{OpenSettings, OpenView};
@@ -29,6 +29,7 @@ use kubyl_core::{
 };
 use kubyl_kube::ConnectionManager;
 use kubyl_kube::cluster_info::Distribution;
+use kubyl_metrics::panels::Unit;
 use kubyl_metrics::{MetricsService, RangeKey, RangeState, Source};
 use kubyl_resources::columns::{node_status, pod_status};
 use kubyl_resources::format::{format_bytes, format_cpu, int_at, parse_quantity, str_at};
@@ -44,25 +45,112 @@ use serde_json::Value;
 use crate::events::{EventsFeed, ui as event_ui};
 use crate::settings::{OverviewSettings, OverviewState};
 
-/// Keeps a series' color while it stays in the chart ("color follows the entity, not its rank").
-#[derive(Default)]
-struct ColorSlots(HashMap<SharedString, usize>);
+/// One breakdown chart: a query grouped by `label`, top N plus "other".
+struct ChartSpec {
+    title: &'static str,
+    subtitle: &'static str,
+    query: &'static str,
+    /// The label that names a series (`namespace`, `pod`, `nodename`).
+    label: &'static str,
+    unit: Unit,
+    /// Left out unless the Prometheus has this metric (node-exporter, CFS stats…).
+    needs: &'static str,
+}
 
-impl ColorSlots {
-    fn assign(&mut self, names: &[SharedString]) {
-        self.0.retain(|name, _| names.contains(name));
-        for name in names {
-            if self.0.contains_key(name) {
-                continue;
-            }
-            let free = (0..SERIES_COLORS).find(|slot| !self.0.values().any(|s| s == slot));
-            self.0.insert(name.clone(), free.unwrap_or(0));
-        }
-    }
+const CLUSTER_CHARTS: &[ChartSpec] = &[
+    ChartSpec {
+        title: "CPU by namespace",
+        subtitle: "cores · rate(container_cpu_usage_seconds_total[5m])",
+        query: "namespace_cpu",
+        label: "namespace",
+        unit: Unit::Cores,
+        needs: "container_cpu_usage_seconds_total",
+    },
+    ChartSpec {
+        title: "Memory working set",
+        subtitle: "bytes · by namespace",
+        query: "namespace_memory",
+        label: "namespace",
+        unit: Unit::Bytes,
+        needs: "container_memory_working_set_bytes",
+    },
+    ChartSpec {
+        title: "Network by namespace",
+        subtitle: "received + transmitted · host-network pods excluded",
+        query: "namespace_network",
+        label: "namespace",
+        unit: Unit::BytesPerSec,
+        needs: "container_network_receive_bytes_total",
+    },
+    ChartSpec {
+        title: "CPU throttling by namespace",
+        subtitle: "throttled CFS periods · containers with limits",
+        query: "namespace_throttling",
+        label: "namespace",
+        unit: Unit::Ratio,
+        needs: "container_cpu_cfs_throttled_periods_total",
+    },
+    ChartSpec {
+        title: "Disk IOPS by node",
+        subtitle: "reads + writes · node-exporter",
+        query: "node_disk_iops",
+        label: "nodename",
+        unit: Unit::PerSec,
+        needs: "node_uname_info",
+    },
+    ChartSpec {
+        title: "Dropped packets by node",
+        subtitle: "in + out · node-exporter",
+        query: "node_net_drops",
+        label: "nodename",
+        unit: Unit::PerSec,
+        needs: "node_uname_info",
+    },
+];
 
-    fn get(&self, name: &SharedString) -> usize {
-        self.0.get(name).copied().unwrap_or(0)
-    }
+const NAMESPACE_CHARTS: &[ChartSpec] = &[
+    ChartSpec {
+        title: "CPU by pod",
+        subtitle: "cores · rate(container_cpu_usage_seconds_total[5m])",
+        query: "pod_cpu",
+        label: "pod",
+        unit: Unit::Cores,
+        needs: "container_cpu_usage_seconds_total",
+    },
+    ChartSpec {
+        title: "Memory working set by pod",
+        subtitle: "bytes · by pod",
+        query: "pod_memory",
+        label: "pod",
+        unit: Unit::Bytes,
+        needs: "container_memory_working_set_bytes",
+    },
+    ChartSpec {
+        title: "Network by pod",
+        subtitle: "received + transmitted",
+        query: "pod_network",
+        label: "pod",
+        unit: Unit::BytesPerSec,
+        needs: "container_network_receive_bytes_total",
+    },
+    ChartSpec {
+        title: "CPU throttling by pod",
+        subtitle: "throttled CFS periods · containers with limits",
+        query: "pod_throttling",
+        label: "pod",
+        unit: Unit::Ratio,
+        needs: "container_cpu_cfs_throttled_periods_total",
+    },
+];
+
+/// The color scope of a series label: a namespace keeps its color on every chart that names
+/// namespaces, in the overview and elsewhere.
+fn color_scope(cluster: &ClusterId, label: &str) -> String {
+    let kind = match label {
+        "nodename" | "node" => "node",
+        other => other,
+    };
+    format!("{cluster}/{kind}")
 }
 
 /// Totals over nodes and pods.
@@ -185,10 +273,7 @@ pub struct OverviewView {
     pods: StoreHandle,
     workloads: Vec<(&'static str, StoreHandle)>,
     feed: Option<Entity<EventsFeed>>,
-    cpu_chart: Entity<LineChart>,
-    memory_chart: Entity<LineChart>,
-    cpu_slots: ColorSlots,
-    memory_slots: ColorSlots,
+    charts: Vec<(&'static ChartSpec, Entity<LineChart>)>,
     selected_node: Option<String>,
     focus: FocusHandle,
     _ticker: Task<()>,
@@ -204,8 +289,6 @@ impl OverviewView {
             .as_deref()
             .and_then(TimeRange::from_label)
             .unwrap_or_default();
-        let cpu_chart = cx.new(|_| LineChart::new(ChartKind::Line, cores));
-        let memory_chart = cx.new(|_| LineChart::new(ChartKind::Line, format_bytes).binary_scale());
         let mut subscriptions =
             vec![cx.observe_global::<Settings>(|this, cx| this.refresh_charts(cx))];
         if let Some(service) = MetricsService::global(cx) {
@@ -249,10 +332,7 @@ impl OverviewView {
             pods,
             workloads: Vec::new(),
             feed: None,
-            cpu_chart,
-            memory_chart,
-            cpu_slots: ColorSlots::default(),
-            memory_slots: ColorSlots::default(),
+            charts: Vec::new(),
             selected_node: None,
             focus: cx.focus_handle(),
             _ticker: ticker,
@@ -309,8 +389,24 @@ impl OverviewView {
             self._scope
                 .push(cx.observe(store.entity(), |_, _, cx| cx.notify()));
         }
-        self.cpu_slots = ColorSlots::default();
-        self.memory_slots = ColorSlots::default();
+        let specs = match self.namespace {
+            None => CLUSTER_CHARTS,
+            Some(_) => NAMESPACE_CHARTS,
+        };
+        self.charts = specs
+            .iter()
+            .map(|spec| {
+                let chart = cx.new(|_| {
+                    let chart = LineChart::new(ChartKind::Line, move |v| spec.unit.format(v));
+                    if spec.unit.binary() {
+                        chart.binary_scale()
+                    } else {
+                        chart
+                    }
+                });
+                (spec, chart)
+            })
+            .collect();
         self.refresh_charts(cx);
         cx.notify();
     }
@@ -337,54 +433,51 @@ impl OverviewView {
         key
     }
 
-    /// Pushes fresh range-query results into the two charts.
+    /// Pushes fresh range-query results into the charts. Series colors come from the shared
+    /// [`ColorRegistry`], so a namespace (pod, node) is the same color on every chart.
     fn refresh_charts(&mut self, cx: &mut Context<Self>) {
         let Some(service) = MetricsService::global(cx) else {
             return;
         };
-        let top = Settings::get::<OverviewSettings>(cx)
-            .top_n
-            .clamp(1, SERIES_COLORS);
-        let (label, cpu_query, memory_query) = match self.namespace {
-            None => ("namespace", "namespace_cpu", "namespace_memory"),
-            Some(_) => ("pod", "pod_cpu", "pod_memory"),
-        };
+        // At most four series plus "other" per chart.
+        let top = Settings::get::<OverviewSettings>(cx).top_n.clamp(1, 4);
         let colors = cx.colors().clone();
-        for (query, chart, memory) in [
-            (cpu_query, self.cpu_chart.clone(), false),
-            (memory_query, self.memory_chart.clone(), true),
-        ] {
-            let key = self.range_key(query);
-            let (data, placeholder) = match service.read(cx).range(&self.cluster, &key) {
+        for (spec, chart) in self.charts.clone() {
+            let key = self.range_key(spec.query);
+            let (named, times, placeholder) = match service.read(cx).range(&self.cluster, &key) {
                 RangeState::Ready(result) => {
-                    let named = result
+                    let named: Vec<(SharedString, Vec<Option<f64>>)> = result
                         .series
                         .iter()
                         .map(|s| {
                             (
-                                SharedString::from(s.label(label).to_string()),
+                                SharedString::from(s.label(spec.label).to_string()),
                                 result.aligned(s),
                             )
                         })
                         .filter(|(name, _)| !name.is_empty())
                         .collect();
+                    (
+                        Some(named),
+                        result.times(),
+                        SharedString::from("No samples in this range."),
+                    )
+                }
+                RangeState::Failed(err) => (None, Vec::new(), err),
+                RangeState::Loading => (None, Vec::new(), "Loading…".into()),
+                RangeState::Unavailable => (None, Vec::new(), "Needs Prometheus.".into()),
+            };
+            let data = match named {
+                Some(named) => {
                     let (top, other) = top_n(named, top);
-                    let slots = if memory {
-                        &mut self.memory_slots
-                    } else {
-                        &mut self.cpu_slots
-                    };
                     let names: Vec<SharedString> = top.iter().map(|(n, _)| n.clone()).collect();
-                    slots.assign(&names);
+                    let slots =
+                        ColorRegistry::assign(cx, &color_scope(&self.cluster, spec.label), &names);
                     let mut series: Vec<Series> = top
                         .into_iter()
-                        .map(|(name, values)| {
-                            Series::new(
-                                name.clone(),
-                                name.clone(),
-                                series_color(slots.get(&name), &colors),
-                                values,
-                            )
+                        .zip(slots)
+                        .map(|((name, values), slot)| {
+                            Series::new(name.clone(), name, series_color(slot, &colors), values)
                         })
                         .collect();
                     if let Some(values) = other {
@@ -392,17 +485,9 @@ impl OverviewView {
                             Series::new("__other", "other", other_color(&colors), values).dashed(),
                         );
                     }
-                    (
-                        ChartData {
-                            times: result.times(),
-                            series,
-                        },
-                        SharedString::from("No samples in this range."),
-                    )
+                    ChartData { times, series }
                 }
-                RangeState::Failed(err) => (ChartData::default(), err),
-                RangeState::Loading => (ChartData::default(), "Loading…".into()),
-                RangeState::Unavailable => (ChartData::default(), "Needs Prometheus.".into()),
+                None => ChartData::default(),
             };
             chart.update(cx, |chart, cx| {
                 chart.set_placeholder(placeholder, cx);
@@ -822,25 +907,32 @@ impl OverviewView {
         if !source.has_history() && !matches!(source, Source::Unknown | Source::Detecting) {
             return self.connect_hint(source, &colors).into_any_element();
         }
-        let (cpu_title, memory_title, by) = match self.namespace {
-            None => ("CPU by namespace", "Memory working set", "by namespace"),
-            Some(_) => ("CPU by pod", "Memory working set by pod", "by pod"),
-        };
-        h_flex()
-            .items_stretch()
+        let service = MetricsService::global(cx);
+        let visible: Vec<&(&'static ChartSpec, Entity<LineChart>)> = self
+            .charts
+            .iter()
+            .filter(|(spec, _)| {
+                // Until the metric names are known, show the core charts.
+                matches!(
+                    spec.query,
+                    "namespace_cpu" | "namespace_memory" | "pod_cpu" | "pod_memory"
+                ) || service
+                    .as_ref()
+                    .is_some_and(|s| s.read(cx).has_metric(&self.cluster, spec.needs))
+            })
+            .collect();
+        v_flex()
             .gap(u(12.0))
-            .child(chart_card(
-                cpu_title,
-                "cores · rate(container_cpu_usage_seconds_total[5m])".into(),
-                self.cpu_chart.clone(),
-                &colors,
-            ))
-            .child(chart_card(
-                memory_title,
-                format!("bytes · {by}"),
-                self.memory_chart.clone(),
-                &colors,
-            ))
+            .children(visible.chunks(2).map(|pair| {
+                h_flex()
+                    .items_stretch()
+                    .gap(u(12.0))
+                    .children(pair.iter().map(|(spec, chart)| {
+                        chart_card(spec.title, spec.subtitle.into(), chart.clone(), &colors)
+                    }))
+                    // A lone last chart keeps half the width.
+                    .when(pair.len() == 1, |this| this.child(div().flex_1()))
+            }))
             .into_any_element()
     }
 
@@ -1588,20 +1680,23 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn colors_follow_the_series() {
-        let mut slots = ColorSlots::default();
-        let names = |n: &[&str]| {
-            n.iter()
-                .map(|s| SharedString::from(s.to_string()))
-                .collect::<Vec<_>>()
-        };
-        slots.assign(&names(&["a", "b", "c"]));
-        let (a, c) = (slots.get(&"a".into()), slots.get(&"c".into()));
-        // "b" drops out, "d" comes in: survivors keep their colors, "d" takes the free slot.
-        slots.assign(&names(&["c", "a", "d"]));
-        assert_eq!(slots.get(&"a".into()), a);
-        assert_eq!(slots.get(&"c".into()), c);
-        assert_eq!(slots.get(&"d".into()), 1);
+    fn chart_specs_use_known_queries_and_shared_color_scopes() {
+        for spec in CLUSTER_CHARTS.iter().chain(NAMESPACE_CHARTS) {
+            assert!(
+                kubyl_metrics::queries::LIBRARY
+                    .iter()
+                    .any(|q| q.id == spec.query),
+                "unknown query {}",
+                spec.query
+            );
+        }
+        let cluster = ClusterId::new("kind");
+        // Every chart of namespaces shares one scope, so a namespace has one color.
+        assert_eq!(color_scope(&cluster, "namespace"), "kind/namespace");
+        assert_eq!(
+            color_scope(&cluster, "nodename"),
+            color_scope(&cluster, "node")
+        );
     }
 
     #[test]
