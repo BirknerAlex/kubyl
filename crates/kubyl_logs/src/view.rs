@@ -428,7 +428,15 @@ pub struct LogsView {
 
 /// A search for the next log view of a target ([`crate::open_filtered`]).
 #[derive(Default)]
-pub(crate) struct PendingSearch(pub Option<(ResourceRef, String, Instant)>);
+pub(crate) struct PendingSearch(pub Option<SearchRequest>);
+
+#[derive(Clone)]
+pub(crate) struct SearchRequest {
+    pub target: ResourceRef,
+    pub query: String,
+    pub regex: bool,
+    pub at: Instant,
+}
 
 impl gpui::Global for PendingSearch {}
 
@@ -543,19 +551,21 @@ impl LogsView {
         let Some(pending) = cx.try_global::<PendingSearch>() else {
             return;
         };
-        let Some((target, query, at)) = pending.0.clone() else {
+        let Some(request) = pending.0.clone() else {
             return;
         };
-        if target != self.target {
+        if request.target != self.target {
             return;
         }
         cx.set_global(PendingSearch(None));
         // A request whose tab never opened (an existing tab was focused instead) goes stale.
-        if at.elapsed() > PENDING_SEARCH_TTL {
+        if request.at.elapsed() > PENDING_SEARCH_TTL {
             return;
         }
+        let query = request.query;
         self.search_input
             .update(cx, |input, cx| input.set_value(query.clone(), window, cx));
+        self.search_regex = request.regex;
         self.filter_to_matches = true;
         self.set_query(query, cx);
         self.rebuild_rendered();

@@ -58,14 +58,22 @@ pub fn logs_applicable(resource: &str) -> bool {
     )
 }
 
-/// Opens the log view of `target` with `query` in the search box and only matching lines shown,
-/// e.g. the Argo CD application controller's lines about one app.
-pub fn open_filtered(target: ResourceRef, query: String, window: &mut Window, cx: &mut App) {
-    cx.set_global(view::PendingSearch(Some((
-        target.clone(),
+/// Opens the log view of `target` with `query` in the search box (a regular expression when
+/// `regex` is set) and only matching lines shown, e.g. the Argo CD application controller's
+/// lines about one app.
+pub fn open_filtered(
+    target: ResourceRef,
+    query: String,
+    regex: bool,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    cx.set_global(view::PendingSearch(Some(view::SearchRequest {
+        target: target.clone(),
         query,
-        std::time::Instant::now(),
-    ))));
+        regex,
+        at: std::time::Instant::now(),
+    })));
     window.dispatch_action(
         Box::new(OpenView(ViewRequest::for_resource(ViewKind::Logs, target))),
         cx,
