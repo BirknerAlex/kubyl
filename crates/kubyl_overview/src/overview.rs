@@ -1024,7 +1024,11 @@ impl OverviewView {
                         .child(name.clone()),
                 )
                 .child(cell(W[0]).child(StatusPill::new(
-                    status.split(',').next().unwrap_or_default().to_string(),
+                    if status == "Ready,SchedulingDisabled" {
+                        "Cordoned".to_string()
+                    } else {
+                        status.split(',').next().unwrap_or_default().to_string()
+                    },
                     tone,
                 )))
                 .child(bar_cell(cpu, W[1]))

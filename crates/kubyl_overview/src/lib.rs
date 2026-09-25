@@ -14,6 +14,9 @@ pub mod notify;
 pub mod overview;
 pub mod settings;
 
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
+
 use gpui::{App, Window, actions};
 use kubyl_core::actions::{ActivateDockPanel, OpenView};
 use kubyl_core::{
@@ -35,8 +38,18 @@ actions!(
     ]
 );
 
+/// When `init` ran; views built right after it are tabs restored from state.json.
+static STARTED: OnceLock<Instant> = OnceLock::new();
+
+fn restoring() -> bool {
+    STARTED
+        .get()
+        .is_none_or(|started| started.elapsed() < Duration::from_secs(2))
+}
+
 /// Registers the Overview and Events views, the Events dock panel, settings and actions.
 pub fn init(cx: &mut App) {
+    STARTED.get_or_init(Instant::now);
     Settings::register::<settings::OverviewSettings>(cx);
     events::view::init(cx);
     ChromeRegistry::add_dock_panel(cx, EventsDock);
@@ -46,11 +59,13 @@ pub fn init(cx: &mut App) {
         let tab = new_tab(cx, |cx| {
             OverviewView::new(target.cluster.clone(), target.namespace.clone(), cx)
         });
-        // Board 4 pairs the overview with the live events in the right dock.
-        if window.is_window_active() {
-            window.defer(cx, |window, cx| {
-                window.dispatch_action(Box::new(ActivateDockPanel(PANEL_ID.into())), cx)
-            });
+        // Board 4 pairs the overview with the live events in the right dock. Not for tabs
+        // restored at startup: the dock stays as the user left it.
+        if !restoring() {
+            // Dispatched now, while focus is still on an element of the rendered frame (GPUI
+            // runs it deferred from there); the new tab isn't rendered yet, and an action routed
+            // from it would start at the window root and miss the workspace.
+            window.dispatch_action(Box::new(ActivateDockPanel(PANEL_ID.into())), cx);
         }
         Some(tab)
     });
