@@ -3,12 +3,22 @@
 //! automatically re-resolves to a live pod (see [`crate::resolve`]) if the previous one died
 //! between connections.
 
+use std::time::Duration;
+
 use futures::channel::mpsc;
 use k8s_openapi::api::core::v1::Pod;
 use kube::Api;
 use tokio::net::{TcpListener, TcpStream};
+use tokio::task::JoinSet;
 
 use crate::resolve::{self, ForwardKind, RemotePort};
+
+/// Initial delay before retrying `accept()` after an error (e.g. EMFILE), doubled each
+/// consecutive failure up to [`MAX_ACCEPT_BACKOFF`].
+const INITIAL_ACCEPT_BACKOFF: Duration = Duration::from_millis(50);
+/// Cap on the accept-error backoff, so a listener recovers reasonably quickly once the
+/// underlying condition (e.g. too many open files) clears.
+const MAX_ACCEPT_BACKOFF: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Debug)]
 pub enum ForwardEvent {
@@ -38,13 +48,32 @@ pub async fn run(
         })
         .ok();
 
+    // Connections in flight, so stopping the forward (dropping/cancelling this task) aborts
+    // them too instead of leaving `copy_bidirectional` running in the background.
+    let mut connections = JoinSet::new();
+    let mut accept_backoff = INITIAL_ACCEPT_BACKOFF;
+    let mut last_accept_error: Option<String> = None;
+
     loop {
+        // Reap finished connections so the set doesn't grow unbounded.
+        while connections.try_join_next().is_some() {}
+
         let (stream, _) = match listener.accept().await {
-            Ok(pair) => pair,
+            Ok(pair) => {
+                accept_backoff = INITIAL_ACCEPT_BACKOFF;
+                last_accept_error = None;
+                pair
+            }
             Err(err) => {
-                events
-                    .unbounded_send(ForwardEvent::Error(err.to_string()))
-                    .ok();
+                let message = err.to_string();
+                if last_accept_error.as_deref() != Some(message.as_str()) {
+                    events
+                        .unbounded_send(ForwardEvent::Error(message.clone()))
+                        .ok();
+                    last_accept_error = Some(message);
+                }
+                tokio::time::sleep(accept_backoff).await;
+                accept_backoff = (accept_backoff * 2).min(MAX_ACCEPT_BACKOFF);
                 continue;
             }
         };
@@ -53,7 +82,7 @@ pub async fn run(
         let kind = kind.clone();
         let port = port.clone();
         let events = events.clone();
-        tokio::spawn(async move {
+        connections.spawn(async move {
             if let Err(err) =
                 handle_connection(client, &namespace, &kind, port, stream, &events).await
             {

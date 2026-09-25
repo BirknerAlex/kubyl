@@ -79,7 +79,7 @@ impl PortForwardManager {
         let local_port = spec.local_port;
         let task_manager = manager.clone();
         let task = cx.spawn(async move |cx| {
-            let _run_task = cx.update(|cx| {
+            let run_task = cx.update(|cx| {
                 kubyl_core::spawn_kube(cx, async move {
                     listener::run(
                         client,
@@ -94,17 +94,36 @@ impl PortForwardManager {
                 })
             });
             let mut events_rx = events_rx;
-            while let Some(event) = events_rx.next().await {
-                let alive = cx.update(|cx| {
-                    task_manager.update(cx, |this, cx| this.apply_event(id, &event, cx))
-                });
-                if !alive {
-                    break;
+            while let Some(mut event) = events_rx.next().await {
+                // Drain any other events already sitting in the channel (a connection burst can
+                // queue many before we get scheduled again) so throughput isn't capped by the
+                // post-batch sleep below.
+                loop {
+                    let alive = cx.update(|cx| {
+                        task_manager.update(cx, |this, cx| this.apply_event(id, &event, cx))
+                    });
+                    if !alive {
+                        return;
+                    }
+                    match events_rx.try_recv() {
+                        Ok(next) => event = next,
+                        Err(_) => break,
+                    }
                 }
                 // Batches status-bar updates so a busy forward doesn't re-render per byte.
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(100))
                     .await;
+            }
+            // The events channel closed because `listener::run` returned — normally only when
+            // binding the local port failed, since its accept loop otherwise runs forever.
+            // Surface that error instead of leaving the session stuck at "starting" forever.
+            if let Err(err) = run_task.await {
+                cx.update(|cx| {
+                    task_manager.update(cx, |this, cx| {
+                        this.apply_event(id, &ForwardEvent::Error(err.to_string()), cx)
+                    });
+                });
             }
         });
 

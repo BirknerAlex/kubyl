@@ -94,14 +94,14 @@ fn start_default_forward(target: ResourceRef, cx: &mut App) {
     let (kind, port, label) = match target.gvr.resource.as_str() {
         "pods" => (
             ForwardKind::Pod { pod: name.clone() },
-            RemotePort::Container(8080),
+            RemotePort::Container(None),
             format!("pod/{name}"),
         ),
         "services" => (
             ForwardKind::Service {
                 service: name.clone(),
             },
-            RemotePort::Service(80),
+            RemotePort::Service(None),
             format!("svc/{name}"),
         ),
         resource @ ("deployments" | "statefulsets" | "daemonsets") => {
@@ -129,7 +129,7 @@ fn start_default_forward(target: ResourceRef, cx: &mut App) {
                                     kind: ForwardKind::Workload {
                                         label_selector: selector,
                                     },
-                                    port: RemotePort::Container(8080),
+                                    port: RemotePort::Container(None),
                                     bind_address: "127.0.0.1".into(),
                                     local_port: 0,
                                     label: format!("{}/{name}", target.gvr.resource),
