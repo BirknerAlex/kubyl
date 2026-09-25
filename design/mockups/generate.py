@@ -70,6 +70,14 @@ ICONS = {
  "tree": '<path d="M8 5h13M13 12h8M13 19h8"></path><path d="M3 10a2 2 0 0 0 2 2h3"></path><path d="M3 5v12a2 2 0 0 0 2 2h3"></path>',
  "ext": '<path d="M15 3h6v6M10 14 21 3"></path><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>',
  "square": '<rect width="18" height="18" x="3" y="3" rx="2"></rect>',
+ "check": '<path d="M20 6 9 17l-5-5"></path>',
+ "save": '<path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"></path><path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7"></path><path d="M7 3v4a1 1 0 0 0 1 1h7"></path>',
+ "flask": '<path d="M14.5 2v17.5c0 1.4-1.1 2.5-2.5 2.5s-2.5-1.1-2.5-2.5V2"></path><path d="M8.5 2h7"></path><path d="M14.5 16h-5"></path>',
+ "fingerprint": '<path d="M2 12C2 6.5 6.5 2 12 2a10 10 0 0 1 8 4"></path><path d="M5 19.5C5.5 18 6 15 6 12c0-.7.12-1.37.34-2"></path><path d="M17.29 21.02c.12-.6.43-2.3.5-3.02"></path><path d="M12 10a2 2 0 0 0-2 2c0 1.02-.1 2.51-.26 4"></path><path d="M8.65 22c.21-.66.45-1.32.57-2"></path><path d="M14 13.12c0 2.38 0 6.38-1 8.88"></path><path d="M2 16h.01"></path><path d="M21.8 16c.2-2 .131-5.354 0-6"></path><path d="M9 6.8a6 6 0 0 1 9 5.2c0 .47 0 1.17-.02 2"></path>',
+ "undo": '<path d="M9 14 4 9l5-5"></path><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"></path>',
+ "pencil": '<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"></path>',
+ "fileplus": '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><path d="M14 2v6h6"></path><path d="M12 18v-6M9 15h6"></path>',
+ "shieldalert": '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"></path><path d="M12 8v4M12 16h.01"></path>',
  "gear": '<circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>',
 }
 
@@ -657,7 +665,8 @@ def overview_screen():
     return page("Cluster overview — Kubyl", shell("Overview", tb, content))
 
 # ---------- 5. Clusters & kubeconfigs + OIDC ----------
-def clusters_screen():
+def clusters_screen(overlay=None, title="Clusters and kubeconfigs — Kubyl"):
+    """Board 5. `overlay` replaces the OIDC sign-in dialog (board 11 reuses this screen behind its wizard)."""
     src = lambda path, sub, on=False, icon="file", warn="": f'<div style="display:flex;gap:10px;padding:10px 12px;border-radius:6px;{"background:var(--sel);outline:1px solid var(--accent);outline-offset:-1px" if on else ""}">{ic(icon,15,C["accent"] if on else C["dim"])}<div style="flex:1;min-width:0"><div class="mono" style="font-size:12px;color:var(--text)">{path}</div><div style="font-size:11.5px;color:var(--dim)">{sub}</div></div>{warn}</div>'
     left = f'''<div style="width:330px;flex-shrink:0;border-right:1px solid var(--bv);padding:16px 12px;display:flex;flex-direction:column;gap:4px">
 <div style="display:flex;align-items:center;margin:0 4px 8px"><h2 style="font-size:14px;font-weight:600;flex:1">Kubeconfig sources</h2><button class="btn" style="height:24px">{ic("plus",12)}Add</button></div>
@@ -667,7 +676,7 @@ def clusters_screen():
 {src("~/work/kube/platform-onprem.yaml","1 context · OIDC",warn=f'<span style="display:flex">{ic("key",13,C["yellow"])}</span>')}
 {src("~/Downloads/gke-analytics.yaml","1 context")}
 <div style="margin-top:10px;border:1px dashed var(--border);border-radius:8px;padding:18px 14px;text-align:center;color:var(--dim);font-size:12.5px;line-height:19px">{ic("upload",18)}<br>Drop kubeconfig files here<br><span style="font-size:12px">or <a href="#">browse</a> · <a href="#">paste YAML</a></span></div>
-<div style="margin-top:auto;font-size:11.5px;color:var(--dim);line-height:17px;padding:0 4px">Files are never modified. Contexts from every source are merged; name collisions get the file name as suffix.</div>
+<div style="margin-top:auto;font-size:11.5px;color:var(--dim);line-height:17px;padding:0 4px">Only the kubeconfig editor writes files: Kubyl&#39;s own freely, others after you turn on editing. Contexts from every source are merged; name collisions get the file name as suffix.</div>
 </div>'''
     CC = "grid-template-columns: 22px minmax(0,1.1fr) minmax(0,1.3fr) minmax(0,1.2fr) 150px"
     ctx = [
@@ -719,9 +728,9 @@ def clusters_screen():
 <main class="main">{tb}{content}</main>
 </div>
 {statusbar()}
-{modal}
+{modal if overlay is None else overlay}
 </div>'''
-    return page("Clusters and kubeconfigs — Kubyl", inner)
+    return page(title, inner)
 
 # ---------- 6. Command palette over deployments ----------
 def palette_screen():
@@ -1040,6 +1049,425 @@ def webview_screen():
 {statusbar(right_extra=webfwd)}
 </div>"""
     return page("Service web view — Kubyl", inner)
+
+# ---------- 11. Kubeconfig editor ----------
+KC_INK = "#1b1e24"  # text and icons on accent-filled controls
+KC_COMMENT = "#7f8591"
+KC_SWATCHES = [C["red"], C["orange"], C["yellow"], C["green"], C["cyan"], C["accent"], C["purple"], "#7a808c"]
+
+# One kubeconfig file open in the editor: its entries and the form of the selected context.
+KC_PROD = dict(
+    dir="~/work/kube/", file="eks-prod.yaml", changes=2,
+    contexts=[("prod-eu-west-1", C["red"], "eks-prod-eu · aws-prod", "ok", True),
+              ("prod-us-east-1", C["red"], "eks-prod-us · aws-prod", "ok", False),
+              ("staging-eu-west-1", C["yellow"], "eks-staging-eu · aws-staging", "warn", False)],
+    clusters=[("eks-prod-eu", "3F9C…gr7.eu-west-1.eks.amazonaws.com", None),
+              ("eks-prod-us", "71AD…yl4.us-east-1.eks.amazonaws.com", None),
+              ("eks-staging-eu", "C04E…p9x.eu-west-1.eks.amazonaws.com", None)],
+    users=[("aws-prod", "exec · aws", None), ("aws-staging", "exec plugin not found", "warn"), ("break-glass", "token", None)],
+    ctx="prod-eu-west-1", color=0, cluster=("eks-prod-eu", "3F9C…gr7.eu-west-1.eks…"), user=("aws-prod", "exec · aws eks get-token"),
+    ns=("payments", "default", "12 namespaces from the last test"), prod=True, readonly=False,
+    problems=[("alert", C["yellow"], 'User <b style="font-weight:500;color:var(--text)">aws-staging</b>: <span class="mono" style="font-size:12px;color:var(--text)">aws</span> wasn\'t found in PATH (login shell)', "Edit user"),
+              ("info", C["dim"], 'Cluster <b style="font-weight:500;color:var(--text)">eks-prod-us</b>: CA valid until 2034-05-02', "")],
+    last=("2 min ago", 'Connected · 38 ms · v1.30.4-eks · as <span class="mono" style="font-size:12px">arn:aws:iam::…:user/alex</span>'),
+)
+KC_HOME = dict(
+    dir="~/.kube/", file="config", changes=1,
+    contexts=[("kind-dev", C["green"], "kind-dev · kind-dev", "ok", True),
+              ("docker-desktop", C["accent"], "docker-desktop · docker-desktop", None, False),
+              ("homelab-k3s", C["faint"], "homelab · homelab-admin", "err", False)],
+    clusters=[("kind-dev", "https://127.0.0.1:52341", None), ("docker-desktop", "kubernetes.docker.internal:6443", None),
+              ("homelab", "https://192.168.1.40:6443", None)],
+    users=[("kind-dev", "client certificate", None), ("docker-desktop", "client certificate", None), ("homelab-admin", "token", None)],
+    ctx="kind-dev", color=3, cluster=("kind-dev", "https://127.0.0.1:52341"), user=("kind-dev", "client certificate"),
+    ns=("payments", "default", "6 namespaces from the last test"), prod=False, readonly=False,
+    problems=[("err", C["red"], 'Context <b style="font-weight:500;color:var(--text)">homelab-k3s</b>: <span class="mono" style="font-size:12px;color:var(--text)">192.168.1.40:6443</span> unreachable at the last test', "Test again")],
+    last=("just now", 'Connected · 2 ms · v1.31.0 · as <span class="mono" style="font-size:12px">kubernetes-admin</span>'),
+)
+KC_HINTS = [("⌘S", "Save…"), ("⌘T", "Test connection"), ("⌘↵", "Test all"), ("⌘1", "Form"), ("⌘2", "YAML"), ("⌫", "Delete…")]
+
+def kc_toggle(on):
+    return (f'<span style="width:28px;height:16px;border-radius:8px;background:{C["accent"] if on else "#4a505c"};position:relative;display:inline-block;flex-shrink:0">'
+            f'<span style="position:absolute;top:2px;{"right" if on else "left"}:2px;width:12px;height:12px;border-radius:50%;background:#fff"></span></span>')
+
+def kc_opt(title, sub, on, last=False):
+    line = "" if last else "border-bottom:1px solid var(--bv);"
+    return (f'<div style="display:flex;gap:12px;align-items:center;padding:8px 0;{line}"><div style="flex:1"><div style="font-size:12.5px">{title}</div>'
+            f'<div style="font-size:11.5px;color:var(--dim)">{sub}</div></div>{kc_toggle(on)}</div>')
+
+def kc_seg(items, h=24, stretch=False):
+    """Segmented control. items: (label, on) or (label, on, icon)."""
+    out = []
+    for i, it in enumerate(items):
+        label, on = it[0], it[1]
+        icon = ic(it[2], 12, C["accent"] if on else C["dim"]) if len(it) > 2 else ""
+        look = "background:#2d3b4d;color:#a8cdf3" if on else "color:var(--dim)"
+        out.append(f'<span style="display:flex;align-items:center;gap:6px;height:{h}px;padding:0 10px;font-size:12px;white-space:nowrap;box-sizing:border-box;'
+                   f'{"flex:1;justify-content:center;" if stretch else ""}{"border-left:1px solid var(--border);" if i else ""}{look}">{icon}{label}</span>')
+    return f'<span style="display:flex;border:1px solid var(--border);border-radius:5px;overflow:hidden;flex-shrink:0">{"".join(out)}</span>'
+
+def kc_mark(state, s=12):
+    """Result of the last test or validation, shown at the end of list rows."""
+    return {"ok": ic("check", s, C["green"], 2.5), "warn": ic("alert", s, C["yellow"]), "err": ic("err", s, C["red"])}.get(state, "")
+
+def kc_badge(state, s=16):
+    """Round step marker: ok / err / no (not granted, not an error) / skip."""
+    tint = {"ok": ("#a1c18126", "#a1c18166", "check", C["green"]), "err": ("#d0727726", "#d0727766", "x", C["red"])}
+    if state in tint:
+        bg, bd, icon, col = tint[state]
+        return (f'<span style="width:{s}px;height:{s}px;border-radius:50%;background:{bg};border:1px solid {bd};box-sizing:border-box;'
+                f'display:flex;align-items:center;justify-content:center;flex-shrink:0">{ic(icon, s - 6, col, 3)}</span>')
+    return f'<span style="width:{s}px;height:{s}px;border-radius:50%;border:1px dashed #5d636f;box-sizing:border-box;flex-shrink:0"></span>'
+
+def kc_shell(tabbar, content, overlay=""):
+    return f'''<div class="app">
+{titlebar()}
+<div class="body">
+{sidebar("none")}
+<main class="main">{tabbar}{content}</main>
+</div>
+{statusbar()}
+{overlay}
+</div>'''
+
+def kc_tabs(doc):
+    return tabs([("file", doc["file"], True, True), ("gear", "Clusters &amp; kubeconfigs", False), ("box", "Pods", False)])
+
+def kc_toolbar(doc, mode):
+    n = doc["changes"]
+    return f'''<div class="tool">
+<div class="crumb mono" style="font-size:12px;white-space:nowrap">{ic("file",14,C["accent"])}<span>{doc["dir"]}<b>{doc["file"]}</b></span></div>
+<span class="chip">{dot(C["green"])}External file · editing on</span>
+<span class="chip" style="color:var(--yellow)">{n} unsaved change{"s" if n != 1 else ""}</span>
+<div style="flex:1"></div>
+{kc_seg([("Form", mode == "form", "sliders"), ("YAML", mode == "yaml", "code")])}
+<button class="btn">{ic("flask",13)}Test connection</button>
+<button class="btn">Test all</button>
+<button class="btn g">{ic("undo",13)}Revert</button>
+<button class="btn p">{ic("save",13,KC_INK)}Save…<span class="mono" style="font-weight:400;font-size:11px;opacity:.7">⌘S</span></button>
+</div>'''
+
+def kc_list(doc):
+    def sec(title, n, first=False):
+        return (f'<div class="sec" style="height:28px;padding-right:6px;{"" if first else "margin-top:8px"}">{ic("cd",11)}{title}'
+                f'<span style="font-weight:400;letter-spacing:0;text-transform:none;color:var(--faint)">{n}</span><span style="flex:1"></span>'
+                f'<button class="ib" aria-label="New {title.lower()[:-1]}" style="width:22px;height:22px">{ic("plus",13)}</button></div>')
+    def row(lead, name, sub, state=None, on=False):
+        subc = C["yellow"] if state == "warn" and "not found" in sub else C["dim"]
+        return (f'<div class="ti{" on" if on else ""}" style="height:26px;padding:0 12px 0 16px;gap:8px">{lead}'
+                f'<span style="color:var(--text);flex-shrink:0">{name}</span>'
+                f'<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;text-align:right;font-size:11.5px;color:{subc}">{sub}</span>'
+                f'<span style="width:12px;display:flex;justify-content:center;flex-shrink:0">{kc_mark(state)}</span></div>')
+    ctx = "".join(row(dot(c), n, s, st, on) for n, c, s, st, on in doc["contexts"])
+    cls = "".join(row(ic("server", 13, C["dim"]), n, s, st) for n, s, st in doc["clusters"])
+    usr = "".join(row(ic("key", 13, C["yellow"] if st == "warn" else C["dim"]), n, s, st) for n, s, st in doc["users"])
+    return f'''<div style="width:290px;flex-shrink:0;border-right:1px solid var(--border);background:var(--panel);display:flex;flex-direction:column;min-height:0">
+<div style="padding:10px 10px 6px"><div class="inp">{ic("filter",12)}Filter contexts, clusters, users</div></div>
+{sec("Contexts", len(doc["contexts"]), True)}{ctx}
+{sec("Clusters", len(doc["clusters"]))}{cls}
+{sec("Users", len(doc["users"]))}{usr}
+<div style="margin-top:auto;padding:12px 14px;border-top:1px solid var(--bv);display:flex;gap:8px;font-size:11.5px;color:var(--dim);line-height:17px">{ic("history",13)}<span>Comments and key order are kept. Backups:<br><span class="mono" style="font-size:11px;color:var(--muted);white-space:nowrap">~/Library/Application Support/<br>kubyl/kubeconfig-backups</span></span></div>
+</div>'''
+
+def kc_form(doc):
+    grid = "display:grid;grid-template-columns:120px minmax(0,1fr);gap:8px 14px;align-items:center"
+    def lab(t, extra=""):
+        return f'<div style="font-size:12.5px;color:var(--muted);height:28px;display:flex;align-items:center;gap:6px">{t}{extra}</div>'
+    def select(val, sub=""):
+        return (f'<div class="inp" style="width:320px;height:28px;flex-shrink:0"><span class="mono" style="font-size:12px;color:var(--text)">{val}</span>'
+                f'<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11.5px;text-align:right">{sub}</span>{ic("cd",12)}</div>')
+    def text_input(val, placeholder=False):
+        return f'<div class="inp" style="width:320px;height:28px"><span class="{"" if placeholder else "mono"}" style="font-size:12px;color:{C["faint"] if placeholder else C["text"]}">{val}</span></div>'
+    def line(*parts):
+        return '<div style="display:flex;align-items:center;gap:12px;min-width:0">' + "".join(parts) + '</div>'
+    link = lambda t: f'<a href="#" style="font-size:12px;text-decoration:none;white-space:nowrap">{t}</a>'
+    hint = lambda t: f'<span style="font-size:11.5px;color:var(--dim);white-space:nowrap">{t}</span>'
+    ns, was, nshint = doc["ns"]
+    changed = f'<span class="dot" style="background:{C["accent"]}" title="Unsaved change"></span>'
+    color = next(c for n, c, s, st, on in doc["contexts"] if on)
+    prod = '<span class="prod">PROD</span>' if doc["prod"] else ""
+    head = f'''<div style="display:flex;align-items:center;gap:10px">
+{dot(color)}<span style="font-size:12px;color:var(--dim)">Context</span><h2 class="mono" style="font-size:15px;font-weight:500">{doc["ctx"]}</h2>{prod}
+<div style="flex:1"></div>
+<button class="btn g">{ic("copy",13)}Duplicate</button><button class="btn g">{ic("pencil",13)}Rename…</button><button class="btn g d">{ic("trash",13,C["red"])}Delete…</button>
+</div>'''
+    ctx_card = f'''<div class="card" style="padding:12px 16px 14px">
+<p class="dtitle">Context</p>
+<div style="{grid}">
+{lab("Name")}{text_input(doc["ctx"])}
+{lab("Cluster")}{line(select(*doc["cluster"]), link("Edit cluster"))}
+{lab("User")}{line(select(*doc["user"]), link("Edit user"))}
+{lab("Namespace", changed)}{line(select(ns), hint(f'{nshint} · was <span class="mono" style="font-size:11px">{was}</span>'))}
+</div></div>'''
+    swatches = "".join(f'<span style="width:14px;height:14px;border-radius:50%;background:{c};display:block;{"box-shadow:0 0 0 2px var(--panel),0 0 0 3.5px " + c if i == doc["color"] else ""}"></span>'
+                       for i, c in enumerate(KC_SWATCHES))
+    over_card = f'''<div class="card" style="padding:12px 16px 4px">
+<p class="dtitle">Kubyl overrides <span style="text-transform:none;letter-spacing:0;font-weight:400">· settings.json (not written to the kubeconfig)</span></p>
+<div style="{grid}">
+{lab("Display name")}{text_input(doc["ctx"], True)}
+{lab("Color")}<div style="display:flex;gap:11px;align-items:center;padding-left:3px">{swatches}</div>
+</div>
+<div style="margin-top:4px">{kc_opt("Production cluster", "Red accent in title bar, typed confirmation for delete / scale to 0", doc["prod"])}{kc_opt("Read-only mode", "Block all mutating requests from this app", doc["readonly"], True)}</div>
+</div>'''
+    def problem(icon, col, text, act):
+        a = f'<a href="#" style="font-size:12px;text-decoration:none">{act}</a>' if act else ""
+        return f'<div style="display:flex;gap:10px;align-items:center;padding:4px 0;font-size:12.5px">{ic(icon,14,col)}<span style="flex:1;min-width:0;color:var(--muted)">{text}</span>{a}</div>'
+    probs = doc["problems"]
+    prob_card = f'''<div class="card" style="padding:12px 16px 8px">
+<p class="dtitle" style="margin-bottom:4px">Problems <span style="text-transform:none;letter-spacing:0;font-weight:400">· {len(probs)}</span></p>
+{"".join(problem(*p) for p in probs)}
+</div>'''
+    when, result = doc["last"]
+    last = f'''<div style="display:flex;align-items:center;gap:10px;padding:9px 16px;border:1px solid var(--bv);border-radius:8px;background:#2a2e36;font-size:12.5px;white-space:nowrap">
+<span class="dtitle" style="margin:0">Last test · {when}</span>{ic("ok",14,C["green"])}<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis">{result}</span><a href="#" style="font-size:12px;text-decoration:none">Details</a></div>'''
+    return f'<div style="flex:1;min-width:0;padding:16px 18px;display:flex;flex-direction:column;gap:12px;overflow:hidden">{head}{ctx_card}{over_card}{prob_card}{last}</div>'
+
+def kc_editor(doc):
+    return f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0;min-height:0">
+{kc_toolbar(doc, "form")}
+<div style="flex:1;display:flex;min-height:0">{kc_list(doc)}{kc_form(doc)}</div>
+{hints(KC_HINTS)}
+</div>'''
+
+def kubeconfig_screen():
+    return page("Kubeconfig editor — Kubyl", kc_shell(kc_tabs(KC_PROD), kc_editor(KC_PROD)))
+
+# YAML tokens, same colors as board 3.
+def kc_key(k): return f'<span style="color:{C["red"]}">{k}</span><span style="color:var(--muted)">:</span>'
+def kc_str(v): return f'<span style="color:{C["green"]}">{v}</span>'
+def kc_punct(p): return f'<span style="color:var(--muted)">{p}</span>'
+def kc_com(t): return f'<span style="color:{KC_COMMENT};font-style:italic"># {t}</span>'
+
+def kc_y(key=None, ind=0, val=None, dash=False, com=None):
+    s = " " * ind + ('<span style="color:var(--faint)">- </span>' if dash else "")
+    if key: s += kc_key(key)
+    if val is not None: s += (" " if key else "") + kc_str(val)
+    if com: s += ("  " if (key or val) else "") + kc_com(com)
+    return s
+
+def kc_yaml_rows():
+    args = ["eks", "get-token", "--cluster-name", "prod-eu", "--region", "eu-west-1"]
+    flow_args = "      " + kc_key("args") + " " + kc_punct("[") + kc_punct(", ").join(kc_str(a) for a in args) + kc_punct("]")
+    flow_env = ("      " + kc_key("env") + " " + kc_punct("[{") + kc_key("name") + " " + kc_str("AWS_PROFILE") + kc_punct(", ")
+                + kc_key("value") + " " + kc_str("prod") + kc_punct("}]"))
+    caret = '<span style="display:inline-block;width:1px;height:15px;background:var(--accent);vertical-align:-3px"></span>'
+    masked = (f'    {kc_key("token")} <span style="color:var(--dim);letter-spacing:.08em">••••••••</span>'
+              f'<span class="chip" style="height:17px;margin-left:10px;font-family:\'IBM Plex Sans\';font-size:11px">{ic("eye",11)}Reveal</span>')
+    # (line number, html, change mark, folded line count)
+    return [
+        (1, kc_y(com="prod clusters are managed by the platform team (#platform-oncall)"), None, 0),
+        (2, kc_y("apiVersion", 0, "v1"), None, 0),
+        (3, kc_y("kind", 0, "Config"), None, 0),
+        (4, kc_y("clusters"), None, 0),
+        (5, kc_y("name", 0, "eks-prod-eu", dash=True), None, 0),
+        (6, kc_y("cluster", 2), None, 0),
+        (7, kc_y("server", 4, "https://3F9C0A7B51E2C8D4.gr7.eu-west-1.eks.amazonaws.com"), None, 0),
+        (8, kc_y("certificate-authority-data", 4, "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t…", com="expires 2034"), None, 0),
+        (9, kc_y("name", 0, "eks-prod-us", dash=True), None, 3),
+        (13, kc_y("name", 0, "eks-staging-eu", dash=True), None, 3),
+        (17, kc_y("contexts"), None, 0),
+        (18, kc_y("name", 0, "prod-eu-west-1", dash=True), None, 0),
+        (19, kc_y("context", 2), None, 0),
+        (20, kc_y("cluster", 4, "eks-prod-eu"), None, 0),
+        (21, kc_y("user", 4, "aws-prod"), None, 0),
+        (22, kc_y("namespace", 4, "payments") + caret, "mod", 0),
+        (23, kc_y("name", 0, "prod-us-east-1", dash=True), None, 4),
+        (28, kc_y("name", 0, "staging-eu-west-1", dash=True), None, 0),
+        (29, kc_y("context", 2), None, 0),
+        (30, kc_y("cluster", 4, "eks-staging-eu"), None, 0),
+        (31, kc_y("user", 4, "aws-staging"), None, 0),
+        (32, kc_y("namespace", 4, "payments"), "mod", 0),
+        (33, kc_y("current-context", 0, "prod-eu-west-1"), None, 0),
+        (34, kc_y("users"), None, 0),
+        (35, kc_y("name", 0, "aws-prod", dash=True), None, 0),
+        (36, kc_y("user", 2), None, 0),
+        (37, kc_y("exec", 4), None, 0),
+        (38, kc_y("apiVersion", 6, "client.authentication.k8s.io/v1beta1"), None, 0),
+        (39, kc_y("command", 6, "aws"), None, 0),
+        (40, flow_args, None, 0),
+        (41, flow_env, None, 0),
+        (42, kc_y("name", 0, "aws-staging", dash=True), None, 7),
+        (50, kc_y("name", 0, "break-glass", dash=True, com="emergency access only, rotate after use"), None, 0),
+        (51, kc_y("user", 2), None, 0),
+        (52, masked, None, 0),
+    ]
+
+def kc_yaml_editor():
+    out = []
+    for n, text, mark, fold in kc_yaml_rows():
+        cur = n == 22
+        bar = C["accent"] if mark == "mod" else "transparent"
+        chev = ic("cr", 11, C["dim"]) if fold else ""
+        pill = (f'<span style="margin-left:10px;padding:0 6px;border-radius:3px;background:#353a45;color:var(--dim);font-family:\'IBM Plex Sans\';font-size:11px;line-height:16px">⋯ {fold} lines</span>' if fold else "")
+        was = '<span style="margin-left:18px;color:var(--faint);font-family:\'IBM Plex Sans\';font-size:11.5px">was default</span>' if mark == "mod" else ""
+        out.append(f'<div class="mono" style="display:flex;height:20px;align-items:center;font-size:12px;white-space:pre;{"background:#2f343e;" if cur else ""}">'
+                   f'<span style="width:40px;text-align:right;color:{"var(--text)" if cur else "var(--faint)"}">{n}</span>'
+                   f'<span style="width:20px;display:flex;justify-content:center">{chev}</span>'
+                   f'<span style="width:3px;height:20px;background:{bar}"></span><span style="padding-left:12px">{text}</span>{pill}{was}</div>')
+    return f'<div style="flex:1;min-width:0;overflow:hidden;padding-top:6px">{"".join(out)}</div>'
+
+def kc_step(state, name, lines=(), last=False, body="", took=""):
+    rail = "" if last else '<span style="flex:1;width:1px;background:var(--border);margin-top:3px"></span>'
+    col = {"err": C["red"], "skip": C["faint"]}.get(state, C["text"])
+    det = "".join(l if l.startswith("<") else f'<div class="mono" style="font-size:11px;line-height:16px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{l}</div>' for l in lines)
+    t = f'<span class="mono" style="font-size:11px;font-weight:400;color:var(--dim)">{took}</span>' if took else ""
+    return (f'<div style="display:flex;gap:10px"><div style="display:flex;flex-direction:column;align-items:center;width:16px;flex-shrink:0">{kc_badge(state)}{rail}</div>'
+            f'<div style="flex:1;min-width:0;padding-bottom:7px"><div style="display:flex;justify-content:space-between;align-items:baseline;font-size:12.5px;font-weight:600;line-height:16px;color:{col}">{name}{t}</div>{det}{body}</div></div>')
+
+def kc_perm(granted, text):
+    mark = ic("check", 11, C["green"], 2.5) if granted else ic("x", 11, C["faint"], 2.5)
+    return f'<div class="mono" style="font-size:11px;line-height:16px;display:flex;gap:6px;align-items:center;color:{C["dim"] if granted else C["faint"]}">{mark}{text}</div>'
+
+def kc_test_panel():
+    steps = "".join([
+        kc_step("ok", "DNS and TCP", ["3F9C…gr7.eu-west-1.eks.amazonaws.com → 3.121.4.18:443"], took="12 ms"),
+        kc_step("ok", "TLS", ['TLS 1.3 · verified by the kubeconfig CA "kubernetes"', "server cert CN=kube-apiserver · valid until 2026-11-02"], took="24 ms"),
+        kc_step("ok", "Exec plugin", ["aws eks get-token · token valid until 14:17 (15 min)"], took="0.9 s"),
+        kc_step("ok", "API server", ["GET /version · v1.30.4-eks-a737599"], took="38 ms"),
+        kc_step("ok", "Authentication", ["arn:aws:iam::123456789012:user/alex", "groups: system:authenticated"], took="41 ms"),
+        kc_step("ok", "Permissions", [kc_perm(True, "list namespaces (14)"), kc_perm(True, "list pods in payments"), kc_perm(False, "cluster-admin (not required)")], took="96 ms"),
+        kc_step("ok", "Latency", ["38 ms median of 3"], last=True, took="0.1 s"),
+    ])
+    ns = "".join(f'<span class="chip{" on" if n == "payments" else ""}">{n}</span>' for n in ["payments", "checkout", "ledger", "risk", "monitoring"])
+    skipped = "".join(f'<span style="display:flex;align-items:center;gap:6px"><span class="mono">—</span>{t}</span>' for t in ["Exec plugin", "API server", "Authentication", "Permissions", "Latency"])
+    tls_fail = (f'<div style="font-size:12px;line-height:17px;color:var(--muted);margin:2px 0 7px">Certificate signed by unknown authority: the server\'s CA isn\'t the one in this kubeconfig.</div>'
+                f'<div style="display:flex;gap:6px"><button class="btn" style="height:24px">{ic("fingerprint",12)}Fetch the CA from the server…</button><button class="btn g" style="height:24px">Details</button></div>')
+    return f'''<aside class="dock" style="width:420px">
+<div style="display:flex;align-items:center;gap:10px;padding:8px 8px 8px 14px;border-bottom:1px solid var(--bv)">{ic("flask",15,C["accent"])}
+<div style="flex:1;min-width:0"><div style="color:var(--text);font-weight:500;white-space:nowrap">Test connection · <span class="mono" style="font-size:12.5px">prod-eu-west-1</span></div><div style="font-size:11.5px;color:var(--dim)">from unsaved edits · 1.2 s</div></div>
+<button class="ib" aria-label="Run again" title="Run again">{ic("refresh",13)}</button><button class="ib" aria-label="Close">{ic("x",13)}</button></div>
+<div style="padding:12px 14px 2px">{steps}</div>
+<div class="card" style="margin:0 14px 12px;padding:9px 12px 10px;background:#2a2e36">
+<div style="display:flex;align-items:center;margin-bottom:7px"><span class="dtitle" style="margin:0;flex:1">Namespaces · 14</span><span style="font-size:11.5px;color:var(--dim)">click one: Use as default</span></div>
+<div style="display:flex;gap:4px;flex-wrap:nowrap;overflow:hidden">{ns}<span class="chip" style="color:var(--dim)">+9 more</span></div></div>
+<div style="border-top:1px solid var(--bv);padding:10px 14px 0">
+<div style="display:flex;align-items:center;gap:8px;margin-bottom:9px">{dot(C["yellow"])}<span class="mono" style="font-size:12.5px;font-weight:500">staging-eu-west-1</span><span style="font-size:11.5px;color:var(--red)">failed at TLS · 0.3 s</span><span style="flex:1"></span><a href="#" style="font-size:12px;text-decoration:none">Run again</a></div>
+{kc_step("ok", "DNS and TCP", ["C04E…p9x.eu-west-1.eks.amazonaws.com → 18.194.7.33:443"], took="14 ms")}
+{kc_step("err", "TLS", body=tls_fail, took="260 ms")}
+{kc_step("skip", "Skipped", last=True, body=f'<div style="display:flex;flex-wrap:wrap;gap:2px 14px;margin-top:2px;font-size:12px;color:var(--faint)">{skipped}</div>')}
+</div>
+</aside>'''
+
+def kubeconfig_yaml_screen():
+    banner = f'''<div style="height:38px;flex-shrink:0;display:flex;align-items:center;gap:10px;padding:0 12px;background:#35322a;border-bottom:1px solid #5a4f33;font-size:12.5px">
+{ic("alert",14,C["yellow"])}<span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><b style="font-weight:600;color:var(--yellow)">eks-prod.yaml changed on disk</b> <span style="color:var(--muted)">(<span class="mono" style="font-size:12px">aws eks update-kubeconfig</span>, 14:02). Your 2 unsaved changes are kept.</span></span>
+<button class="btn" style="height:24px">{ic("diff",12)}Show diff</button><button class="btn" style="height:24px">{ic("refresh",12)}Reload</button><button class="btn g" style="height:24px">Keep mine</button>
+</div>'''
+    content = f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0;min-height:0">
+{kc_toolbar(KC_PROD, "yaml")}
+{banner}
+<div style="flex:1;display:flex;min-height:0">{kc_yaml_editor()}{kc_test_panel()}</div>
+</div>'''
+    return page("Kubeconfig editor, YAML and test — Kubyl", kc_shell(kc_tabs(KC_PROD), content))
+
+def kc_stepper(steps, current):
+    out = []
+    for i, name in enumerate(steps, 1):
+        if i < current:
+            mark = kc_badge("ok", 18)
+            label = f'<span style="font-size:12px;color:var(--muted)">{name}</span>'
+        elif i == current:
+            mark = f'<span style="width:18px;height:18px;border-radius:50%;background:var(--accent);color:{KC_INK};font-size:11px;font-weight:600;display:flex;align-items:center;justify-content:center;flex-shrink:0">{i}</span>'
+            label = f'<span style="font-size:12px;color:var(--text);font-weight:600">{name}</span>'
+        else:
+            mark = f'<span style="width:18px;height:18px;border-radius:50%;border:1px solid var(--border);box-sizing:border-box;color:var(--dim);font-size:11px;display:flex;align-items:center;justify-content:center;flex-shrink:0">{i}</span>'
+            label = f'<span style="font-size:12px;color:var(--dim)">{name}</span>'
+        if i > 1:
+            out.append(f'<span style="flex:1;min-width:10px;height:1px;background:{"#a1c18166" if i <= current else "var(--border)"}"></span>')
+        out.append(f'<span style="display:flex;align-items:center;gap:6px;white-space:nowrap">{mark}{label}</span>')
+    return '<div style="display:flex;align-items:center;gap:8px;padding:11px 16px;border-bottom:1px solid var(--bv);background:#2b3039">' + "".join(out) + '</div>'
+
+def kc_wizard_modal():
+    label = lambda t: f'<div style="font-size:12px;color:var(--muted);margin-bottom:5px">{t}</div>'
+    cursor = '<span style="display:inline-block;width:1px;height:15px;background:var(--accent);margin-left:-6px"></span>'
+    ca = kc_seg([("System trust store", False, "shield"), ("File", False, "file"), ("Paste PEM", False, "copy"), ("Fetch from server", True, "download")], h=28, stretch=True)
+    fp = "3F:9C:0A:7B:51:E2:C8:D4:19:6A:F0:23:8B:77:E5:0C<br>A1:5D:92:3E:C4:08:B6:71:2F:DA:64:9E:13:C7:58:B0"
+    cert = f'''<div class="card" style="background:#2a2e36;overflow:hidden">
+<div style="display:flex;align-items:center;gap:8px;padding:8px 10px 8px 12px;border-bottom:1px solid var(--bv);font-size:12.5px">{ic("shieldalert",14,C["yellow"])}<span>Fetched from <span class="mono" style="font-size:12px">https://127.0.0.1:52341</span></span><span style="color:var(--yellow)">· not trusted yet</span><span style="flex:1"></span><button class="ib" aria-label="Copy PEM" title="Copy PEM">{ic("copy",13)}</button></div>
+<dl class="kv" style="margin:0;padding:10px 12px 12px;grid-template-columns:86px minmax(0,1fr)">
+<dt>Subject</dt><dd class="mono" style="font-size:12px">CN=kubernetes</dd>
+<dt>Issuer</dt><dd><span class="mono" style="font-size:12px">CN=kubernetes</span> <span style="color:var(--dim)">(self-signed)</span></dd>
+<dt>Valid</dt><dd class="mono" style="font-size:12px">2026-09-24 → 2036-09-22</dd>
+<dt>Source</dt><dd><span class="mono" style="font-size:12px">kube-public/cluster-info</span> <span style="color:var(--dim)">(anonymous)</span></dd>
+<dt style="display:flex;gap:5px;align-items:flex-start">{ic("fingerprint",13)}SHA-256</dt><dd class="mono" style="font-size:12px;line-height:18px;white-space:normal;color:var(--text)">{fp}</dd>
+</dl></div>'''
+    return f'''<div style="position:absolute;inset:0;background:rgba(15,17,21,.55);display:flex;align-items:flex-start;justify-content:center;padding-top:70px">
+<div role="dialog" aria-label="New kubeconfig" style="width:640px;background:#2f343e;border:1px solid var(--border);border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,.5);overflow:hidden">
+<div style="display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--bv)">{ic("fileplus",16,C["accent"])}<b style="font-weight:600;flex:1">New kubeconfig</b><span style="font-size:12px;color:var(--dim)">Step 2 of 6</span><button class="ib" aria-label="Close">{ic("x",13)}</button></div>
+{kc_stepper(["Name", "Cluster", "Credentials", "Context", "Test", "Save"], 2)}
+<div style="padding:16px;display:flex;flex-direction:column;gap:14px">
+<div style="display:grid;grid-template-columns:200px minmax(0,1fr);gap:12px">
+<div>{label("Cluster name")}<div class="inp" style="height:28px"><span class="mono" style="font-size:12.5px;color:var(--text)">kind-dev</span></div></div>
+<div>{label("API server")}<div class="inp focus" style="height:28px"><span class="mono" style="font-size:12.5px;color:var(--text)">https://127.0.0.1:52341</span>{cursor}</div></div>
+</div>
+<div>{label("Certificate authority")}{ca}</div>
+{cert}
+<div style="font-size:11.5px;color:var(--dim);line-height:17px">Trust on first use: compare this fingerprint with the CA your admin gave you, or <span class="mono" style="font-size:11px;color:var(--muted)">kubectl config view --raw</span> on a machine you trust. No credentials are sent to this server until you confirm.</div>
+{check(True, "I compared the fingerprint; trust this CA for kind-dev")}
+<div style="display:flex;align-items:center;gap:8px;padding-top:12px;border-top:1px solid var(--bv);font-size:12.5px">{ic("cr",12,C["dim"])}<span>Advanced</span><span style="font-size:11.5px;color:var(--dim)">TLS server name · Proxy URL · Skip TLS verification <span style="color:var(--red)">(insecure)</span></span></div>
+</div>
+<div style="display:flex;align-items:center;gap:8px;padding:12px 16px;border-top:1px solid var(--bv)">
+<span style="flex:1;min-width:0;display:flex;gap:6px;align-items:flex-start;font-size:11.5px;color:var(--dim);line-height:16px">{ic("lock",12)}<span style="white-space:nowrap">Saved to <span class="mono" style="font-size:11px">~/Library/Application Support/kubyl/</span><br><span class="mono" style="font-size:11px">kubeconfigs/kind-dev.yaml</span> (0600)</span></span>
+<button class="btn g">Cancel</button><button class="btn">{ic("left",12)}Back</button><button class="btn p">Next: Credentials{ic("right",12,KC_INK)}</button>
+</div>
+</div></div>'''
+
+def kubeconfig_wizard_screen():
+    return clusters_screen(overlay=kc_wizard_modal(), title="New kubeconfig wizard — Kubyl")
+
+def kc_diff():
+    # (old line, new line, sign, html)
+    y = kc_y
+    rows = [
+        (18, 18, " ", y("contexts")),
+        (19, 19, " ", kc_com("local kind cluster, recreated every Monday")),
+        (20, 20, " ", y("name", 0, "kind-dev", dash=True)),
+        (21, 21, " ", y("context", 2)),
+        (22, 22, " ", y("cluster", 4, "kind-dev")),
+        (23, 23, " ", y("user", 4, "kind-dev")),
+        (24, "", "-", "    namespace: default"),
+        ("", 24, "+", "    namespace: payments"),
+        (25, 25, " ", y("name", 0, "docker-desktop", dash=True)),
+        (26, 26, " ", y("context", 2)),
+    ]
+    look = {"-": ("background:#3a2e31;color:#e7a9ad", "#e7a9ad"), "+": ("background:#2d3a2c;color:#bfd9a6", "#bfd9a6")}
+    out = [f'<div style="padding:2px 12px;background:#2a2e36;color:var(--dim);border-bottom:1px solid var(--bv)">@@ contexts[kind-dev] @@ <span style="font-family:\'IBM Plex Sans\';font-size:11.5px">· lines 18–26</span></div>']
+    for old, new, sign, text in rows:
+        bg, _ = look.get(sign, ("", ""))
+        out.append(f'<div style="display:flex;{bg}"><span style="width:34px;text-align:right;color:var(--faint)">{old}</span><span style="width:34px;text-align:right;color:var(--faint)">{new}</span>'
+                   f'<span style="width:26px;text-align:center">{sign.strip()}</span><span>{text}</span></div>')
+    return f'<div class="mono" style="border:1px solid var(--bv);border-radius:7px;background:#23272e;overflow:hidden;font-size:12px;line-height:20px;white-space:pre;padding-bottom:4px">{"".join(out)}</div>'
+
+def kubeconfig_save_screen():
+    save = f'''<div role="dialog" aria-label="Save ~/.kube/config" style="width:740px;flex-shrink:0;background:#2f343e;border:1px solid var(--border);border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,.5);overflow:hidden">
+<div style="display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--bv)">{ic("save",16,C["accent"])}<b style="font-weight:600;flex:1">Save <span class="mono" style="font-weight:500;font-size:13px">~/.kube/config</span></b><span class="chip">{ic("file",11)}external file</span><button class="ib" aria-label="Close">{ic("x",13)}</button></div>
+<div style="padding:16px;display:flex;flex-direction:column;gap:12px">
+<div style="display:flex;align-items:center;gap:8px;font-size:12.5px">{ic("ok",14,C["green"])}<span><b style="font-weight:500">1 change</b> <span style="color:var(--muted)">· comments and key order kept · 7 comments</span></span></div>
+{kc_diff()}
+<div style="display:flex;gap:8px;align-items:center;font-size:11.5px;color:var(--yellow)">{ic("alert",12,C["yellow"])}If a change can't be written in place, the preview lists the comments that would be removed.</div>
+<dl class="kv" style="margin:0;padding-top:12px;border-top:1px solid var(--bv);grid-template-columns:70px minmax(0,1fr);row-gap:7px">
+<dt>Backup</dt><dd class="mono" style="font-size:11.5px;white-space:normal">~/Library/Application Support/kubyl/kubeconfig-backups/config-20260926-140512.yaml <span style="font-family:'IBM Plex Sans';color:var(--dim)">(0600)</span></dd>
+<dt>Write</dt><dd>atomic (temp file + rename) · mode 0600 kept</dd>
+<dt>Checked</dt><dd style="display:flex;gap:6px;align-items:center">{ic("check",12,C["green"],2.5)}unchanged on disk since you opened it <span style="color:var(--dim)">(sha256 <span class="mono" style="font-size:11.5px">7c1e…</span>)</span></dd>
+</dl>
+</div>
+<div style="display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--bv)"><button class="btn g">Cancel</button><button class="btn">Save as a Kubyl copy…</button><button class="btn p">{ic("save",12,KC_INK)}Save</button></div>
+</div>'''
+    kv = [("command", "aws"), ("args", "eks get-token --cluster-name staging --region eu-west-1"), ("env", "AWS_PROFILE=staging"),
+          ("apiVersion", "client.authentication.k8s.io/v1beta1"), ("interactive", "Never")]
+    words = lambda v: " ".join(f'<span style="white-space:nowrap">{w}</span>' for w in v.split(" "))  # wrap between arguments only
+    box = "".join(f'<span style="color:var(--dim)">{k}</span><span style="color:var(--text)">{words(v)}</span>' for k, v in kv)
+    consent = f'''<div role="dialog" aria-label="Run an exec plugin for staging-eu-west-1?" style="width:460px;flex-shrink:0;margin-top:230px;background:#2f343e;border:1px solid var(--border);border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,.5);overflow:hidden">
+<div style="display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--bv)">{ic("terminal",16,C["yellow"])}<b style="font-weight:600;flex:1">Run an exec plugin for staging-eu-west-1?</b></div>
+<div style="padding:16px;display:flex;flex-direction:column;gap:12px">
+<div style="font-size:12.5px;color:var(--muted);line-height:19px">This command comes from unsaved edits. Kubyl runs it only after you agree; it can do anything your user can.</div>
+<div class="mono" style="display:grid;grid-template-columns:88px minmax(0,1fr);gap:4px 10px;padding:10px 12px;border-radius:7px;background:#23272e;border:1px solid var(--bv);font-size:11.5px;line-height:17px">{box}</div>
+<div style="font-size:11.5px;color:var(--dim)">Resolved with your login shell PATH: <span class="mono" style="font-size:11px;color:var(--muted)">/opt/homebrew/bin/aws</span></div>
+</div>
+<div style="display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--bv)"><button class="btn g">Cancel</button><button class="btn p">{ic("play",11,KC_INK)}Run and test</button></div>
+</div>'''
+    overlay = f'<div style="position:absolute;inset:0;background:rgba(15,17,21,.55);display:flex;align-items:flex-start;justify-content:center;gap:24px;padding-top:70px">{save}{consent}</div>'
+    return page("Save kubeconfig and exec consent — Kubyl", kc_shell(kc_tabs(KC_HOME), kc_editor(KC_HOME), overlay))
 
 # ---------- 12–15. Argo CD ----------
 # Argo CD's own status colors mapped to theme tokens.
@@ -1366,6 +1794,10 @@ SCREENS = [
  ("Updates.dc.html", "8 · Cluster updates — OpenShift-style", updates_screen),
  ("Files.dc.html", "9 · Pod file browser — drag & drop upload/download", files_screen),
  ("Webview.dc.html", "10 · Service web view over a temporary port-forward", webview_screen),
+ ("Kubeconfig.dc.html", "11 · Kubeconfig editor: contexts, clusters, users (form)", kubeconfig_screen),
+ ("KubeconfigYaml.dc.html", "11 · Kubeconfig editor: YAML tab and Test connection", kubeconfig_yaml_screen),
+ ("KubeconfigWizard.dc.html", "11 · New kubeconfig wizard (CA fetched from the server)", kubeconfig_wizard_screen),
+ ("KubeconfigSave.dc.html", "11 · Save preview and exec plugin consent", kubeconfig_save_screen),
  ("ArgoApps.dc.html", "12 · Argo CD applications (sync, health, filters)", argo_apps_screen),
  ("ArgoApp.dc.html", "13 · Argo CD application: resource tree and summary", argo_app_screen),
  ("ArgoHistory.dc.html", "14 · Argo CD application: history and rollback", argo_history_screen),
