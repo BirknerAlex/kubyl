@@ -22,8 +22,9 @@ pub use error::{Error, Result};
 pub use notify::{Notification, NotificationCenter, NotificationLevel, NotifyResultExt};
 pub use registry::{
     ActionRegistry, ActionSpec, Align, CellValue, ChromeRegistry, ColumnDef, ColumnProvider,
-    ColumnWidth, DockPanel, DockPosition, ResourceColumns, SidebarSection, StatusBarItem,
-    StatusBarPosition, TabHandle, TabView, Tone, ViewFactory, ViewRegistry, ViewRequest, new_tab,
+    ColumnWidth, DetailsSection, DockPanel, DockPosition, ResourceColumns, SidebarSection,
+    StatusBarItem, StatusBarPosition, TabHandle, TabView, Tone, ViewFactory, ViewRegistry,
+    ViewRequest, new_tab,
 };
 pub use runtime::spawn_kube;
 pub use types::{ClusterCaps, ClusterId, ContextName, Gvk, Gvr, ResourceRef, ViewKind};
