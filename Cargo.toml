@@ -21,6 +21,7 @@ kubyl_explorer = { path = "crates/kubyl_explorer" }
 kubyl_files = { path = "crates/kubyl_files" }
 kubyl_keymap = { path = "crates/kubyl_keymap" }
 kubyl_kube = { path = "crates/kubyl_kube" }
+kubyl_kubeconfig = { path = "crates/kubyl_kubeconfig" }
 kubyl_logs = { path = "crates/kubyl_logs" }
 kubyl_metrics = { path = "crates/kubyl_metrics" }
 kubyl_operators = { path = "crates/kubyl_operators" }

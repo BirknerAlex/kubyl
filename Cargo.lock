@@ -4866,6 +4866,7 @@ dependencies = [
  "kubyl_files",
  "kubyl_keymap",
  "kubyl_kube",
+ "kubyl_kubeconfig",
  "kubyl_logs",
  "kubyl_metrics",
  "kubyl_operators",
@@ -5056,6 +5057,14 @@ dependencies = [
  "tower",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "kubyl_kubeconfig"
+version = "0.2.0"
+dependencies = [
+ "gpui-pre",
+ "kubyl_core",
 ]
 
 [[package]]
