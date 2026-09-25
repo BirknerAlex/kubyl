@@ -349,13 +349,20 @@ impl PortForwardManager {
                                 if matches!(forward.state, ForwardState::Reconnecting(_)) {
                                     forward.state = ForwardState::Listening;
                                 }
+                                // The loop ends here: a later error must be able to probe
+                                // again. (Dropping this task from inside is fine, it returns
+                                // right after.)
+                                forward.probe = None;
                                 this.refresh_row(id, cx);
                                 true
                             }
+                            // Binding the local port failed: nothing to reconnect.
+                            Err(_) if matches!(forward.state, ForwardState::Failed(_)) => {
+                                forward.probe = None;
+                                true
+                            }
                             Err(err) => {
-                                if !matches!(forward.state, ForwardState::Failed(_)) {
-                                    forward.state = ForwardState::Reconnecting(format!("{err:#}"));
-                                }
+                                forward.state = ForwardState::Reconnecting(format!("{err:#}"));
                                 this.refresh_row(id, cx);
                                 false
                             }
@@ -497,11 +504,20 @@ impl PortForwardManager {
         self.refresh_row(id, cx);
     }
 
-    /// The most recently started listening forward's URL, for "open last forward".
+    /// The most recently started live HTTP forward's URL, for "open last forward".
     pub fn last_url(&self) -> Option<String> {
+        // Live HTTP forwards only: a failed bind's port may belong to another process, and
+        // `http://…:5432` isn't worth opening.
         self.forwards
             .iter()
-            .filter(|(_, f)| f.local_port != 0 && f.state != ForwardState::Starting)
+            .filter(|(_, f)| {
+                f.local_port != 0
+                    && f.spec.http
+                    && matches!(
+                        f.state,
+                        ForwardState::Listening | ForwardState::Reconnecting(_)
+                    )
+            })
             .max_by_key(|(id, _)| **id)
             .map(|(_, f)| f.url())
     }

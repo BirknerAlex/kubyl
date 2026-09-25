@@ -143,7 +143,9 @@ pub fn init(cx: &mut App) {
             // `open_url` hands the URL to the OS without waiting (not `open::that`, which can
             // block the UI thread).
             Some(url) => cx.open_url(&url),
-            None => NotificationCenter::push(cx, Notification::info("No port-forward is running.")),
+            None => {
+                NotificationCenter::push(cx, Notification::info("No HTTP port-forward is running."))
+            }
         }
     });
     cx.on_action(|_: &ShowSavedForwards, cx| {
