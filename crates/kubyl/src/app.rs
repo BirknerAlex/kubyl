@@ -139,15 +139,13 @@ pub fn init(cx: &mut App) {
     set_menus(cx);
     crate::views::init(cx);
 
-    // macOS apps stay open without windows; elsewhere closing the last window quits.
-    if !cfg!(target_os = "macos") {
-        cx.on_window_closed(|cx, _| {
-            if cx.windows().is_empty() {
-                cx.quit();
-            }
-        })
-        .detach();
-    }
+    // Closing the last window quits, on macOS too.
+    cx.on_window_closed(|cx, _| {
+        if cx.windows().is_empty() {
+            cx.quit();
+        }
+    })
+    .detach();
 }
 
 fn set_menus(cx: &mut App) {
