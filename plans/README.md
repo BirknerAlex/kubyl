@@ -39,6 +39,7 @@ Each phase file is written so one Claude Code session can own it from start to f
 | 10 | [Packaging, release, auto-update, hardening](10-packaging-release.md) | 00 (CI), then all | `script/`, `.github/`, `crates/kubyl` bundling | none |
 | 11 | [Service web views over temporary port-forwards](11-service-webview.md) | 02, 05 | `kubyl_webview` (new) | 10 · Web view |
 | 12 | [Argo CD: applications, sync, history, rollback](12-argocd.md) | 02, 04, 05 (11 optional) | `kubyl_argocd` (new) | none yet |
+| 13 | [Kubeconfig editor: clusters, credentials, contexts, connection test](13-kubeconfig-editor.md) | 01, 04 | `kubyl_kubeconfig` (new) | none yet (board 11) |
 
 ```
 00 ─▶ 01 ─▶ 02 ─┬─▶ 03
@@ -47,11 +48,12 @@ Each phase file is written so one Claude Code session can own it from start to f
                 ├─▶ 07 ──────┼─▶ 09 (also needs 08)
                 └────────────┴─▶ 08 (needs 04 for install YAML/diff)
 05 ─▶ 11 (web views)        02 + 04 + 05 ─▶ 12 (Argo CD; uses 11 for "Open Argo CD UI" if present)
+01 + 04 ─▶ 13 (kubeconfig editor)
 10: CI part runs from 00 onward; packaging and release after the feature phases
 ```
 
-After phase 02, phases 03, 04, 05 and 07 can run in parallel sessions. Phase 11 can start once 05 is done, and phase 12 once 04 and 05 are done.
-Phases 11 and 12 add crates that phase 00 didn't stub (`kubyl_webview`, `kubyl_argocd`): their first commit adds the stub crate (workspace member plus the `init` line in `crates/kubyl/src/main.rs`) in a tiny PR that lands on `main` before the feature work, so parallel sessions don't conflict.
+After phase 02, phases 03, 04, 05 and 07 can run in parallel sessions. Phase 11 can start once 05 is done, phase 12 once 04 and 05 are done, and phase 13 once 04 is done.
+Phases 11, 12 and 13 add crates that phase 00 didn't stub (`kubyl_webview`, `kubyl_argocd`, `kubyl_kubeconfig`): their first commit adds the stub crate (workspace member plus the `init` line in `crates/kubyl/src/main.rs`) in a tiny PR that lands on `main` before the feature work, so parallel sessions don't conflict.
 Phase 00 must leave stub crates and registration traits so that parallel phases never edit
 the same files. See "Extension points" below.
 
@@ -84,6 +86,7 @@ crates/
   kubyl_updates/            # cluster update providers + preflight checks
   kubyl_webview/            # embedded web views over temporary port-forwards (phase 11)
   kubyl_argocd/             # Argo CD applications, sync, history, rollback (phase 12)
+  kubyl_kubeconfig/         # kubeconfig editor, connection test, creation wizard (phase 13)
 assets/                     # logo, icons, fonts, keymaps, themes
 design/mockups/             # mockup generator (HTML design canvas)
 plans/                      # these plans
