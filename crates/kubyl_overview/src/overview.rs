@@ -74,6 +74,7 @@ struct Totals {
     memory_allocatable: f64,
     pods_allocatable: f64,
     pods: usize,
+    running: usize,
     failing: usize,
     cpu_requests: f64,
     cpu_limits: f64,
@@ -104,6 +105,7 @@ fn totals(nodes: Option<&StoreHandle>, pods: &StoreHandle, cx: &App) -> Totals {
             continue;
         }
         t.pods += 1;
+        t.running += (str_at(pod, "/status/phase") == "Running") as usize;
         t.failing += pod_status(pod).is_degraded() as usize;
         let sum = |kind: &str, resource: &str| pod_resource(pod, kind, resource).unwrap_or(0.0);
         t.cpu_requests += sum("requests", "cpu");
@@ -646,17 +648,23 @@ impl OverviewView {
                 .map(|p| format!("{p:.0}%"))
                 .unwrap_or_else(|| "—".into())
         };
+        // The big number: one decimal below 10% so a quiet cluster doesn't read "0%".
+        let big_pct = |value: f64, of: f64| match percent(value, of) {
+            Some(p) if p < 9.95 => format!("{p:.1}%"),
+            Some(p) => format!("{p:.0}%"),
+            None => "—".into(),
+        };
         let namespace = self.namespace.is_some();
 
         // CPU
         let (cpu_big, cpu_sub) = match usage {
             Some(u) if !namespace => (
-                pct(u.cpu, totals.cpu_allocatable),
+                big_pct(u.cpu, totals.cpu_allocatable),
                 format!("{} / {} cores", cores(u.cpu), cores(totals.cpu_allocatable)),
             ),
             Some(u) => (
                 cores(u.cpu),
-                format!("of {} requested", cores(totals.cpu_requests)),
+                format!("of {} req", cores(totals.cpu_requests)),
             ),
             None if !namespace => (
                 "—".into(),
@@ -679,7 +687,7 @@ impl OverviewView {
         // Memory
         let (memory_big, memory_sub) = match usage {
             Some(u) if !namespace => (
-                pct(u.memory, totals.memory_allocatable),
+                big_pct(u.memory, totals.memory_allocatable),
                 format!(
                     "{} / {}",
                     format_bytes(u.memory),
@@ -688,7 +696,7 @@ impl OverviewView {
             ),
             Some(u) => (
                 format_bytes(u.memory),
-                format!("of {} requested", format_bytes(totals.memory_requests)),
+                format!("of {} req", format_bytes(totals.memory_requests)),
             ),
             None if !namespace => (
                 "—".into(),
@@ -712,24 +720,17 @@ impl OverviewView {
         let pods_card = if namespace {
             kpi(
                 "Pods",
-                (
-                    format!("{} running", totals.pods - totals.failing),
-                    colors.text_dim,
-                ),
+                if totals.failing > 0 {
+                    (format!("{} failing", totals.failing), colors.red)
+                } else {
+                    ("none failing".into(), colors.text_dim)
+                },
                 format_count(totals.pods),
-                String::new(),
+                format!("{} running", totals.running),
                 spark("pods_running", &|_| 0.0),
                 colors.cyan,
                 &colors,
             )
-            .when(totals.failing > 0, |this| {
-                this.child(
-                    div()
-                        .text_size(u(12.0))
-                        .text_color(colors.red)
-                        .child(format!("{} failing", totals.failing)),
-                )
-            })
         } else {
             kpi(
                 "Pods",
@@ -1248,12 +1249,12 @@ impl OverviewView {
             let scale = limit.or(request);
             h_flex()
                 .flex_none()
-                .w(u(120.0))
+                .w(u(96.0))
                 .gap(u(6.0))
                 .child(
                     div()
                         .flex_none()
-                        .w(u(48.0))
+                        .w(u(44.0))
                         .font_family(fonts::MONO)
                         .text_size(u(12.0))
                         .child(format(value)),
@@ -1266,7 +1267,7 @@ impl OverviewView {
                                     .filter(|_| limit.is_some())
                                     .map(|r| (r / scale * 100.0) as f32),
                             )
-                            .width(56.0),
+                            .width(44.0),
                     )
                 })
         };
@@ -1325,11 +1326,7 @@ impl OverviewView {
             .overflow_hidden()
             .flex_1()
             .min_w_0()
-            .child(card_title(
-                "Top pods",
-                "by CPU · bar vs limit, | request",
-                &colors,
-            ))
+            .child(card_title("Top pods", "by CPU · bars vs limit", &colors))
             .children(rows)
             .when(empty, |this| {
                 this.child(

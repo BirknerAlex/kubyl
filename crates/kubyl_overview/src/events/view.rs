@@ -18,8 +18,8 @@ use kubyl_core::{
 };
 use kubyl_resources::{ResourceSelection, Selected};
 use kubyl_ui::{
-    ActiveColors, Chip, DataTable, DataTableEvent, Icon, IconName, KeyHints, TableDelegate, fonts,
-    h_flex, sizes, u, v_flex,
+    ActiveColors, DataTable, DataTableEvent, Icon, IconButton, IconName, KeyHints, TableDelegate,
+    fonts, h_flex, sizes, u, v_flex,
 };
 
 use super::feed::{EventsFeed, object_ref};
@@ -74,23 +74,22 @@ struct Rows {
 impl TableDelegate for Rows {
     fn columns(&self) -> Vec<ColumnDef> {
         vec![
-            ColumnDef::new("last_seen", "Last seen", ColumnWidth::Fixed(84.0)).mono(),
-            ColumnDef::new("type", "Type", ColumnWidth::Fixed(96.0)),
-            ColumnDef::new("reason", "Reason", ColumnWidth::Fixed(160.0)),
-            ColumnDef::new("object", "Object", ColumnWidth::Fixed(280.0)).mono(),
+            ColumnDef::new("last_seen", "Last seen", ColumnWidth::Fixed(76.0)).mono(),
+            ColumnDef::new("type", "Type", ColumnWidth::Fixed(90.0)),
+            ColumnDef::new("reason", "Reason", ColumnWidth::Fixed(150.0)),
+            ColumnDef::new("object", "Object", ColumnWidth::Fixed(260.0)).mono(),
             ColumnDef::new(
                 "message",
                 "Message",
                 ColumnWidth::Flex {
                     weight: 1.0,
-                    min: 240.0,
+                    min: 200.0,
                 },
             ),
-            ColumnDef::new("count", "Count", ColumnWidth::Fixed(64.0))
+            ColumnDef::new("count", "Count", ColumnWidth::Fixed(56.0))
                 .mono()
                 .align_end(),
             ColumnDef::new("namespace", "Namespace", ColumnWidth::Fixed(130.0)).mono(),
-            ColumnDef::new("source", "Source", ColumnWidth::Fixed(150.0)),
         ]
     }
 
@@ -126,10 +125,13 @@ impl TableDelegate for Rows {
                 },
             },
             3 => CellValue::Text(event.object().into()),
+            // Derived rows say so; everything else names its reporter in the details.
+            4 if event.derived => {
+                CellValue::Text(format!("{} (from pod status)", event.message).into())
+            }
             4 => CellValue::Text(event.message.clone()),
             5 => CellValue::Text(event.count.to_string().into()),
             6 => muted(event.namespace.as_deref().unwrap_or_default().to_string()),
-            7 => muted(event.source.to_string()),
             _ => CellValue::Empty,
         }
     }
@@ -300,13 +302,6 @@ impl EventsView {
         self.filter.warnings = value;
         self.refresh(cx);
     }
-
-    fn scope_label(&self, cx: &App) -> String {
-        match self.feed.read(cx).namespace() {
-            Some(ns) => format!("in {ns}"),
-            None => "in all namespaces".into(),
-        }
-    }
 }
 
 impl Focusable for EventsView {
@@ -342,7 +337,6 @@ impl Render for EventsView {
         let status = feed.status(cx);
         let folded = feed.is_folded();
         let shown = self.rows.borrow().len();
-        let warnings = all.iter().filter(|r| r.warning).count();
         let search_focused = self.search.read(cx).focus_handle(cx).is_focused(window);
         let weak = cx.weak_entity();
 
@@ -358,13 +352,10 @@ impl Render for EventsView {
                     .child("Events"),
             )
             .child("·")
-            .child(format!("{shown} {}", self.scope_label(cx)))
-            .when(warnings > 0, |this| {
-                this.child(
-                    div()
-                        .text_color(colors.yellow)
-                        .child(format!("· {warnings} warnings")),
-                )
+            .child(if shown == all.len() {
+                shown.to_string()
+            } else {
+                format!("{shown} of {}", all.len())
             });
         let search = div()
             .key_context(SEARCH_CONTEXT)
@@ -372,8 +363,9 @@ impl Render for EventsView {
                 let focus = this.table.read(cx).focus_handle(cx);
                 focus.focus(window, cx);
             }))
-            .flex_none()
-            .w(u(300.0))
+            .flex_1()
+            .min_w(u(120.0))
+            .max_w(u(300.0))
             .h(u(sizes::CONTROL))
             .px(u(8.0))
             .flex()
@@ -412,13 +404,19 @@ impl Render for EventsView {
             })
         };
         let feed_handle = self.feed.clone();
-        let group_chip = div()
-            .id("events-group")
-            .cursor_pointer()
-            .child(Chip::new("×N grouped").selected(folded))
-            .on_click(move |_, _, cx| {
-                feed_handle.update(cx, |feed, cx| feed.set_folded(!folded, cx))
-            });
+        let group_button = div()
+            .id("events-group-tooltip")
+            .tooltip(|window, cx| {
+                gpui_component::tooltip::Tooltip::new("Group repeated events (g)").build(window, cx)
+            })
+            .child(
+                IconButton::new("events-group", IconName::Layers)
+                    .icon_size(13.0)
+                    .toggled(folded)
+                    .on_click(move |_, _, cx| {
+                        feed_handle.update(cx, |feed, cx| feed.set_folded(!folded, cx))
+                    }),
+            );
         let toolbar = h_flex()
             .flex_none()
             .h(u(sizes::TOOLBAR))
@@ -431,7 +429,7 @@ impl Render for EventsView {
             .child(search)
             .child(ui::type_chips(&all, &self.filter, on_type, &colors))
             .child(ui::namespace_chip(&self.feed, on_namespace, cx))
-            .child(group_chip)
+            .child(group_button)
             .child(ui::live_indicator(&status, &colors))
             .child(ui::pause_button(&self.feed, cx));
         let hints: Vec<(SharedString, SharedString)> = vec![
