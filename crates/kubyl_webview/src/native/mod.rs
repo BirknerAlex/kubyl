@@ -335,6 +335,11 @@ impl NativeWebView {
         if self.placement == Placement::Window {
             return;
         }
+        // wry (macOS) unwraps the view's window.
+        #[cfg(target_os = "macos")]
+        if !macos::in_window(&self.webview) {
+            return;
+        }
         #[cfg(target_os = "linux")]
         self.bounds.set(Some(bounds));
         with_wry! {{
@@ -382,6 +387,10 @@ impl NativeWebView {
             self.platform.present();
             return;
         }
+        #[cfg(target_os = "macos")]
+        if !macos::in_window(&self.webview) {
+            return;
+        }
         with_wry! { self.webview.focus().ok(); }
     }
 
@@ -395,7 +404,13 @@ impl NativeWebView {
 
     #[allow(unused_variables)]
     pub fn load_url(&self, url: &str) {
-        with_wry! { self.webview.load_url(url).ok(); }
+        // Normalized first: wry (macOS) unwraps `NSURL::URLWithString`, which rejects some
+        // strings a user can type into the address bar.
+        let Ok(url) = url::Url::parse(url) else {
+            tracing::debug!(url, "not loading an invalid URL");
+            return;
+        };
+        with_wry! { self.webview.load_url(url.as_str()).ok(); }
     }
 
     pub fn reload(&self) {
@@ -423,8 +438,12 @@ impl NativeWebView {
     }
 
     /// The main frame's URL.
+    /// The page's URL; `None` before a page commits.
     pub fn url(&self) -> Option<String> {
-        with_wry! { return self.webview.url().ok(); }
+        #[cfg(target_os = "macos")]
+        return macos::url(&self.webview);
+        #[cfg(any(target_os = "windows", target_os = "linux"))]
+        return self.webview.url().ok().filter(|url| !url.is_empty());
         #[allow(unreachable_code)]
         None
     }
