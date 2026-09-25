@@ -1114,7 +1114,10 @@ impl MetricsService {
                     Err(err) => {
                         tracing::debug!(%cluster, query = key.query, %err, "range query failed");
                         entry.fetch.finish(Some(err.to_string().into()));
-                        this.failed(&cluster, &err);
+                        // A heavy query (7d) timing out says nothing about the target.
+                        if !matches!(err, PromError::Timeout) {
+                            this.failed(&cluster, &err);
+                        }
                     }
                 }
                 cx.notify();

@@ -227,7 +227,7 @@ pub fn rows<'a>(
     group(rows, fold)
 }
 
-/// Warning and normal counts (occurrences, like the chips in the mockup count rows).
+/// Warning and normal row counts, as the mockup's chips show (folded rows count once).
 pub fn counts(rows: &[EventRow]) -> (usize, usize) {
     let warnings = rows.iter().filter(|r| r.warning).count();
     (warnings, rows.len() - warnings)
