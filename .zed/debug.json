@@ -8,6 +8,7 @@
     "cargo": {
       "args": ["build", "-p", "kubyl"]
     },
+    "program": "target/debug/kubyl",
     "env": {
       "KUBYL_CREDENTIAL_STORE": "memory"
     }
