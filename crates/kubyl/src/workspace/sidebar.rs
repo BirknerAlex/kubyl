@@ -3,9 +3,12 @@
 use gpui::{
     AnyView, App, Context, FocusHandle, Focusable, IntoElement, Render, Window, div, prelude::*,
 };
+use gpui_component::button::{Button as MenuButton, ButtonVariants as _};
+use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 use kubyl_core::ChromeRegistry;
 use kubyl_core::actions::{AddKubeconfig, FilterSidebar};
-use kubyl_ui::{ActiveColors, IconButton, IconName, PanelHeader, v_flex};
+use kubyl_kube::ui::{OpenClusters, PasteKubeconfig};
+use kubyl_ui::{ActiveColors, Icon, IconButton, IconName, PanelHeader, v_flex};
 
 pub struct Sidebar {
     sections: Vec<AnyView>,
@@ -48,24 +51,37 @@ impl Render for Sidebar {
                         IconButton::new("filter-kinds", IconName::Search)
                             .icon_size(13.0)
                             .on_click(|_, window, cx| {
-                                crate::views::dispatch_or_explain(
-                                    Box::new(FilterSidebar),
-                                    "Filtering the sidebar",
-                                    window,
-                                    cx,
+                                window.dispatch_action(Box::new(FilterSidebar), cx)
+                            }),
+                    )
+                    .end_child(
+                        MenuButton::new("add-kubeconfig")
+                            .ghost()
+                            .compact()
+                            .child(Icon::new(IconName::Plus).size(14.0))
+                            .dropdown_menu(|menu, _, _| {
+                                menu.item(
+                                    PopupMenuItem::new("Add kubeconfig file or folder…").on_click(
+                                        |_, window, cx| {
+                                            window.dispatch_action(Box::new(AddKubeconfig), cx)
+                                        },
+                                    ),
+                                )
+                                .item(PopupMenuItem::new("Paste kubeconfig YAML…").on_click(
+                                    |_, window, cx| {
+                                        window.dispatch_action(Box::new(PasteKubeconfig), cx)
+                                    },
+                                ))
+                                .separator()
+                                .item(
+                                    PopupMenuItem::new("Manage kubeconfigs").on_click(
+                                        |_, window, cx| {
+                                            window.dispatch_action(Box::new(OpenClusters), cx)
+                                        },
+                                    ),
                                 )
                             }),
                     )
-                    .end_child(IconButton::new("add-kubeconfig", IconName::Plus).on_click(
-                        |_, window, cx| {
-                            crate::views::dispatch_or_explain(
-                                Box::new(AddKubeconfig),
-                                "Adding kubeconfigs",
-                                window,
-                                cx,
-                            )
-                        },
-                    ))
                     .end_child(IconButton::new("sidebar-more", IconName::Ellipsis)),
             )
             .child(
