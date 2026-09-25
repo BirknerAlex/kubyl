@@ -221,6 +221,105 @@ pub fn edit(webview: &wry::WebView, command: EditCommand) {
 }
 
 /// Takes a PNG snapshot of the visible page.
+/// Sets session cookies, then loads `url`, without blocking. WebKit's cookie store answers on
+/// the main queue, which a blocking wait inside a GPUI task keeps busy: wry's `set_cookie`
+/// gives up after 1 s while a new data store's network process starts, and the page loads
+/// without its cookie.
+pub fn set_cookies_then_load(
+    webview: &wry::WebView,
+    cookies: &[wry::cookie::Cookie<'static>],
+    url: &str,
+) {
+    use std::cell::Cell;
+
+    use objc2_foundation::{NSURL, NSURLRequest};
+
+    let view = webview.webview();
+    let Some(request) = NSURL::URLWithString(&NSString::from_str(url))
+        .map(|url| NSURLRequest::requestWithURL(&url))
+    else {
+        tracing::debug!(url, "not loading an invalid URL");
+        return;
+    };
+    let pending = Rc::new(Cell::new(cookies.len()));
+    let load = Rc::new(RefCell::new(Some((view.clone(), request))));
+    let done = move || {
+        pending.set(pending.get().saturating_sub(1));
+        if pending.get() == 0
+            && let Some((view, request)) = load.borrow_mut().take()
+        {
+            // SAFETY: `loadRequest:` on the WKWebView with an NSURLRequest (returns a
+            // WKNavigation we don't need).
+            unsafe {
+                let _: *mut AnyObject = msg_send![&*view, loadRequest: &*request];
+            }
+        }
+    };
+    // SAFETY: plain getters of WKWebView → WKWebViewConfiguration → WKWebsiteDataStore →
+    // WKHTTPCookieStore; the store lives as long as the web view's data store.
+    let store: *mut AnyObject = unsafe {
+        let configuration: *mut AnyObject = msg_send![&*view, configuration];
+        let data_store: *mut AnyObject = msg_send![configuration, websiteDataStore];
+        msg_send![data_store, httpCookieStore]
+    };
+    for cookie in cookies {
+        let Some(ns_cookie) = ns_cookie(cookie) else {
+            tracing::warn!(name = cookie.name(), "couldn't make a session cookie");
+            done();
+            continue;
+        };
+        let done = done.clone();
+        let block = RcBlock::new(done);
+        // SAFETY: `setCookie:completionHandler:` with an NSHTTPCookie and a `void (^)(void)`
+        // block, called on the main thread.
+        unsafe {
+            let _: () = msg_send![store, setCookie: &*ns_cookie, completionHandler: &*block];
+        }
+    }
+}
+
+/// An `NSHTTPCookie` for a session cookie (no expiry).
+fn ns_cookie(cookie: &wry::cookie::Cookie<'_>) -> Option<Retained<objc2_foundation::NSHTTPCookie>> {
+    use objc2_foundation::{
+        NSDictionary, NSHTTPCookie, NSHTTPCookieDomain, NSHTTPCookieName, NSHTTPCookiePath,
+        NSHTTPCookieSameSiteLax, NSHTTPCookieSameSitePolicy, NSHTTPCookieSecure, NSHTTPCookieValue,
+    };
+
+    let name = NSString::from_str(cookie.name());
+    let value = NSString::from_str(cookie.value());
+    let domain = NSString::from_str(cookie.domain()?);
+    let path = NSString::from_str(cookie.path().unwrap_or("/"));
+    let flag =
+        |on: Option<bool>| NSString::from_str(if on == Some(true) { "TRUE" } else { "FALSE" });
+    let secure = flag(cookie.secure());
+    let http_only = flag(cookie.http_only());
+    let http_only_key = NSString::from_str("HttpOnly");
+    // SAFETY: the property keys are Foundation's constants; the values are NSStrings, as
+    // `cookieWithProperties:` expects.
+    unsafe {
+        let keys: [&NSString; 7] = [
+            NSHTTPCookieName,
+            NSHTTPCookieValue,
+            NSHTTPCookieDomain,
+            NSHTTPCookiePath,
+            NSHTTPCookieSecure,
+            &http_only_key,
+            NSHTTPCookieSameSitePolicy,
+        ];
+        let values: [&AnyObject; 7] = [
+            &name,
+            &value,
+            &domain,
+            &path,
+            &secure,
+            &http_only,
+            NSHTTPCookieSameSiteLax,
+        ];
+        let properties = NSDictionary::from_slices(&keys, &values);
+        NSHTTPCookie::cookieWithProperties(&properties)
+    }
+}
+
 pub fn snapshot(webview: &wry::WebView, done: Box<dyn FnOnce(Option<Vec<u8>>)>) {
     let done = RefCell::new(Some(done));
     let block = RcBlock::new(move |image: *mut AnyObject, _error: *mut AnyObject| {

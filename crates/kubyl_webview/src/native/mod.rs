@@ -319,15 +319,21 @@ impl NativeWebView {
             let platform = linux::attach(&webview, platform, &options, events)?;
             if !options.cookies.is_empty() {
                 // After `attach`: the certificate hooks must be in place for the first load.
-                for cookie in crate::session::wry_cookies(&options.url, &options.cookies) {
-                    if let Err(err) = webview.set_cookie(&cookie) {
-                        tracing::warn!(
-                            name = cookie.name(),
-                            "couldn't set a session cookie: {err}"
-                        );
+                let cookies = crate::session::wry_cookies(&options.url, &options.cookies);
+                #[cfg(target_os = "macos")]
+                macos::set_cookies_then_load(&webview, &cookies, &options.url);
+                #[cfg(not(target_os = "macos"))]
+                {
+                    for cookie in cookies {
+                        if let Err(err) = webview.set_cookie(&cookie) {
+                            tracing::warn!(
+                                name = cookie.name(),
+                                "couldn't set a session cookie: {err}"
+                            );
+                        }
                     }
+                    webview.load_url(&options.url).ok();
                 }
-                webview.load_url(&options.url).ok();
             }
             Ok(Self {
                 webview,
