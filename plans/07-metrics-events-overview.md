@@ -216,3 +216,8 @@ endpoints' pods.
   events feed falls back to core Events when the shared `events.k8s.io` store already failed;
   the Events table drops a stale selection; throttled warning toasts are delivered when the
   interval ends.
+- Security review of the OpenShift paths: the Route fallback only runs for
+  `openshift-monitoring` or a Service named in settings (a Service and Route anyone can create
+  elsewhere must not receive the user's token), and only uses a host a router admitted, never
+  `spec.host`. OAuth passwords and code exchanges only go to HTTPS endpoints (or loopback).
+  Changed TLS/proxy settings in the kubeconfig replace the shared OpenShift auth.

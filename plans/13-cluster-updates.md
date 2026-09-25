@@ -27,7 +27,7 @@ distribution upgrades differently.
 - [ ] Deprecated/removed APIs still in use: `apiserver_requested_deprecated_apis` metric (Prometheus from 07, or `/metrics` if allowed) plus a scan of stored objects and Helm manifests against the target version's removal list (bundled table, updated each release)
 - [ ] PodDisruptionBudgets that block drain (allowed disruptions = 0)
 - [ ] Node capacity headroom for surge upgrades
-- [ ] Installed operators compatible with the target version (OLM `maxKubeVersion`/`minKubeVersion`, from 08)
+- [ ] Installed operators compatible with the target version (OLM `maxKubeVersion`/`minKubeVersion`, from 12)
 - [ ] Add-on compatibility (provider-supplied: EKS add-ons, GKE/AKS components)
 - [ ] Version skew: kubelet vs control plane, and the skip-version rules
 - [ ] Each check is pass/warn/fail with an explanation and a "fix" action (open the PDB, update the add-on…)
