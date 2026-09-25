@@ -263,6 +263,42 @@ mod screenshot {
             // dispatches any action by name.
             // `mouse=640:380` moves the pointer there (hover popups), `click=640:380` clicks,
             // in logical window pixels.
+            // `scroll=640:380:-600` scrolls the element under that point by the pixel delta
+            // (negative scrolls down, like a trackpad swipe up).
+            step if step.starts_with("scroll=") => {
+                let mut parts = step["scroll=".len()..].splitn(3, ':');
+                let parsed = (|| {
+                    let x = parts.next()?.trim().parse::<f32>().ok()?;
+                    let y = parts.next()?.trim().parse::<f32>().ok()?;
+                    let dy = parts.next()?.trim().parse::<f32>().ok()?;
+                    Some((x, y, dy))
+                })();
+                let Some((x, y, dy)) = parsed else {
+                    tracing::error!("bad screenshot step {step}");
+                    return;
+                };
+                let position = gpui::point(gpui::px(x), gpui::px(y));
+                window.draw(cx).clear(cx);
+                window.dispatch_event(
+                    gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                        position,
+                        pressed_button: None,
+                        modifiers: Default::default(),
+                    }),
+                    cx,
+                );
+                window.draw(cx).clear(cx);
+                window.dispatch_event(
+                    gpui::PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+                        position,
+                        delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.0), gpui::px(dy))),
+                        modifiers: Default::default(),
+                        touch_phase: gpui::TouchPhase::Moved,
+                    }),
+                    cx,
+                );
+                window.draw(cx).clear(cx);
+            }
             // `filedrop=640:380:/tmp/a;/tmp/b` drops files from the OS at that point.
             step if step.starts_with("filedrop=") => {
                 let mut parts = step["filedrop=".len()..].splitn(3, ':');

@@ -49,7 +49,8 @@ cargo run -p kubyl
   config dir picks the open tabs (e.g. `{"kind":{"custom":"clusters"}}`) and `kube.active`.
   `KUBYL_SCREENSHOT_ACTIONS` takes comma-separated steps: `split`, `bottom`, `zoom`, `light`,
   `about`, `toast`, `palette=:cert`, `action=pane::GoBack`, `keys=: p o enter` (typed through
-  GPUI's key dispatch), `mouse=640:380` (hover), `click=640:380` (logical window pixels) and
+  GPUI's key dispatch), `mouse=640:380` (hover), `click=640:380` (logical window pixels),
+  `scroll=640:380:-600` (wheel delta at a point; negative scrolls down) and
   `wait=800`, which is enough to click through keyboard flows. Steps are comma-separated, so
   `keys=` can't type commas; type `:`/`#` as themselves (not `shift-;`), and close completion
   menus with `escape` before `enter` when typing into the YAML editor.
