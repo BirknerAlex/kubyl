@@ -41,7 +41,7 @@ one changes the current rule "Kubyl never modifies kubeconfig files".
 
 ### Model and files
 - [ ] Kubeconfig document model: clusters, users, contexts, `current-context`, preferences and extensions. Unknown fields survive a round trip
-- [ ] Load and save per file: atomic write (temp file + rename), keep the file mode (0600 for new files), timestamped backups (`<config dir>/kubeconfig-backups/`, keep the last N), refuse to overwrite a file whose hash changed since it was loaded
+- [ ] Load and save per file: atomic write (temp file + rename), mode 0600 for new files and for files with inline credentials (otherwise keep the existing mode), timestamped backups (`<config dir>/kubeconfig-backups/`, keep the last N), refuse to overwrite a file whose hash changed since it was loaded
 - [ ] Changed on disk while editing (phase 01's watcher): a banner with "Reload" and "Keep mine" (shows the diff)
 - [ ] Validation as you type: contexts pointing at missing clusters or users, duplicate names, invalid server URLs, unreadable certificate or key files, client certificates and CAs that are expired or expire soon (parse the PEM, show NotAfter), `insecure-skip-tls-verify` together with CA data
 - [ ] `$KUBECONFIG` merges several files: the editor edits one file at a time, and the merged view offers "open the file that defines this"
@@ -55,9 +55,9 @@ one changes the current rule "Kubyl never modifies kubeconfig files".
 - [ ] Secrets are masked by default, never logged, never written to `state.json`; copying one is an explicit action
 
 ### Verify and test
-- [ ] "Test connection" for a context, from the in-memory edits, without saving (phase 01's client builder). Steps, each with ✓/✗ and a plain-language error: DNS and TCP, TLS (handshake, CA verification, server certificate details), `/version`, authentication (`SelfSubjectReview`: user name and groups), permissions (can list namespaces, can list pods, cluster-admin or not), latency
+- [ ] "Test connection" for a context, from the in-memory edits, without saving (phase 01's client builder). Before it runs an exec plugin that comes from an import or unsaved edits, it shows the command and arguments and asks for consent (`interactiveMode` isn't consent). Steps, each with ✓/✗ and a plain-language error: DNS and TCP, TLS (handshake, CA verification, server certificate details), `/version`, authentication (`SelfSubjectReview`: user name and groups), permissions (can list namespaces, can list pods, cluster-admin or not), latency
 - [ ] Failures suggest the fix: "certificate signed by unknown authority: fetch the CA from the server?", "token expired", "`aws` isn't installed: see the install hint"
-- [ ] Exec plugins run with the login-shell `PATH` (phase 01) and show their stderr. OIDC runs the sign-in flow
+- [ ] After consent, exec plugins run with the login-shell `PATH` (phase 01) and show their stderr. OIDC runs the sign-in flow
 - [ ] "Test all contexts" of a file, results shown in the list
 
 ### Creating and sharing
