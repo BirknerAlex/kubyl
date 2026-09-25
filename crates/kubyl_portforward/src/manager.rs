@@ -8,6 +8,8 @@
 //! forward survives pod restarts.
 
 use std::collections::HashMap;
+use std::fmt;
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures::StreamExt as _;
@@ -46,9 +48,39 @@ pub struct ForwardSpec {
     pub https: bool,
     /// Open the browser once the port listens.
     pub open_browser: bool,
+    /// A temporary forward owned by another feature (web views): never saved, not listed in
+    /// [`kubyl_core::forwards::ActiveForwards`].
+    pub ephemeral: Option<Ephemeral>,
+}
+
+/// How a temporary forward shows in Active Sessions, and who to tell when the user stops it.
+#[derive(Clone)]
+pub struct Ephemeral {
+    /// The session title, e.g. `web view · svc/grafana :3000`.
+    pub title: String,
+    /// Extra buttons on the session row (before the stop button).
+    pub buttons: Vec<SessionButton>,
+    /// Called after the user stopped the forward from Active Sessions.
+    pub on_stop: Arc<dyn Fn(&mut App)>,
+}
+
+impl fmt::Debug for Ephemeral {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Ephemeral")
+            .field("title", &self.title)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ForwardSpec {
+    /// `svc/ledger :5432`, or the title of a temporary forward.
+    pub fn session_label(&self) -> String {
+        match &self.ephemeral {
+            Some(ephemeral) => ephemeral.title.clone(),
+            None => self.target_label(),
+        }
+    }
+
     /// `svc/ledger :5432`.
     pub fn target_label(&self) -> String {
         let kind = short_kind(&self.target.gvr.resource);
@@ -70,17 +102,36 @@ pub enum ForwardState {
     Failed(String),
 }
 
+/// A running forward's state, for crates that show their own forwards.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ForwardInfo {
+    pub state: ForwardState,
+    /// `0` until the port listens.
+    pub local_port: u16,
+    /// The pod the last connection (or check) reached.
+    pub pod: Option<String>,
+    /// The remote port of the last resolution.
+    pub remote_port: Option<u16>,
+    pub connections: u64,
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+}
+
 struct Forward {
     spec: ForwardSpec,
     state: ForwardState,
     local_port: u16,
     /// The remote port of the last resolution.
     resolved_port: Option<u16>,
+    /// The pod of the last resolution or connection.
+    resolved_pod: Option<String>,
     connections: u64,
     bytes_sent: u64,
     bytes_received: u64,
     session_id: SessionId,
     saved: bool,
+    /// The client the forward was started with (probes use it too).
+    client: kube::Client,
     _task: Task<()>,
     probe: Option<Task<()>>,
 }
@@ -101,7 +152,7 @@ impl Forward {
 
     /// `svc/ledger :5432 → :15432`.
     fn title(&self) -> String {
-        let target = self.spec.target_label();
+        let target = self.spec.session_label();
         if self.local_port == 0 {
             target
         } else {
@@ -222,20 +273,21 @@ impl PortForwardManager {
             }
         });
 
-        let saved = SavedForwards::global(cx)
-            .read(cx)
-            .state()
-            .contains(&saved_forward(&spec, cx));
+        let saved = spec.ephemeral.is_none()
+            && SavedForwards::global(cx)
+                .read(cx)
+                .state()
+                .contains(&saved_forward(&spec, cx));
         manager.update(cx, |this, cx| {
             let session_id = SessionRegistry::add(
                 cx,
                 SessionKind::PortForward,
-                spec.target_label(),
+                spec.session_label(),
                 spec.namespace.clone(),
                 "starting…",
                 Tone::Info,
                 move |cx| {
-                    Self::global(cx).update(cx, |this, cx| this.remove(id, cx));
+                    Self::global(cx).update(cx, |this, cx| this.stopped_by_user(id, cx));
                 },
             );
             this.forwards.insert(
@@ -245,11 +297,13 @@ impl PortForwardManager {
                     state: ForwardState::Starting,
                     local_port,
                     resolved_port: None,
+                    resolved_pod: None,
                     connections: 0,
                     bytes_sent: 0,
                     bytes_received: 0,
                     session_id,
                     saved,
+                    client: client.clone(),
                     _task: task,
                     probe: None,
                 },
@@ -278,6 +332,34 @@ impl PortForwardManager {
         }
     }
 
+    /// The user stopped the forward from Active Sessions: drop it and tell a temporary
+    /// forward's owner.
+    fn stopped_by_user(&mut self, id: u64, cx: &mut Context<Self>) {
+        let on_stop = self
+            .forwards
+            .get(&id)
+            .and_then(|f| f.spec.ephemeral.as_ref())
+            .map(|e| e.on_stop.clone());
+        self.remove(id, cx);
+        if let Some(on_stop) = on_stop {
+            cx.defer(move |cx| on_stop(cx));
+        }
+    }
+
+    /// A forward's state, or `None` once it stopped.
+    pub fn info(&self, id: ForwardId) -> Option<ForwardInfo> {
+        let forward = self.forwards.get(&id.0)?;
+        Some(ForwardInfo {
+            state: forward.state.clone(),
+            local_port: forward.local_port,
+            pod: forward.resolved_pod.clone(),
+            remote_port: forward.resolved_port,
+            connections: forward.connections,
+            bytes_sent: forward.bytes_sent,
+            bytes_received: forward.bytes_received,
+        })
+    }
+
     /// Stops the forward with a raw id from [`kubyl_core::forwards::ActiveForward::id`].
     pub fn stop_raw(&mut self, id: u64, cx: &mut Context<Self>) {
         self.stop(ForwardId(id), cx);
@@ -289,6 +371,7 @@ impl PortForwardManager {
         let mut forwards: Vec<ActiveForward> = self
             .forwards
             .iter()
+            .filter(|(_, forward)| forward.spec.ephemeral.is_none())
             .map(|(id, forward)| {
                 let listening = forward.state == ForwardState::Listening && forward.local_port != 0;
                 ActiveForward {
@@ -308,6 +391,7 @@ impl PortForwardManager {
     pub fn is_running(&self, saved: &SavedForward, cx: &App) -> bool {
         self.forwards
             .values()
+            .filter(|f| f.spec.ephemeral.is_none())
             .any(|f| saved_forward(&f.spec, cx).same_target(saved))
     }
 
@@ -346,6 +430,7 @@ impl PortForwardManager {
                         match result {
                             Ok(resolved) => {
                                 forward.resolved_port = Some(resolved.port);
+                                forward.resolved_pod = Some(resolved.pod);
                                 if matches!(forward.state, ForwardState::Reconnecting(_)) {
                                     forward.state = ForwardState::Listening;
                                 }
@@ -398,8 +483,9 @@ impl PortForwardManager {
                     cx.open_url(&forward.url());
                 }
             }
-            ForwardEvent::ConnectionOpened => {
+            ForwardEvent::ConnectionOpened { pod } => {
                 forward.connections += 1;
+                forward.resolved_pod = Some(pod.clone());
                 // A connection reached a pod: the target resolves again.
                 if matches!(forward.state, ForwardState::Reconnecting(_)) {
                     forward.state = ForwardState::Listening;
@@ -414,16 +500,12 @@ impl PortForwardManager {
                 forward.bytes_received += received;
             }
             ForwardEvent::Error(message) => {
-                tracing::debug!(forward = %forward.spec.target_label(), "port-forward error: {message}");
+                tracing::debug!(forward = %forward.spec.session_label(), "port-forward error: {message}");
                 if !matches!(forward.state, ForwardState::Failed(_)) {
                     forward.state = ForwardState::Reconnecting(message.clone());
                     if forward.probe.is_none() {
-                        let client = kubyl_kube::ConnectionManager::global(cx)
-                            .read(cx)
-                            .client(&forward.spec.cluster);
-                        if let Some(client) = client {
-                            self.check_target(id, client, cx);
-                        }
+                        let client = forward.client.clone();
+                        self.check_target(id, client, cx);
                     }
                 }
             }
@@ -463,6 +545,14 @@ impl PortForwardManager {
             ));
         }
         let saved = forward.saved;
+        if let Some(ephemeral) = &forward.spec.ephemeral {
+            buttons.extend(ephemeral.buttons.iter().cloned());
+            SessionRegistry::set_title(cx, session, title);
+            SessionRegistry::set_status(cx, session, status, tone);
+            SessionRegistry::set_buttons(cx, session, buttons);
+            cx.notify();
+            return;
+        }
         buttons.push(SessionButton::new(
             "save",
             if saved {
@@ -489,6 +579,9 @@ impl PortForwardManager {
         let Some(forward) = self.forwards.get_mut(&id) else {
             return;
         };
+        if forward.spec.ephemeral.is_some() {
+            return;
+        }
         let saved = saved_forward(&forward.spec, cx);
         forward.saved = !forward.saved;
         let keep = forward.saved;
@@ -512,6 +605,7 @@ impl PortForwardManager {
             .iter()
             .filter(|(_, f)| {
                 f.local_port != 0
+                    && f.spec.ephemeral.is_none()
                     && f.spec.http
                     && matches!(
                         f.state,
@@ -525,10 +619,8 @@ impl PortForwardManager {
 
 /// The saved-forward form of a spec (its context resolved through the connection manager).
 pub fn saved_forward(spec: &ForwardSpec, cx: &App) -> SavedForward {
-    let context = kubyl_kube::ConnectionManager::global(cx)
-        .read(cx)
-        .context(&spec.cluster)
-        .cloned();
+    let context = kubyl_kube::ConnectionManager::try_global(cx)
+        .and_then(|manager| manager.read(cx).context(&spec.cluster).cloned());
     SavedForward {
         context: context
             .as_ref()

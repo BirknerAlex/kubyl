@@ -331,6 +331,7 @@ pub fn start_target_forward(target: ResourceRef, choice: ForwardChoice, cx: &mut
         http: choice.http,
         https: choice.https,
         open_browser: choice.open_browser,
+        ephemeral: None,
     };
     let save = choice.save.then_some(choice.auto_start);
     match target.gvr.resource.as_str() {
