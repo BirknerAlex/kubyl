@@ -500,6 +500,17 @@ mod screenshot {
     #[cfg(not(target_os = "macos"))]
     fn keep_awake() {}
 
+    /// Waits on a thread of its own: macOS coalesces dispatch timers of background apps so much
+    /// that the executor's timers may not fire for minutes while another app is in front.
+    async fn sleep(duration: Duration) {
+        let (tx, rx) = futures::channel::oneshot::channel::<()>();
+        std::thread::spawn(move || {
+            std::thread::sleep(duration);
+            tx.send(()).ok();
+        });
+        rx.await.ok();
+    }
+
     pub fn schedule(window: AnyWindowHandle, cx: &mut App) {
         let Some(path) = std::env::var_os("KUBYL_SCREENSHOT") else {
             return;
@@ -507,8 +518,7 @@ mod screenshot {
         let actions = std::env::var("KUBYL_SCREENSHOT_ACTIONS").unwrap_or_default();
         keep_awake();
         cx.spawn(async move |cx| {
-            let executor = cx.background_executor().clone();
-            let settle = || executor.timer(Duration::from_millis(1500));
+            let settle = || sleep(Duration::from_millis(1500));
             settle().await;
             // Steps run in order. `keys=: c e r t enter` types keystrokes (a frame is drawn
             // before each, so focused inputs have their input handler), `wait=500` pauses.
@@ -531,19 +541,19 @@ mod screenshot {
                                 );
                             })
                             .ok();
-                        executor.timer(Duration::from_millis(150)).await;
+                        sleep(Duration::from_millis(150)).await;
                     }
                     continue;
                 }
                 if let Some(ms) = step.strip_prefix("wait=") {
                     let ms = ms.parse().unwrap_or(500);
-                    executor.timer(Duration::from_millis(ms)).await;
+                    sleep(Duration::from_millis(ms)).await;
                     continue;
                 }
                 window
                     .update(cx, |_, window, cx| run_step(step, window, cx))
                     .ok();
-                executor.timer(Duration::from_millis(150)).await;
+                sleep(Duration::from_millis(150)).await;
             }
             settle().await;
             // Draw fresh frames: macOS doesn't drive frames while the display sleeps, is locked
@@ -552,7 +562,7 @@ mod screenshot {
             window
                 .update(cx, |_, window, cx| window.draw(cx).clear(cx))
                 .ok();
-            executor.timer(Duration::from_millis(600)).await;
+            sleep(Duration::from_millis(600)).await;
             let image = window.update(cx, |_, window, cx| {
                 window.draw(cx).clear(cx);
                 window.render_to_image()
