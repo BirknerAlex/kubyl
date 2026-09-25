@@ -104,7 +104,8 @@ plans/                      # these plans
 | Syntax | `tree-sitter-yaml` through gpui-component's `tree-sitter-yaml` feature (phase 04) | Highlighting and folding in gpui-component's code editor (`EditorState`); editor colors come from `kubyl_ui` (One Dark). |
 | YAML editor | gpui-component `EditorState` (Apache-2.0), not Zed's GPL `editor` (phase 04) | Diagnostics, hover and completion use its LSP-style providers; gutter markers, code lenses and end-of-line messages are painted by `kubyl_yaml` over the editor. Diffs: `similar` 3 (line diff, three-way merge). |
 | Apply | Server-side apply, field manager `kubyl`, strict field validation; `force` only after the user saw the conflicting managers; replace/create fallback on 415 (phase 04) | `kubyl_yaml::apply`. PROD clusters confirm with the change summary and the typed object name. Kubyl's own applies are kept in state.json (`yaml_history`, never Secrets). |
-| Terminal | `alacritty_terminal` (Apache-2.0) with a custom GPUI renderer | Same approach as Zed, without Zed's GPL view code. |
+| Terminal | `alacritty_terminal` (Apache-2.0) with a custom GPUI canvas renderer (decided in phase 05) | Same approach as Zed, without Zed's GPL view code. Cell width = the advance of `m` from GPUI's text system; runs are shaped with that width forced. Control keys, tab and escape are bound to `terminal::SendKeystroke` in the `TerminalView` key context, because gpui-component's `Root` binds `ctrl-c`/`tab` and `secondary-*` is Ctrl on Linux/Windows. |
+| Log view | `gpui::list` with `FollowMode::Tail`, spliced per batch (decided in phase 05) | Variable-height rows (wrap, pretty JSON). Timestamps are always requested from the API and split off each line; reconnects resume at `sinceTime`. Selector sources watch their pods. |
 | Charts | Own GPUI `canvas`/path renderer in `kubyl_charts` | No webviews. |
 | Web views | `wry` (MIT/Apache-2.0) as a child view of the GPUI window; separate window or system browser as fallback (phase 11 spike decides per platform) | Only for phase 11 service web views, loaded lazily. |
 | File watching | `notify` | Kubeconfig hot reload. |
@@ -146,7 +147,20 @@ one list. That list is the only shared line, and it is append-only.
 - YAML (phase 04): open `ViewKind::Yaml` with an object ref (edit) or a list ref / no target
   (new resource); `kubyl_yaml::{parse, schema, validate, diff, apply, render}` are usable without
   the view (see plans/04-yaml-editor.md, "API for later phases").
-- Confirmations (phase 02/04): `kubyl_explorer::dialogs::confirm(ConfirmSpec { typed, lines, .. })`.
+- Confirmations (phase 02/04): `kubyl_explorer::dialogs::confirm(ConfirmSpec { typed, lines, .. })`,
+  one-line input: `kubyl_explorer::dialogs::prompt_text`.
+- Dock panels (phase 05): dispatch `kubyl_core::actions::ActivateDockPanel(id)` to show the dock
+  holding a `DockPanel` with that id, activate it and focus it (the panel's `Focusable` decides
+  which element). Dispatch it before focusing anything inside a hidden dock.
+- Active sessions (phase 05): long-running work registers a row with
+  `kubyl_logs::sessions::SessionRegistry::add(kind, title, subtitle, status, tone, on_stop)` and
+  keeps it current with `set_status` / `set_title` / `set_buttons`; the right-dock "Active
+  Sessions" panel and the status bar show them next to the resource watches
+  (`kubyl_resources::ResourceStores::watches`, pausable with `ResourceStore::pause/resume`).
+- Terminals (phase 05): `kubyl_terminal::open(TerminalSpec, in_tab, cx)` opens exec, attach,
+  debug-container or node-shell sessions in the bottom-dock Terminal panel. `kubyl_terminal::exec`
+  (`pod_info`, `run`, `create_debug_container`, `wait_running`) is the exec layer for other crates
+  (the file browser in phase 06).
 
 ### UX principles (from the mockups)
 
