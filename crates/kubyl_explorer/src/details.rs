@@ -9,17 +9,20 @@
 //! Related stores (events, pods, owners…) are acquired only after the selection has been
 //! stable for [`SETTLE`], so scrolling through thousands of rows doesn't start watches.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use base64::Engine as _;
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable, FontWeight,
-    IntoElement, Render, SharedString, Subscription, Task, Window, div, prelude::*,
+    AnyElement, AnyView, App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle,
+    Focusable, FontWeight, IntoElement, Render, SharedString, Subscription, Task, Window, div,
+    prelude::*,
 };
 use kubyl_core::actions::OpenView;
 use kubyl_core::{
-    ClusterId, DockPanel, DockPosition, Gvr, ResourceRef, TabHandle, TabView, Tone, ViewKind,
-    ViewRequest,
+    ClusterCaps, ClusterId, DockPanel, DockPosition, Gvr, Notification, NotificationCenter,
+    ResourceRef, TabHandle, TabView, Tone, ViewKind, ViewRegistry, ViewRequest,
 };
 use kubyl_kube::ConnectionManager;
 use kubyl_resources::columns::{
@@ -69,10 +72,48 @@ impl Target {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Mode {
     Summary,
     Describe,
+    /// Inline YAML editor sub-tab (built on demand via [`ViewRegistry`]).
+    Yaml,
+    /// Inline logs sub-tab (built on demand via [`ViewRegistry`]).
+    Logs,
+    /// Inline exec terminal sub-tab (built on demand via [`ViewRegistry`]).
+    Terminal,
+}
+
+/// Maps an extra sub-tab to the [`ViewKind`] it builds through the shared [`ViewRegistry`].
+/// `Summary`/`Describe` aren't served this way, so they return `None`.
+fn extra_view_kind(mode: Mode) -> Option<ViewKind> {
+    match mode {
+        Mode::Yaml => Some(ViewKind::Yaml),
+        Mode::Logs => Some(ViewKind::Logs),
+        Mode::Terminal => Some(ViewKind::Terminal),
+        Mode::Summary | Mode::Describe => None,
+    }
+}
+
+/// Mirrors `kubyl_logs`'s `ShowLogs` availability: pods and the workloads whose pod-template
+/// selector logs can follow.
+fn logs_applicable(resource: &str) -> bool {
+    matches!(
+        resource,
+        "pods" | "deployments" | "statefulsets" | "daemonsets" | "jobs"
+    )
+}
+
+/// Mirrors `kubyl_terminal`'s `ShowShell` availability: pods on a non-read-only cluster.
+fn terminal_applicable(resource: &str, caps: &ClusterCaps) -> bool {
+    resource == "pods" && !caps.read_only
+}
+
+/// A cached extra sub-tab view, built once per target so switching tabs doesn't rebuild or
+/// reconnect the underlying kube watch/exec/log-stream.
+struct ExtraTab {
+    handle: Box<dyn TabHandle>,
+    _subscription: Subscription,
 }
 
 /// Stores for related objects, acquired once the selection settles.
@@ -100,6 +141,10 @@ pub struct DetailsContent {
     related: Related,
     settle: Option<Task<()>>,
     _source_observer: Option<Subscription>,
+    /// Cached Yaml/Logs/Terminal sub-tab views, built lazily and kept until the target changes.
+    extra: HashMap<Mode, ExtraTab>,
+    /// Secret `data`/`stringData` keys whose decoded value is currently revealed.
+    revealed: std::collections::HashSet<String>,
 }
 
 impl DetailsContent {
@@ -114,6 +159,8 @@ impl DetailsContent {
             related: Related::default(),
             settle: None,
             _source_observer: None,
+            extra: HashMap::new(),
+            revealed: std::collections::HashSet::new(),
         }
     }
 
@@ -138,6 +185,24 @@ impl DetailsContent {
         self.gone = false;
         if !same_object {
             self.related = Related::default();
+            self.extra.clear();
+            self.revealed.clear();
+            // Fall back to Summary if the new target doesn't offer the sub-tab that was open
+            // (e.g. navigating from a Pod's Terminal tab to a ConfigMap).
+            let mode_valid = match (&target, self.mode) {
+                (_, Mode::Summary | Mode::Describe | Mode::Yaml) => target.is_some(),
+                (None, _) => false,
+                (Some(t), Mode::Logs) => logs_applicable(&t.gvr.resource),
+                (Some(t), Mode::Terminal) => {
+                    let caps = ConnectionManager::try_global(cx)
+                        .map(|m| m.read(cx).caps(&t.cluster))
+                        .unwrap_or_default();
+                    terminal_applicable(&t.gvr.resource, &caps)
+                }
+            };
+            if !mode_valid {
+                self.mode = Mode::Summary;
+            }
         }
         self.own = None;
         self._source_observer = None;
@@ -193,6 +258,46 @@ impl DetailsContent {
     fn set_mode(&mut self, mode: Mode, cx: &mut Context<Self>) {
         self.mode = mode;
         cx.notify();
+    }
+
+    /// Builds (or returns the cached) view for an extra sub-tab (Yaml/Logs/Terminal), via the
+    /// shared [`ViewRegistry`] rather than dispatching [`OpenView`] (which would open a
+    /// separate top-level pane tab instead of rendering inline here).
+    fn ensure_extra_view(
+        &mut self,
+        mode: Mode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyView> {
+        if let Some(existing) = self.extra.get(&mode) {
+            return Some(existing.handle.to_any_view());
+        }
+        let kind = extra_view_kind(mode)?;
+        let target = self.target.as_ref()?;
+        let reference = ResourceRef::object(
+            target.cluster.clone(),
+            target.gvr.clone(),
+            target.namespace.clone(),
+            target.name.clone(),
+        );
+        let request = ViewRequest::for_resource(kind, reference);
+        let handle = ViewRegistry::build(&request, window, cx)?;
+        let weak = cx.entity().downgrade();
+        let subscription = handle.observe(
+            cx,
+            Box::new(move |cx| {
+                weak.update(cx, |_, cx| cx.notify()).ok();
+            }),
+        );
+        let view = handle.to_any_view();
+        self.extra.insert(
+            mode,
+            ExtraTab {
+                handle,
+                _subscription: subscription,
+            },
+        );
+        Some(view)
     }
 
     fn observe_store(&mut self, handle: &StoreHandle, cx: &mut Context<Self>) {
@@ -464,6 +569,27 @@ fn link(
         .on_click(move |_, window, cx| open_details(target.clone(), window, cx))
 }
 
+/// Placeholder shown for a masked Secret value, conceptually like `kubyl_yaml::render::MASK`
+/// (not imported: replicating a one-line constant isn't worth a cross-crate dependency).
+const SECRET_MASK: &str = "••••••••";
+
+/// Decodes one Secret `data`/`stringData` entry into plain text, never raw base64. `data`
+/// values are base64-encoded; `stringData` values are already plain text. Falls back to a
+/// byte count when the decoded bytes aren't valid UTF-8, or when the value isn't valid base64
+/// at all.
+fn decode_secret_value(raw: &str, is_string_data: bool) -> String {
+    if is_string_data {
+        return raw.to_string();
+    }
+    match base64::engine::general_purpose::STANDARD.decode(raw) {
+        Ok(bytes) => {
+            let len = bytes.len();
+            String::from_utf8(bytes).unwrap_or_else(|_| format!("<binary, {len} bytes>"))
+        }
+        Err(_) => "<invalid base64>".to_string(),
+    }
+}
+
 fn container_state(status: Option<&Value>, now: jiff::Timestamp) -> (String, Tone) {
     let Some(status) = status else {
         return ("waiting".into(), Tone::Warning);
@@ -647,6 +773,7 @@ impl DetailsContent {
             "Service" => out.extend(self.render_service(object, target, &colors, cx)),
             "PersistentVolumeClaim" => out.extend(self.render_pvc(object, target, &colors, cx)),
             "Ingress" => out.extend(self.render_ingress(object, target, &colors)),
+            "Secret" => out.extend(self.render_secret(object, &colors, cx)),
             _ => {}
         }
 
@@ -1417,6 +1544,101 @@ impl DetailsContent {
         vec![section("Backends", colors).child(list).into_any_element()]
     }
 
+    /// Secret `data`/`stringData`: decoded plain text, masked by default with a per-key reveal
+    /// toggle and a copy-to-clipboard button. Never shows raw base64.
+    fn render_secret(
+        &self,
+        secret: &Value,
+        colors: &Colors,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let mut entries: Vec<(String, String)> = Vec::new();
+        for (is_string_data, pointer) in [(false, "/data"), (true, "/stringData")] {
+            if let Some(map) = secret.pointer(pointer).and_then(Value::as_object) {
+                for (key, value) in map {
+                    let raw = value.as_str().unwrap_or_default();
+                    entries.push((key.clone(), decode_secret_value(raw, is_string_data)));
+                }
+            }
+        }
+        if entries.is_empty() {
+            return Vec::new();
+        }
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut list = v_flex().gap(u(6.0)).text_size(u(12.0));
+        for (key, decoded) in entries {
+            let revealed = self.revealed.contains(&key);
+            let display: SharedString = if revealed {
+                decoded.clone().into()
+            } else {
+                SECRET_MASK.into()
+            };
+            let weak = cx.entity().downgrade();
+            let reveal_key = key.clone();
+            let copy_text = decoded.clone();
+            let copy_key = key.clone();
+            list = list.child(
+                h_flex()
+                    .gap(u(8.0))
+                    .items_center()
+                    .child(
+                        div()
+                            .w(u(140.0))
+                            .flex_none()
+                            .truncate()
+                            .font_family(fonts::MONO)
+                            .text_color(colors.text_dim)
+                            .child(key.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .font_family(fonts::MONO)
+                            .text_color(colors.text)
+                            .child(display),
+                    )
+                    .child(
+                        IconButton::new(
+                            SharedString::from(format!("secret-reveal-{key}")),
+                            if revealed {
+                                IconName::EyeOff
+                            } else {
+                                IconName::Eye
+                            },
+                        )
+                        .icon_size(13.0)
+                        .toggled(revealed)
+                        .on_click(move |_, _, cx| {
+                            weak.update(cx, |this, cx| {
+                                if !this.revealed.remove(&reveal_key) {
+                                    this.revealed.insert(reveal_key.clone());
+                                }
+                                cx.notify();
+                            })
+                            .ok();
+                        }),
+                    )
+                    .child(
+                        IconButton::new(
+                            SharedString::from(format!("secret-copy-{copy_key}")),
+                            IconName::Copy,
+                        )
+                        .icon_size(13.0)
+                        .on_click(move |_, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
+                            NotificationCenter::push(
+                                cx,
+                                Notification::info(format!("Copied {copy_key}")),
+                            );
+                        }),
+                    ),
+            );
+        }
+        vec![section("Data", colors).child(list).into_any_element()]
+    }
+
     fn render_describe(&self, object: &Value, target: &Target, cx: &App) -> AnyElement {
         let colors = cx.colors();
         let events: Vec<Value> = self
@@ -1453,7 +1675,7 @@ impl DetailsContent {
 }
 
 impl Render for DetailsContent {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors().clone();
         let (Some(target), Some(object)) = (self.target.clone(), self.object.clone()) else {
             let message = if self.target.is_some() {
@@ -1469,9 +1691,28 @@ impl Render for DetailsContent {
                 .child(message)
                 .into_any_element();
         };
-        let body: Vec<AnyElement> = match self.mode {
-            Mode::Summary => self.render_summary(&object, &target, cx),
-            Mode::Describe => vec![self.render_describe(&object, &target, cx)],
+        let mode = self.mode;
+        let caps = ConnectionManager::try_global(cx)
+            .map(|m| m.read(cx).caps(&target.cluster))
+            .unwrap_or_default();
+        let show_logs = logs_applicable(&target.gvr.resource);
+        let show_terminal = terminal_applicable(&target.gvr.resource, &caps);
+
+        let body = match mode {
+            Mode::Summary => v_flex()
+                .children(self.render_summary(&object, &target, cx))
+                .into_any_element(),
+            Mode::Describe => self.render_describe(&object, &target, cx),
+            Mode::Yaml | Mode::Logs | Mode::Terminal => {
+                match self.ensure_extra_view(mode, window, cx) {
+                    Some(view) => view.into_any_element(),
+                    None => div()
+                        .p(u(14.0))
+                        .text_color(colors.text_dim)
+                        .child("Not available for this resource.")
+                        .into_any_element(),
+                }
+            }
         };
         let tab = |id: &'static str, label: &'static str, mode: Mode, current: Mode| {
             let active = mode == current;
@@ -1487,7 +1728,6 @@ impl Render for DetailsContent {
                 .when(!active, |this| this.text_color(colors.text_dim))
                 .child(label)
         };
-        let mode = self.mode;
         v_flex()
             .size_full()
             .text_size(u(13.0))
@@ -1510,16 +1750,34 @@ impl Render for DetailsContent {
                         tab("describe", "Describe", Mode::Describe, mode).on_click(
                             cx.listener(|this, _, _, cx| this.set_mode(Mode::Describe, cx)),
                         ),
-                    ),
+                    )
+                    .child(
+                        tab("yaml", "YAML", Mode::Yaml, mode)
+                            .on_click(cx.listener(|this, _, _, cx| this.set_mode(Mode::Yaml, cx))),
+                    )
+                    .when(show_logs, |this| {
+                        this.child(
+                            tab("logs", "Logs", Mode::Logs, mode).on_click(
+                                cx.listener(|this, _, _, cx| this.set_mode(Mode::Logs, cx)),
+                            ),
+                        )
+                    })
+                    .when(show_terminal, |this| {
+                        this.child(tab("terminal", "Terminal", Mode::Terminal, mode).on_click(
+                            cx.listener(|this, _, _, cx| this.set_mode(Mode::Terminal, cx)),
+                        ))
+                    }),
             )
             .child(
                 div()
                     .id("details-scroll")
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
+                    .when(matches!(mode, Mode::Summary | Mode::Describe), |this| {
+                        this.overflow_y_scroll()
+                    })
                     .when(mode == Mode::Describe, |this| this.overflow_x_scroll())
-                    .child(v_flex().children(body)),
+                    .child(body),
             )
             .into_any_element()
     }
@@ -1701,8 +1959,10 @@ impl TabView for DetailsView {
     fn tab_title(&self, _: &App) -> SharedString {
         let name = self.target.name.clone().unwrap_or_default();
         match self.mode {
-            Mode::Summary => name.into(),
             Mode::Describe => format!("{name} · describe").into(),
+            // `DetailsView` is only ever constructed with `Summary` or `Describe` (the two
+            // top-level entry `ViewKind`s); the extra sub-tabs live inside `DetailsContent`.
+            Mode::Summary | Mode::Yaml | Mode::Logs | Mode::Terminal => name.into(),
         }
     }
 
@@ -1712,8 +1972,8 @@ impl TabView for DetailsView {
 
     fn view_request(&self, _: &App) -> Option<ViewRequest> {
         let kind = match self.mode {
-            Mode::Summary => ViewKind::Details,
             Mode::Describe => describe_view_kind(),
+            Mode::Summary | Mode::Yaml | Mode::Logs | Mode::Terminal => ViewKind::Details,
         };
         Some(ViewRequest::for_resource(kind, self.target.clone()))
     }
@@ -1740,6 +2000,51 @@ impl Render for DetailsView {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn logs_and_terminal_applicability_mirrors_context_menu_actions() {
+        assert!(logs_applicable("pods"));
+        assert!(logs_applicable("deployments"));
+        assert!(logs_applicable("statefulsets"));
+        assert!(logs_applicable("daemonsets"));
+        assert!(logs_applicable("jobs"));
+        assert!(!logs_applicable("configmaps"));
+        assert!(!logs_applicable("services"));
+
+        let writable = ClusterCaps::default();
+        let read_only = ClusterCaps {
+            read_only: true,
+            ..Default::default()
+        };
+        assert!(terminal_applicable("pods", &writable));
+        assert!(!terminal_applicable("pods", &read_only));
+        assert!(!terminal_applicable("deployments", &writable));
+    }
+
+    #[test]
+    fn extra_view_kind_maps_sub_tabs_only() {
+        assert_eq!(extra_view_kind(Mode::Yaml), Some(ViewKind::Yaml));
+        assert_eq!(extra_view_kind(Mode::Logs), Some(ViewKind::Logs));
+        assert_eq!(extra_view_kind(Mode::Terminal), Some(ViewKind::Terminal));
+        assert_eq!(extra_view_kind(Mode::Summary), None);
+        assert_eq!(extra_view_kind(Mode::Describe), None);
+    }
+
+    #[test]
+    fn decodes_secret_values_without_ever_showing_raw_base64() {
+        // `data`: base64-decoded to plain text.
+        assert_eq!(decode_secret_value("aGVsbG8=", false), "hello");
+        // `stringData`: already plain text, passed through.
+        assert_eq!(decode_secret_value("hello", true), "hello");
+        // Invalid UTF-8 after decoding: a byte count, not mojibake.
+        let binary = base64::engine::general_purpose::STANDARD.encode([0xff, 0xfe, 0x00]);
+        assert_eq!(decode_secret_value(&binary, false), "<binary, 3 bytes>");
+        // Not valid base64 at all.
+        assert_eq!(
+            decode_secret_value("not base64!!", false),
+            "<invalid base64>"
+        );
+    }
 
     #[test]
     fn guesses_kinds() {
