@@ -123,7 +123,9 @@ pub fn inline(value: &Value) -> Rendered {
 /// Indented multi-line rendering (two spaces, like `jq`).
 pub fn pretty(value: &Value) -> Rendered {
     let mut out = Rendered::default();
-    fn write(out: &mut Rendered, value: &Value, indent: usize, path: &str) {
+    /// `record`: offer the fields as filters. Not inside arrays: a dotted path can't address an
+    /// element, so the filter would hide every line (as in [`inline`]).
+    fn write(out: &mut Rendered, value: &Value, indent: usize, path: &str, record: bool) {
         match value {
             Value::Object(map) if !map.is_empty() => {
                 out.push("{", Some(Token::Punctuation));
@@ -138,7 +140,7 @@ pub fn pretty(value: &Value) -> Rendered {
                     };
                     let key_range = out.push(&format!("\"{key}\""), Some(Token::Key));
                     out.push(": ", Some(Token::Punctuation));
-                    if !matches!(child, Value::Object(_) | Value::Array(_)) {
+                    if record && !matches!(child, Value::Object(_) | Value::Array(_)) {
                         out.fields.push((
                             key_range,
                             FieldFilter {
@@ -147,7 +149,7 @@ pub fn pretty(value: &Value) -> Rendered {
                             },
                         ));
                     }
-                    write(out, child, indent + 1, &child_path);
+                    write(out, child, indent + 1, &child_path, record);
                     if i + 1 < len {
                         out.push(",", Some(Token::Punctuation));
                     }
@@ -162,7 +164,7 @@ pub fn pretty(value: &Value) -> Rendered {
                 for (i, item) in items.iter().enumerate() {
                     out.push("\n", None);
                     out.push(&"  ".repeat(indent + 1), None);
-                    write(out, item, indent + 1, path);
+                    write(out, item, indent + 1, path, false);
                     if i + 1 < len {
                         out.push(",", Some(Token::Punctuation));
                     }
@@ -176,7 +178,7 @@ pub fn pretty(value: &Value) -> Rendered {
             }
         }
     }
-    write(&mut out, value, 0, "");
+    write(&mut out, value, 0, "", true);
     out
 }
 
@@ -262,6 +264,21 @@ mod tests {
         );
         let fields: Vec<String> = rendered.fields.iter().map(|(_, f)| f.label()).collect();
         assert_eq!(fields, ["a=1", "b.c=x"]);
+    }
+
+    #[test]
+    fn pretty_offers_no_filters_inside_arrays() {
+        let value: Value =
+            serde_json::from_str(r#"{"ok":1,"items":[{"name":"a"}],"http":{"status":200}}"#)
+                .unwrap();
+        let fields: Vec<String> = pretty(&value)
+            .fields
+            .into_iter()
+            .map(|(_, f)| f.field)
+            .collect();
+        assert!(fields.contains(&"ok".to_string()));
+        assert!(fields.contains(&"http.status".to_string()));
+        assert!(!fields.iter().any(|f| f.starts_with("items")), "{fields:?}");
     }
 
     #[test]

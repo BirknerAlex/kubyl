@@ -493,15 +493,16 @@ impl Merge {
         self.flushed_rx.clone()
     }
 
-    /// Waits for every backlog (or [`BACKLOG_TIMEOUT`]), emits them merged and lets the
-    /// containers follow.
+    /// Waits for every backlog (or [`BACKLOG_TIMEOUT`]), emits the ones that arrived merged
+    /// and lets the containers follow. A late backlog is sent on its own by its container.
     async fn run(self) {
-        let deadline = tokio::time::sleep(BACKLOG_TIMEOUT);
-        let collect = futures::future::join_all(self.backlogs);
-        let backlogs: Vec<Vec<RawLine>> = tokio::select! {
-            results = collect => results.into_iter().filter_map(Result::ok).collect(),
-            _ = deadline => Vec::new(),
-        };
+        let deadline = tokio::time::Instant::now() + BACKLOG_TIMEOUT;
+        let mut backlogs: Vec<Vec<RawLine>> = Vec::new();
+        for backlog in self.backlogs {
+            if let Ok(Ok(lines)) = tokio::time::timeout_at(deadline, backlog).await {
+                backlogs.push(lines);
+            }
+        }
         let merged = merge_by_time(backlogs);
         for chunk in merged.chunks(BATCH) {
             if self
@@ -686,7 +687,11 @@ async fn container_task(
             resume.record(line.timestamp);
         }
         first = false;
-        backlog.send(lines).ok();
+        // Too late for the merge (it timed out): send the lines on their own, since `resume`
+        // already skips them when following.
+        if let Err(lines) = backlog.send(lines) {
+            tx.unbounded_send(StreamEvent::Lines(lines)).ok();
+        }
         if !options.follows() {
             return;
         }

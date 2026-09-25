@@ -100,8 +100,9 @@ pub fn short_pod_name(pod: &str) -> &str {
     let Some((prefix, suffix)) = pod.rsplit_once('-') else {
         return pod;
     };
-    // StatefulSet ordinals and very short suffixes don't identify a pod on their own.
-    let generated = suffix.len() == 5 && suffix.chars().all(|c| c.is_ascii_alphanumeric());
+    // Only suffixes Kubernetes generates (no vowels, no 0/1/3): `web-proxy` stays whole.
+    const GENERATED: &[u8] = b"bcdfghjklmnpqrstvwxz2456789";
+    let generated = suffix.len() == 5 && suffix.bytes().all(|b| GENERATED.contains(&b));
     if generated && !prefix.is_empty() {
         suffix
     } else {
@@ -126,5 +127,6 @@ mod tests {
         assert_eq!(short_pod_name("checkout-api-7d9f8c6b5-x2kqp"), "x2kqp");
         assert_eq!(short_pod_name("ledger-writer-0"), "ledger-writer-0");
         assert_eq!(short_pod_name("standalone"), "standalone");
+        assert_eq!(short_pod_name("redis-cache"), "redis-cache");
     }
 }
