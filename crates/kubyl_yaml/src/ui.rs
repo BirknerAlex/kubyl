@@ -9,7 +9,7 @@ use gpui::{
 };
 use gpui_component::input::{Editor, Input};
 use kubyl_core::actions::OpenView;
-use kubyl_core::{ViewKind, ViewRequest};
+use kubyl_core::{ChromeRegistry, ViewKind, ViewRequest};
 use kubyl_settings::Settings;
 use kubyl_ui::{
     ActiveColors, Button, Chip, Colors, Icon, IconButton, IconName, ProdBadge, fonts, h_flex,
@@ -17,7 +17,7 @@ use kubyl_ui::{
 };
 
 use crate::apply::Outcome;
-use crate::diff::{self, Marker, Tag};
+use crate::diff::{self, LineDiff, Marker, Tag};
 use crate::parse::{self, Path};
 use crate::schema::Schema;
 use crate::settings::YamlSettings;
@@ -275,44 +275,52 @@ impl YamlEditor {
 
     // ----- Banner -----
 
+    /// What other crates say about editing this object ([`ChromeRegistry::edit_notice`]).
+    fn edit_notice(&self, cx: &Context<Self>) -> Option<SharedString> {
+        let (target, live) = (self.object.as_ref()?, self.live.as_ref()?);
+        ChromeRegistry::edit_notice(cx, target, live)
+    }
+
     fn render_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let colors = cx.colors().clone();
-        let (icon, color, message, actions): (IconName, Hsla, &str, Vec<AnyElement>) = if self
-            .pending
-            .is_some()
-        {
-            (
-                IconName::TriangleAlert,
-                colors.yellow,
-                "Object changed on server",
-                vec![
-                    Button::new("merge")
-                        .label("Merge")
-                        .on_click(cx.listener(|this, _, window, cx| this.merge_pending(window, cx)))
-                        .into_any_element(),
-                    Button::new("reload")
-                        .label("Reload")
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.reload_pending(window, cx)),
-                        )
-                        .into_any_element(),
-                    Button::new("keep")
-                        .ghost()
-                        .label("Keep mine")
-                        .on_click(cx.listener(|this, _, _, cx| this.keep_mine(cx)))
-                        .into_any_element(),
-                ],
-            )
-        } else if self.state == LoadState::Gone {
-            (
-                IconName::TriangleAlert,
-                colors.red,
-                "Deleted on the server. Apply creates it again.",
-                Vec::new(),
-            )
-        } else {
-            return None;
-        };
+        let (icon, color, message, actions): (IconName, Hsla, SharedString, Vec<AnyElement>) =
+            if self.pending.is_some() {
+                (
+                    IconName::TriangleAlert,
+                    colors.yellow,
+                    "Object changed on server".into(),
+                    vec![
+                        Button::new("merge")
+                            .label("Merge")
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.merge_pending(window, cx)),
+                            )
+                            .into_any_element(),
+                        Button::new("reload")
+                            .label("Reload")
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.reload_pending(window, cx)),
+                            )
+                            .into_any_element(),
+                        Button::new("keep")
+                            .ghost()
+                            .label("Keep mine")
+                            .on_click(cx.listener(|this, _, _, cx| this.keep_mine(cx)))
+                            .into_any_element(),
+                    ],
+                )
+            } else if self.state == LoadState::Gone {
+                (
+                    IconName::TriangleAlert,
+                    colors.red,
+                    "Deleted on the server. Apply creates it again.".into(),
+                    Vec::new(),
+                )
+            } else {
+                // Another crate's note about the object (managed by Argo CD…).
+                let notice = self.edit_notice(cx)?;
+                (IconName::TriangleAlert, colors.yellow, notice, Vec::new())
+            };
         Some(
             h_flex()
                 .flex_none()
@@ -822,62 +830,7 @@ impl YamlEditor {
         if self.diff.is_empty() {
             return Self::empty("No changes vs live.", &colors);
         }
-        let removed_bg: Hsla = rgb(0x3a2e31).into();
-        let removed_fg: Hsla = rgb(0xe7a9ad).into();
-        let added_bg: Hsla = rgb(0x2d3a2c).into();
-        let added_fg: Hsla = rgb(0xbfd9a6).into();
-        let mut out = v_flex()
-            .font_family(fonts::MONO)
-            .text_size(u(12.5))
-            .line_height(u(21.0));
-        for hunk in &self.diff.hunks {
-            out = out.child(
-                div()
-                    .px(u(14.0))
-                    .text_color(colors.text_dim)
-                    .child(format!("@@ {} @@", hunk.section)),
-            );
-            if side_by_side {
-                for row in diff::side_by_side(hunk) {
-                    let cell = |side: Option<(usize, String)>, bg: Hsla, fg: Hsla| {
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .px(u(14.0))
-                            .whitespace_nowrap()
-                            .overflow_hidden()
-                            .when(row.changed && side.is_some(), |this| {
-                                this.bg(bg).text_color(fg)
-                            })
-                            .when(!row.changed, |this| this.text_color(colors.text_muted))
-                            .child(side.map(|(_, t)| t).unwrap_or_default())
-                    };
-                    out = out.child(
-                        h_flex()
-                            .child(cell(row.left.clone(), removed_bg, removed_fg))
-                            .child(div().w(px(1.)).h_full().bg(colors.border_variant))
-                            .child(cell(row.right.clone(), added_bg, added_fg)),
-                    );
-                }
-            } else {
-                for line in &hunk.lines {
-                    let (sign, bg, fg) = match line.tag {
-                        Tag::Removed => ("-", Some(removed_bg), removed_fg),
-                        Tag::Added => ("+", Some(added_bg), added_fg),
-                        Tag::Equal => (" ", None, colors.text_muted),
-                    };
-                    out = out.child(
-                        div()
-                            .px(u(14.0))
-                            .whitespace_nowrap()
-                            .text_color(fg)
-                            .when_some(bg, |this, bg| this.bg(bg))
-                            .child(format!("{sign} {}", line.text)),
-                    );
-                }
-            }
-        }
-        out.into_any_element()
+        diff_view(&self.diff, side_by_side, &colors)
     }
 
     fn render_problems(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1510,4 +1463,65 @@ struct OutlineRow {
     required: bool,
     expandable: bool,
     expanded: bool,
+}
+
+/// A diff's hunks as the editor's Diff panel shows them (unified or side by side), for other
+/// views that compare two renderings of an object (Argo CD's desired vs live).
+pub fn diff_view(line_diff: &LineDiff, side_by_side: bool, colors: &Colors) -> AnyElement {
+    let removed_bg: Hsla = rgb(0x3a2e31).into();
+    let removed_fg: Hsla = rgb(0xe7a9ad).into();
+    let added_bg: Hsla = rgb(0x2d3a2c).into();
+    let added_fg: Hsla = rgb(0xbfd9a6).into();
+    let mut out = v_flex()
+        .font_family(fonts::MONO)
+        .text_size(u(12.5))
+        .line_height(u(21.0));
+    for hunk in &line_diff.hunks {
+        out = out.child(
+            div()
+                .px(u(14.0))
+                .text_color(colors.text_dim)
+                .child(format!("@@ {} @@", hunk.section)),
+        );
+        if side_by_side {
+            for row in diff::side_by_side(hunk) {
+                let cell = |side: Option<(usize, String)>, bg: Hsla, fg: Hsla| {
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .px(u(14.0))
+                        .whitespace_nowrap()
+                        .overflow_hidden()
+                        .when(row.changed && side.is_some(), |this| {
+                            this.bg(bg).text_color(fg)
+                        })
+                        .when(!row.changed, |this| this.text_color(colors.text_muted))
+                        .child(side.map(|(_, t)| t).unwrap_or_default())
+                };
+                out = out.child(
+                    h_flex()
+                        .child(cell(row.left.clone(), removed_bg, removed_fg))
+                        .child(div().w(px(1.)).h_full().bg(colors.border_variant))
+                        .child(cell(row.right.clone(), added_bg, added_fg)),
+                );
+            }
+        } else {
+            for line in &hunk.lines {
+                let (sign, bg, fg) = match line.tag {
+                    Tag::Removed => ("-", Some(removed_bg), removed_fg),
+                    Tag::Added => ("+", Some(added_bg), added_fg),
+                    Tag::Equal => (" ", None, colors.text_muted),
+                };
+                out = out.child(
+                    div()
+                        .px(u(14.0))
+                        .whitespace_nowrap()
+                        .text_color(fg)
+                        .when_some(bg, |this, bg| this.bg(bg))
+                        .child(format!("{sign} {}", line.text)),
+                );
+            }
+        }
+    }
+    out.into_any_element()
 }

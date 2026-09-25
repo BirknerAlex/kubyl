@@ -6,7 +6,8 @@
 //! - [`schema`]: OpenAPI v3 schemas per kind (built-ins and CRDs) and their shared cache.
 //! - [`validate`]: schema validation with ranges for inline diagnostics.
 //! - [`intel`]: hover docs and completion (adapted to the editor in `lsp`).
-//! - [`diff`]: diffs against the live object, gutter markers, three-way merge.
+//! - [`diff`]: diffs against the live object, gutter markers, three-way merge;
+//!   [`diff_view`] renders one like the editor's Diff panel.
 //! - [`render`]: object → editor text (managedFields, Secret masking) and back.
 //! - [`apply`]: dry run and server-side apply of the buffer's documents.
 //! - [`templates`]: "New resource" templates and schema skeletons.
@@ -28,6 +29,8 @@ pub mod templates;
 mod ui;
 pub mod validate;
 pub mod view;
+
+pub use ui::diff_view;
 
 use gpui::{App, AppContext as _, Window, actions};
 use kubyl_core::actions::OpenView;
