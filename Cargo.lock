@@ -4427,6 +4427,7 @@ dependencies = [
  "kubyl_terminal",
  "kubyl_ui",
  "kubyl_updates",
+ "kubyl_webview",
  "kubyl_yaml",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
@@ -4785,6 +4786,14 @@ dependencies = [
 
 [[package]]
 name = "kubyl_updates"
+version = "0.1.2"
+dependencies = [
+ "gpui-pre",
+ "kubyl_core",
+]
+
+[[package]]
+name = "kubyl_webview"
 version = "0.1.2"
 dependencies = [
  "gpui-pre",

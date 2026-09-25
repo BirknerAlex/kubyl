@@ -55,6 +55,7 @@ kubyl_settings.workspace = true
 kubyl_terminal.workspace = true
 kubyl_ui.workspace = true
 kubyl_updates.workspace = true
+kubyl_webview.workspace = true
 kubyl_yaml.workspace = true
 
 image.workspace = true

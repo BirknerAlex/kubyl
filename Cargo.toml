@@ -31,6 +31,7 @@ kubyl_settings = { path = "crates/kubyl_settings" }
 kubyl_terminal = { path = "crates/kubyl_terminal" }
 kubyl_ui = { path = "crates/kubyl_ui" }
 kubyl_updates = { path = "crates/kubyl_updates" }
+kubyl_webview = { path = "crates/kubyl_webview" }
 kubyl_yaml = { path = "crates/kubyl_yaml" }
 
 # GPUI. `gpui-pre-*` are crates.io snapshots of zed-industries/zed (0.3.6 = zed@bcf6582),
