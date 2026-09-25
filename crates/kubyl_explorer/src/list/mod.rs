@@ -322,6 +322,10 @@ impl ResourceListView {
             cx.observe_global_in::<ActiveContext>(window, |this, window, cx| {
                 this.active_context_changed(window, cx)
             }),
+            cx.observe_global_in::<kubyl_resources::metrics::Metrics>(
+                window,
+                |this, window, cx| this.metrics_changed(window, cx),
+            ),
         ];
         if let Some(manager) = ConnectionManager::try_global(cx) {
             subscriptions.push(cx.subscribe_in(
@@ -980,6 +984,23 @@ impl ResourceListView {
         }
         self.update_columns();
         self.sync_sources(window, cx);
+    }
+
+    /// New usage numbers: re-sort when sorted by CPU or memory, else just repaint.
+    fn metrics_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.gvr.group.is_empty() || !matches!(self.gvr.resource.as_str(), "pods" | "nodes") {
+            return;
+        }
+        if self
+            .sort
+            .as_ref()
+            .is_some_and(|(column, _)| matches!(column.as_ref(), "cpu" | "memory"))
+        {
+            self.sort_cache.clear();
+            self.refresh_rows(window, cx);
+        } else {
+            cx.notify();
+        }
     }
 
     fn active_context_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {

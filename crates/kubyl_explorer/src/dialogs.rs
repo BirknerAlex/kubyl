@@ -712,9 +712,33 @@ pub fn prompt_text(
     window: &mut Window,
     cx: &mut App,
 ) {
+    prompt(title, label, initial, false, on_submit, window, cx);
+}
+
+/// Asks for a secret (token, header value): the input is masked and starts empty. Store the
+/// value in the OS keychain, never in settings or state.
+pub fn prompt_secret(
+    title: SharedString,
+    label: &'static str,
+    on_submit: impl Fn(String, &mut Window, &mut App) + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    prompt(title, label, String::new(), true, on_submit, window, cx);
+}
+
+fn prompt(
+    title: SharedString,
+    label: &'static str,
+    initial: String,
+    masked: bool,
+    on_submit: impl Fn(String, &mut Window, &mut App) + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let view = cx.new(|cx| {
         let input = cx.new(|cx| {
-            let mut state = InputState::new(window, cx);
+            let mut state = InputState::new(window, cx).masked(masked);
             state.set_value(initial, window, cx);
             state
         });

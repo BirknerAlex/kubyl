@@ -13,7 +13,7 @@ use gpui::{
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::ContextMenuExt as _;
 use kubyl_core::actions::OpenView;
-use kubyl_core::{ActiveContext, ClusterId, Gvr, ResourceRef, ViewKind, ViewRequest};
+use kubyl_core::{ActiveContext, ClusterId, Gvr, ResourceRef, ViewKind, ViewRegistry, ViewRequest};
 use kubyl_kube::access::AccessQuery;
 use kubyl_kube::{ConnectionEvent, ConnectionManager, ConnectionState};
 use kubyl_resources::{ResourceStores, StoreHandle, StoreKey};
@@ -513,9 +513,18 @@ impl ClustersSection {
             }
             Item::Kind { cluster, kind, .. } => {
                 Self::activate_cluster(cluster, cx);
+                // Events get their own view (live stream, Warning/Normal filters) when a crate
+                // provides one; the generic table otherwise.
+                let events = kind.gvr.group.is_empty()
+                    && kind.gvr.resource == "events"
+                    && ViewRegistry::is_registered(cx, &ViewKind::Events);
                 window.dispatch_action(
                     Box::new(OpenView(ViewRequest::for_resource(
-                        ViewKind::Table,
+                        if events {
+                            ViewKind::Events
+                        } else {
+                            ViewKind::Table
+                        },
                         ResourceRef::list(cluster.clone(), kind.gvr.clone(), None),
                     ))),
                     cx,
@@ -523,7 +532,10 @@ impl ClustersSection {
             }
             Item::View { cluster, entry, .. } => {
                 Self::activate_cluster(cluster, cx);
-                let namespace = Self::scope_namespace(cluster, cx);
+                // The cluster's Overview is cluster-wide; a namespace makes it the namespace
+                // variant (opened from a favorite).
+                let namespace =
+                    Self::scope_namespace(cluster, cx).filter(|_| entry.kind != ViewKind::Overview);
                 window.dispatch_action(
                     Box::new(OpenView(ViewRequest::for_resource(
                         entry.kind.clone(),
