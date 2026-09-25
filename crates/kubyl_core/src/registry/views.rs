@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use gpui::{
-    AnyView, App, AppContext as _, Entity, EntityId, FocusHandle, Focusable, Global, Render,
+    AnyView, App, AppContext as _, Entity, EntityId, FocusHandle, Focusable, Global, Hsla, Render,
     SharedString, Subscription, Window,
 };
 use serde::{Deserialize, Serialize};
@@ -45,6 +45,17 @@ pub trait TabView: Render + Focusable {
         false
     }
 
+    /// A colored dot before the icon, e.g. the color of the view's cluster.
+    fn tab_dot(&self, _cx: &App) -> Option<Hsla> {
+        None
+    }
+
+    /// The view asks its pane to close it (its session was stopped elsewhere). Checked
+    /// whenever the view notifies.
+    fn wants_close(&self, _cx: &App) -> bool {
+        false
+    }
+
     /// The request that rebuilds this view on the next start. `None` = not restored.
     fn view_request(&self, _cx: &App) -> Option<ViewRequest> {
         None
@@ -57,6 +68,8 @@ pub trait TabHandle: 'static {
     fn title(&self, cx: &App) -> SharedString;
     fn icon(&self, cx: &App) -> Option<SharedString>;
     fn is_dirty(&self, cx: &App) -> bool;
+    fn dot(&self, cx: &App) -> Option<Hsla>;
+    fn wants_close(&self, cx: &App) -> bool;
     fn view_request(&self, cx: &App) -> Option<ViewRequest>;
     fn focus_handle(&self, cx: &App) -> FocusHandle;
     fn to_any_view(&self) -> AnyView;
@@ -80,6 +93,14 @@ impl<T: TabView> TabHandle for Entity<T> {
 
     fn is_dirty(&self, cx: &App) -> bool {
         self.read(cx).is_dirty(cx)
+    }
+
+    fn dot(&self, cx: &App) -> Option<Hsla> {
+        self.read(cx).tab_dot(cx)
+    }
+
+    fn wants_close(&self, cx: &App) -> bool {
+        self.read(cx).wants_close(cx)
     }
 
     fn view_request(&self, cx: &App) -> Option<ViewRequest> {
