@@ -56,6 +56,12 @@ impl SortKey {
                     .map(SortKey::Number)
                     .unwrap_or_else(|| SortKey::Text(label.to_string()));
             }
+            CellValue::Buttons(buttons) => {
+                return buttons
+                    .first()
+                    .map(|b| SortKey::Text(b.label.to_string()))
+                    .unwrap_or(SortKey::Missing);
+            }
             CellValue::Empty => return SortKey::Missing,
         };
         SortKey::Text(label.to_string())

@@ -1135,7 +1135,7 @@ impl ResourceListView {
     }
 
     /// The resource ref of a row.
-    fn row_ref(&self, row: &rows::Row) -> ResourceRef {
+    pub(crate) fn row_ref(&self, row: &rows::Row) -> ResourceRef {
         let source = &self.sources[row.source];
         ResourceRef::object(
             source.spec.cluster.clone(),
