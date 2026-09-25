@@ -247,3 +247,13 @@ try).
   naming the service, requested target port and chosen pod instead.
 - Removed a stale "probe shells for real" TODO left over from the first CodeRabbit pass — that
   was already fixed then (`shell::detect`).
+
+#### 2026-09-25: Details pane grew inline Logs/Terminal sub-tabs (owner request, out of phase order)
+
+At the repo owner's explicit request, `kubyl_explorer`'s Details pane
+(`crates/kubyl_explorer/src/details.rs`) now offers Logs/Terminal (and Yaml) as sub-tabs next to
+Summary/Describe, building `kubyl_logs`'s/`kubyl_terminal`'s `ViewKind::Logs`/`ViewKind::Terminal`
+views inline via `ViewRegistry::build` rather than `OpenView`. This crate's own `ViewKind`
+registrations, actions and the log/terminal views themselves are unchanged — see
+plans/02-resource-explorer.md's 2026-09-25 entry for the full description (that's the phase
+file whose crate, `kubyl_explorer`, actually changed).
