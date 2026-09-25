@@ -1321,7 +1321,11 @@ impl OverviewView {
     fn top_pods_card(&self, pods: &[Arc<Value>], cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors().clone();
         let usage = MetricsService::global(cx)
-            .and_then(|s| s.read(cx).pods(&self.cluster).cloned())
+            .and_then(|s| {
+                s.read(cx)
+                    .pods_in(&self.cluster, self.namespace.as_deref())
+                    .cloned()
+            })
             .unwrap_or_default();
         let mut ranked: Vec<(Arc<Value>, Usage)> = pods
             .iter()
@@ -1632,7 +1636,7 @@ impl Render for OverviewView {
                     }),
                 Some(ns) => {
                     let prefix = format!("{ns}/");
-                    s.pods(&self.cluster).map(|pods| {
+                    s.pods_in(&self.cluster, Some(ns)).map(|pods| {
                         pods.iter().filter(|(k, _)| k.starts_with(&prefix)).fold(
                             Usage::default(),
                             |a, (_, b)| Usage {
