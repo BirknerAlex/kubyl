@@ -49,6 +49,83 @@ port-forward manager. All of them appear in one "Active sessions" panel.
 
 ## Handoff log
 
+### 2026-09-25 (CodeRabbit review fixes, PR #1)
+
+Fixed all 20 CodeRabbit findings from the PR #1 review (`kubyl_logs`, `kubyl_portforward`,
+`kubyl_terminal`); none were stale. Full workspace `cargo fmt --all`, `cargo clippy --workspace
+--all-targets -- -D warnings`, `cargo test --workspace` and `cargo deny check` all pass after the
+combined change. Not run against a live cluster in this environment.
+
+**`kubyl_logs`**
+- `view.rs`: `LogsView::start` now holds real stop state and registers `cx.on_release` so closing
+  the tab (not just clicking "stop" in Active Sessions) stops the stream task and removes the
+  `SessionRegistry` row.
+- `json.rs`: `FieldFilter::matches` only falls back to substring matching for lines that are *not*
+  valid JSON; a valid-JSON line simply missing the filtered field no longer matches by
+  coincidence. Added a unit test.
+- `stream.rs`: `workload_loop` no longer returns immediately (dropping `known` and aborting
+  container tasks) when `follow=false`; non-follow workload views now actually collect and
+  deliver lines before returning.
+- `stream.rs`: the reconnect loop now tracks the last-seen timestamp and passes it as
+  `since_time`/`since_seconds` on retry, and only resets backoff after data is actually received
+  (not merely on connection open) — fixes full-log replay loops against terminated containers.
+- `view.rs`: `apply_events` no longer unconditionally stomps a "reconnecting"/error status set
+  earlier in the same batch with "streaming", and only calls `SessionRegistry::set_status` when
+  the status actually changed.
+- `view.rs`/`ring.rs`/`search.rs`: replaced full-ring rescans on every batch/frame with
+  incremental rebuild caches (`rebuild_matches_and_rendered`, `rebuild_rendered_cache`,
+  `rebuild_visible_cache`) so search/level counts/rendered lines aren't recomputed from scratch
+  ~60x/sec; a proportionate fix, not a full incremental-index rewrite.
+- `view.rs`: `recompute_search` only resets `MatchCursor` to 0 when the query/filter actually
+  changes, not on every data batch, so Next/Prev navigation survives streaming updates.
+- `view.rs`: `resolve_source` (new `label_selector_to_string` helper) now builds the selector from
+  both `matchLabels` and `matchExpressions` (In/NotIn/Exists/DoesNotExist), so workloads using
+  only `matchExpressions` no longer stream every pod in the namespace. Added unit tests.
+- `view.rs`: `uniform_list` still assumes fixed row height (true variable-height rows need
+  `gpui::list`/`ListState`, out of scope for this pass); as a proportionate fix, `pretty_json`
+  rendering now uses the flat `key=value` form instead of multi-line pretty JSON so rows never
+  span multiple lines and clip/overlap. `wrap` mode is unchanged and still a known gap.
+
+**`kubyl_portforward`**
+- `lib.rs`/`resolve.rs`: `RemotePort::Container`/`Service` are now `Option<u16>`; `None` means
+  "first port", resolved from the pod's first container port or `match_service_port(..., None)`
+  for Services, instead of a hardcoded 8080/80 default.
+- `listener.rs`: persistent `accept()` errors (e.g. EMFILE) now back off briefly between retries
+  instead of spinning in a tight loop and flooding the event channel.
+- `listener.rs`: accepted connections are tracked in a `tokio::task::JoinSet` owned by the
+  listener loop, so stopping a forward aborts in-flight `copy_bidirectional` connections instead
+  of leaving them detached and running.
+- `manager.rs`: the spawned listener task's `Result` is now awaited/handled, so a `bind()` failure
+  moves the session to an error status instead of leaving it stuck in "starting" forever.
+- `manager.rs`: the event loop now drains all currently-ready events (non-blocking) after each
+  wait before processing, instead of sleeping 100ms per single event, fixing the ~10 events/sec
+  throughput cap under bursts.
+- `resolve.rs`: Service and workload selector resolution now build from both `matchLabels`/
+  `spec.selector` and `matchExpressions`, and return an explicit error instead of an empty-string
+  selector (which `ListParams::labels("")` treats as "match everything") when no selector
+  information is present at all — no more forwarding to a random unrelated pod. Added unit tests
+  for the `matchExpressions` and empty-selector cases.
+
+**`kubyl_terminal`**
+- `grid.rs`: `NullListener` (renamed `PtyWriteListener`) now buffers `Event::PtyWrite` bytes
+  (cursor position DSR, device attribute/color query replies) instead of dropping them;
+  `TerminalGrid::take_pty_writes()` drains the buffer and `view.rs`'s output loop forwards it
+  back over `input_tx`/stdin, so vim/fish no longer stall on unanswered terminal queries.
+- `shell.rs`: added `shell::detect` (async, off the UI thread) which execs `probe_command()` per
+  candidate via a real `Api::exec` + `take_status()` check before falling back to `pick`; `sh`
+  is no longer the default for every session.
+- `exec.rs`: added `resolve_container` (fetches the Pod, checks the
+  `kubectl.kubernetes.io/default-container` annotation, falls back to `spec.containers[0]`) called
+  from `view.rs`'s `start()` before building `ExecTarget` — multi-container pods no longer hit "a
+  container name must be specified".
+- `exec.rs`/`view.rs`: `exec::run` now takes a `connected: oneshot::Sender<Result<(), String>>`,
+  signaled right after the exec/attach call resolves. `view.rs` only marks the session/status
+  "connected" once that fires `Ok(())`, and surfaces the real error message (RBAC, missing pod,
+  …) instead of a bare "disconnected" when it fires `Err`.
+- `view.rs`: the measurement `canvas()` now has `.absolute().top_0().left_0().size_full()` (same
+  pattern as `kubyl_yaml/src/ui.rs`'s overlay canvas) so `maybe_resize` sees real bounds instead
+  of ~0 height collapsing the terminal to 2 rows.
+
 ### 2026-09-25
 
 Implemented all three crates end to end with real (not stubbed) kube integration, wired into
@@ -106,10 +183,10 @@ Missing/deferred (this is the biggest gap in the phase): the renderer draws grid
 text spans (one span per contiguous same-style run), which is *not* a glyph-atlas renderer — no
 mouse text selection, no scrollback UI (alacritty's `Term` has scrollback; nothing exposes it),
 no hyperlink detection, and bracketed-paste is implemented (`input::bracketed_paste`) but never
-called from an actual paste event handler. Shell auto-detection (`shell.rs`) has the pure
-pick-a-shell logic and a `probe_command()` builder, but nothing in `view.rs`/`exec.rs` actually
-execs the probe — so unless `terminal.shell_override` is set, every shell defaults to plain `sh`,
-not the intended bash-first fallback chain. `exec::Mode::Attach` exists and is exercised nowhere
+called from an actual paste event handler. Shell auto-detection (`shell.rs`) now execs
+`probe_command()` for each candidate off the UI thread (`shell::detect`, wired from `view.rs`'s
+`start()` via `spawn_kube`) before falling back to `pick`'s pure decision — bash-first fallback
+works unless `terminal.shell_override` is set. `exec::Mode::Attach` exists and is exercised nowhere
 (only `Mode::Exec` is wired, behind the `s` action). Ephemeral debug containers and node shell are
 not implemented at all — no debug-pod spec builder, no confirmation dialog, no read-only-cluster
 gate. Terminals open via the generic `ViewKind::Terminal` factory; there's no bottom-dock-specific

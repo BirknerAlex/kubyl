@@ -75,6 +75,15 @@ impl TerminalView {
             _task: None,
             _subscriptions: Vec::new(),
         };
+        let release_subscription = cx.on_release(|this, cx| {
+            // The tab was closed without the user clicking "stop" in the Active Sessions panel:
+            // drop the session row too (the exec task itself stops when `this` is dropped, since
+            // `_task`/`_run_task` are held only by this view).
+            if let Some(id) = this.session_id.take() {
+                SessionRegistry::remove(cx, id);
+            }
+        });
+        this._subscriptions.push(release_subscription);
         this.start(cx);
         this
     }
@@ -92,7 +101,6 @@ impl TerminalView {
         let shell_override = kubyl_settings::Settings::get::<TerminalSettings>(cx)
             .shell_override
             .clone();
-        let shell = shell::pick(shell_override.as_deref(), |_| false);
 
         let (input_tx, input_rx) = mpsc::unbounded();
         let (output_tx, output_rx) = mpsc::unbounded();
@@ -102,35 +110,116 @@ impl TerminalView {
 
         let title = format!("Shell: {pod}");
         let subtitle: SharedString = namespace.clone().into();
-        let target = ExecTarget {
-            namespace,
-            pod,
-            container: None,
-            mode: Mode::Exec {
-                command: vec![shell],
-            },
-        };
+
         self._task = Some(cx.spawn(async move |this, cx| {
-            let _run_task = cx.update(|cx| {
+            let stop_weak = this.clone();
+            let id = this
+                .update(cx, |this, cx| {
+                    let id = SessionRegistry::add(
+                        cx,
+                        SessionKind::Terminal,
+                        title,
+                        subtitle,
+                        "connecting…",
+                        Tone::Warning,
+                        move |cx| {
+                            // Dropping `_task` drops the outer spawned future, which in turn
+                            // drops the `_run_task` local it holds, aborting the exec websocket
+                            // (the Task-drop rule from AGENTS.md).
+                            stop_weak
+                                .update(cx, |this, cx| {
+                                    this._task = None;
+                                    this.session_id = None;
+                                    this.status = "stopped".into();
+                                    cx.notify();
+                                })
+                                .ok();
+                        },
+                    );
+                    this.session_id = Some(id);
+                    this.status = "connecting…".into();
+                    cx.notify();
+                    id
+                })
+                .ok();
+
+            // Resolve the container (multi-container pods reject exec without one) and detect
+            // the shell to run, off the UI thread — both need real exec/get calls.
+            let setup_client = client.clone();
+            let setup_namespace = namespace.clone();
+            let setup_pod = pod.clone();
+            let setup_task = cx.update(|cx| {
                 kubyl_core::spawn_kube(cx, async move {
-                    exec::run(client, target, input_rx, output_tx, resize_rx).await
+                    let container =
+                        exec::resolve_container(&setup_client, &setup_namespace, &setup_pod).await;
+                    let shell = shell::detect(
+                        &setup_client,
+                        &setup_namespace,
+                        &setup_pod,
+                        container.as_deref(),
+                        shell_override.as_deref(),
+                    )
+                    .await;
+                    (container, shell)
                 })
             });
-            this.update(cx, |this, cx| {
-                let id = SessionRegistry::add(
-                    cx,
-                    SessionKind::Terminal,
-                    title,
-                    subtitle,
-                    "connected",
-                    Tone::Good,
-                    |_| {},
-                );
-                this.session_id = Some(id);
-                this.status = "connected".into();
-                cx.notify();
-            })
-            .ok();
+            let (container, shell) = setup_task.await;
+
+            let target = ExecTarget {
+                namespace,
+                pod,
+                container,
+                mode: Mode::Exec {
+                    command: vec![shell],
+                },
+            };
+
+            let (connected_tx, connected_rx) = futures::channel::oneshot::channel();
+            let _run_task = cx.update(|cx| {
+                kubyl_core::spawn_kube(cx, async move {
+                    exec::run(client, target, input_rx, output_tx, resize_rx, connected_tx).await
+                })
+            });
+            match connected_rx.await {
+                Ok(Ok(())) => {
+                    this.update(cx, |this, cx| {
+                        this.status = "connected".into();
+                        if let Some(id) = id {
+                            SessionRegistry::set_status(cx, id, "connected", Tone::Good);
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+                }
+                Ok(Err(message)) => {
+                    this.update(cx, |this, cx| {
+                        this.status = format!("error: {message}").into();
+                        if let Some(id) = id {
+                            SessionRegistry::set_status(
+                                cx,
+                                id,
+                                format!("error: {message}"),
+                                Tone::Bad,
+                            );
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+                    return;
+                }
+                Err(_) => {
+                    this.update(cx, |this, cx| {
+                        this.status = "disconnected".into();
+                        if let Some(id) = id {
+                            SessionRegistry::set_status(cx, id, "disconnected", Tone::Muted);
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+                    return;
+                }
+            }
+
             let mut output_rx = output_rx;
             while let Some(bytes) = output_rx.next().await {
                 let mut batch = bytes;
@@ -140,6 +229,12 @@ impl TerminalView {
                 let alive = this
                     .update(cx, |this, cx| {
                         this.grid.advance(&batch);
+                        let replies = this.grid.take_pty_writes();
+                        if !replies.is_empty()
+                            && let Some(tx) = &this.input_tx
+                        {
+                            tx.unbounded_send(replies).ok();
+                        }
                         cx.notify();
                     })
                     .is_ok();
@@ -298,15 +393,21 @@ impl Render for TerminalView {
                     .text_color(colors.text_faint)
                     .child(status),
             )
-            .child(canvas(
-                move |bounds, _, cx| {
-                    weak.update(cx, |this, cx| {
-                        this.maybe_resize(bounds, cx);
-                    })
-                    .ok();
-                },
-                |_, _, _, _| {},
-            ))
+            .child(
+                canvas(
+                    move |bounds, _, cx| {
+                        weak.update(cx, |this, cx| {
+                            this.maybe_resize(bounds, cx);
+                        })
+                        .ok();
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
+            )
     }
 }
 

@@ -2,6 +2,10 @@
 //! `snapshot()` the view renders through GPUI's text system (no glyph-atlas/GPU renderer of our
 //! own — see the phase 05 handoff log for what that would take).
 
+use std::cell::RefCell;
+use std::collections::VecDeque;
+use std::rc::Rc;
+
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::Dimensions as _;
 use alacritty_terminal::index::{Column, Line};
@@ -10,13 +14,19 @@ use alacritty_terminal::term::test::TermSize;
 use alacritty_terminal::term::{Config, Term};
 use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor, Processor, Rgb};
 
-/// Ignores every terminal-driven event (title changes, clipboard, bell…). Good enough for a
-/// first pass; wiring these up is left for a later session.
+/// Ignores most terminal-driven events (title changes, clipboard, bell…) but buffers
+/// `Event::PtyWrite` bytes — the replies to terminal query sequences (cursor position DSR,
+/// device attributes, color queries) that programs like vim/fish block on. The view drains
+/// these with [`TerminalGrid::take_pty_writes`] and forwards them back to the PTY's stdin.
 #[derive(Clone, Default)]
-pub struct NullListener;
+pub struct PtyWriteListener(Rc<RefCell<VecDeque<Vec<u8>>>>);
 
-impl EventListener for NullListener {
-    fn send_event(&self, _event: Event) {}
+impl EventListener for PtyWriteListener {
+    fn send_event(&self, event: Event) {
+        if let Event::PtyWrite(text) = event {
+            self.0.borrow_mut().push_back(text.into_bytes());
+        }
+    }
 }
 
 /// One cell of the rendered grid, in a form the GPUI view can turn into text runs without
@@ -59,25 +69,39 @@ pub struct Snapshot {
     pub cursor: (usize, usize),
 }
 
-/// Wraps `Term<NullListener>` plus the ANSI parser that feeds it.
+/// Wraps `Term<PtyWriteListener>` plus the ANSI parser that feeds it.
 pub struct TerminalGrid {
-    term: Term<NullListener>,
+    term: Term<PtyWriteListener>,
     parser: Processor,
+    pty_writes: PtyWriteListener,
 }
 
 impl TerminalGrid {
     pub fn new(columns: usize, rows: usize) -> Self {
         let size = TermSize::new(columns.max(1), rows.max(1));
-        let term = Term::new(Config::default(), &size, NullListener);
+        let pty_writes = PtyWriteListener::default();
+        let term = Term::new(Config::default(), &size, pty_writes.clone());
         Self {
             term,
             parser: Processor::new(),
+            pty_writes,
         }
     }
 
     /// Feeds raw bytes read from the exec/attach stream into the terminal state machine.
     pub fn advance(&mut self, bytes: &[u8]) {
         self.parser.advance(&mut self.term, bytes);
+    }
+
+    /// Drains any PTY reply bytes queued by terminal query sequences (cursor position, device
+    /// attributes, color queries) since the last call, ready to write back to the PTY's stdin.
+    pub fn take_pty_writes(&mut self) -> Vec<u8> {
+        let mut queue = self.pty_writes.0.borrow_mut();
+        let mut out = Vec::new();
+        while let Some(bytes) = queue.pop_front() {
+            out.extend_from_slice(&bytes);
+        }
+        out
     }
 
     pub fn resize(&mut self, columns: usize, rows: usize) {
