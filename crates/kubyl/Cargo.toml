@@ -75,7 +75,7 @@ tempfile.workspace = true
 [package.metadata.bundle]
 name = "Kubyl"
 identifier = "io.github.birkneralex.Kubyl"
-icon = ["../../assets/logo/kubyl.icns", "../../assets/logo/png/app-icon-*.png"]
+icon = ["assets/logo/kubyl.icns", "assets/logo/png/app-icon-*.png"]
 category = "public.app-category.developer-tools"
 short_description = "Native Kubernetes desktop client"
 
