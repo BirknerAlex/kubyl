@@ -302,13 +302,15 @@ impl Workspace {
                 DockPosition::Bottom => &mut self.docks.bottom,
                 _ => &mut self.docks.right,
             };
-            if !layout.visible {
-                layout.visible = true;
-                if self.zoomed.take().and_then(|z| z.upgrade()).is_some() {
-                    for pane in self.center.panes() {
-                        pane.update(cx, |p, cx| p.set_zoomed(false, cx));
-                    }
+            let was_visible = std::mem::replace(&mut layout.visible, true);
+            // A zoomed pane hides every dock, visible or not: un-zoom so the panel shows.
+            let unzoomed = self.zoomed.take().and_then(|z| z.upgrade()).is_some();
+            if unzoomed {
+                for pane in self.center.panes() {
+                    pane.update(cx, |p, cx| p.set_zoomed(false, cx));
                 }
+            }
+            if !was_visible || unzoomed {
                 self.save_layout(window, cx);
             }
             let focus = dock.read(cx).active_focus_handle(cx);
@@ -831,6 +833,12 @@ mod tests {
                 // Unknown ids leave the layout alone.
                 workspace.activate_dock_panel("missing", window, cx);
                 assert!(workspace.docks.bottom.visible);
+                // A zoomed pane hides the dock even though it's visible: activating un-zooms.
+                let pane = workspace.active_pane.clone();
+                workspace.toggle_zoom(&pane, cx);
+                assert!(workspace.zoomed.is_some());
+                workspace.activate_dock_panel("test-panel", window, cx);
+                assert!(workspace.zoomed.is_none());
             })
             .unwrap();
     }
