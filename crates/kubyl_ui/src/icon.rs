@@ -31,6 +31,7 @@ icons! {
     ArrowRight => "arrow-right",
     ArrowUp => "arrow-up",
     Bell => "bell",
+    Check => "check",
     Blocks => "blocks",
     Box => "box",
     ChevronDown => "chevron-down",
