@@ -6,10 +6,12 @@
 //! - [`registry`]: extension points that feature crates register into from their `init(cx)`.
 //! - [`context`]: the active cluster/namespace shown in the window chrome.
 //! - [`actions`]: app-wide actions that several crates dispatch or handle.
+//! - [`forwards`]: the port-forwards running now, for crates that show them.
 
 pub mod actions;
 pub mod context;
 pub mod error;
+pub mod forwards;
 pub mod notify;
 pub mod registry;
 pub mod runtime;
@@ -35,4 +37,5 @@ pub fn init(cx: &mut App) {
     registry::init(cx);
     notify::init(cx);
     context::init(cx);
+    forwards::ActiveForwards::init(cx);
 }

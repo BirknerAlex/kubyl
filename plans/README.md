@@ -167,6 +167,10 @@ one list. That list is the only shared line, and it is append-only.
   lists). `kubyl_files::remote::open` probes a container and gives a `RemoteTarget` (list, read,
   write, stat, mkdir, rename, delete, chmod over exec); `kubyl_files::queue::TransferQueue`
   runs verified transfers for any crate (`enqueue(TransferJob)`).
+- Port-forwards from anywhere (phase 05): dispatch `kubyl_core::actions::ForwardPort { target,
+  port }` (one click: same local port when free, `80` → `8080`) and `StopForward(id)`; read the
+  running ones from the `kubyl_core::forwards::ActiveForwards` global (observe it to update).
+  `kubyl_portforward` publishes it; the details pane shows forwards next to each port.
 
 ### UX principles (from the mockups)
 
