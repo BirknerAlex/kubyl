@@ -11,7 +11,9 @@ use tower::buffer::BufferLayer;
 use tower::filter::AsyncFilterLayer;
 
 use crate::auth::oidc::OidcSecrets;
-use crate::auth::{AuthError, AuthLayer, AuthMethod, CredentialSource, ExecAuth, OidcAuth, exec};
+use crate::auth::{
+    AuthError, AuthLayer, AuthMethod, BearerToken, CredentialSource, ExecAuth, OidcAuth, exec,
+};
 use crate::kubeconfig::ContextInfo;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -100,6 +102,8 @@ pub(crate) fn error_chain(err: &(dyn std::error::Error + 'static)) -> String {
 pub struct BuiltClient {
     pub client: Client,
     pub credentials: Option<CredentialSource>,
+    /// The user's bearer token, when they authenticate with one (not client certificates).
+    pub bearer: Option<BearerToken>,
     pub default_namespace: String,
     /// The proxy in use (kubeconfig `proxy-url` or `HTTPS_PROXY`).
     pub proxy: Option<String>,
@@ -162,6 +166,17 @@ pub async fn build(
         _ => {}
     }
 
+    let bearer = match (
+        &credentials,
+        &config.auth_info.token,
+        &config.auth_info.token_file,
+    ) {
+        (Some(source), _, _) => Some(BearerToken::Managed(source.clone())),
+        (None, Some(token), _) => Some(BearerToken::Static(token.clone())),
+        (None, None, Some(file)) => Some(BearerToken::File(file.into())),
+        _ => None,
+    };
+
     if config.proxy_url.is_none() {
         config.proxy_url = env_proxy(&config.cluster_url);
     }
@@ -185,6 +200,7 @@ pub async fn build(
     Ok(BuiltClient {
         client,
         credentials,
+        bearer,
         default_namespace,
         proxy,
         rebuild_at,

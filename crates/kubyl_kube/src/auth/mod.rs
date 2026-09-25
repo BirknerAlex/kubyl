@@ -223,6 +223,34 @@ impl CredentialSource {
     }
 }
 
+/// The user's bearer token for a cluster, for in-cluster services that authenticate the user
+/// themselves (OpenShift's monitoring Routes). The API server strips credentials from requests
+/// it proxies, so those services must be called directly, with the same token.
+///
+/// Never log it or store it anywhere.
+#[derive(Clone)]
+pub enum BearerToken {
+    /// `token` in the kubeconfig (`oc login`).
+    Static(SecretString),
+    /// `tokenFile`, read on every use (it rotates).
+    File(PathBuf),
+    /// An exec plugin or OIDC, refreshed as needed.
+    Managed(CredentialSource),
+}
+
+impl BearerToken {
+    pub async fn get(&self) -> Result<SecretString, AuthError> {
+        match self {
+            BearerToken::Static(token) => Ok(token.clone()),
+            BearerToken::File(path) => tokio::fs::read_to_string(path)
+                .await
+                .map(|token| SecretString::from(token.trim().to_string()))
+                .map_err(|err| AuthError::Failed(format!("reading the token file: {err}"))),
+            BearerToken::Managed(source) => source.token().await,
+        }
+    }
+}
+
 /// Adds `Authorization: Bearer …` from a [`CredentialSource`] to every request.
 ///
 /// Used as `tower::filter::AsyncFilterLayer::new(AuthLayer(source))` on the kube client.

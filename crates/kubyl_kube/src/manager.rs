@@ -1307,6 +1307,19 @@ impl ConnectionManager {
         None
     }
 
+    /// The user's bearer token for a connected cluster (kubeconfig token or token file, exec
+    /// plugin, OIDC), or `None` for client-certificate users. For in-cluster services that
+    /// authenticate the user themselves; never log or store it.
+    pub fn bearer_token(&self, id: &ClusterId) -> Option<crate::auth::BearerToken> {
+        self.clusters
+            .get(id)
+            .filter(|c| c.state.is_connected())?
+            .client
+            .as_ref()?
+            .bearer
+            .clone()
+    }
+
     /// The OIDC credentials of a context, shared with its client if one exists.
     pub fn oidc_auth(&self, id: &ClusterId) -> Option<Arc<crate::auth::OidcAuth>> {
         if let Some(CredentialSource::Oidc(auth)) = self.credentials(id) {
