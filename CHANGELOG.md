@@ -2,6 +2,106 @@
 
 All notable changes to Kubyl are documented here.
 
+## [0.2.0] - 2026-09-25
+
+### Design
+
+- Argo CD boards (applications, resource tree, history and rollback, sync) ([0d8c65d](https://github.com/BirknerAlex/kubyl/commit/0d8c65da7359904c8ddc1b3681f383c23f2753ef))
+
+### Kubyl
+
+- Show tab dots, close tabs that ask for it ([79c460c](https://github.com/BirknerAlex/kubyl/commit/79c460ce4719a8ac9d8288ff3f6951208273df69))
+- Web view snapshots in harness screenshots ([8bd0132](https://github.com/BirknerAlex/kubyl/commit/8bd0132aa3a3df9460aa01bb9ca157402ffb3a11))
+- Screenshot runs opt out of App Nap (macOS) ([2d46cc7](https://github.com/BirknerAlex/kubyl/commit/2d46cc76842ebbe02630caf7773ac89f6f5c8a3c))
+- Screenshot waits don't depend on dispatch timers ([59cf4c1](https://github.com/BirknerAlex/kubyl/commit/59cf4c1a889708eb0816bacbd237223737712c8f))
+
+### Kubyl_argocd
+
+- Stub crate for phase 10 (Argo CD) ([4807e50](https://github.com/BirknerAlex/kubyl/commit/4807e501f59611cf334f563e5f5fb9c676de1ee3))
+- Model, Kubernetes-mode actions, API client, detection ([ff79abd](https://github.com/BirknerAlex/kubyl/commit/ff79abdb7e4045a8215eddc7becdb8e9e3ca58e1))
+- Applications, application tab, dialogs, dock, actions ([8c4505a](https://github.com/BirknerAlex/kubyl/commit/8c4505ae08fd133937a671a5c9132faddc539d45))
+- Fixes from running against kind ([bfdcff5](https://github.com/BirknerAlex/kubyl/commit/bfdcff5f37616e633c75759f673d71e21c682af8))
+- UI follows the CRDs; live UI test ([563b824](https://github.com/BirknerAlex/kubyl/commit/563b82420c11cced0e48a921caae831fd7496488))
+- Rollback options align; mode tooltip says what API mode adds ([eeaaed0](https://github.com/BirknerAlex/kubyl/commit/eeaaed0db7b759113dc55e3d3f1f6e88f92bea42))
+- SSO sign-in, and the Argo CD UI opens signed in ([3d5cb79](https://github.com/BirknerAlex/kubyl/commit/3d5cb79ad014a6fa965d73f22ae630f99c6e0651))
+- SSO sign-in survives the dialog; explains confidential clients ([1ff7df6](https://github.com/BirknerAlex/kubyl/commit/1ff7df61dc43b727389fa42c5ca1d96e29c031bb))
+- Fixes from review ([e2357b3](https://github.com/BirknerAlex/kubyl/commit/e2357b3a3cd3b59a93cea6c19d663ef207504519))
+- SSO in the browser only; Argo CD UI at its own URL for SSO ([d3461c5](https://github.com/BirknerAlex/kubyl/commit/d3461c593535e2bb98c0dfce5ddca7e62f43a401))
+- Signing out revokes the Argo CD session ([48ce535](https://github.com/BirknerAlex/kubyl/commit/48ce535f276a2e15742122b562d4521d1ab695fe))
+
+### Kubyl_core
+
+- Button cells and extra columns for existing kinds ([f8f8c19](https://github.com/BirknerAlex/kubyl/commit/f8f8c194899888b838d9c7db955875140750af02))
+- Argo CD caps, list/object view overrides, edit notices ([f3bb46c](https://github.com/BirknerAlex/kubyl/commit/f3bb46c6271684cf09b33fc518f7c382fd29d708))
+
+### Kubyl_explorer
+
+- Contributed tree groups, kind-specific object views ([e0226dd](https://github.com/BirknerAlex/kubyl/commit/e0226dd17e47dba6829997162eb560ab5855e487))
+- PVC details list the pods using the claim ([001daf5](https://github.com/BirknerAlex/kubyl/commit/001daf59540465a1ccaf0a0a750510db2f6b9d71))
+- Rustfmt ([7daf460](https://github.com/BirknerAlex/kubyl/commit/7daf4604e27a0428901646b54289db0a7cf70ab9))
+
+### Kubyl_kube
+
+- Fill ClusterCaps::argocd from discovery ([09f1647](https://github.com/BirknerAlex/kubyl/commit/09f1647409e683633dd1f7ba6152e9c668a2e214))
+- Re-run discovery until new CRDs are served ([33ea83b](https://github.com/BirknerAlex/kubyl/commit/33ea83bc91a52a3572df5796a0e651a5ced15f8a))
+- Loopback redirect helpers and jwt_expiry are public ([23f9d79](https://github.com/BirknerAlex/kubyl/commit/23f9d79b0dc95ab271f908a3f19cfde3047e6db7))
+
+### Kubyl_logs
+
+- Open_filtered opens a log view with a search applied ([809643b](https://github.com/BirknerAlex/kubyl/commit/809643b147e0c23eae95885b2e47056e974b2d62))
+- Open_filtered can search with a regular expression ([4e632b5](https://github.com/BirknerAlex/kubyl/commit/4e632b5399f5aa8ddf7e59aef1667e19386fa366))
+
+### Kubyl_palette
+
+- Open kinds and objects in their registered views ([3243d20](https://github.com/BirknerAlex/kubyl/commit/3243d20dc51907d33d3fa24d13c39bd4cc47faa0))
+
+### Kubyl_portforward
+
+- Temporary forwards for other crates ([3f52024](https://github.com/BirknerAlex/kubyl/commit/3f52024e78ae5dbe01cda7bdc35e61934560c224))
+
+### Kubyl_ui
+
+- Icons for Argo CD (branch, commit, fork, history, rollback…) ([781c32c](https://github.com/BirknerAlex/kubyl/commit/781c32c4c222726a8b6400da12929372726c7572))
+- Check icon ([6b1517d](https://github.com/BirknerAlex/kubyl/commit/6b1517debb8e3bd45587bc235c16b0df5057970f))
+
+### Kubyl_webview
+
+- Stub crate for phase 08 ([b8f285f](https://github.com/BirknerAlex/kubyl/commit/b8f285f7c104e1cac471c002162bf62e6b49aadd))
+- Service web views over temporary port-forwards ([a3c6d80](https://github.com/BirknerAlex/kubyl/commit/a3c6d80ac73fc709f57e89497cebce4e697d0ec6))
+- Linux web views, macOS fixes ([d4d1a6d](https://github.com/BirknerAlex/kubyl/commit/d4d1a6daa0e9e3c19d66d13377a6869d15531315))
+- Idle and download fixes, timings ([0d3c943](https://github.com/BirknerAlex/kubyl/commit/0d3c94353dfb68752b3c3d1a627ac450f36006f6))
+- Typing a path in the address bar, closed tabs let go ([e23adcb](https://github.com/BirknerAlex/kubyl/commit/e23adcb8481f5fa6b5d99cf43110db7d24698c83))
+- Review fixes ([3be0951](https://github.com/BirknerAlex/kubyl/commit/3be0951ee7b7383f85c114ce2951899c8201c104))
+- Don't abort on a page without a URL (macOS) ([49ab311](https://github.com/BirknerAlex/kubyl/commit/49ab31181b75133732db9a86f219b9d2fb7aeec1))
+- Session cookies from crates holding a session for a target ([cfb2b8a](https://github.com/BirknerAlex/kubyl/commit/cfb2b8a892a6c00a23adc16c948f53e390dd8f08))
+- Session cookies on macOS without blocking ([b3cb5f5](https://github.com/BirknerAlex/kubyl/commit/b3cb5f5f2eb36734a22a194f8412c78760319d02))
+- MacOS session cookies that older WebKit takes ([5d0bb15](https://github.com/BirknerAlex/kubyl/commit/5d0bb157aeb803f61bb9d1d9298d5f7911f19030))
+- Session cookies try wry's set_cookie first on macOS ([79afd27](https://github.com/BirknerAlex/kubyl/commit/79afd270f58b97f1d8521b171751ea89ac2bf242))
+- Live_webview says what the store holds when a session cookie is missing ([7f4fbdd](https://github.com/BirknerAlex/kubyl/commit/7f4fbdddcc5172bb488c1bfb0bbfa426cf536de2))
+- MacOS session cookies are secure only for https ([b214310](https://github.com/BirknerAlex/kubyl/commit/b21431085f7afa9f95deccca7f65fe71e86886fa))
+
+### Kubyl_yaml
+
+- Reusable diff view, edit notices as a banner ([c6f6b93](https://github.com/BirknerAlex/kubyl/commit/c6f6b936ca7123ef030f2b44051c10537a0ff295))
+
+### Plans
+
+- Phase 08 done, web view decision and screenshots ([8c0fe67](https://github.com/BirknerAlex/kubyl/commit/8c0fe670fd6f5f2d3848e0273eabf3a1e9e47777))
+- Phase 10 done (Argo CD), screenshots, README decisions and extension points ([8cad2ac](https://github.com/BirknerAlex/kubyl/commit/8cad2ac21a2efc86950a7a331c6a875ef9f32e09))
+- Phase 10 SSO, signed-in Argo CD UI, PVC pods; screenshots ([cab6c74](https://github.com/BirknerAlex/kubyl/commit/cab6c74d1030a31908270f4e7470b679b5c15499))
+- Phase 10 sign-out revokes the session ([f93dfe8](https://github.com/BirknerAlex/kubyl/commit/f93dfe84b6a97ed3c7b0cd96cb0f3a9ea502d57b))
+
+### Script
+
+- Webview-dev.sh for trying service web views ([7b8dbfa](https://github.com/BirknerAlex/kubyl/commit/7b8dbfa89b766830a2f865d585285d1d3fb76dfa))
+- Argocd-dev.sh installs Argo CD with sample apps on kind ([f38132f](https://github.com/BirknerAlex/kubyl/commit/f38132f827795a7b8cc16b52c952706f9a4d3098))
+
+### Workspace
+
+- Web view dependencies ([84a2595](https://github.com/BirknerAlex/kubyl/commit/84a2595cd9563c4ce57938949326b4605bd567d7))
+- Gtk and webkit2gtk for Linux web views ([e88cef7](https://github.com/BirknerAlex/kubyl/commit/e88cef75f09c99c342129b6f5ab83708925d3a36))
+- Wry's devtools feature ([35f33e5](https://github.com/BirknerAlex/kubyl/commit/35f33e57509f622cef1fa8db5543779ecd22af47))
+
 ## [0.1.2] - 2026-09-25
 
 ### AGENTS.md
