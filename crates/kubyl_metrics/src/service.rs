@@ -1257,12 +1257,20 @@ async fn find_prometheus(
         .and_then(|sa| sa.split_once('/'))
         .map(|(ns, name)| (ns.to_string(), name.to_string()));
     // Behind an auth proxy (OpenShift): the service proxy strips credentials, so call the
-    // Service's Route with a token instead.
-    let through_route = |target: Target, err: PromError| {
+    // Service's Route with a token instead. Only for the platform's monitoring stack or a
+    // Service named in settings: anyone who can create a Service and a Route elsewhere must not
+    // receive the user's token.
+    let through_route = |target: Target, err: PromError, from_settings: bool| {
         let user = auth.user_token.clone();
         let service_account = service_account.clone();
         async move {
             if !matches!(err, PromError::Http(401 | 403, _)) {
+                return Err(err.to_string());
+            }
+            let trusted = from_settings
+                || matches!(&target, Target::Service { namespace, .. }
+                    if namespace == openshift::MONITORING_NAMESPACE);
+            if !trusted {
                 return Err(err.to_string());
             }
             openshift::through_route(client, &target, user, service_account)
@@ -1306,7 +1314,7 @@ async fn find_prometheus(
             Found::Prometheus(prom) => Ok(prom),
             Found::Nothing {
                 best: Some((target, err)),
-            } => through_route(target.clone(), err)
+            } => through_route(target.clone(), err, true)
                 .await
                 .map_err(|why| format!("Prometheus {} (from settings): {why}", target.label())),
             Found::Nothing { best: None } => Err(format!(
@@ -1322,7 +1330,7 @@ async fn find_prometheus(
         Found::Prometheus(prom) => Ok(prom),
         Found::Nothing {
             best: Some((target, err)),
-        } => through_route(target.clone(), err)
+        } => through_route(target.clone(), err, false)
             .await
             .map_err(|why| format!("Found {} but it didn't answer: {why}.", target.label())),
         Found::Nothing { best: None } => Err("No Prometheus found.".into()),

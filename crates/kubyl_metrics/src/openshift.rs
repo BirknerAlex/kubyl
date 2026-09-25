@@ -19,9 +19,13 @@ use tokio::sync::Mutex;
 
 use crate::prometheus::{PromClient, PromError, Target};
 
+/// OpenShift's monitoring stack. Only cluster admins can create `openshift-*` namespaces, so its
+/// Routes may receive the user's token without being named in settings.
+pub const MONITORING_NAMESPACE: &str = "openshift-monitoring";
+
 /// Service account used when the user's own token can't be used, per namespace of the target.
 pub fn default_service_account(namespace: &str) -> Option<(&'static str, &'static str)> {
-    (namespace == "openshift-monitoring").then_some(("openshift-monitoring", "prometheus-k8s"))
+    (namespace == MONITORING_NAMESPACE).then_some((MONITORING_NAMESPACE, "prometheus-k8s"))
 }
 
 /// Lifetime requested for service-account tokens; renewed a while before it ends.
@@ -123,8 +127,10 @@ pub fn parse_token_request(response: &Value) -> Option<SecretString> {
 
 /// `https://<host>` of the Route that exposes `service`, from a RouteList.
 ///
-/// The Route's `path` is only what it matches (thanos-querier's is `/api`), not a prefix to add:
-/// the router passes request paths through unchanged, so `/api/v1/query` goes to the host root.
+/// Only a host a router admitted counts: `spec.host` alone is whatever the Route's author wrote
+/// and may point anywhere. The Route's `path` is only what it matches (thanos-querier's is
+/// `/api`), not a prefix to add: the router passes request paths through unchanged, so
+/// `/api/v1/query` goes to the host root.
 pub fn parse_route_url(routes: &Value, service: &str) -> Option<String> {
     routes["items"].as_array()?.iter().find_map(|route| {
         let spec = &route["spec"];
@@ -133,10 +139,17 @@ pub fn parse_route_url(routes: &Value, service: &str) -> Option<String> {
         {
             return None;
         }
-        let host = route
-            .pointer("/status/ingress/0/host")
-            .and_then(Value::as_str)
-            .or_else(|| spec["host"].as_str())
+        let host = route["status"]["ingress"]
+            .as_array()?
+            .iter()
+            .find(|ingress| {
+                ingress["conditions"].as_array().is_some_and(|conditions| {
+                    conditions
+                        .iter()
+                        .any(|c| c["type"] == "Admitted" && c["status"] == "True")
+                })
+            })?["host"]
+            .as_str()
             .filter(|h| !h.is_empty())?;
         let scheme = if spec.get("tls").is_some_and(|t| !t.is_null()) {
             "https"
@@ -282,22 +295,24 @@ mod tests {
 
     #[test]
     fn finds_the_route_of_a_service() {
+        let admitted = |host: &str| json!({"ingress": [{"host": host, "conditions": [{"type": "Admitted", "status": "True"}]}]});
         let routes = json!({"items": [
-            {"spec": {"host": "alertmanager-main.apps.example", "to": {"kind": "Service", "name": "alertmanager-main"}, "tls": {"termination": "reencrypt"}}},
+            // Not admitted by a router: its host is only what its author wrote.
+            {"spec": {"host": "evil.example.com", "to": {"kind": "Service", "name": "alertmanager-main"}, "tls": {"termination": "reencrypt"}}},
+            {"spec": {"host": "rejected.example.com", "to": {"kind": "Service", "name": "grafana"}},
+             "status": {"ingress": [{"host": "rejected.example.com", "conditions": [{"type": "Admitted", "status": "False"}]}]}},
             {"spec": {"host": "thanos-querier-openshift-monitoring.apps.example", "path": "/api",
                       "to": {"kind": "Service", "name": "thanos-querier"}, "tls": {"termination": "reencrypt"}},
-             "status": {"ingress": [{"host": "thanos-querier-openshift-monitoring.apps.lab.example"}]}}
+             "status": admitted("thanos-querier-openshift-monitoring.apps.lab.example")}
         ]});
         assert_eq!(
             parse_route_url(&routes, "thanos-querier").as_deref(),
             Some("https://thanos-querier-openshift-monitoring.apps.lab.example")
         );
-        assert_eq!(
-            parse_route_url(&routes, "alertmanager-main").as_deref(),
-            Some("https://alertmanager-main.apps.example")
-        );
+        assert_eq!(parse_route_url(&routes, "alertmanager-main"), None);
         assert_eq!(parse_route_url(&routes, "grafana"), None);
-        let plain = json!({"items": [{"spec": {"host": "p.example", "to": {"name": "p"}}}]});
+        assert_eq!(parse_route_url(&routes, "prometheus"), None);
+        let plain = json!({"items": [{"spec": {"host": "p.example", "to": {"name": "p"}}, "status": admitted("p.example")}]});
         assert_eq!(
             parse_route_url(&plain, "p").as_deref(),
             Some("http://p.example")
