@@ -14,4 +14,53 @@ workspace = true
 
 [dependencies]
 gpui.workspace = true
+gpui-component.workspace = true
 kubyl_core.workspace = true
+kubyl_explorer.workspace = true
+kubyl_kube.workspace = true
+kubyl_logs.workspace = true
+kubyl_portforward.workspace = true
+kubyl_resources.workspace = true
+kubyl_settings.workspace = true
+kubyl_ui.workspace = true
+anyhow.workspace = true
+base64.workspace = true
+dirs.workspace = true
+futures.workspace = true
+k8s-openapi.workspace = true
+kube.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+raw-window-handle.workspace = true
+sha2.workspace = true
+x509-cert.workspace = true
+tracing.workspace = true
+url.workspace = true
+
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+wry.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wry = { workspace = true, features = ["os-webview", "x11"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+webview2-com.workspace = true
+windows.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2.workspace = true
+objc2.workspace = true
+objc2-app-kit = { workspace = true, features = ["NSEvent", "NSView", "NSWindow", "NSGraphics", "block2", "objc2-core-foundation"] }
+objc2-foundation = { workspace = true, features = ["NSProcessInfo", "NSString", "NSGeometry", "objc2-core-foundation"] }
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+gpui_platform.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+
+# Real web views need the main thread (and a display): a test with its own `main`.
+[[test]]
+name = "live_webview"
+harness = false
