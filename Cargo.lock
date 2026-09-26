@@ -4859,6 +4859,7 @@ dependencies = [
  "gpui-pre",
  "gpui-pre-platform",
  "image",
+ "kubyl_alerts",
  "kubyl_argocd",
  "kubyl_charts",
  "kubyl_core",
@@ -4890,6 +4891,14 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "winresource",
+]
+
+[[package]]
+name = "kubyl_alerts"
+version = "0.2.0"
+dependencies = [
+ "gpui-pre",
+ "kubyl_core",
 ]
 
 [[package]]
