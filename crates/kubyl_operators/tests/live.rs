@@ -7,8 +7,8 @@
 //! ```
 //!
 //! - `approve_moves_the_install_forward` approves the upgrade `script/olm-dev.sh` leaves
-//!   waiting in `kubyl-manual`; run `script/olm-dev.sh --delete && script/olm-dev.sh` to get a
-//!   new one (the test skips when nothing waits).
+//!   waiting in `kubyl-manual` (and so runs before `upgrade_review_reads_the_bundle`); run
+//!   `script/olm-dev.sh --reset-manual` to get a new one (both skip when nothing waits).
 //! - `install_cert_manager_and_create_a_certificate` installs cert-manager from the catalog
 //!   (all namespaces) when it isn't installed, and leaves it installed.
 //! - `uninstall_removes_the_operator_and_its_crds` installs `ack-recyclebin-controller` into
@@ -231,7 +231,7 @@ async fn upgrade_review_reads_the_bundle() {
     let client = client().await;
     let Some((plan, installed)) = pending_manual_plan(&client).await else {
         println!(
-            "nothing waits for approval in kubyl-manual: run script/olm-dev.sh --delete && script/olm-dev.sh"
+            "nothing waits for approval in kubyl-manual: run script/olm-dev.sh --reset-manual"
         );
         return;
     };
@@ -274,7 +274,7 @@ async fn approve_moves_the_install_forward() {
     let client = client().await;
     let Some((plan, _)) = pending_manual_plan(&client).await else {
         println!(
-            "nothing waits for approval in kubyl-manual: run script/olm-dev.sh --delete && script/olm-dev.sh"
+            "nothing waits for approval in kubyl-manual: run script/olm-dev.sh --reset-manual"
         );
         return;
     };
