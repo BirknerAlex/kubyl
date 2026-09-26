@@ -1,0 +1,14 @@
+{
+  "error": {
+    "code": 403,
+    "message": "Required \"container.clusters.update\" permission(s) for \"projects/kubyl-example/locations/europe-west1/clusters/prod\".",
+    "status": "PERMISSION_DENIED",
+    "details": [
+      {
+        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+        "reason": "IAM_PERMISSION_DENIED",
+        "domain": "container.googleapis.com"
+      }
+    ]
+  }
+}

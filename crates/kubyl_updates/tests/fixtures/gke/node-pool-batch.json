@@ -1,0 +1,17 @@
+{
+  "name": "batch",
+  "config": {
+    "machineType": "n2-highmem-8",
+    "diskSizeGb": 200,
+    "imageType": "UBUNTU_CONTAINERD",
+    "diskType": "pd-ssd"
+  },
+  "initialNodeCount": 2,
+  "management": {"autoUpgrade": false, "autoRepair": true},
+  "upgradeSettings": {"strategy": "BLUE_GREEN"},
+  "locations": ["europe-west1-b", "europe-west1-c", "europe-west1-d"],
+  "selfLink": "https://container.googleapis.com/v1/projects/kubyl-example/locations/europe-west1/clusters/prod/nodePools/batch",
+  "version": "1.29.9-gke.1177000",
+  "status": "RUNNING",
+  "etag": "c1a2b3c4-0000-4000-8000-000000000002"
+}

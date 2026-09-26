@@ -1,0 +1,43 @@
+{
+  "operations": [
+    {
+      "name": "operation-1726826400000-0a1b2c3d",
+      "zone": "europe-west1",
+      "operationType": "UPGRADE_MASTER",
+      "status": "DONE",
+      "selfLink": "https://container.googleapis.com/v1/projects/123456789012/locations/europe-west1/operations/operation-1726826400000-0a1b2c3d",
+      "targetLink": "https://container.googleapis.com/v1/projects/123456789012/locations/europe-west1/clusters/prod",
+      "startTime": "2024-09-20T10:00:00.000000Z",
+      "endTime": "2024-09-20T10:25:00.000000Z",
+      "location": "europe-west1"
+    },
+    {
+      "name": "operation-1726905600000-1b2c3d4e",
+      "zone": "europe-west1",
+      "operationType": "UPGRADE_NODES",
+      "status": "RUNNING",
+      "selfLink": "https://container.googleapis.com/v1/projects/123456789012/locations/europe-west1/operations/operation-1726905600000-1b2c3d4e",
+      "targetLink": "https://container.googleapis.com/v1/projects/123456789012/locations/europe-west1/clusters/prod/nodePools/batch",
+      "startTime": "2024-09-21T08:00:00.000000Z",
+      "progress": {
+        "status": "RUNNING",
+        "metrics": [
+          {"name": "NODES_TOTAL", "intValue": "6"},
+          {"name": "NODES_FAILED", "intValue": "0"},
+          {"name": "NODES_DONE", "intValue": "3"}
+        ]
+      },
+      "location": "europe-west1"
+    },
+    {
+      "name": "operation-1726905600001-2c3d4e5f",
+      "zone": "europe-west1",
+      "operationType": "UPGRADE_MASTER",
+      "status": "RUNNING",
+      "selfLink": "https://container.googleapis.com/v1/projects/123456789012/locations/europe-west1/operations/operation-1726905600001-2c3d4e5f",
+      "targetLink": "https://container.googleapis.com/v1/projects/123456789012/locations/europe-west1/clusters/staging",
+      "startTime": "2024-09-21T08:00:00.000000Z",
+      "location": "europe-west1"
+    }
+  ]
+}
