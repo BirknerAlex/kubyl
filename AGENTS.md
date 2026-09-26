@@ -77,6 +77,18 @@ cargo run -p kubyl
   OperatorHub in Kubyl), `--delete` removes what it installed (it marks the namespaces;
   an OLM or cert-manager that was there stays). Helm releases come from
   `prometheus-dev.sh`.
+- Cluster updates and Routes: `script/updates-dev.sh` adds a PDB that blocks drains and a Helm
+  release whose manifest uses removed APIs (namespace `kubyl-updates`) to the kind cluster, and
+  creates a second kind cluster `kubyl-ocp` (`KUBECONFIG=/tmp/kubyl-dev/ocp-kubeconfig`) that
+  looks like OpenShift 4.17: the openshift/api CRDs, a ClusterVersion with available and
+  conditional updates and an admin gate, ClusterOperators, MachineConfigPools, APIRequestCounts,
+  and Routes in `shop` with real backends. `--ocp-stage idle|started|operators|nodes|done` sets
+  an update state, `--ocp-update` plays one, `--fake-cvo` acts on `spec.desiredUpdate` and
+  `spec.channel` like the cluster-version operator (`oc adm upgrade` works against it). `--k3s`
+  makes a k3d cluster `kubyl-k3s` (`/tmp/kubyl-dev/k3s-kubeconfig`) with system-upgrade-controller
+  Plans pinned to its version. `--delete` removes only what it marked. Kubernetes v1.37 serves no
+  deprecated group-version, so `apiserver_requested_deprecated_apis` only shows v1
+  ComponentStatus and Endpoints on kind.
 - Live tests against those clusters are ignored by default: see the header of
   `crates/kubyl_kube/tests/live.rs` (and of `crates/kubyl_metrics/tests/live.rs`,
   `crates/kubyl_alerts/tests/live.rs`, `crates/kubyl_operators/tests/live.rs`).
