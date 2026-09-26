@@ -5397,6 +5397,7 @@ dependencies = [
  "kubyl_ui",
  "kubyl_yaml",
  "openidconnect",
+ "regex",
  "schemars 1.2.2",
  "serde",
  "serde_json",

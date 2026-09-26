@@ -14,9 +14,9 @@ workspace = true
 
 [features]
 # Cloud providers (decided in phase 13): off by default to keep the binary small.
-updates-eks = ["dep:hmac", "dep:openidconnect"]
-updates-gke = ["dep:openidconnect"]
-updates-aks = ["dep:openidconnect"]
+updates-eks = ["dep:hmac"]
+updates-gke = []
+updates-aks = []
 
 [dependencies]
 futures.workspace = true
@@ -35,6 +35,9 @@ kubyl_resources.workspace = true
 kubyl_settings.workspace = true
 kubyl_ui.workspace = true
 kubyl_yaml.workspace = true
+# Its reqwest (already in the tree through kubyl_kube): channel servers and cloud APIs.
+openidconnect.workspace = true
+regex.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -45,7 +48,6 @@ url.workspace = true
 
 # Cloud providers.
 hmac = { workspace = true, optional = true }
-openidconnect = { workspace = true, optional = true }
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
