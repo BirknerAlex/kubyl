@@ -167,7 +167,7 @@ pub fn init(cx: &mut App) {
             let saved: Vec<SavedForward> = SavedForwards::global(cx)
                 .read(cx)
                 .state()
-                .auto_start(cluster, &contexts)
+                .auto_start(cluster, &contexts, |id| manager.read(cx).resolve(id))
                 .cloned()
                 .collect();
             let forwards = PortForwardManager::global(cx);
@@ -279,8 +279,10 @@ pub fn start_saved(saved: &SavedForward, cx: &mut App) {
         );
         return;
     };
+    // The entry the context belongs to (grouped contexts).
+    let cluster = manager.read(cx).resolve(&context.id);
     let target = ResourceRef::object(
-        context.id.clone(),
+        cluster,
         gvr_for(&saved.resource),
         Some(saved.namespace.clone()),
         saved.name.clone(),

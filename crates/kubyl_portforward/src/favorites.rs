@@ -131,14 +131,19 @@ impl SavedForwardsState {
     }
 
     /// Saved forwards to start when `cluster` connects.
+    /// The forwards to start when `cluster` connects. `entry` maps a context's id to its
+    /// cluster entry (grouped contexts, `ConnectionManager::resolve`).
     pub fn auto_start<'a>(
         &'a self,
         cluster: &'a ClusterId,
         contexts: &'a [ContextInfo],
+        entry: impl Fn(&ClusterId) -> ClusterId + 'a,
     ) -> impl Iterator<Item = &'a SavedForward> + 'a {
-        self.forwards
-            .iter()
-            .filter(move |f| f.auto_start && f.resolve(contexts).is_some_and(|c| &c.id == cluster))
+        self.forwards.iter().filter(move |f| {
+            f.auto_start
+                && f.resolve(contexts)
+                    .is_some_and(|c| &entry(&c.id) == cluster)
+        })
     }
 }
 
