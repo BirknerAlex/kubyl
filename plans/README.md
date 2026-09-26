@@ -57,7 +57,7 @@ Each phase file is written so one Claude Code session can own it from start to f
 ```
 
 After phase 02, phases 03, 04, 05 and 07 can run in parallel sessions. Phase 08 can start once 05 is done, phase 10 once 04 and 05 are done, phase 11 once 04 is done, and phase 14 once 07 is done.
-Phases 08, 10, 11 and 14 add crates that phase 00 didn't stub (`kubyl_webview`, `kubyl_argocd`, `kubyl_kubeconfig`, `kubyl_alerts`): their first commit adds the stub crate (workspace member plus the `init` line in `crates/kubyl/src/main.rs`) in a tiny PR that lands on `main` before the feature work, so parallel sessions don't conflict (phase 10 skipped it on request: its crate landed with the feature PR).
+Phases 08, 10, 11 and 14 add crates that phase 00 didn't stub (`kubyl_webview`, `kubyl_argocd`, `kubyl_kubeconfig`, `kubyl_alerts`): their first commit adds the stub crate (workspace member plus the `init` line in `crates/kubyl/src/main.rs`) in a tiny PR that lands on `main` before the feature work, so parallel sessions don't conflict (phases 10 and 11 skipped it on request: their crates landed with the feature PR).
 Phase 00 must leave stub crates and registration traits so that parallel phases never edit
 the same files. See "Extension points" below.
 
@@ -126,7 +126,7 @@ plans/                      # these plans
 | Kubeconfig writes | Kubyl writes kubeconfigs only from the kubeconfig editor (`kubyl_kubeconfig`, decided in phase 11; this replaces "Kubyl never modifies kubeconfig files"). **Kubyl-owned** files (`<config dir>/kubeconfigs/`: pasted or created in Kubyl) are edited freely. **Other files** (`~/.kube/config`, `$KUBECONFIG`, user-added) stay read-only until the user turns on editing for that file ("Edit this file", kept in settings.json `kubeconfig_editor.editable_files`; `kubeconfig_editor.allow_external_edits: false` removes the option). The alternative is "Save as a Kubyl copy": the copy replaces the original as a source, the original is untouched | Every save shows a diff preview, keeps a timestamped backup (`<config dir>/kubeconfig-backups/`, mode 0600, the last `kubeconfig_editor.backups_kept` per file, default 10), writes atomically (temp file in the same folder, fsync, rename; symlinks are followed) and refuses to overwrite a file whose SHA-256 changed since it was loaded. New files and files with inline credentials are 0600, others keep their mode. Phase 01 still deletes only pasted files. |
 | Kubeconfig comments and key order | Kept (decided in phase 11). The editor never re-serializes a file it can edit in place: `kubyl_kubeconfig::yaml` compares the loaded document with the edited model on `kubyl_yaml::parse` spans and writes minimal text edits (scalars replaced in place with their quote style and trailing comment, keys and list items removed or appended at the right indent, flow collections rewritten in flow style). The result is parsed again and must equal the edited model; otherwise the file is rendered from scratch and the save preview lists every comment that would be lost | Spike (2026-09-26): `yamlpatch` 1.30.1 (MIT) dropped the other keys of a flow mapping when replacing one value, wrote `'yes'` unquoted (a boolean for kubectl's YAML 1.1 parser) and removed a trailing comment with the last list item; `yaml-edit` 0.3.2 (Apache-2.0) mis-indented appended nested entries. Both pass `cargo deny`, neither was solid enough for `~/.kube/config`. Scalars are quoted whenever YAML 1.1 (`sigs.k8s.io/yaml`, which kubectl uses) could read them as anything but a string. |
 | Kubeconfig credentials | Inline in the file, as kubectl expects (decided in phase 11); a file with inline credentials is written 0600. Keeping a secret in the OS keychain behind a `kubyl credential <id>` exec plugin is a follow-up | Secrets (tokens, client keys, passwords, OIDC client secrets and refresh tokens) are masked in the form and the YAML tab until revealed; copying one is an explicit action with a toast; they never reach logs, settings.json or state.json. Exports with credentials warn first and are written 0600. |
-| Exec-plugin consent and CA trust (kubeconfig editor) | An exec plugin from an import, a paste or unsaved edits runs only after the user saw its command, args, env, API version and interactive mode and agreed (decided in phase 11). `interactiveMode` isn't consent. Consent covers that exact config for the session (a hash in memory); "Test all contexts" asks once for every plugin that needs it. Plugins in saved, loaded kubeconfigs behave as in phase 01 | Fetching a CA is trust on first use: a TLS handshake that sends nothing, plus an anonymous read of `kube-public/cluster-info` (kubeadm clusters publish their CA there); a candidate must verify the server's certificate. The UI shows subject, validity and the SHA-256 fingerprint and needs an explicit confirmation. No credentials go to a server before its certificate verifies against a trusted CA; a TLS failure never falls back to insecure mode (`insecure-skip-tls-verify` only when the user sets it, with a red warning). |
+| Exec-plugin consent and CA trust (kubeconfig editor) | An exec plugin from an import, a paste or unsaved edits runs only after the user saw its command, args, env, API version and interactive mode and agreed (decided in phase 11). `interactiveMode` isn't consent. Consent covers that exact config for the session (a hash in memory); "Test all contexts" asks once for every plugin that needs it. Plugins in saved, loaded kubeconfigs behave as in phase 01. Pasting a kubeconfig (phase 01's dialog) lists its exec plugins and adds the file only after "I checked these commands and trust them" | Fetching a CA is trust on first use: a TLS handshake that sends nothing, plus an anonymous read of `kube-public/cluster-info` (kubeadm clusters publish their CA there); a candidate must verify the server's certificate. The UI shows subject, validity and the SHA-256 fingerprint and needs an explicit confirmation. No credentials go to a server before its certificate verifies against a trusted CA; a TLS failure never falls back to insecure mode (`insecure-skip-tls-verify` only when the user sets it, with a red warning). |
 | File watching | `notify` | Kubeconfig hot reload. |
 | Settings | JSON (`serde_json`) in `dirs::config_dir()/kubyl/` (override with `$KUBYL_CONFIG_DIR`) | `settings.json` (user, hot-reloaded, with a generated `settings.schema.json`), `state.json` (UI state, favorites, tabs). Typed sections: `kubyl_settings::{SettingsSection, StateSection}`. |
 | UI units | Sizes use `kubyl_ui::u(px)` (rems); the window's rem size follows `ui_font_size` | Zoom (⌘+/⌘-) scales the whole UI. Colors come from `cx.colors()`. |
@@ -144,8 +144,9 @@ Phase 00 creates these traits/registries in `kubyl_core` / `kubyl_ui`. Feature c
 into them from their own `init(cx)` function, and `crates/kubyl/src/main.rs` calls each `init` in
 one list. That list is the only shared line, and it is append-only.
 
-- `ViewRegistry`: open a tab/pane for a `ViewRequest { kind: ViewKind, target: Option<ResourceRef> }`
-  (Table, Details, Yaml, Logs, Terminal, Files, Overview, Operators, Updates, Settings…). Views
+- `ViewRegistry`: open a tab/pane for a `ViewRequest { kind: ViewKind, target: Option<ResourceRef>,
+  path: Option<PathBuf> }` (Table, Details, Yaml, Logs, Terminal, Files, Overview, Operators,
+  Updates, Settings…; `ViewRequest::for_path` for views of a file, since phase 11). Views
   implement `TabView`; dispatch `kubyl_core::actions::OpenView(request)` to open one. Kinds without
   a factory show a placeholder tab.
 - `ActionRegistry`: named actions with keybindings, availability predicate
@@ -240,6 +241,13 @@ one list. That list is the only shared line, and it is append-only.
 - Argo CD (phase 10): `ClusterCaps::argocd` (`applications`, `application_sets`, `projects`,
   `any()`) says which Argo CD CRDs a cluster serves; `kubyl_argocd::dock::managed_by(object)`
   tells which Application tracks an object.
+- Kubeconfig editor (phase 11): dispatch `kubyl_core::actions::EditKubeconfig { path, context }`
+  to open a kubeconfig in the editor tab (and select a context), `NewKubeconfig` for the
+  wizard. Without the UI: `kubyl_kubeconfig::conntest::run` (the step-by-step connection
+  test), `tls::{check, fetch_ca}` (handshake and trust-on-first-use CA fetch), `certs` (PEM and
+  X.509 details), `files::save` (atomic, backup, hash check), `yaml::write` (comment-preserving
+  writes). `kubyl_kube::kubeconfig::context_info` builds a `ContextInfo` from any in-memory
+  kubeconfig; `ConnectionManager::move_context_settings` moves a context's overrides.
 
 ### UX principles (from the mockups)
 
