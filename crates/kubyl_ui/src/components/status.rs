@@ -1,5 +1,8 @@
+use std::time::Duration;
+
 use gpui::{
-    App, Hsla, IntoElement, Pixels, RenderOnce, SharedString, Window, div, prelude::*, relative,
+    Animation, AnimationExt as _, App, ElementId, Hsla, IntoElement, Pixels, RenderOnce,
+    SharedString, Window, div, prelude::*, pulsating_between, relative,
 };
 use gpui_component::h_flex;
 use kubyl_core::Tone;
@@ -22,17 +25,37 @@ pub fn tone_color(tone: Tone, colors: &Colors) -> Hsla {
 #[derive(IntoElement)]
 pub struct StatusDot {
     color: Hsla,
+    pulse: Option<ElementId>,
 }
 
 impl StatusDot {
     pub fn new(color: Hsla) -> Self {
-        Self { color }
+        Self { color, pulse: None }
+    }
+
+    /// Fades in and out, e.g. while a cluster connects. `id` must be unique among siblings.
+    pub fn pulsing(mut self, id: impl Into<ElementId>) -> Self {
+        self.pulse = Some(id.into());
+        self
     }
 }
 
 impl RenderOnce for StatusDot {
     fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        div().flex_none().size(u(7.0)).rounded_full().bg(self.color)
+        let dot = div().flex_none().size(u(7.0)).rounded_full().bg(self.color);
+        match self.pulse {
+            Some(id) => dot
+                .with_animation(
+                    id,
+                    Animation::new(Duration::from_millis(1600))
+                        .repeat_synced()
+                        .with_max_fps(24.0)
+                        .with_easing(pulsating_between(0.3, 1.0)),
+                    |dot, alpha| dot.opacity(alpha),
+                )
+                .into_any_element(),
+            None => dot.into_any_element(),
+        }
     }
 }
 
