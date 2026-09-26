@@ -218,6 +218,17 @@ pub fn references(kind: &str, object: &Value) -> Vec<Reference> {
                 );
             }
         }
+        // OpenShift Routes (`spec.to` + alternate backends); other groups' `Route` kinds have no
+        // `spec.to`.
+        "Route" => {
+            let route = kubyl_resources::route::Route::parse(object);
+            for backend in route.services() {
+                add(
+                    "Backend",
+                    object_ref(core("Service"), namespace.clone(), &backend.name),
+                );
+            }
+        }
         "RoleBinding" | "ClusterRoleBinding" => {
             if let (Some(kind), Some(name)) = (
                 str_at(object, "/roleRef/kind"),
@@ -270,6 +281,51 @@ pub fn references(kind: &str, object: &Value) -> Vec<Reference> {
         _ => {}
     }
     out.into_iter().collect()
+}
+
+/// The Routes that send traffic to a Service (Service → Routes, on clusters that serve
+/// `route.openshift.io`): a filtered list of the Routes whose `spec.to` names it, plus the Routes
+/// among `known` (an already loaded Routes list) that name it as an alternate backend. `gvk` is
+/// the served Route version.
+pub fn service_routes<'a>(
+    service: &str,
+    namespace: Option<&str>,
+    gvk: &Gvk,
+    known: impl IntoIterator<Item = &'a Value>,
+) -> Vec<Reference> {
+    let filter = Reference {
+        relation: "Route",
+        target: RefTarget::Filtered {
+            gvk: gvk.clone(),
+            namespace: namespace.map(String::from),
+            filter: format!("spec.to.name={service}"),
+        },
+    };
+    let mut out = BTreeSet::new();
+    for object in known {
+        let route = kubyl_resources::route::Route::parse(object);
+        if route.namespace.as_deref() != namespace
+            || route.backends.first().is_some_and(|to| to.name == service)
+        {
+            continue;
+        }
+        if route
+            .backends
+            .iter()
+            .skip(1)
+            .any(|backend| backend.is_service() && backend.name == service)
+        {
+            out.insert(Reference {
+                relation: "Route",
+                target: RefTarget::Object {
+                    gvk: gvk.clone(),
+                    namespace: route.namespace.clone(),
+                    name: route.name,
+                },
+            });
+        }
+    }
+    std::iter::once(filter).chain(out).collect()
 }
 
 fn pod_references(
@@ -472,5 +528,56 @@ mod tests {
             titles(&references("Event", &event)),
             vec![("About".to_string(), "Pod p".to_string())]
         );
+    }
+
+    #[test]
+    fn routes_and_the_services_they_route_to() {
+        let route = |name: &str, to: &str, alternates: &[&str]| {
+            json!({
+                "apiVersion": "route.openshift.io/v1", "kind": "Route",
+                "metadata": {"name": name, "namespace": "shop", "ownerReferences": [
+                    {"apiVersion": "networking.k8s.io/v1", "kind": "Ingress", "name": "shop"}]},
+                "spec": {"to": {"kind": "Service", "name": to},
+                         "alternateBackends": alternates.iter()
+                            .map(|a| json!({"kind": "Service", "name": a})).collect::<Vec<_>>()}
+            })
+        };
+        // Route → its backends and its owner Ingress.
+        let refs = references("Route", &route("shop", "shop-web", &["shop-canary"]));
+        let titles_ = titles(&refs);
+        assert!(titles_.contains(&("Backend".into(), "Service shop-web".into())));
+        assert!(titles_.contains(&("Backend".into(), "Service shop-canary".into())));
+        assert!(titles_.contains(&("Owner".into(), "Ingress shop".into())));
+        let backend = refs.iter().find(|r| r.relation == "Backend").unwrap();
+        assert!(
+            matches!(&backend.target, RefTarget::Object { namespace: Some(ns), .. } if ns == "shop")
+        );
+
+        // Service → the Routes that send traffic to it.
+        let gvk = Gvk::new("route.openshift.io", "v1", "Route");
+        let known = [
+            route("shop", "shop-web", &["shop-canary"]),
+            route("canary-only", "other", &["shop-canary"]),
+            route("web", "shop-canary", &[]),
+            route("unrelated", "other", &[]),
+        ];
+        let refs = service_routes("shop-canary", Some("shop"), &gvk, &known);
+        assert_eq!(
+            refs[0].target,
+            RefTarget::Filtered {
+                gvk: gvk.clone(),
+                namespace: Some("shop".into()),
+                filter: "spec.to.name=shop-canary".into()
+            }
+        );
+        assert_eq!(refs[0].title(), "Routes spec.to.name=shop-canary");
+        let names: Vec<String> = refs[1..].iter().map(Reference::title).collect();
+        assert_eq!(names, ["Route canary-only", "Route shop"]);
+        // Other namespaces don't count; without a loaded list only the filter remains.
+        assert_eq!(
+            service_routes("shop-canary", Some("other"), &gvk, &known).len(),
+            1
+        );
+        assert_eq!(service_routes("x", Some("shop"), &gvk, []).len(), 1);
     }
 }
