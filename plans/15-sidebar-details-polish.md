@@ -113,7 +113,7 @@ this phase.
    - For `oc`-style names (`<namespace>/<cluster entry>/<user>`), the label is the server host
      without a leading `api.` and without the default port, then ` · ` and the user name (the user
      entry name without its `/<cluster entry>` suffix). Examples:
-     `oci.fra01.g-portal.se · alexander.birkner@g-portal.cloud`, `ocip.stl01.g-portal.se · kube:admin`,
+     `ocp.eu1.example.com · jane.doe@example.com`, `ocp.us1.example.com · kube:admin`,
      `0.0.0.0:55878 · system:admin`. This applies to `oc`-style contexts without siblings too, so
      all of them look alike.
    - Other groups: `<cluster entry> · <user entry>`.
