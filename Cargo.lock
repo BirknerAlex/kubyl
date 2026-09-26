@@ -5193,8 +5193,34 @@ dependencies = [
 name = "kubyl_operators"
 version = "0.2.2"
 dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "flate2",
+ "futures",
+ "gpui-component",
  "gpui-pre",
+ "http",
+ "http-body-util",
+ "jiff",
+ "k8s-openapi",
+ "kube",
  "kubyl_core",
+ "kubyl_explorer",
+ "kubyl_kube",
+ "kubyl_resources",
+ "kubyl_settings",
+ "kubyl_ui",
+ "kubyl_yaml",
+ "open",
+ "parking_lot",
+ "schemars 1.2.2",
+ "serde",
+ "serde-saphyr 1.3.0",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

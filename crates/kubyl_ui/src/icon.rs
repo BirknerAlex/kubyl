@@ -27,6 +27,7 @@ macro_rules! icons {
 
 icons! {
     Activity => "activity",
+    Anchor => "anchor",
     ArrowLeft => "arrow-left",
     ArrowRight => "arrow-right",
     ArrowUp => "arrow-up",
