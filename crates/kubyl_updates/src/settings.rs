@@ -23,9 +23,42 @@ impl SettingsSection for UpdatesSettings {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct ClusterUpdateSettings {
+    /// The provider to use when detection picks the wrong one (e.g. an EKS cluster behind a
+    /// proxy URL).
+    pub provider: Option<ProviderSetting>,
     pub eks: Option<EksSettings>,
     pub gke: Option<GkeSettings>,
     pub aks: Option<AksSettings>,
+}
+
+/// A provider picked in settings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderSetting {
+    Openshift,
+    Eks,
+    Gke,
+    Aks,
+    K3s,
+    Rke2,
+    ClusterApi,
+    SelfManaged,
+}
+
+impl ProviderSetting {
+    pub fn kind(self) -> crate::model::ProviderKind {
+        use crate::model::ProviderKind;
+        match self {
+            ProviderSetting::Openshift => ProviderKind::OpenShift,
+            ProviderSetting::Eks => ProviderKind::Eks,
+            ProviderSetting::Gke => ProviderKind::Gke,
+            ProviderSetting::Aks => ProviderKind::Aks,
+            ProviderSetting::K3s => ProviderKind::K3s,
+            ProviderSetting::Rke2 => ProviderKind::Rke2,
+            ProviderSetting::ClusterApi => ProviderKind::ClusterApi,
+            ProviderSetting::SelfManaged => ProviderKind::SelfManaged,
+        }
+    }
 }
 
 /// An EKS cluster (defaults come from the `aws eks get-token` exec plugin).

@@ -150,6 +150,20 @@ impl Updates {
                     this.connection_event(event, cx)
                 }));
             }
+            if cx.has_global::<kubyl_settings::Settings>() {
+                // A provider override or cloud settings changed: build the providers again.
+                subscriptions.push(cx.observe_global::<kubyl_settings::Settings>(
+                    |this: &mut Self, cx| {
+                        let ids: Vec<ClusterId> = this.clusters.keys().cloned().collect();
+                        for id in ids {
+                            if let Some(state) = this.clusters.get_mut(&id) {
+                                state.facts = None;
+                            }
+                            this.detect(&id, cx);
+                        }
+                    },
+                ));
+            }
             Self {
                 clusters: HashMap::new(),
                 poll,
@@ -294,7 +308,18 @@ impl Updates {
         if state.facts.as_ref() == Some(&facts) && state.provider.is_some() {
             return;
         }
-        let detected = detect::detect(&facts);
+        let overridden = ConnectionManager::try_global(cx).and_then(|m| {
+            kubyl_settings::Settings::get::<UpdatesSettings>(cx)
+                .for_keys(&m.read(cx).settings_keys(cluster))
+                .provider
+        });
+        let detected = match overridden {
+            Some(setting) => Detected {
+                kind: setting.kind(),
+                reason: "picked in settings (updates.clusters.<cluster>.provider)".into(),
+            },
+            None => detect::detect(&facts),
+        };
         let provider = build(cluster, &detected, &facts, client, cx);
         let Some(state) = self.clusters.get_mut(cluster) else {
             return;

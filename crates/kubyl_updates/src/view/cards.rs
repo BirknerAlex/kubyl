@@ -1138,7 +1138,7 @@ pub fn preflight_card(
                 let titles: Vec<String> = passed
                     .iter()
                     .filter(|c| c.status == CheckStatus::Pass)
-                    .map(|c| c.title.to_lowercase())
+                    .map(|c| c.title.clone())
                     .collect();
                 body = body.child(
                     h_flex()
