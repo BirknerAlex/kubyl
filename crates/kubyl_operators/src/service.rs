@@ -61,6 +61,9 @@ pub struct Snapshot {
     pub loading: bool,
     /// Watches that can't list (403…): what's missing.
     pub problems: Vec<String>,
+    /// The first of `problems` from the Subscription or CSV watch: the installed operators are
+    /// incomplete (other watches failing leave them intact).
+    pub operators_problem: Option<String>,
 }
 
 impl Snapshot {
@@ -383,6 +386,14 @@ impl Olm {
         Some(snapshot)
     }
 
+    /// Fills a cluster's OperatorHub packages by hand (GPUI tests: nothing is fetched).
+    #[cfg(test)]
+    pub(crate) fn insert_hub_for_test(&mut self, cluster: &ClusterId, packages: Vec<Package>) {
+        let state = self.hub.entry(cluster.clone()).or_default();
+        state.packages = Some(Arc::new(packages.into_iter().map(Arc::new).collect()));
+        state.fetched_at = Some(Instant::now());
+    }
+
     /// Fills a cluster's watches by hand (GPUI tests: no cluster, no network).
     #[cfg(test)]
     pub(crate) fn insert_for_test(
@@ -645,6 +656,44 @@ fn served(cluster: &ClusterId, cx: &App) -> Option<(bool, bool)> {
         .map(|d| (d.has_group(model::GROUP), d.has_group(v1::GROUP)))
 }
 
+/// What the watches say: whether one still lists, what can't be read, and the first problem
+/// of the Subscription or CSV watch (the installed operators come from those two).
+#[derive(Debug, Default, PartialEq)]
+struct WatchProblems {
+    loading: bool,
+    problems: Vec<String>,
+    operators: Option<String>,
+}
+
+/// `watches`: (resource, status, empty?) of each running watch.
+fn watch_problems(watches: &[(&str, StoreStatus, bool)]) -> WatchProblems {
+    let mut out = WatchProblems::default();
+    for (what, status, empty) in watches {
+        let problem = match status {
+            StoreStatus::Waiting | StoreStatus::Loading => {
+                out.loading = true;
+                None
+            }
+            StoreStatus::Forbidden => Some(format!(
+                "Forbidden: you can't list {what} cluster-wide. Ask for a role that can list and watch {what}."
+            )),
+            StoreStatus::Error(err) if !status.is_settled() || *empty => {
+                Some(format!("{what}: {err}"))
+            }
+            _ => None,
+        };
+        if let Some(problem) = problem {
+            if out.operators.is_none()
+                && matches!(*what, "subscriptions" | "clusterserviceversions")
+            {
+                out.operators = Some(problem.clone());
+            }
+            out.problems.push(problem);
+        }
+    }
+    out
+}
+
 fn build(state: &ClusterOlm, cx: &App) -> Snapshot {
     let mut snapshot = Snapshot {
         v0: state.v0,
@@ -652,21 +701,8 @@ fn build(state: &ClusterOlm, cx: &App) -> Snapshot {
         loading: !state.discovered,
         ..Default::default()
     };
-    let mut check = |handle: &StoreHandle, what: &str| {
-        let store = handle.read(cx);
-        match store.status() {
-            StoreStatus::Waiting | StoreStatus::Loading => snapshot.loading = true,
-            StoreStatus::Forbidden => snapshot.problems.push(format!(
-                "Forbidden: you can't list {what} cluster-wide. Ask for a role that can list and watch {what}."
-            )),
-            StoreStatus::Error(err) if !store.status().is_settled() || store.is_empty() => {
-                snapshot.problems.push(format!("{what}: {err}"))
-            }
-            _ => {}
-        }
-    };
     let s = &state.stores;
-    for (handle, what) in [
+    let watches: Vec<(&str, StoreStatus, bool)> = [
         (&s.subscriptions, "subscriptions"),
         (&s.csvs, "clusterserviceversions"),
         (&s.plans, "installplans"),
@@ -674,11 +710,17 @@ fn build(state: &ClusterOlm, cx: &App) -> Snapshot {
         (&s.groups, "operatorgroups"),
         (&s.extensions, "clusterextensions"),
         (&s.cluster_catalogs, "clustercatalogs"),
-    ] {
-        if let Some(handle) = handle {
-            check(handle, what);
-        }
-    }
+    ]
+    .into_iter()
+    .filter_map(|(handle, what)| {
+        let store = handle.as_ref()?.read(cx);
+        Some((what, store.status().clone(), store.is_empty()))
+    })
+    .collect();
+    let watched = watch_problems(&watches);
+    snapshot.loading |= watched.loading;
+    snapshot.problems = watched.problems;
+    snapshot.operators_problem = watched.operators;
     let values = |handle: &Option<StoreHandle>| -> Vec<Arc<Value>> {
         handle
             .as_ref()
@@ -747,4 +789,41 @@ fn build(state: &ClusterOlm, cx: &App) -> Snapshot {
         .cluster_catalogs
         .sort_by(|a, b| a.name.cmp(&b.name));
     snapshot
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A watch the installed operators don't come from (OLM v1, catalogs) is a problem to show,
+    /// not one that hides the operators; a failing Subscription or CSV watch is.
+    #[test]
+    fn only_subscription_and_csv_watches_block_the_operators() {
+        let ready = |what| (what, StoreStatus::Ready, false);
+        let watched = watch_problems(&[
+            ready("subscriptions"),
+            ready("clusterserviceversions"),
+            ("clusterextensions", StoreStatus::Forbidden, true),
+            ("catalogsources", StoreStatus::Loading, true),
+        ]);
+        assert!(watched.loading);
+        assert_eq!(watched.problems.len(), 1);
+        assert!(watched.problems[0].contains("clusterextensions"));
+        assert_eq!(watched.operators, None);
+
+        let watched = watch_problems(&[
+            ("subscriptions", StoreStatus::Error("timeout".into()), true),
+            ("clusterserviceversions", StoreStatus::Forbidden, true),
+        ]);
+        assert_eq!(watched.operators.as_deref(), Some("subscriptions: timeout"));
+        assert_eq!(watched.problems.len(), 2);
+
+        // An error after the list was read (the watch retries) keeps what was read.
+        let watched = watch_problems(&[(
+            "clusterserviceversions",
+            StoreStatus::Error("stream reset".into()),
+            false,
+        )]);
+        assert_eq!(watched, WatchProblems::default());
+    }
 }

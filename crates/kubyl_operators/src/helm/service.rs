@@ -483,20 +483,7 @@ impl Helm {
                 }
             })
             .collect();
-        let problem = match (secrets.status(), &state.scope) {
-            (StoreStatus::Forbidden, Some(ns)) => Some(format!(
-                "Helm stores releases in Secrets, and you can't list secrets in {ns} either. Ask for a role that can list and watch secrets."
-            )),
-            (StoreStatus::Forbidden, None) => Some(
-                "Helm stores releases in Secrets, and you can't list secrets cluster-wide. Ask for a role that can list and watch secrets, or pick a namespace you can read."
-                    .to_string(),
-            ),
-            (_, Some(ns)) => Some(format!(
-                "You can't list secrets cluster-wide: showing the releases in {ns} only."
-            )),
-            (StoreStatus::Error(err), _) => Some(err.clone()),
-            _ => None,
-        };
+        let problem = problem(secrets.status(), state.scope.as_deref());
         let snapshot = Arc::new(Snapshot {
             releases,
             loading: !secrets.status().is_settled(),
@@ -505,6 +492,25 @@ impl Helm {
         });
         *state.snapshot.borrow_mut() = Some((generation, snapshot.clone()));
         Some(snapshot)
+    }
+}
+
+/// The banner over the release list: what the Secrets watch can't read, or a failing watch
+/// (its error, also in a single namespace), or the namespace the list is limited to.
+fn problem(status: &StoreStatus, scope: Option<&str>) -> Option<String> {
+    match (status, scope) {
+        (StoreStatus::Forbidden, Some(ns)) => Some(format!(
+            "Helm stores releases in Secrets, and you can't list secrets in {ns} either. Ask for a role that can list and watch secrets."
+        )),
+        (StoreStatus::Forbidden, None) => Some(
+            "Helm stores releases in Secrets, and you can't list secrets cluster-wide. Ask for a role that can list and watch secrets, or pick a namespace you can read."
+                .to_string(),
+        ),
+        (StoreStatus::Error(err), _) => Some(err.clone()),
+        (_, Some(ns)) => Some(format!(
+            "You can't list secrets cluster-wide: showing the releases in {ns} only."
+        )),
+        _ => None,
     }
 }
 
@@ -606,6 +612,28 @@ mod tests {
             "resourceVersion": rv,
             "labels": {"owner": "helm", "name": name, "version": revision.to_string(), "status": status, "modifiedAt": "1790338899"}}}),
         )
+    }
+
+    /// A failing watch shows its error, also when the list is limited to one namespace.
+    #[test]
+    fn banners_show_watch_errors_before_the_scope() {
+        let error = StoreStatus::Error("connection refused".into());
+        assert_eq!(
+            problem(&error, Some("shop")).as_deref(),
+            Some("connection refused")
+        );
+        assert_eq!(problem(&error, None).as_deref(), Some("connection refused"));
+        assert!(
+            problem(&StoreStatus::Ready, Some("shop"))
+                .unwrap()
+                .contains("releases in shop only")
+        );
+        assert!(
+            problem(&StoreStatus::Forbidden, Some("shop"))
+                .unwrap()
+                .contains("in shop either")
+        );
+        assert_eq!(problem(&StoreStatus::Ready, None), None);
     }
 
     #[test]

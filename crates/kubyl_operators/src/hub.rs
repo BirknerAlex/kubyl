@@ -38,6 +38,10 @@ const CARD_MIN_WIDTH: f32 = 230.0;
 const CARD_HEIGHT: f32 = 122.0;
 const GAP: f32 = 12.0;
 
+/// What the shown packages were filtered from: filters, sort, the package list (by pointer)
+/// and the installed (package, catalog) pairs.
+type ShownFrom = (Filters, Sort, usize, BTreeSet<(String, String)>);
+
 actions!(
     operatorhub,
     [
@@ -155,9 +159,10 @@ pub struct OperatorHubView {
     scroll: UniformListScrollHandle,
     /// The grid's width (measured), for the number of columns.
     width: Rc<Cell<f32>>,
-    /// The filtered packages and what they were filtered from.
+    /// The filtered packages and what they were filtered from (the installed packages too:
+    /// "Installed only" follows the Subscription watch).
     shown: Vec<Arc<Package>>,
-    shown_from: Option<(Filters, Sort, usize)>,
+    shown_from: Option<ShownFrom>,
     _lease: Option<OlmLease>,
     _subscriptions: Vec<Subscription>,
 }
@@ -233,18 +238,20 @@ impl OperatorHubView {
 
     /// Filters and sorts the packages when something changed.
     fn refresh_shown(&mut self, packages: &Arc<Vec<Arc<Package>>>, cx: &App) {
+        let installed = self.installed(cx);
         let key = (
             self.filters.clone(),
             self.sort,
             Arc::as_ptr(packages) as usize,
+            installed,
         );
         if self.shown_from.as_ref() == Some(&key) {
             return;
         }
-        let installed = self.installed(cx);
+        let installed = &key.3;
         let mut shown: Vec<Arc<Package>> = packages
             .iter()
-            .filter(|p| self.filters.matches(p, Self::is_installed(&installed, p)))
+            .filter(|p| self.filters.matches(p, Self::is_installed(installed, p)))
             .cloned()
             .collect();
         if self.sort == Sort::Relevance && !self.filters.query.trim().is_empty() {
@@ -1311,5 +1318,80 @@ impl Render for OperatorHubView {
             .child(toolbar)
             .child(div().flex_1().min_h_0().flex().child(body))
             .child(kubyl_ui::KeyHints::new(hints))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{Entity, TestAppContext};
+    use serde_json::json;
+
+    fn subscription(package: &str) -> serde_json::Value {
+        json!({"metadata": {"name": package, "namespace": "operators"},
+               "spec": {"name": package, "source": "operatorhubio-catalog",
+                        "sourceNamespace": "olm", "channel": "stable"}})
+    }
+
+    /// "Installed only" follows the Subscription watch while the tab is open: an install shows
+    /// up, an uninstall goes away, without touching the filters.
+    #[gpui::test]
+    fn installed_only_follows_subscriptions(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let olm = cx.update(|cx| {
+            kubyl_core::init(cx);
+            kubyl_settings::init_with_dir(cx, dir.path());
+            kubyl_ui::init(cx);
+            kubyl_resources::init(cx);
+            Olm::install(false, cx)
+        });
+        let cluster = ClusterId::new("c");
+        let items: Vec<serde_json::Value> = ["cert-manager", "cloudnative-pg"]
+            .map(|name| {
+                json!({"metadata": {"name": name, "namespace": "olm"},
+                       "status": {"catalogSource": "operatorhubio-catalog", "catalogSourceNamespace": "olm",
+                                  "packageName": name, "defaultChannel": "stable",
+                                  "channels": [{"name": "stable", "currentCSV": format!("{name}.v1.0.0"),
+                                                "currentCSVDesc": {"version": "1.0.0"}}]}})
+            })
+            .into();
+        let list = json!({ "items": items }).to_string();
+        let packages = crate::olm::hub::parse_list(list.as_bytes()).unwrap();
+        olm.update(cx, |olm, cx| {
+            olm.insert_hub_for_test(&cluster, packages);
+            olm.insert_for_test(&cluster, Vec::new(), Vec::new(), Vec::new(), cx);
+        });
+        let slot: Rc<std::cell::RefCell<Option<Entity<OperatorHubView>>>> = Default::default();
+        let (_root, cx) = cx.add_window_view({
+            let slot = slot.clone();
+            let cluster = cluster.clone();
+            move |window, cx| {
+                let view = cx.new(|cx| OperatorHubView::new(cluster, window, cx));
+                *slot.borrow_mut() = Some(view.clone());
+                gpui_component::Root::new(view, window, cx)
+            }
+        });
+        let view = slot.borrow().clone().unwrap();
+        let shown = |cx: &mut gpui::VisualTestContext| {
+            view.update(cx, |view, cx| {
+                let packages = view.packages(cx).unwrap();
+                view.refresh_shown(&packages, cx);
+                view.shown
+                    .iter()
+                    .map(|p| p.name.clone())
+                    .collect::<Vec<_>>()
+            })
+        };
+        view.update(cx, |view, _| view.filters.installed_only = true);
+        assert!(shown(cx).is_empty());
+        olm.update(cx, |olm, cx| {
+            let subs = vec![subscription("cloudnative-pg")];
+            olm.insert_for_test(&cluster, subs, Vec::new(), Vec::new(), cx);
+        });
+        assert_eq!(shown(cx), ["cloudnative-pg"]);
+        olm.update(cx, |olm, cx| {
+            olm.insert_for_test(&cluster, Vec::new(), Vec::new(), Vec::new(), cx)
+        });
+        assert!(shown(cx).is_empty());
     }
 }

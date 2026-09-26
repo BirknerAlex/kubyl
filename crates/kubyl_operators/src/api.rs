@@ -73,7 +73,9 @@ pub fn installed(cluster: &ClusterId, cx: &mut App) -> Installed {
     let Some(snapshot) = olm.snapshot(cluster, cx) else {
         return Installed::Loading;
     };
-    if let Some(problem) = snapshot.problems.first() {
+    // Only the Subscription and CSV watches feed the list: a CatalogSource or OLM v1 watch
+    // that can't list doesn't hide the operators.
+    if let Some(problem) = &snapshot.operators_problem {
         return Installed::Problem(problem.clone());
     }
     if snapshot.loading {

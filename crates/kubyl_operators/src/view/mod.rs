@@ -991,7 +991,7 @@ impl OperatorsView {
             ResourceRef::list(self.cluster.clone(), crate::olm::v1::cluster_extensions(), None),
             text,
             Some(
-                "OLM v1 template: set the package, then apply. The installer service account needs the bundle's permissions."
+                "OLM v1 template: set the package and namespace, then apply. operator-controller before 1.12 also needs spec.serviceAccount (see the comments)."
                     .into(),
             ),
             window,
