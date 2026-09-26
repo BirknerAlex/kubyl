@@ -78,6 +78,9 @@ ICONS = {
  "pencil": '<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"></path>',
  "fileplus": '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><path d="M14 2v6h6"></path><path d="M12 18v-6M9 15h6"></path>',
  "shieldalert": '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"></path><path d="M12 8v4M12 16h.01"></path>',
+ "siren": '<path d="M7 18v-6a5 5 0 1 1 10 0v6"></path><path d="M5 21a1 1 0 0 1-1-1v-1a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v1a1 1 0 0 1-1 1z"></path><path d="M21 12h1"></path><path d="M18.5 4.5 18 5"></path><path d="M2 12h1"></path><path d="M12 2v1"></path><path d="m4.929 4.929.707.707"></path><path d="M12 12v6"></path>',
+ "belloff": '<path d="M10.268 21a2 2 0 0 0 3.464 0"></path><path d="M17 17H4a1 1 0 0 1-.74-1.673C4.59 13.956 6 12.499 6 8a6 6 0 0 1 .258-1.742"></path><path d="m2 2 20 20"></path><path d="M8.668 3.01A6 6 0 0 1 18 8c0 2.687.77 4.653 1.707 6.05"></path>',
+ "listchecks": '<path d="M13 5h8"></path><path d="M13 12h8"></path><path d="M13 19h8"></path><path d="m3 17 2 2 4-4"></path><path d="m3 7 2 2 4-4"></path>',
  "gear": '<circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>',
 }
 
@@ -232,22 +235,53 @@ def ti(label, depth=0, icon=None, count=None, open_=None, on=False, root=False, 
     cls = "ti" + (" on" if on else "") + (" root" if root else "")
     return f'<div class="{cls}" style="padding-left:{pad}px">{chev}{ico}<span class="n">{label}</span>{extra}{cnt}</div>'
 
-def sidebar(active="Pods", cr_open=True):
+STATUS_TIPS = {"on": "Connected · 38 ms · v1.30.4", "connecting": "Connecting…", "key": "Sign-in required",
+               "err": "Unreachable: dial tcp 192.168.1.40:6443: i/o timeout · retry in 20s", None: "Not connected"}
+
+def status_slot(state):
+    """Phase 15: the connection state at the right end of a cluster row. Green dot connected, a
+    pulsing dim dot connecting, the yellow key for a sign-in, a red dot unreachable or forbidden,
+    nothing when not connected. The error text lives in the tooltip and the expanded status row."""
+    inner = {"on": dot(C["green"]),
+             "connecting": f'<span class="dot" style="background:{C["dim"]};box-shadow:0 0 0 3px #959aa633"></span>',
+             "key": ic("key", 12, C["yellow"]),
+             "err": dot(C["red"])}.get(state, "")
+    return f'<span title="{STATUS_TIPS[state]}" style="width:12px;display:flex;justify-content:center;flex-shrink:0">{inner}</span>'
+
+PROD_MINI = '<span class="prod" style="font-size:9.5px;padding:0 4px">PROD</span>'
+
+def alert_marker(n):
+    """Phase 14: a red siren before the status slot while critical alerts fire (visible when the root is collapsed)."""
+    return f'<span title="{n} critical alerts firing" style="display:flex">{ic("siren", 12, C["red"], 2)}</span>'
+
+def alert_badge(n, col):
+    """Phase 14: the Alerts row's badge: firing alerts in the color of the most severe, a check when all is clear."""
+    if n == "ok":
+        return f'<span title="No alerts firing" style="display:flex;margin-right:1px">{ic("check", 12, C["green"], 2.5)}</span>'
+    return f'<span class="mono" style="font-size:10.5px;font-weight:600;line-height:15px;padding:0 5px;border-radius:8px;background:{col};color:#1e2127">{n}</span>'
+
+def root(name, state=None, open_=False, color=C["dim"], prod=False, marker="", on=False):
+    faint = state == "err"
+    return ti(name, 0, "wheel", open_=open_, root=True, color=C["faint"] if faint else color, on=on,
+              extra=(PROD_MINI if prod else "") + marker + status_slot(state))
+
+def sidebar(active="Pods", cr_open=True, alerts=False):
     a = lambda n: n == active
-    fav = lambda ns, cl, col, src: (f'<div class="ti{" on" if active=="fav:"+ns+cl else ""}" style="padding-left:12px">{ic("star",13,C["yellow"],1.6,C["yellow"])}'
-                                   f'<span class="n"><span style="color:var(--text)">{ns}</span> <span style="color:var(--dim)">· {cl}</span></span>'
-                                   f'<span title="{src}" style="display:flex">{dot(col)}</span></div>')
+    fav = lambda ns, cl, col, src, faint=False: (f'<div class="ti{" on" if active=="fav:"+ns+cl else ""}" style="padding-left:12px" title="{src}{" · not connected" if faint else ""}">{ic("star",13,C["yellow"],1.6,C["yellow"])}'
+                                   f'<span class="n"><span style="color:{C["dim"] if faint else C["text"]}">{ns}</span> <span style="color:{C["faint"] if faint else C["dim"]}">· {cl}</span></span>'
+                                   f'<span style="display:flex">{dot(col)}</span></div>')
     rows = [
         f'<div class="phead"><span style="flex:1;font-weight:500;color:var(--text)">Explorer</span><button class="ib" aria-label="Filter kinds">{ic("search",13)}</button><button class="ib" aria-label="Add kubeconfig">{ic("plus",14)}</button><button class="ib" aria-label="More">{ic("more",14)}</button></div>',
         f'<div class="sec">{ic("cd",11)}Favorites<span style="flex:1"></span><span style="font-weight:400;letter-spacing:0;text-transform:none;color:var(--faint)">4</span></div>',
         fav("payments", "prod-eu-west-1", C["red"], "~/work/kube/eks-prod.yaml"),
         fav("payments", "staging-eu-west-1", C["yellow"], "~/.kube/config"),
-        fav("checkout", "gke-analytics", C["cyan"], "~/Downloads/gke-analytics.yaml"),
-        fav("ingress", "platform-onprem", C["purple"], "~/work/kube/platform-onprem.yaml"),
+        fav("checkout", "gke-analytics", C["cyan"], "~/Downloads/gke-analytics.yaml", True),
+        fav("ingress", "platform-onprem", C["purple"], "~/work/kube/platform-onprem.yaml", True),
         '<div style="height:6px"></div>',
         f'<div class="sec">{ic("cd",11)}Clusters</div>',
-        ti("prod-eu-west-1", 0, "wheel", open_=True, root=True, color=C["red"], extra='<span class="prod" style="font-size:9.5px;padding:0 4px">PROD</span>'),
+        root("prod-eu-west-1", "on", True, C["red"], prod=True, marker=alert_marker(3) if alerts else ""),
         ti("Overview", 1, "gauge", on=a("Overview")),
+        *([ti("Alerts", 1, "siren", on=a("Alerts"), extra=alert_badge("3", C["red"]))] if alerts else []),
         ti("Events", 1, "bell", "23", on=a("Events"), color=C["yellow"] if not a("Events") else None),
         ti("Workloads", 1, open_=True),
         ti("Pods", 2, "box", "17", on=a("Pods")),
@@ -270,10 +304,10 @@ def sidebar(active="Pods", cr_open=True):
         ti("Issuers", 3, "file", "3"),
         ti("monitoring.coreos.com", 2, open_=False),
         ti('<span style="color:var(--dim)">14 more API groups…</span>', 2),
-        ti("staging-eu-west-1", 0, "wheel", open_=False, root=True, color=C["yellow"]),
-        ti("gke-analytics", 0, "wheel", open_=False, root=True, color=C["cyan"]),
-        ti("platform-onprem", 0, "wheel", open_=False, root=True, color=C["purple"], extra=f'<span style="color:var(--yellow);display:flex" title="Sign-in required">{ic("key",12,C["yellow"])}</span>'),
-        ti("homelab-k3s", 0, "wheel", open_=False, root=True, color=C["faint"], extra=f'<span style="color:var(--red);font-size:11px">offline</span>'),
+        root("staging-eu-west-1", "on", color=C["yellow"]),
+        root("gke-analytics", None, color=C["cyan"]),
+        root("platform-onprem", "key", color=C["purple"]),
+        root("homelab-k3s", "err"),
     ]
     return '<aside class="side">' + "\n".join(rows) + '</aside>'
 
@@ -1492,7 +1526,7 @@ def argo_sidebar(active):
         f'<div class="phead"><span style="flex:1;font-weight:500;color:var(--text)">Explorer</span><button class="ib" aria-label="Filter kinds">{ic("search",13)}</button><button class="ib" aria-label="Add kubeconfig">{ic("plus",14)}</button><button class="ib" aria-label="More">{ic("more",14)}</button></div>',
         f'<div class="sec">{ic("cr",11)}Favorites<span style="flex:1"></span><span style="font-weight:400;letter-spacing:0;text-transform:none;color:var(--faint)">4</span></div>',
         f'<div class="sec">{ic("cd",11)}Clusters</div>',
-        ti("prod-eu-west-1", 0, "wheel", open_=True, root=True, color=C["red"], extra='<span class="prod" style="font-size:9.5px;padding:0 4px">PROD</span>'),
+        root("prod-eu-west-1", "on", True, C["red"], prod=True),
         ti("Overview", 1, "gauge"),
         ti("Events", 1, "bell", "23", color=C["yellow"]),
         ti("Workloads", 1, open_=False),
@@ -1515,9 +1549,9 @@ def argo_sidebar(active):
         ti("cert-manager.io", 2, open_=False),
         ti("monitoring.coreos.com", 2, open_=False),
         ti('<span style="color:var(--dim)">14 more API groups…</span>', 2),
-        ti("staging-eu-west-1", 0, "wheel", open_=False, root=True, color=C["yellow"]),
-        ti("prod-us-east-1", 0, "wheel", open_=False, root=True, color=C["red"]),
-        ti("gke-analytics", 0, "wheel", open_=False, root=True, color=C["cyan"]),
+        root("staging-eu-west-1", "on", color=C["yellow"]),
+        root("prod-us-east-1", "on", color=C["red"], prod=True),
+        root("gke-analytics", None, color=C["cyan"]),
     ]
     return '<aside class="side">' + "\n".join(rows) + '</aside>'
 
@@ -1783,6 +1817,589 @@ def argo_sync_screen():
     tb = tabs([("layers", "Applications", True), ("fork", "ApplicationSets", False), ("box", "Pods", False)])
     return page("Argo CD sync — Kubyl", argo_shell("Applications", tb, content, modal, f'<span style="color:var(--text)">{ic("link",12,C["accent"])}Argo CD API</span>'))
 
+# ---------- 16. Alerts (phase 14) ----------
+SEV = {"critical": C["red"], "warning": C["yellow"], "info": C["accent"], "none": C["dim"]}
+
+def sev_pill(s):
+    return f'<span class="pill">{dot(SEV[s])}<span style="color:{SEV[s]}">{s}</span></span>'
+
+def astate(s):
+    """State cell: firing, pending (hollow dot), silenced/inhibited (dim), resolved (green)."""
+    if s == "firing":
+        return f'<span class="pill" style="color:var(--red)">{dot(C["red"])}firing</span>'
+    if s == "pending":
+        return f'<span class="pill" style="color:var(--yellow)"><span class="dot" style="border:1.5px solid {C["yellow"]};box-sizing:border-box"></span>pending</span>'
+    if s == "silenced":
+        return f'<span class="pill" style="color:var(--dim)">{ic("belloff",12)}silenced</span>'
+    return f'<span class="pill" style="color:var(--dim)">{s}</span>'
+
+def am_statusbar(tip=False):
+    item = f'<span title="3 critical · 7 warning · 2 info firing" style="color:var(--text)">{ic("siren",12,C["red"])}<span style="color:var(--red)">12</span></span>'
+    return statusbar(left_extra=item)
+
+def alerts_shell(active, tabbar, content, overlay="", sidebar_html=None):
+    return f'''<div class="app">
+{titlebar()}
+<div class="body">
+{sidebar_html or sidebar(active, alerts=True)}
+<main class="main">
+{tabbar}
+{content}
+</main>
+</div>
+{am_statusbar()}
+{overlay}
+</div>'''
+
+def alerts_header(cluster="prod-eu-west-1", prod=True, sources=True, active="Alerts", counts=("12", "5", "312"), compact=False):
+    if compact:
+        chips = f'<span class="chip" title="monitoring/alertmanager-operated · v0.28.1 · 2/2 peers · Rules: Prometheus">{ic("siren",11,C["green"])}Alertmanager · v0.28.1</span>' if sources else ""
+    else:
+        chips = (f'<span class="chip" title="v0.28.1 · cluster ready · 2/2 peers">{ic("siren",11,C["green"])}Alertmanager <span class="mono" style="font-size:11px">monitoring/alertmanager-operated</span> · v0.28.1 · 2/2 peers</span>'
+             f'<span class="chip">{ic("listchecks",11,C["green"])}Rules: Prometheus</span>') if sources else ""
+    ui = (f'<button class="ib" aria-label="Open Alertmanager UI" title="Open Alertmanager UI">{ic("globe",14)}</button>' if compact
+          else f'<button class="btn g" style="height:26px">{ic("globe",13)}Open Alertmanager UI</button>') if sources else ""
+    tabs_ = [("Alerts", "siren", counts[0]), ("Silences", "belloff", counts[1]), ("Rules", "listchecks", counts[2])]
+    sub = "".join(f'<span style="display:flex;align-items:center;gap:6px;padding:0 10px;{"color:var(--text);box-shadow:inset 0 -2px 0 var(--accent)" if t == active else "color:var(--dim)"}">{ic(i,13,C["accent"] if t == active else C["dim"])}{t}' + (f'<span class="chip" style="height:17px">{c}</span>' if c else "") + '</span>' for t, i, c in tabs_)
+    return f'''<div style="display:flex;align-items:center;gap:10px;padding:0 12px 0 16px;height:44px;flex-shrink:0;border-bottom:1px solid var(--bv)">
+<span style="font-size:15px;font-weight:600;white-space:nowrap">{cluster}</span>{'<span class="prod">PROD</span>' if prod else ''}
+{chips}
+<div style="flex:1"></div>
+{ui}
+<button class="ib" aria-label="More">{ic("more",14)}</button>
+</div>
+<div style="display:flex;gap:2px;padding:0 8px;border-bottom:1px solid var(--bv);height:34px;align-items:stretch;flex-shrink:0">{sub}</div>'''
+
+# severity, alert, state, since, summary, target (icon, text), namespace, receivers
+ALERTS = [
+ ("g", "KubePodCrashLooping", "critical", "2", "oldest 2h 14m", True),
+ ("critical", "KubePodCrashLooping", "firing", "2h 14m", "Pod is crash looping.", ("box", "payment-gateway-5c8b7f9d4-hl2vp"), "payments", "pagerduty-payments", True),
+ ("critical", "KubePodCrashLooping", "firing", "19m", "Pod is crash looping.", ("box", "currency-rates-28791455-q9w8e"), "payments", "pagerduty-payments", False),
+ ("critical", "KubeNodeNotReady", "firing", "18m", "Node is not ready.", ("server", "ip-10-0-15-3"), "Cluster", "pagerduty-platform", False),
+ ("warning", "KubeDeploymentReplicasMismatch", "firing", "47m", "Deployment has not matched the expected number of replicas.", ("layers", "payment-gateway"), "payments", "slack-payments", False),
+ ("warning", "KubeStatefulSetReplicasMismatch", "firing", "31m", "StatefulSet has not matched the expected number of replicas.", ("db", "ledger-writer"), "payments", "slack-payments", False),
+ ("warning", "KubePersistentVolumeFillingUp", "firing", "26m", "PersistentVolume is filling up.", ("drive", "data-ledger-writer-0"), "payments", "slack-payments", False),
+ ("warning", "KubeJobFailed", "firing", "19m", "Job failed to complete.", ("play", "currency-rates-28791455"), "payments", "slack-payments", False),
+ ("warning", "NodeFilesystemSpaceFillingUp", "pending", "12m", "Filesystem is predicted to run out of space within the next 24 hours.", ("server", "ip-10-0-13-5"), "Cluster", "slack-platform", False),
+ ("warning", "TargetDown", "firing", "11m", "One or more targets are unreachable.", ("network", "webhook-relay"), "payments", "slack-payments", False),
+ ("warning", "KubeHpaMaxedOut", "pending", "9m", "HPA is running at max replicas.", ("activity", "checkout-api"), "payments", "slack-payments", False),
+ ("warning", "KubePodNotReady", "firing", "2m", "Pod has been in a non-ready state for more than 15 minutes.", ("box", "ledger-writer-2"), "payments", "slack-payments", False),
+ ("g", "CPUThrottlingHigh", "info", "2", "oldest 6h", False),
+]
+AL_COLS = "grid-template-columns: 82px minmax(0,1.25fr) 76px 58px minmax(0,1.5fr) minmax(0,1.25fr)"
+
+def alert_rows(selected=1):
+    out = []
+    for i, a in enumerate(ALERTS):
+        if a[0] == "g":
+            _, name, sev, n, oldest, open_ = a
+            out.append(f'<div class="tr" style="{AL_COLS};height:28px;background:#2a2e36"><span style="grid-column:1/-1;display:flex;align-items:center;gap:8px;font-size:12px">{ic("cd" if open_ else "cr",12,C["dim"])}<span class="mono" style="font-weight:500">{name}</span><span class="chip" style="height:17px">×{n}</span>{sev_pill(sev)}<span style="color:var(--dim)">· {oldest}</span></span></div>')
+            continue
+        sev, name, state, since, summary, (icon, target), ns, rcv, _ = a
+        nested = name == "KubePodCrashLooping"
+        out.append(f'''<div class="tr{" on" if i == selected else ""}" style="{AL_COLS};height:30px">{sev_pill(sev)}
+<span class="mono" style="font-size:12px;{"padding-left:14px" if nested else ""}">{name}</span>{astate(state)}
+<span class="mono" style="font-size:11.5px;color:var(--muted)" title="since 13:58 local · 11:58 UTC">{since}</span>
+<span style="font-size:12px;color:var(--muted)">{summary}</span>
+<a href="#" class="mono" style="font-size:11.5px;text-decoration:none;display:flex;align-items:center;gap:5px;min-width:0">{ic(icon,12,C["accent"])}<span style="overflow:hidden;text-overflow:ellipsis">{target}</span></a></div>''')
+    out.append(f'<div class="tr" style="{AL_COLS};height:30px;color:var(--dim)"><span style="grid-column:1/-1;display:flex;align-items:center;gap:8px;font-size:12px">{ic("belloff",13)}5 silenced · 1 inhibited <a href="#" style="text-decoration:none">Show</a></span></div>')
+    return "".join(out)
+
+def alerts_summary():
+    return f'''<div style="display:flex;align-items:center;gap:14px;padding:0 14px;height:34px;flex-shrink:0;border-bottom:1px solid var(--bv);font-size:12.5px;white-space:nowrap">
+<span><b style="font-weight:600;color:var(--red)">3 critical</b> <span style="color:var(--faint)">·</span> <b style="font-weight:600;color:var(--yellow)">7 warning</b> <span style="color:var(--faint)">·</span> <b style="font-weight:600;color:var(--accent)">2 info</b> <span style="color:var(--muted)">firing</span> <span style="color:var(--faint)">·</span> <span style="color:var(--yellow)">2 pending</span> <span style="color:var(--faint)">·</span> <span style="color:var(--dim)">5 silenced</span></span>
+<span style="flex:1"></span>
+<span style="display:flex;align-items:center;gap:5px;color:var(--muted)" title="Watchdog: Prometheus delivers alerts to this Alertmanager">{ic("activity",12,C["green"])}Heartbeat OK · 14s ago</span>
+<a href="#" style="display:flex;align-items:center;gap:5px;color:var(--red);text-decoration:none">{ic("err",12,C["red"])}1 rule fails to evaluate</a>
+<span style="color:var(--dim)">checked 6s ago</span>
+</div>'''
+
+def alerts_filters():
+    fchip = lambda label, n, c, on=False: f'<span class="chip{" on" if on else ""}">{dot(c)}{label}<span class="mono" style="font-size:11px;color:var(--dim)">{n}</span></span>'
+    sev = "".join(fchip(s.capitalize(), n, SEV[s]) for s, n in [("critical", 3), ("warning", 9), ("info", 2)])
+    state = "".join(f'<span class="chip{" on" if on else ""}">{t}<span class="mono" style="font-size:11px;color:var(--dim)">{n}</span></span>' for t, n, on in [("Firing", 12, False), ("Pending", 2, False), ("Silenced", 5, False), ("Inhibited", 1, False)])
+    sep = '<span style="width:1px;height:16px;background:var(--border);margin:0 2px"></span>'
+    return f'''<div style="height:38px;flex-shrink:0;display:flex;align-items:center;gap:6px;padding:0 12px;border-bottom:1px solid var(--bv);white-space:nowrap;overflow:hidden">
+<div class="inp" style="width:170px;height:26px">{ic("filter",12)}<span class="mono" style="font-size:11.5px;color:var(--faint);overflow:hidden;white-space:nowrap">alertname=~"Kube.*"</span></div>
+{sev}{sep}{state}<span style="flex:1"></span>
+<button class="btn g" style="height:24px;padding:0 6px">All namespaces{ic("cd",11)}</button>
+<button class="btn g" style="height:24px;padding:0 6px">Group: alert name{ic("cd",11)}</button>
+</div>'''
+
+AL_HINTS = [("↵", "Details"), ("s", "Silence…"), ("a", "Acknowledge"), ("o", "Go to target"), ("l", "Logs"), ("r", "Runbook"), ("y", "Copy matchers"), ("/", "Filter")]
+
+def label_chips(labels, dim=False):
+    return "".join(f'<span class="chip mchip" style="{"color:var(--dim)" if dim else ""}">{k}={v}</span>' for k, v in labels)
+
+def alerts_screen():
+    head = f'<div class="th" style="{AL_COLS}"><span>SEVERITY {ic("cd",10)}</span><span>ALERT</span><span>STATE</span><span>SINCE</span><span>SUMMARY</span><span>TARGET</span></div>'
+    center = f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0">
+{alerts_summary()}
+{alerts_filters()}
+{head}
+<div style="flex:1;overflow:hidden">{alert_rows()}</div>
+{hints(AL_HINTS)}
+</div>'''
+    tl = [("#3a3f4a", 30), (C["yellow"], 3), (C["red"], 8), ("#3a3f4a", 22), (C["yellow"], 2), (C["red"], 5), ("#3a3f4a", 20), (C["yellow"], 1), (C["red"], 9)]
+    timeline = "".join(f'<span style="flex:{w};background:{c};height:10px"></span>' for c, w in tl)
+    kv = lambda k, v: f'<dt>{k}</dt><dd>{v}</dd>'
+    dock = f'''<aside class="dock" style="width:350px;overflow:hidden">
+<div class="phead" style="border-bottom:1px solid var(--bv)"><span style="flex:1;color:var(--text);font-weight:500">Alert</span><button class="ib" aria-label="Close">{ic("x",13)}</button></div>
+<div class="dsec">
+<div class="mono" style="font-size:13px;color:var(--text);margin-bottom:6px">KubePodCrashLooping</div>
+<div style="display:flex;gap:12px;align-items:center">{sev_pill("critical")}{astate("firing")}<span style="font-size:12px;color:var(--dim)">fired 3 times in 24 h</span></div>
+<div style="display:flex;gap:6px;margin-top:10px"><button class="btn p" style="height:24px">{ic("belloff",12,"#1b1e24")}Silence…</button><button class="btn" style="height:24px">Acknowledge</button><span style="flex:1"></span><button class="btn g" style="height:24px" title="Copy labels · Copy as amtool filter">{ic("copy",12)}Copy{ic("cd",11)}</button></div>
+</div>
+<div class="dsec"><dl class="kv" style="margin:0;grid-template-columns:96px minmax(0,1fr)">{kv("Firing since", '2h 14m <span style="color:var(--dim)">· 13:58 (11:58 UTC)</span>')}{kv("Last received", "12s ago")}</dl><div style="display:flex;gap:8px;align-items:center;margin-top:5px;font-size:12px"><span style="color:var(--dim);width:96px;flex-shrink:0">Receivers</span><span style="display:flex;gap:4px;flex-wrap:wrap"><span class="chip" style="height:18px">pagerduty-payments</span><span class="chip" style="height:18px">slack-payments</span></span></div></div>
+<div class="dsec"><p class="dtitle">Summary</p>
+<div style="font-size:12.5px;line-height:18px">Pod is crash looping.</div>
+<div style="font-size:12px;line-height:18px;color:var(--muted);margin-top:6px">Pod payments/payment-gateway-5c8b7f9d4-hl2vp (gateway) is in waiting state (reason: "CrashLoopBackOff"). <a href="#" style="text-decoration:none">More</a></div></div>
+<div class="dsec"><p class="dtitle">Target</p>
+<div style="display:flex;align-items:center;gap:8px;font-size:12px">{ic("box",13,C["accent"])}<a href="#" class="mono" style="font-size:11.5px;text-decoration:none;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis">pod/payment-gateway-5c8b7f9d4-hl2vp</a>{st("CrashLoopBackOff")}</div>
+<div style="display:flex;gap:6px;margin-top:8px"><button class="btn g" style="height:22px;padding:0 8px">{ic("list",12)}Logs</button><button class="btn g" style="height:22px;padding:0 8px">Details</button></div></div>
+<div class="dsec"><p class="dtitle">Labels</p><div style="display:flex;gap:4px;flex-wrap:wrap">{label_chips([("container","gateway"),("job","kube-state-metrics"),("namespace","payments"),("pod","payment-gateway-5c8b…-hl2vp"),("severity","critical")])}</div></div>
+<div class="dsec"><p class="dtitle">Runbook</p><a href="#" class="mono" style="font-size:11px;text-decoration:none;word-break:break-all">https://runbooks.prometheus-operator.dev/runbooks/kubernetes/kubepodcrashlooping</a></div>
+<div class="dsec"><p class="dtitle">Rule <span style="text-transform:none;letter-spacing:0;font-weight:400">· kubernetes-apps · <a href="#" style="text-decoration:none">Edit PrometheusRule</a></span></p>
+<div class="mono" style="font-size:11px;line-height:16px;padding:6px 8px;border-radius:5px;background:#23272e;color:var(--muted)">max_over_time(kube_pod_container_status_waiting_reason{{reason="CrashLoopBackOff", job="kube-state-metrics"}}[5m]) &gt;= 1</div>
+<div style="display:flex;gap:12px;font-size:11.5px;color:var(--dim);margin-top:6px"><span>for 15m</span><span>{ic("ok",11,C["green"])} healthy</span><span>evaluated 21s ago</span></div></div>
+<div class="dsec" style="border-bottom:0"><p class="dtitle">Last 24 h</p><div style="display:flex;border-radius:3px;overflow:hidden">{timeline}</div>
+<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--dim);margin-top:4px"><span>24h ago</span><span style="color:var(--yellow)">■ pending</span><span style="color:var(--red)">■ firing</span><span>now</span></div></div>
+</aside>'''
+    content = f'<div style="flex:1;display:flex;flex-direction:column;min-height:0">{alerts_header()}<div style="flex:1;display:flex;min-height:0">{center}{dock}</div></div>'
+    tb = tabs([("siren", "Alerts", True), ("box", "Pods", False), ("gauge", "Overview", False)])
+    tip = f'''<div role="tooltip" style="position:absolute;left:230px;bottom:34px;width:330px;background:#353b45;border:1px solid var(--border);border-radius:7px;box-shadow:0 10px 30px rgba(0,0,0,.45);padding:9px 11px;font-size:12px;display:flex;flex-direction:column;gap:5px">
+<div style="color:var(--dim)">prod-eu-west-1 · 12 firing</div>
+<div style="display:flex;gap:7px;align-items:center">{dot(C["red"])}<span class="mono" style="font-size:11.5px">KubePodCrashLooping</span><span style="color:var(--dim);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">payment-gateway-5c8…</span><span class="mono" style="font-size:11px;color:var(--dim)">2h 14m</span></div>
+<div style="display:flex;gap:7px;align-items:center">{dot(C["red"])}<span class="mono" style="font-size:11.5px">KubePodCrashLooping</span><span style="color:var(--dim);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">currency-rates-2879…</span><span class="mono" style="font-size:11px;color:var(--dim)">19m</span></div>
+<div style="display:flex;gap:7px;align-items:center">{dot(C["red"])}<span class="mono" style="font-size:11.5px">KubeNodeNotReady</span><span style="color:var(--dim);flex:1">ip-10-0-15-3</span><span class="mono" style="font-size:11px;color:var(--dim)">18m</span></div>
+<div style="color:var(--dim);font-size:11.5px">and 9 more · click to open Alerts</div></div>'''
+    return page("Alerts — Kubyl", alerts_shell("Alerts", tb, content, tip))
+
+def alerts_states_screen():
+    ok_side = [
+        f'<div class="phead"><span style="flex:1;font-weight:500;color:var(--text)">Explorer</span><button class="ib" aria-label="Filter kinds">{ic("search",13)}</button><button class="ib" aria-label="Add kubeconfig">{ic("plus",14)}</button><button class="ib" aria-label="More">{ic("more",14)}</button></div>',
+        f'<div class="sec">{ic("cr",11)}Favorites<span style="flex:1"></span><span style="font-weight:400;letter-spacing:0;text-transform:none;color:var(--faint)">4</span></div>',
+        f'<div class="sec">{ic("cd",11)}Clusters</div>',
+        root("prod-eu-west-1", "on", False, C["red"], prod=True, marker=alert_marker(3)),
+        root("staging-eu-west-1", "on", True, C["yellow"]),
+        ti("Overview", 1, "gauge"),
+        ti("Alerts", 1, "siren", on=True, extra=alert_badge("ok", None)),
+        ti("Events", 1, "bell", "4", color=C["yellow"]),
+        ti("Workloads", 1, open_=False), ti("Network", 1, open_=False), ti("Config &amp; Secrets", 1, open_=False),
+        ti("Storage", 1, open_=False), ti("Access Control", 1, open_=False), ti("Cluster", 1, open_=False),
+        ti("Administration", 1, open_=False), ti("Custom Resources", 1, open_=False),
+        root("gke-analytics", None, color=C["cyan"]),
+        root("platform-onprem", "key", color=C["purple"]),
+        root("homelab-k3s", "on", True, C["green"]),
+        ti("Overview", 1, "gauge"),
+        ti("Events", 1, "bell", "0"),
+        ti("Workloads", 1, open_=False), ti("Network", 1, open_=False),
+    ]
+    side = '<aside class="side">' + "\n".join(ok_side) + '</aside>'
+    all_clear = f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0;border-right:1px solid var(--border)">
+{tabs([("siren", "Alerts · staging", True), ("box", "Pods", False)], tools=False)}
+{alerts_header("staging-eu-west-1", False, True, counts=("0", "1", "298"), compact=True)}
+<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:30px">
+<span style="width:56px;height:56px;border-radius:50%;background:#a1c18122;border:1px solid #a1c18155;display:flex;align-items:center;justify-content:center">{ic("check",28,C["green"],2.5)}</span>
+<div style="font-size:17px;font-weight:600">No alerts firing</div>
+<div style="display:flex;flex-direction:column;gap:7px;font-size:12.5px;color:var(--muted);align-items:center">
+<span style="display:flex;gap:6px;align-items:center">{ic("activity",13,C["green"])}Heartbeat OK · Watchdog received 14s ago</span>
+<span>298 alerting rules evaluate · all healthy</span>
+<span><a href="#" style="text-decoration:none">1 pending</a> <span style="color:var(--faint)">·</span> <a href="#" style="text-decoration:none">1 silenced</a></span>
+<span style="color:var(--dim)">Last check 9s ago · Alertmanager monitoring/alertmanager-operated</span></div>
+</div>
+{hints([("s","New silence…"),("⇧r","Look again"),("/","Filter")])}
+</div>'''
+    tried = [("ok", "prometheus-operator", "no <span class=\"mono\" style=\"font-size:11.5px\">monitoring.coreos.com</span> CRDs, no Alertmanager objects"),
+             ("ok", "Prometheus's Alertmanagers", "no Prometheus found (phase 07 looked in 10 namespaces)"),
+             ("err", "Services", '<span class="mono" style="font-size:11.5px">monitoring/alertmanager</span> · 403: needs <span class="mono" style="font-size:11.5px">get services/proxy</span> in <span class="mono" style="font-size:11.5px">monitoring</span>')]
+    trows = "".join(f'<div style="display:flex;gap:10px;padding:7px 0;border-bottom:1px solid var(--bv);font-size:12.5px;align-items:flex-start">{ic("err" if s == "err" else "minus",13,C["red"] if s == "err" else C["dim"])}<div style="flex:1;min-width:0"><div>{t}</div><div style="color:var(--dim);font-size:12px;margin-top:2px">{d}</div></div></div>' for s, t, d in tried)
+    none = f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0">
+{tabs([("siren", "Alerts · homelab-k3s", True)], tools=False)}
+{alerts_header("homelab-k3s", False, False, counts=("", "", ""), compact=True)}
+<div style="flex:1;display:flex;flex-direction:column;gap:14px;padding:30px 34px">
+<div style="display:flex;gap:12px;align-items:center">{ic("belloff",22,C["dim"])}<div><div style="font-size:16px;font-weight:600">No Alertmanager found</div><div style="font-size:12.5px;color:var(--muted);margin-top:2px">Kubyl looked for one 2 min ago and looks again every 5 min.</div></div></div>
+<div class="card" style="padding:6px 14px 4px"><p class="dtitle" style="margin:6px 0 2px">What was tried</p>{trows}
+<div style="font-size:12px;color:var(--dim);padding:8px 0">Best candidate: <span class="mono" style="font-size:11.5px;color:var(--text)">monitoring/alertmanager</span> · ask for <span class="mono" style="font-size:11.5px">get services/proxy</span> in <span class="mono" style="font-size:11.5px">monitoring</span>.</div></div>
+<div style="font-size:12.5px;color:var(--muted);line-height:19px">Alertmanager somewhere else? Name it in settings.json:</div>
+<div class="mono" style="font-size:11.5px;line-height:17px;padding:8px 10px;border-radius:6px;background:#23272e;color:var(--muted)">"alerts": {{ "clusters": {{ "homelab-k3s": {{<br>&nbsp;&nbsp;"alertmanagers": [{{ "url": "https://alertmanager.example.com" }}] }} }} }}</div>
+<div style="display:flex;gap:8px"><button class="btn p">{ic("gear",13,"#1b1e24")}Set Alertmanager…</button><button class="btn">{ic("refresh",13)}Look again</button></div>
+</div>
+</div>'''
+    content = f'<div style="flex:1;display:flex;min-height:0">{all_clear}{none}</div>'
+    inner = f'''<div class="app">
+{titlebar("staging-eu-west-1", "payments", False, "EKS · v1.30.4")}
+<div class="body">{side}<main class="main" style="flex-direction:row">{content}</main></div>
+{statusbar(left_extra=f'<span title="No alerts firing">{ic("siren",12,C["green"])}{ic("check",12,C["green"],2.5)}</span>')}
+</div>'''
+    return page("Alerts: all clear and no Alertmanager — Kubyl", inner)
+
+# state, matchers, comment, created by, starts, ends, matches now
+SILENCES = [
+ ("active", [("alertname", "=", "KubeHpaMaxedOut"), ("namespace", "=", "payments")], "Black Friday load test until 18:00", "alice@example.com", "10:02", "ends in 3h 12m", "1"),
+ ("active", [("alertname", "=~", "Kube(Pod|Container).*"), ("namespace", "=", "sandbox")], "Sandbox namespace is noisy, cleaning up", "bob@example.com", "yesterday", "ends in 5d", "4"),
+ ("active", [("alertname", "=", "CPUThrottlingHigh"), ("container", "=", "istio-proxy")], "Known, tracked in PLAT-2291", "carol@example.com", "3 days ago", "ends in 4d 2h", "0"),
+ ("pending", [("alertname", "=", "NodeFilesystemSpaceFillingUp"), ("instance", "=", "ip-10-0-13-5")], "Disk resize in the maintenance window", "alice@example.com", "in 2h", "ends in 6h", "1"),
+ ("active", [("alertname", "=", "TargetDown"), ("service", "=", "webhook-relay")], "Acknowledged in Kubyl by dave@example.com", "dave@example.com", "12m ago", "ends in 48m", "1"),
+]
+SI_COLS = "grid-template-columns: 76px minmax(0,1.5fr) minmax(0,1.2fr) 130px 84px 104px 66px 104px"
+
+def matcher_chips(ms):
+    return "".join(f'<span class="chip mchip">{k}<span style="color:var(--accent)">{op}</span>{v}</span>' for k, op, v in ms)
+
+def silences_screen():
+    rows = []
+    for i, (state, ms, comment, by, start, end, n) in enumerate(SILENCES):
+        col = {"active": C["green"], "pending": C["yellow"]}.get(state, C["dim"])
+        rows.append(f'''<div class="tr{" on" if i == 0 else ""}" style="{SI_COLS};height:34px"><span class="pill" style="color:{col}">{dot(col)}{state}</span>
+<span style="display:flex;gap:4px;overflow:hidden">{matcher_chips(ms)}</span><span style="font-size:12px;color:var(--muted)">{comment}</span>
+<span style="font-size:12px;color:var(--muted)">{by}</span><span class="mono" style="font-size:11.5px;color:var(--muted)">{start}</span><span class="mono" style="font-size:11.5px">{end}</span><span class="mono" style="font-size:11.5px;text-align:right;padding-right:14px">{n}</span>
+<span style="display:flex;gap:2px"><button class="btn g" style="height:22px;padding:0 6px">+1h</button><button class="btn g" style="height:22px;padding:0 6px">+4h</button><button class="ib" aria-label="More" style="height:22px">{ic("more",13)}</button></span></div>''')
+    expired = f'<div class="tr" style="{SI_COLS};height:28px;background:#2a2e36"><span style="grid-column:1/-1;display:flex;gap:8px;align-items:center;font-size:12px;color:var(--dim)">{ic("cr",12)}Expired in the last 24 h<span class="chip" style="height:17px">3</span></span></div>'
+    center = f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0">
+<div style="height:38px;flex-shrink:0;display:flex;align-items:center;gap:8px;padding:0 12px;border-bottom:1px solid var(--bv)">
+<div class="inp" style="width:260px;height:26px">{ic("filter",12)}<span style="font-size:12px">Filter matchers, comments, creators</span></div>
+<span class="chip on">Active 4</span><span class="chip">Pending 1</span><span class="chip">Expired 3</span><span style="flex:1"></span>
+<button class="btn p" style="height:26px">{ic("plus",13,"#1b1e24")}New silence…</button></div>
+<div class="th" style="{SI_COLS}"><span>STATE</span><span>MATCHERS</span><span>COMMENT</span><span>CREATED BY</span><span>STARTS</span><span>ENDS</span><span style="text-align:right;padding-right:14px">MATCHES</span><span></span></div>
+<div style="flex:1;overflow:hidden">{"".join(rows)}{expired}</div>
+{hints([("↵","Edit…"),("e","Extend +1h"),("⌃d","Expire…"),("n","New silence…"),("c","Copy as amtool"),("/","Filter")])}
+</div>'''
+    def mrow(on, name, op, value, locked=False, note=""):
+        box = check(on)
+        if locked:
+            box = f'<span style="width:14px;display:flex;justify-content:center">{ic("lock",12,C["dim"])}</span>'
+        return f'''<div style="display:grid;grid-template-columns:18px 150px 58px minmax(0,1fr) 20px;gap:8px;align-items:center;height:30px">{box}
+<div class="inp" style="height:26px;{"opacity:.55" if not on else ""}"><span class="mono" style="font-size:12px;color:var(--text)">{name}</span></div>
+<div class="inp" style="height:26px;justify-content:space-between;{"opacity:.55" if not on else ""}"><span class="mono" style="font-size:12px;color:var(--accent)">{op}</span>{ic("cd",11)}</div>
+<div class="inp" style="height:26px;{"opacity:.55" if not on else ""}"><span class="mono" style="font-size:12px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{value}</span>{note}</div>
+<span style="color:var(--faint);display:flex">{"" if locked else ic("x",12)}</span></div>'''
+    dur = "".join(f'<span class="chip{" on" if d == "2h" else ""}" style="height:24px;padding:0 10px">{d}</span>' for d in ["1h", "2h", "4h", "1d", "1w", "Custom…"])
+    modal = f'''<div style="position:absolute;inset:0;background:rgba(15,17,21,.55);display:flex;align-items:flex-start;justify-content:center;padding-top:62px">
+<div role="dialog" aria-label="New silence" style="width:600px;background:#2f343e;border:1px solid var(--border);border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,.5);overflow:hidden">
+<div style="display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--bv)">{ic("belloff",16,C["accent"])}<b style="font-weight:600;flex:1">New silence · prod-eu-west-1</b><span class="prod" style="font-size:9.5px;padding:0 4px">PROD</span></div>
+<div style="padding:14px 16px;display:flex;flex-direction:column;gap:12px">
+<div style="font-size:12px;color:var(--muted)">From <span class="mono" style="color:var(--text)">KubePodCrashLooping</span> on <span class="mono">pod/payment-gateway-5c8b7f9d4-hl2vp</span>. Ticked labels become matchers.</div>
+<div>{mrow(True, "alertname", "=", "KubePodCrashLooping")}{mrow(True, "namespace", "=", "payments")}{mrow(True, "pod", "=~", "payment-gateway-.*")}{mrow(False, "container", "=", "gateway")}{mrow(False, "severity", "=", "critical")}{mrow(False, "job", "=", "kube-state-metrics")}
+<a href="#" style="font-size:12px;text-decoration:none;display:inline-flex;gap:5px;align-items:center;margin-top:4px">{ic("plus",12,C["accent"])}Add matcher</a></div>
+<div style="display:flex;flex-direction:column;gap:6px"><div style="font-size:12px;color:var(--dim)">Duration</div><div style="display:flex;gap:6px;align-items:center">{dur}<span style="flex:1"></span><span style="font-size:12px;color:var(--muted)">starts now · ends 16:12 (14:12 UTC)</span></div></div>
+<div style="display:flex;flex-direction:column;gap:6px"><div style="font-size:12px;color:var(--dim)">Comment <span style="color:var(--red)">required</span></div><div class="inp focus" style="height:48px;align-items:flex-start;padding-top:6px"><span style="font-size:12.5px;color:var(--text)">Rolling back gateway 5.2.0, see INC-4411</span></div></div>
+<div style="display:grid;grid-template-columns:80px minmax(0,1fr);gap:8px;align-items:center"><span style="font-size:12px;color:var(--dim)">Created by</span><div class="inp" style="height:26px"><span style="font-size:12.5px;color:var(--text)">alice@example.com</span><span style="flex:1"></span><span style="font-size:11.5px">from your sign-in</span></div></div>
+<div style="display:flex;gap:10px;align-items:center;padding:9px 11px;border-radius:7px;background:#2a2e36;border:1px solid var(--bv);font-size:12.5px">{ic("eye",14,C["accent"])}<span>Matches <b style="font-weight:600">3 alerts</b> now: <span style="color:var(--red)">1 critical</span>, <span style="color:var(--yellow)">2 warning</span></span><span style="flex:1"></span><a href="#" style="font-size:12px;text-decoration:none">Show</a></div>
+</div>
+<div style="display:flex;align-items:center;gap:8px;padding:12px 16px;border-top:1px solid var(--bv)"><span style="font-size:11.5px;color:var(--dim)">Alertmanager monitoring/alertmanager-operated</span><span style="flex:1"></span><button class="btn g">Cancel</button><button class="btn p">Review…</button></div>
+</div></div>'''
+    content = f'<div style="flex:1;display:flex;flex-direction:column;min-height:0">{alerts_header(active="Silences")}<div style="flex:1;display:flex;min-height:0">{center}</div></div>'
+    tb = tabs([("siren", "Alerts", True), ("box", "Pods", False), ("gauge", "Overview", False)])
+    return page("Silences and the silence editor — Kubyl", alerts_shell("Alerts", tb, content, modal))
+
+def silence_confirm_screen():
+    head = f'<div class="th" style="{AL_COLS}"><span>SEVERITY {ic("cd",10)}</span><span>ALERT</span><span>STATE</span><span>SINCE</span><span>SUMMARY</span><span>TARGET</span></div>'
+    center = f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0">
+{alerts_summary()}
+{alerts_filters()}
+{head}
+<div style="flex:1;overflow:hidden">{alert_rows()}</div>
+{hints(AL_HINTS)}
+</div>'''
+    row = lambda k, v: f'<div style="display:flex;gap:10px;align-items:flex-start;font-size:12.5px"><span style="color:var(--dim);width:84px;flex-shrink:0">{k}</span><div style="flex:1;min-width:0">{v}</div></div>'
+    matched = "".join(f'<div style="display:flex;gap:8px;align-items:center;font-size:12px;padding:2px 0">{dot(SEV[s])}<span class="mono" style="font-size:11.5px">{n}</span><span style="color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{t}</span></div>' for s, n, t in [("critical", "KubePodCrashLooping", "pod/payment-gateway-5c8b7f9d4-hl2vp"), ("warning", "KubeDeploymentReplicasMismatch", "deployment/payment-gateway"), ("warning", "KubePodNotReady", "pod/payment-gateway-5c8b7f9d4-7tgxs")])
+    modal = f'''<div style="position:absolute;inset:0;background:rgba(15,17,21,.55);display:flex;align-items:flex-start;justify-content:center;padding-top:96px">
+<div role="dialog" aria-label="Create silence on prod-eu-west-1" style="width:540px;background:#2f343e;border:1px solid var(--border);border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,.5);overflow:hidden">
+<div style="display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--bv)">{ic("belloff",16,C["accent"])}<b style="font-weight:600;flex:1">Create silence on prod-eu-west-1</b><span class="prod" style="font-size:9.5px;padding:0 4px">PROD</span></div>
+<div style="padding:16px;display:flex;flex-direction:column;gap:12px">
+{row("Matchers", f'<div style="display:flex;gap:4px;flex-wrap:wrap">{matcher_chips([("alertname","=","KubePodCrashLooping"),("namespace","=","payments"),("pod","=~","payment-gateway-.*")])}</div>')}
+{row("Duration", '2h · until 16:12 today (14:12 UTC)')}
+{row("Comment", 'Rolling back gateway 5.2.0, see INC-4411')}
+{row("Created by", 'alice@example.com')}
+{row("Silences", f'<div><b style="font-weight:600">3 alerts</b> firing now{matched}</div>')}
+<div style="display:flex;gap:10px;padding:10px 12px;border-radius:7px;background:#3a2a2d;border:1px solid #6a3a3f">{ic("alert",15,C["red"])}<div style="font-size:12.5px;line-height:18px"><b style="font-weight:600;color:var(--red)">This silences a critical alert</b> on a production cluster. Nobody is paged for it until the silence ends or is expired.</div></div>
+<div style="display:flex;flex-direction:column;gap:6px"><div style="font-size:12px;color:var(--muted)">Type <span class="mono" style="color:var(--text)">prod-eu-west-1</span> to confirm.</div>
+<div class="inp focus" style="height:28px"><span class="mono" style="font-size:12.5px;color:var(--text)">prod-eu-w</span><span style="display:inline-block;width:1px;height:15px;background:var(--accent);margin-left:-6px"></span></div></div>
+</div>
+<div style="display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--bv)"><button class="btn g">Back</button><button class="btn p" style="opacity:.55">{ic("belloff",12,"#1b1e24")}Create silence</button></div>
+</div></div>'''
+    content = f'<div style="flex:1;display:flex;flex-direction:column;min-height:0">{alerts_header()}<div style="flex:1;display:flex;min-height:0">{center}</div></div>'
+    tb = tabs([("siren", "Alerts", True), ("box", "Pods", False), ("gauge", "Overview", False)])
+    return page("Silence confirmation on production — Kubyl", alerts_shell("Alerts", tb, content, modal))
+
+# state, name, health, for, last eval, took, expression
+RULES = [
+ ("g", "kubernetes-apps", "monitoring/kube-prometheus-stack-kubernetes-apps", "18 rules · 3 firing"),
+ ("firing", "KubePodCrashLooping", "ok", "15m", "21s", "4ms", 'max_over_time(kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff", job="kube-state-metrics"}[5m]) >= 1'),
+ ("inactive", "KubePodNotReady", "ok", "15m", "21s", "6ms", 'sum by (namespace, pod, cluster) (max by (namespace, pod, cluster) (kube_pod_status_phase{job="kube-state-metrics", phase=~"Pending|Unknown|Failed"}) …'),
+ ("firing", "KubeDeploymentReplicasMismatch", "ok", "15m", "21s", "3ms", '(kube_deployment_spec_replicas{job="kube-state-metrics"} > kube_deployment_status_replicas_available{job="kube-state-metrics"}) and …'),
+ ("pending", "KubeHpaMaxedOut", "ok", "15m", "21s", "2ms", 'kube_horizontalpodautoscaler_status_current_replicas{job="kube-state-metrics"} == kube_horizontalpodautoscaler_spec_max_replicas …'),
+ ("g", "payments.rules", "payments/payments-slo", "4 rules · 1 failing"),
+ ("inactive", "CheckoutErrorBudgetBurn", "err", "5m", "14s", "1ms", 'sum(rate(http_requests_total{job="checkout-api",code=~"5.."}[5m])) / sum(rate(http_requests_total{job="checkout-api"}[5m])) > 0.02'),
+ ("inactive", "LedgerLagHigh", "ok", "10m", "14s", "2ms", 'ledger_writer_replication_lag_seconds > 30'),
+ ("g", "node-exporter", "monitoring/kube-prometheus-stack-node-exporter", "22 rules · 1 pending"),
+ ("pending", "NodeFilesystemSpaceFillingUp", "ok", "1h", "9s", "11ms", '(node_filesystem_avail_bytes{job="node-exporter",fstype!=""} / node_filesystem_size_bytes{…} * 100 < 15 and predict_linear(…[6h], 24*60*60) < 0 …'),
+ ("inactive", "NodeHighNumberConntrackEntriesUsed", "ok", "", "9s", "1ms", '(node_nf_conntrack_entries{job="node-exporter"} / node_nf_conntrack_entries_limit) > 0.75'),
+]
+RU_COLS = "grid-template-columns: 76px minmax(0,1.1fr) 70px 46px 96px minmax(0,2fr)"
+
+def rules_screen():
+    rows = []
+    for i, r in enumerate(RULES):
+        if r[0] == "g":
+            _, group, obj, count = r
+            rows.append(f'<div class="tr" style="{RU_COLS};height:28px;background:#2a2e36"><span style="grid-column:1/-1;display:flex;align-items:center;gap:8px;font-size:12px">{ic("cd",12,C["dim"])}<span style="font-weight:500">{group}</span><span style="color:var(--dim)">·</span><a href="#" class="mono" style="font-size:11.5px;text-decoration:none">{obj}</a><span style="color:var(--dim)">· {count}</span></span></div>')
+            continue
+        state, name, health, for_, last, took, expr = r
+        scol = {"firing": C["red"], "pending": C["yellow"]}.get(state, C["green"])
+        slabel = {"inactive": "OK"}.get(state, state)
+        hcell = f'<span class="pill" style="color:var(--green)">{ic("ok",12,C["green"])}ok</span>' if health == "ok" else f'<span class="pill" style="color:var(--red)">{ic("err",12,C["red"])}error</span>'
+        rows.append(f'''<div class="tr{" on" if name == "CheckoutErrorBudgetBurn" else ""}" style="{RU_COLS};height:30px"><span class="pill" style="color:{scol}">{dot(scol)}{slabel}</span>
+<span class="mono" style="font-size:12px">{name}</span>{hcell}<span class="mono" style="font-size:11.5px;color:var(--muted)">{for_ or "—"}</span>
+<span class="mono" style="font-size:11.5px;color:var(--muted)">{last} · {took}</span><span class="mono" style="font-size:11px;color:var(--dim)">{expr.replace("<", "&lt;").replace(">", "&gt;")}</span></div>''')
+        if health == "err":
+            rows.append(f'<div class="tr" style="{RU_COLS};height:26px;border-bottom:1px solid #2e333b"><span></span><span style="grid-column:2/-1;display:flex;gap:6px;align-items:center;font-size:12px;color:var(--red)">{ic("alert",12,C["red"])}<span class="mono" style="font-size:11.5px">vector contains metrics with the same labelset after applying alert labels</span></span></div>')
+    center = f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0">
+<div style="height:38px;flex-shrink:0;display:flex;align-items:center;gap:8px;padding:0 12px;border-bottom:1px solid var(--bv);white-space:nowrap">
+<span style="font-size:12.5px"><b style="font-weight:600">312 rules</b> <span style="color:var(--faint)">·</span> <span style="color:var(--red)">4 firing</span> <span style="color:var(--faint)">·</span> <span style="color:var(--yellow)">2 pending</span> <span style="color:var(--faint)">·</span> <span style="color:var(--red)">1 failing</span></span>
+<span style="flex:1"></span><span class="chip">Only firing, pending or failing</span>
+<div class="inp" style="width:200px;height:26px">{ic("filter",12)}<span style="font-size:12px">Filter rules</span></div></div>
+<div class="th" style="{RU_COLS}"><span>STATE</span><span>ALERT RULE</span><span>HEALTH</span><span>FOR</span><span>EVALUATED</span><span>EXPRESSION</span></div>
+<div style="flex:1;overflow:hidden">{"".join(rows)}</div>
+{hints([("↵","Details"),("e","Edit PrometheusRule"),("a","Show its alerts"),("y","Copy expression"),("/","Filter")])}
+</div>'''
+    dock = f'''<aside class="dock" style="width:330px">
+<div class="phead" style="border-bottom:1px solid var(--bv)"><span style="flex:1;color:var(--text);font-weight:500">Alerting rule</span><button class="ib" aria-label="Close">{ic("x",13)}</button></div>
+<div class="dsec"><div class="mono" style="font-size:13px;margin-bottom:6px">CheckoutErrorBudgetBurn</div>
+<div style="display:flex;gap:12px;align-items:center;font-size:12px"><span class="pill" style="color:var(--red)">{ic("err",12,C["red"])}fails to evaluate</span><span style="color:var(--dim)">group payments.rules</span></div></div>
+<div class="dsec"><p class="dtitle">Last error</p><div class="mono" style="font-size:11.5px;line-height:17px;color:var(--red)">vector contains metrics with the same labelset after applying alert labels</div>
+<div style="font-size:11.5px;color:var(--dim);margin-top:6px">last evaluation 14s ago · took 1ms</div></div>
+<div class="dsec"><p class="dtitle">Expression</p><div class="mono" style="font-size:11px;line-height:16px;padding:6px 8px;border-radius:5px;background:#23272e;color:var(--muted)">sum(rate(http_requests_total{{job="checkout-api",code=~"5.."}}[5m]))<br>/ sum(rate(http_requests_total{{job="checkout-api"}}[5m]))<br>&gt; 0.02</div>
+<div style="display:flex;gap:6px;margin-top:8px"><button class="btn g" style="height:22px;padding:0 8px">{ic("copy",12)}Copy</button><button class="btn g" style="height:22px;padding:0 8px">{ic("pencil",12)}Edit PrometheusRule</button></div></div>
+<div class="dsec"><dl class="kv" style="margin:0;grid-template-columns:104px minmax(0,1fr)"><dt>for</dt><dd class="mono" style="font-size:11.5px">5m</dd><dt>keep_firing_for</dt><dd class="mono" style="font-size:11.5px">—</dd><dt>Defined in</dt><dd><a href="#" class="mono" style="font-size:11.5px;text-decoration:none">payments/payments-slo</a></dd></dl></div>
+<div class="dsec"><p class="dtitle">Labels</p><div style="display:flex;gap:4px;flex-wrap:wrap">{label_chips([("severity","critical"),("team","payments")])}</div></div>
+<div class="dsec" style="border-bottom:0"><p class="dtitle">Annotations</p><dl class="kv" style="margin:0;grid-template-columns:86px minmax(0,1fr)"><dt>summary</dt><dd style="white-space:normal">Checkout burns its error budget.</dd><dt>runbook_url</dt><dd><a href="#" style="text-decoration:none">https://runbooks.example.com/checkout-slo</a></dd></dl></div>
+</aside>'''
+    content = f'<div style="flex:1;display:flex;flex-direction:column;min-height:0">{alerts_header(active="Rules")}<div style="flex:1;display:flex;min-height:0">{center}{dock}</div></div>'
+    tb = tabs([("siren", "Alerts", True), ("box", "Pods", False), ("gauge", "Overview", False)])
+    return page("Alerting rules — Kubyl", alerts_shell("Alerts", tb, content))
+
+# ---------- 17. Cluster status and ConfigMap data (phase 15) ----------
+OCP_EU = "ocp.eu1.example.com"
+OCP_US = "ocp.us1.example.com"
+JANE = "jane.doe@example.com"
+
+def polish_sidebar(tooltip=True):
+    fav = lambda ns, cl, col, faint=False: (f'<div class="ti" style="padding-left:12px">{ic("star",13,C["yellow"],1.6,C["yellow"])}'
+                                            f'<span class="n"><span style="color:{C["dim"] if faint else C["text"]}">{ns}</span> <span style="color:{C["faint"] if faint else C["dim"]}">· {cl}</span></span>{dot(col)}</div>')
+    rows = [
+        f'<div class="phead"><span style="flex:1;font-weight:500;color:var(--text)">Explorer</span><button class="ib" aria-label="Filter kinds">{ic("search",13)}</button><button class="ib" aria-label="Add kubeconfig">{ic("plus",14)}</button><button class="ib" aria-label="More">{ic("more",14)}</button></div>',
+        f'<div class="sec">{ic("cd",11)}Favorites<span style="flex:1"></span><span style="font-weight:400;letter-spacing:0;text-transform:none;color:var(--faint)">4</span></div>',
+        fav("payments", "prod-eu-west-1", C["red"]),
+        fav("shop", f"{OCP_EU} · {JANE}", C["cyan"]),
+        fav("checkout", "gke-analytics", C["purple"], True),
+        fav("ops", f"{OCP_EU} · kube:admin", C["red"], True),
+        '<div style="height:6px"></div>',
+        f'<div class="sec">{ic("cd",11)}Clusters<span style="flex:1"></span><span title="Connected only" style="display:flex;text-transform:none;letter-spacing:0;font-weight:400;gap:4px;align-items:center;color:var(--faint)">{dot(C["green"])}4 of 9</span></div>',
+        root("prod-eu-west-1", "on", color=C["red"], prod=True),
+        root("staging-eu-west-1", "on", color=C["yellow"]),
+        root(f"{OCP_EU} · {JANE}", "on", color=C["cyan"], on=tooltip),
+        root(f"{OCP_EU} · kube:admin", None, color=C["red"], prod=True),
+        root(f"{OCP_US} · {JANE}", "connecting", color=C["accent"]),
+        root("0.0.0.0:55878 · system:admin", None, color=C["orange"]),
+        root("platform-onprem", "key", color=C["purple"]),
+        root("homelab-k3s", "err"),
+        root("kind-dev", "on", True, C["green"]),
+        ti("Overview", 1, "gauge"),
+        ti("Events", 1, "bell", "2", color=C["yellow"]),
+        ti("Workloads", 1, open_=True),
+        ti("Pods", 2, "box", "14"),
+        ti("Deployments", 2, "layers", "6"),
+        ti("StatefulSets", 2, "db", "1"),
+        ti("Network", 1, open_=False),
+        ti("Config &amp; Secrets", 1, open_=True),
+        ti("ConfigMaps", 2, "file", "9", on=not tooltip),
+        ti("Secrets", 2, "key", "7"),
+        ti("Storage", 1, open_=False),
+    ]
+    return '<aside class="side">' + "\n".join(rows) + '</aside>'
+
+def group_tooltip():
+    members = [("shop", "shop"), ("payments", "payments"), ("dev-alex", "dev-alex"), ("openshift-monitoring", "openshift-monitoring")]
+    mrows = "".join(f'<div style="display:flex;gap:10px;font-size:11.5px"><span class="mono" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)">{c}/api-ocp-eu1-example-com:6443/{JANE}</span><span class="mono" style="color:var(--dim)">{n}</span></div>' for c, n in members)
+    return f'''<div role="tooltip" style="position:absolute;left:250px;top:268px;width:430px;background:#353b45;border:1px solid var(--border);border-radius:7px;box-shadow:0 12px 34px rgba(0,0,0,.5);padding:10px 12px;display:flex;flex-direction:column;gap:7px;font-size:12px;z-index:5">
+<div style="font-weight:600">{OCP_EU} · {JANE}</div>
+<div style="display:flex;gap:6px;align-items:center;color:var(--muted)">{dot(C["green"])}Connected · 38 ms · v1.33.1</div>
+<div style="color:var(--dim)">User <span class="mono" style="color:var(--text)">{JANE}</span> on <span class="mono">https://api.{OCP_EU}:6443</span></div>
+<div style="border-top:1px solid var(--bv);padding-top:7px;color:var(--dim)">14 contexts in <span class="mono">~/.kube/config</span>, shown as one cluster:</div>
+<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--faint);text-transform:uppercase;letter-spacing:.05em"><span>Context</span><span>Namespace</span></div>
+{mrows}
+<div style="color:var(--dim);font-size:11.5px">and 10 more · <span style="color:var(--muted)">current context: shop</span></div>
+</div>'''
+
+def clusters_grouped_screen():
+    CC = "grid-template-columns: 22px minmax(0,1.6fr) minmax(0,1.1fr) minmax(0,0.9fr) 136px"
+    def grow(open_, color, label, n, server, auth, status, scol, on=False):
+        return (f'<div class="tr{" on" if on else ""}" style="{CC};height:34px"><span>{dot(color)}</span>'
+                f'<span style="display:flex;gap:7px;align-items:center;min-width:0">{ic("cd" if open_ else "cr",12,C["dim"])}<span style="font-weight:500;overflow:hidden;text-overflow:ellipsis">{label}</span><span class="chip" style="height:17px;flex-shrink:0">{n} contexts</span></span>'
+                f'<span class="mono" style="color:var(--muted)">{server}</span><span style="color:var(--muted)">{auth}</span><span class="pill" style="color:{scol}">{dot(scol) if scol != C["dim"] else ""}{status}</span></div>')
+    def member(ctx, ns):
+        return (f'<div class="tr" style="{CC};height:28px"><span></span><span class="mono" style="font-size:11.5px;color:var(--muted);padding-left:26px;overflow:hidden;text-overflow:ellipsis">{ctx}</span>'
+                f'<span class="mono" style="font-size:11.5px;color:var(--dim)">namespace {ns}</span><span></span><span></span></div>')
+    def single(color, name, server, auth, status, scol):
+        return (f'<div class="tr" style="{CC};height:34px"><span>{dot(color)}</span><span style="font-weight:500;padding-left:19px">{name}</span>'
+                f'<span class="mono" style="color:var(--muted)">{server}</span><span style="color:var(--muted)">{auth}</span><span class="pill" style="color:{scol}">{dot(scol) if scol != C["dim"] else ""}{status}</span></div>')
+    rows = "".join([
+        grow(True, C["cyan"], f"{OCP_EU} · {JANE}", 14, f"https://api.{OCP_EU}:6443", "OpenShift · oc login", "Connected · 38ms", C["green"], True),
+        f'<div class="tr" style="{CC};height:26px"><span></span><span style="grid-column:2/-1;display:flex;gap:6px;align-items:center;font-size:11.5px;color:var(--dim);padding-left:26px">{ic("info",12)}Shown as one cluster in the sidebar: same file, cluster and user; only the namespace differs. <a href="#" style="text-decoration:none">Show contexts separately</a></span></div>',
+        member(f"shop/api-ocp-eu1-example-com:6443/{JANE}", "shop"),
+        member(f"payments/api-ocp-eu1-example-com:6443/{JANE}", "payments"),
+        member(f"dev-alex/api-ocp-eu1-example-com:6443/{JANE}", "dev-alex"),
+        f'<div class="tr" style="{CC};height:26px"><span></span><span style="font-size:11.5px;color:var(--dim);padding-left:26px">and 11 more</span></div>',
+        grow(False, C["red"], f"{OCP_EU} · kube:admin", 6, f"https://api.{OCP_EU}:6443", "OpenShift · oc login", "Not connected", C["dim"]),
+        grow(False, C["accent"], f"{OCP_US} · {JANE}", 9, f"https://api.{OCP_US}:6443", "OpenShift · oc login", "Connecting…", C["yellow"]),
+        grow(False, C["orange"], "0.0.0.0:55878 · system:admin", 5, "https://0.0.0.0:55878", "client certificate", "Not connected", C["dim"]),
+        single(C["red"], "prod-eu-west-1", "https://3F9C…gr7.eu-west-1.eks.amazonaws.com", "exec · aws eks get-token", "Connected · 41ms", C["green"]),
+        single(C["green"], "kind-dev", "https://127.0.0.1:52341", "client certificate", "Connected · 2ms", C["green"]),
+    ])
+    src = lambda path, sub, on=False, icon="file": f'<div style="display:flex;gap:10px;padding:10px 12px;border-radius:6px;{"background:var(--sel);outline:1px solid var(--accent);outline-offset:-1px" if on else ""}">{ic(icon,15,C["accent"] if on else C["dim"])}<div style="flex:1;min-width:0"><div class="mono" style="font-size:12px;color:var(--text)">{path}</div><div style="font-size:11.5px;color:var(--dim)">{sub}</div></div></div>'
+    left = f'''<div style="width:300px;flex-shrink:0;border-right:1px solid var(--bv);padding:16px 12px;display:flex;flex-direction:column;gap:4px">
+<div style="display:flex;align-items:center;margin:0 4px 8px"><h2 style="font-size:14px;font-weight:600;flex:1">Kubeconfig sources</h2><button class="btn" style="height:24px">{ic("plus",12)}Add</button></div>
+{src("~/.kube/config","37 contexts · 5 clusters · 8 users · watched",True)}
+{src("~/work/kube/eks-prod.yaml","2 contexts · watched")}
+{src("~/work/kube/platform-onprem.yaml","1 context · OIDC")}
+</div>'''
+    toggle = lambda on: f'<span style="width:28px;height:16px;border-radius:8px;background:{C["accent"] if on else "#4a505c"};position:relative;display:inline-block;flex-shrink:0"><span style="position:absolute;top:2px;{"right" if on else "left"}:2px;width:12px;height:12px;border-radius:50%;background:#fff"></span></span>'
+    right = f'''<div style="flex:1;min-width:0;padding:16px 18px;display:flex;flex-direction:column;gap:12px">
+<div style="display:flex;align-items:center;gap:10px"><h2 style="font-size:14px;font-weight:600">Contexts</h2><span style="color:var(--dim);font-size:12px">37 in ~/.kube/config · 8 clusters in the sidebar</span><div style="flex:1"></div><div class="inp" style="width:200px">{ic("search",12)}Filter contexts</div></div>
+<div class="card" style="overflow:hidden"><div class="th" style="{CC}"><span></span><span>CONTEXT</span><span>API SERVER</span><span>AUTH</span><span>STATUS</span></div>{rows}</div>
+<div class="card" style="padding:12px 16px;display:flex;gap:12px;align-items:center"><div style="flex:1"><div style="font-size:12.5px">One entry per cluster and user</div><div style="font-size:11.5px;color:var(--dim)">Contexts that differ only in their namespace (<span class="mono">oc project</span>) share one sidebar row · <span class="mono">kubernetes.group_contexts</span></div></div>{toggle(True)}</div>
+</div>'''
+    content = f'<div style="flex:1;display:flex;min-height:0">{left}{right}</div>'
+    tb = tabs([("gear", "Clusters &amp; kubeconfigs", True), ("box", "Pods", False)])
+    inner = f'''<div class="app">
+{titlebar(f"{OCP_EU} · {JANE}", "shop", False, "OpenShift · v1.33.1")}
+<div class="body">{polish_sidebar(True)}<main class="main">{tb}{content}</main></div>
+{statusbar()}
+{group_tooltip()}
+</div>'''
+    return page("Cluster status dots and grouped contexts — Kubyl", inner)
+
+def yk(k, ind=0): return f'{"&nbsp;" * ind}<span style="color:{C["red"]}">{k}</span><span style="color:var(--muted)">:</span>'
+def ys(v): return f' <span style="color:{C["green"]}">{v}</span>'
+def yn(v): return f' <span style="color:{C["orange"]}">{v}</span>'
+
+def cm_block(key, fmt, size, lines, body, shown=None, total=None, open_=True, binary=False, empty=False):
+    chip = f'<span class="chip" style="height:17px;font-size:10.5px;padding:0 5px;{"color:var(--purple)" if binary else ""}">{fmt}</span>'
+    meta = f'<span style="font-size:11px;color:var(--dim);white-space:nowrap">{size}{" · " + lines if lines else ""}</span>'
+    if binary:
+        tools = f'<button class="btn g" style="height:20px;padding:0 6px;font-size:11.5px">{ic("copy",11)}base64</button><button class="btn g" style="height:20px;padding:0 6px;font-size:11.5px">{ic("download",11)}Save…</button>'
+    else:
+        tools = f'<button class="ib" aria-label="Wrap" style="width:20px;height:20px">{ic("wrap",12)}</button><button class="ib" aria-label="Copy {key}" style="width:20px;height:20px">{ic("copy",12)}</button>'
+    head = (f'<div style="display:flex;align-items:center;gap:7px;height:28px;padding:0 6px 0 8px">{ic("cd" if open_ else "cr",11,C["dim"])}'
+            f'<span class="mono" style="font-size:12px;color:var(--text);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{key}</span>{chip}{meta}{tools}</div>')
+    if not open_:
+        return f'<div style="border:1px solid var(--bv);border-radius:6px;background:#2a2e36">{head}</div>'
+    if empty:
+        content = '<div style="padding:4px 10px 8px 26px;font-size:12px;color:var(--faint);font-style:italic">(empty)</div>'
+    elif binary:
+        content = '<div style="padding:4px 10px 8px 26px;font-size:12px;color:var(--dim)">Binary data (Java keystore). Copy it as base64 or save it to a file.</div>'
+    else:
+        more = f'<div style="padding:4px 0 2px;font-size:11.5px"><a href="#" style="text-decoration:none">Show all {total} lines</a></div>' if shown else ""
+        content = f'<div style="padding:2px 10px 6px 26px"><div class="mono" style="font-size:11.5px;line-height:17px;white-space:pre;color:var(--text);overflow:hidden">{body}</div>{more}</div>'
+    return f'<div style="border:1px solid var(--bv);border-radius:6px;background:#2a2e36">{head}{content}</div>'
+
+def configmap_screen():
+    CMC = "grid-template-columns: minmax(0,1fr) 60px 70px 56px"
+    cms = [("checkout-api-config", 10, "18.4 KiB", "41d"), ("currency-codes", 1, "2.2 KiB", "90d"), ("fraud-scorer-model", 3, "812 KiB", "6h"), ("istio-ca-root-cert", 1, "1.1 KiB", "90d"),
+           ("kube-root-ca.crt", 1, "1.1 KiB", "90d"), ("ledger-writer-scripts", 4, "6.0 KiB", "12d"), ("payment-gateway-env", 9, "640 B", "47m"), ("webhook-relay-routes", 2, "3.4 KiB", "2d")]
+    rows = "".join(f'<div class="tr{" on" if i == 0 else ""}" style="{CMC}"><span class="mono">{n}</span><span class="mono">{k}</span><span class="mono" style="color:var(--muted)">{s}</span><span class="mono" style="color:var(--muted)">{a}</span></div>' for i, (n, k, s, a) in enumerate(cms))
+    center = f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0">
+<div class="tool"><div class="crumb">{ic("file",14,C["accent"])}<b>ConfigMaps</b><span>·</span><span>8 in payments</span></div><div style="flex:1"></div><div class="inp" style="width:170px">{ic("filter",12)}Filter</div><span class="chip" style="color:var(--green)">{dot(C["green"])}live</span></div>
+<div class="th" style="{CMC}"><span>NAME</span><span>DATA</span><span>SIZE</span><span>AGE</span></div>
+<div style="flex:1;overflow:hidden">{rows}</div>
+{hints([("↵","Details"),("e","Edit YAML"),("y","Copy"),("⌃d","Delete"),("/","Filter")])}
+</div>'''
+    app_yaml = "<br>".join([yk("server"), yk("port", 2) + yn("8080"), yk("shutdown", 2) + ys("graceful"), yk("payments"), yk("gateway", 2),
+                            yk("url", 4) + ys("http://payment-gateway.payments.svc:8080"), yk("timeout", 4) + ys("2s")])
+    flags = "<br>".join(['<span style="color:var(--muted)">{</span>', f'&nbsp;&nbsp;<span style="color:{C["red"]}">"newCheckout"</span><span style="color:var(--muted)">:</span> <span style="color:{C["orange"]}">true</span><span style="color:var(--muted)">,</span>',
+                         f'&nbsp;&nbsp;<span style="color:{C["red"]}">"applePay"</span><span style="color:var(--muted)">:</span> <span style="color:{C["orange"]}">false</span><span style="color:var(--muted)">,</span>', f'&nbsp;&nbsp;<span style="color:{C["red"]}">"rolloutPercent"</span><span style="color:var(--muted)">:</span> <span style="color:{C["orange"]}">25</span>'])
+    props = "<br>".join(["status = warn", "appender.console.type = Console", "rootLogger.level = info"])
+    menu = f'''<div role="menu" style="position:absolute;right:14px;top:34px;width:270px;background:#353b45;border:1px solid var(--border);border-radius:7px;box-shadow:0 12px 34px rgba(0,0,0,.5);padding:4px;font-size:12.5px;z-index:4">
+<div style="padding:6px 10px;border-radius:4px;background:var(--sel)">Copy as YAML <span style="color:var(--dim)">(the data map)</span></div>
+<div style="padding:6px 10px">Copy as .env <span style="color:var(--dim)">· skips 3 multi-line keys</span></div></div>'''
+    used = [("layers", "Deployment", "checkout-api", "3 pods", "volume config → application.yaml, feature-flags.json"),
+            ("layers", "Deployment", "checkout-worker", "2 pods", "envFrom"),
+            ("play", "Job", "checkout-migrate-28791440", "1 pod", "env LOG_LEVEL")]
+    urows = "".join(f'<div style="display:flex;gap:8px;align-items:flex-start;padding:4px 0;font-size:12px">{ic(i,13,C["dim"])}<div style="flex:1;min-width:0"><div><span style="color:var(--dim)">{k}</span> <a href="#" class="mono" style="font-size:11.5px;text-decoration:none">{n}</a> <span style="color:var(--dim)">· {p}</span></div><div class="mono" style="font-size:11px;color:var(--muted)">{how}</div></div></div>' for i, k, n, p, how in used)
+    dock = f'''<aside class="dock" style="width:470px;position:relative">
+<div class="phead" style="border-bottom:1px solid var(--bv)"><span style="flex:1;color:var(--text);font-weight:500">ConfigMap details</span><button class="ib" aria-label="Pin">{ic("star",13)}</button><button class="ib" aria-label="Close">{ic("x",13)}</button></div>
+<div class="dsec"><div class="mono" style="font-size:12.5px;margin-bottom:6px">checkout-api-config</div>
+<div style="display:flex;gap:6px;flex-wrap:wrap"><span class="chip">9 keys · 1 binary</span><span class="chip">18.4 KiB</span><span class="chip" style="color:var(--yellow)">{ic("lock",11,C["yellow"])}immutable</span></div></div>
+<div class="dsec" style="position:relative;padding-bottom:10px"><div style="display:flex;align-items:center;gap:6px;margin-bottom:8px"><p class="dtitle" style="margin:0;flex:1">Data</p>
+<button class="btn g" style="height:22px;padding:0 6px;font-size:12px">Expand all</button><button class="btn g" style="height:22px;padding:0 6px;font-size:12px">Collapse all</button><button class="btn" style="height:22px;padding:0 8px;font-size:12px">{ic("copy",12)}Copy all{ic("cd",11)}</button></div>
+{menu}
+<div class="inp" style="height:26px;margin-bottom:8px">{ic("filter",12)}<span style="font-size:12px">Filter 10 keys</span></div>
+<div style="display:flex;flex-direction:column;gap:6px">
+{cm_block("LOG_LEVEL", "text", "4 B", "1 line", "info")}
+{cm_block("SENTRY_DSN", "text", "0 B", "", "", empty=True)}
+{cm_block("application.yaml", "YAML", "2.1 KiB", "64 lines", app_yaml, shown=True, total=64)}
+{cm_block("entrypoint.sh", "shell", "1.2 KiB", "38 lines", "", open_=False)}
+{cm_block("feature-flags.json", "JSON", "96 B", "5 lines", "", open_=False)}
+{cm_block("log4j2.properties", "properties", "84 B", "3 lines", "", open_=False)}
+{cm_block("nginx.conf", "text", "3.9 KiB", "142 lines", "", open_=False)}
+{cm_block("truststore.jks", "binary", "3.1 KiB", "", "", binary=True)}
+</div></div>
+<div class="dsec" style="border-bottom:0"><p class="dtitle">Used by <span style="text-transform:none;letter-spacing:0;font-weight:400">· 6 pods</span></p>{urows}</div>
+</aside>'''
+    content = f'<div style="flex:1;display:flex;min-height:0">{center}{dock}</div>'
+    tb = tabs([("file", "ConfigMaps", True), ("box", "Pods", False)])
+    inner = f'''<div class="app">
+{titlebar("kind-dev", "payments", False, "kind · v1.37.0")}
+<div class="body">{polish_sidebar(False)}<main class="main">{tb}{content}</main></div>
+{statusbar()}
+</div>'''
+    return page("ConfigMap data in the details — Kubyl", inner)
+
+def contexts_palette_screen():
+    item = lambda state, label, sub, right, on=False: (f'<div style="display:flex;align-items:center;gap:10px;height:40px;padding:0 12px;border-radius:5px;{"background:var(--sel)" if on else ""}">{ic("wheel",14,C["accent"] if on else C["dim"])}'
+                                                       f'<div style="flex:1;min-width:0"><div style="color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{label}</div><div class="mono" style="font-size:11px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{sub}</div></div>'
+                                                       f'<span style="font-size:11.5px;color:var(--dim);white-space:nowrap">{right}</span>{status_slot(state)}</div>')
+    grp = lambda t: f'<div style="padding:8px 12px 4px;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--dim)">{t}</div>'
+    hl = lambda t: f'<span style="color:var(--accent)">{t}</span>'
+    pal = f'''<div role="dialog" aria-label="Command palette" style="position:absolute;left:50%;top:60px;margin-left:-310px;width:620px;background:#2f343e;border:1px solid var(--border);border-radius:9px;box-shadow:0 24px 60px rgba(0,0,0,.55);overflow:hidden">
+<div style="display:flex;align-items:center;gap:10px;height:44px;padding:0 14px;border-bottom:1px solid var(--bv)"><span class="mono" style="color:var(--accent);font-size:14px">@</span><span class="mono" style="font-size:14px;color:var(--text)">dev-al<span style="display:inline-block;width:1px;height:16px;background:var(--accent);vertical-align:-3px;margin-left:1px"></span></span><span style="flex:1"></span><span style="font-size:11.5px;color:var(--dim)">9 clusters · 4 connected</span></div>
+<div style="padding:4px 6px 8px">
+{grp("Clusters")}
+{item("on", f"{OCP_EU} · {JANE}", f"context {hl('dev-al')}ex/api-ocp-eu1-example-com:6443/{JANE}", "opens in dev-alex", True)}
+{item("connecting", f"{OCP_US} · {JANE}", f"context {hl('dev-al')}ex/api-ocp-us1-example-com:6443/{JANE}", "opens in dev-alex")}
+{item("on", "kind-dev", f"~/.kube/config · {hl('dev')}", "payments")}
+{grp("Recent")}
+{item("on", "prod-eu-west-1", "~/work/kube/eks-prod.yaml", "payments")}
+{item(None, f"{OCP_EU} · kube:admin", "~/.kube/config · 6 contexts", "openshift-monitoring")}
+</div>
+<div style="display:flex;gap:16px;padding:8px 14px;border-top:1px solid var(--bv);font-size:11.5px;color:var(--dim)"><span><span class="kbd">↵</span> switch</span><span style="flex:1"></span><span>{dot(C["green"])} connected</span><span><span class="kbd">esc</span></span></div>
+</div>'''
+    CMC = "grid-template-columns: minmax(0,1fr) 60px 70px 56px"
+    rows = "".join(f'<div class="tr" style="{CMC}"><span class="mono">{n}</span><span class="mono">{k}</span><span class="mono" style="color:var(--muted)">{s}</span><span class="mono" style="color:var(--muted)">{a}</span></div>' for n, k, s, a in [("checkout-api-config", 12, "18.4 KiB", "41d"), ("currency-codes", 1, "2.2 KiB", "90d"), ("fraud-scorer-model", 3, "812 KiB", "6h")])
+    center = f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0">
+<div class="tool"><div class="crumb">{ic("file",14,C["accent"])}<b>ConfigMaps</b><span>·</span><span>3 in shop</span></div><div style="flex:1"></div></div>
+<div class="th" style="{CMC}"><span>NAME</span><span>DATA</span><span>SIZE</span><span>AGE</span></div>
+<div style="flex:1;overflow:hidden">{rows}</div></div>'''
+    pem = "<br>".join(["-----BEGIN CERTIFICATE-----", "MIIDBTCCAe2gAwIBAgIIU0lTZXhhbXBsZTANBgkqhkiG9w0BAQsFADAV", "MRMwEQYDVQQDEwprdWJlcm5ldGVzMB4XDTI2MDkyNjA4MDAwMFoXDTM2", "MDkyNDA4MDAwMFowFTETMBEGA1UEAxMKa3ViZXJuZXRlczCCASIwDQYJ"])
+    masked = lambda k: f'<div style="display:flex;align-items:center;gap:7px;height:28px;padding:0 6px 0 8px;border:1px solid var(--bv);border-radius:6px;background:#2a2e36">{ic("key",12,C["dim"])}<span class="mono" style="font-size:12px;flex:1">{k}</span><span class="mono" style="font-size:12px;color:var(--dim)">••••••••</span><button class="ib" aria-label="Reveal" style="width:20px;height:20px">{ic("eye",12)}</button><button class="ib" aria-label="Copy" style="width:20px;height:20px">{ic("copy",12)}</button></div>'
+    revealed = cm_block("ca.crt", "PEM", "1.1 KiB", "19 lines", pem, shown=True, total=19).replace(f'aria-label="Wrap"', 'aria-label="Hide"').replace(ic("wrap",12), ic("eye",12,C["accent"]), 1)
+    sdock = f'''<aside class="dock" style="width:420px">
+<div class="phead" style="border-bottom:1px solid var(--bv)"><span style="flex:1;color:var(--text);font-weight:500">Secret details</span><button class="ib" aria-label="Close">{ic("x",13)}</button></div>
+<div class="dsec"><div class="mono" style="font-size:12.5px;margin-bottom:6px">shop-db</div><div style="display:flex;gap:6px"><span class="chip">Opaque</span><span class="chip">3 keys</span></div></div>
+<div class="dsec"><p class="dtitle">Data</p><div style="display:flex;flex-direction:column;gap:6px">{masked("DB_PASSWORD")}{masked("DB_USER")}{revealed}</div></div>
+<div class="dsec" style="border-bottom:0"><p class="dtitle">Used by <span style="text-transform:none;letter-spacing:0;font-weight:400">· 2 pods</span></p>
+<div style="display:flex;gap:8px;align-items:flex-start;font-size:12px">{ic("layers",13,C["dim"])}<div><div><span style="color:var(--dim)">Deployment</span> <a href="#" class="mono" style="font-size:11.5px;text-decoration:none">shop-api</a> <span style="color:var(--dim)">· 2 pods</span></div><div class="mono" style="font-size:11px;color:var(--muted)">env DB_PASSWORD, DB_USER · volume db-ca → ca.crt</div></div></div></div>
+</aside>'''
+    inner = f'''<div class="app">
+{titlebar(f"{OCP_EU} · {JANE}", "shop", False, "OpenShift · v1.33.1")}
+<div class="body">{polish_sidebar(False)}<main class="main">{tabs([("file", "ConfigMaps", True)])}<div style="flex:1;display:flex;min-height:0">{center}{sdock}</div></main></div>
+{statusbar()}
+{pal}
+</div>'''
+    return page("@ contexts with status dots and aliases — Kubyl", inner)
+
 SCREENS = [
  ("Main.dc.html", "1 · Pods (k9s-style table + details)", pods_screen),
  ("Logs.dc.html", "2 · Live logs, exec shell, port-forwards", logs_screen),
@@ -1802,6 +2419,14 @@ SCREENS = [
  ("ArgoApp.dc.html", "13 · Argo CD application: resource tree and summary", argo_app_screen),
  ("ArgoHistory.dc.html", "14 · Argo CD application: history and rollback", argo_history_screen),
  ("ArgoSync.dc.html", "15 · Argo CD sync dialog (options, selective sync)", argo_sync_screen),
+ ("Alerts.dc.html", "16 · Alerts: firing alerts, details, sidebar badge and status bar", alerts_screen),
+ ("AlertsStates.dc.html", "16 · Alerts: all clear, and no Alertmanager found", alerts_states_screen),
+ ("Silences.dc.html", "16 · Silences and the silence editor", silences_screen),
+ ("SilenceConfirm.dc.html", "16 · Silence summary on a production cluster", silence_confirm_screen),
+ ("AlertRules.dc.html", "16 · Alerting rules and rule health", rules_screen),
+ ("ClusterStatus.dc.html", "17 · Connection dots, one row per cluster and user", clusters_grouped_screen),
+ ("ConfigMapData.dc.html", "17 · ConfigMap data in the details", configmap_screen),
+ ("ContextsPalette.dc.html", "17 · @ contexts with status dots and aliases; a revealed Secret", contexts_palette_screen),
 ]
 
 boards, order = {}, []
