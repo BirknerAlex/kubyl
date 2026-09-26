@@ -934,10 +934,15 @@ impl ClustersSection {
                         .is_some_and(|m| m.read(cx).state(&cluster).is_connected());
                     // A group can show its contexts separately; a context of such a group can
                     // go back to one entry.
+                    // "Show as One Cluster" only while grouping is on (with it off, the click
+                    // would have no effect).
+                    let grouping_on =
+                        kubyl_settings::Settings::get::<kubyl_kube::settings::KubeSettings>(cx)
+                            .group_contexts;
                     let grouping = ConnectionManager::try_global(cx).and_then(|m| {
                         let entry = m.read(cx).context(&cluster)?;
                         let group = entry.group.clone()?;
-                        Some((group, entry.is_group()))
+                        (entry.is_group() || grouping_on).then_some((group, entry.is_group()))
                     });
                     let switch = cluster.clone();
                     let toggle = cluster.clone();

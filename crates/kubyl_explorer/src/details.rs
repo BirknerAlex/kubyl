@@ -236,7 +236,9 @@ impl DetailsContent {
         cx: &mut Context<Self>,
     ) {
         if target == self.target && store == self.given {
-            if object.is_some() {
+            // With a watch of the object itself (ConfigMaps, Secrets: their list is metadata
+            // only), keep its full object; the list's copy would hide the data again.
+            if object.is_some() && (self.own.is_none() || self.object.is_none()) {
                 self.object = object;
             }
             return;

