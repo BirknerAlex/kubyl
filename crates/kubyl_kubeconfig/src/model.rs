@@ -149,7 +149,8 @@ impl Doc {
             .collect()
     }
 
-    fn index(&self, kind: Kind, name: &str) -> Option<usize> {
+    /// The position of the first entry named `name` in its list (unnamed entries count).
+    pub fn index(&self, kind: Kind, name: &str) -> Option<usize> {
         self.list(kind)
             .iter()
             .position(|e| e.get("name").and_then(Value::as_str) == Some(name))
@@ -434,6 +435,16 @@ impl Doc {
     /// Makes relative file paths absolute against `dir` (what kube's `read_from` does), for
     /// building a client from a document that isn't read from disk. Exec commands only when
     /// they contain a path separator (bare names are looked up in `PATH`).
+    /// A copy with relative paths made absolute against the folder of `file` (where this
+    /// document is read from), for copying its entries into a file somewhere else.
+    pub fn with_absolute_paths(&self, file: &std::path::Path) -> Doc {
+        let mut doc = self.clone();
+        if let Some(dir) = file.parent().filter(|d| !d.as_os_str().is_empty()) {
+            doc.absolutize_paths(dir);
+        }
+        doc
+    }
+
     pub fn absolutize_paths(&mut self, dir: &std::path::Path) {
         let fix = |map: &mut Map<String, Value>, key: &str| {
             if let Some(Value::String(path)) = map.get_mut(key)

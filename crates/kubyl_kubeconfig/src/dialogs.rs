@@ -1256,6 +1256,7 @@ pub(crate) fn merge_into(editor: WeakEntity<KubeconfigEditor>, window: &mut Wind
                         for (path, doc) in read {
                             match doc {
                                 Ok(other) => {
+                                    let other = other.with_absolute_paths(&path);
                                     this.edit(window, cx, |doc| {
                                         for context in other.names(Kind::Context) {
                                             if doc.import_context(&other, &context).is_some() {
@@ -1288,7 +1289,7 @@ pub(crate) fn merge_into(editor: WeakEntity<KubeconfigEditor>, window: &mut Wind
 
 pub(crate) fn split(editor: WeakEntity<KubeconfigEditor>, window: &mut Window, cx: &mut App) {
     let Some(this) = editor.upgrade() else { return };
-    let doc = this.read(cx).doc.clone();
+    let doc = this.read(cx).doc.with_absolute_paths(&this.read(cx).path);
     let stem = this
         .read(cx)
         .path
@@ -1385,7 +1386,7 @@ pub(crate) fn export(
     cx: &mut App,
 ) {
     let Some(this) = editor.upgrade() else { return };
-    let doc = this.read(cx).doc.clone();
+    let doc = this.read(cx).doc.with_absolute_paths(&this.read(cx).path);
     let view = cx.new(|cx| ExportView {
         doc,
         context,
@@ -1559,7 +1560,10 @@ impl CopyToView {
         let Some(editor) = self.editor.upgrade() else {
             return;
         };
-        let doc = editor.read(cx).doc.clone();
+        let doc = editor
+            .read(cx)
+            .doc
+            .with_absolute_paths(&editor.read(cx).path);
         let context = self.context.clone();
         let keep = Settings::get::<KubeconfigSettings>(cx).backups_kept;
         let new_target = target.is_none();

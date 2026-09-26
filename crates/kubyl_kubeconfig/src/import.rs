@@ -259,14 +259,18 @@ pub async fn service_account_token(
 }
 
 /// A kubeconfig for a service account: the source context's cluster (no credentials of the
-/// source user), a user with the token, a context in the namespace.
+/// source user), a user with the token, a context in the namespace. `file` is where `source`
+/// was read from: relative paths (a CA file) are made absolute, since the new file lives
+/// elsewhere.
 pub fn service_account_doc(
     source: &Doc,
+    file: &Path,
     source_context: &str,
     namespace: &str,
     name: &str,
     token: &str,
 ) -> Option<Doc> {
+    let source = source.with_absolute_paths(file);
     let (cluster, _) = source.context_refs(source_context);
     let cluster_name = cluster?;
     let cluster_body = source.body(Kind::Cluster, &cluster_name)?.clone();
@@ -405,13 +409,16 @@ impl SaView {
             this.update_in(cx, |this, window, cx| {
                 this.busy = false;
                 let doc = match (result, source) {
-                    (Ok(sa), Ok(source)) => {
-                        service_account_doc(&source, &info.context, &namespace, &name, &sa.token)
-                            .map(|doc| (doc, sa))
-                            .ok_or_else(|| {
-                                "the context's cluster isn't in its kubeconfig".to_string()
-                            })
-                    }
+                    (Ok(sa), Ok(source)) => service_account_doc(
+                        &source,
+                        &info.file,
+                        &info.context,
+                        &namespace,
+                        &name,
+                        &sa.token,
+                    )
+                    .map(|doc| (doc, sa))
+                    .ok_or_else(|| "the context's cluster isn't in its kubeconfig".to_string()),
                     (Err(err), _) | (_, Err(err)) => Err(err),
                 };
                 match doc {
@@ -1070,12 +1077,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn service_account_kubeconfigs_make_relative_paths_absolute() {
+        let source = Doc::parse(
+            "clusters:\n- name: kind\n  cluster: {server: \"https://127.0.0.1:6443\", certificate-authority: certs/ca.pem}\ncontexts:\n- name: kind-dev\n  context: {cluster: kind, user: admin}\nusers:\n- name: admin\n  user: {token: x}\n",
+        )
+        .unwrap();
+        let file = Path::new("/home/me/.kube/config");
+        let doc = service_account_doc(&source, file, "kind-dev", "ci", "deployer", "t0k").unwrap();
+        assert_eq!(
+            crate::model::get_str(
+                doc.body(Kind::Cluster, "kind").unwrap(),
+                &["certificate-authority"]
+            ),
+            Path::new("/home/me/.kube")
+                .join("certs/ca.pem")
+                .to_string_lossy()
+        );
+    }
+
+    #[test]
     fn service_account_kubeconfigs_copy_the_cluster_only() {
         let source = Doc::parse(
             "clusters:\n- name: kind\n  cluster: {server: \"https://127.0.0.1:6443\", certificate-authority-data: QUJD}\ncontexts:\n- name: kind-dev\n  context: {cluster: kind, user: admin}\nusers:\n- name: admin\n  user: {client-key-data: S0VZ, client-certificate-data: Q0VSVA==}\n",
         )
         .unwrap();
-        let doc = service_account_doc(&source, "kind-dev", "ci", "deployer", "t0k").unwrap();
+        let doc = service_account_doc(
+            &source,
+            Path::new("/home/me/.kube/config"),
+            "kind-dev",
+            "ci",
+            "deployer",
+            "t0k",
+        )
+        .unwrap();
         assert_eq!(doc.names(Kind::User), ["deployer@kind"]);
         assert_eq!(
             doc.body(Kind::User, "deployer@kind").unwrap()["token"],

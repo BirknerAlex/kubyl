@@ -246,3 +246,76 @@ fn renames_and_the_yaml_tab_stay_in_sync(cx: &mut TestAppContext) {
         );
     });
 }
+
+#[gpui::test]
+async fn a_kubyl_copy_is_what_the_editor_watches_afterwards(cx: &mut TestAppContext) {
+    let s = setup(cx);
+    let path = s.external.join("config");
+    std::fs::write(&path, FILE).unwrap();
+    let (editor, cx) = open(&path, cx);
+    set_namespace(&editor, "payments", cx);
+
+    // "Save as a Kubyl copy": the edits go to the copy, the original stays as it was.
+    let copy = s.owned.join("config.yaml");
+    let text = editor.read_with(cx, |editor, _| editor.text_to_save().text);
+    let options = files::SaveOptions {
+        expected: None,
+        backups: None,
+        private: true,
+    };
+    let saved = files::save(&copy, &text, &options).unwrap();
+    editor.update_in(cx, |editor, window, cx| {
+        editor.moved_to(copy.clone(), cx);
+        editor.saved(saved, text, window, cx);
+    });
+
+    // The next polls read the copy, not the original, so nothing is reverted.
+    cx.executor().advance_clock(Duration::from_secs(5));
+    cx.run_until_parked();
+    editor.read_with(cx, |editor, _| {
+        assert_eq!(editor.path, copy);
+        assert!(editor.disk.is_none());
+        assert!(!editor.is_dirty());
+        let ns = model::get_str(
+            editor.doc.body(Kind::Context, "dev").unwrap(),
+            &["namespace"],
+        );
+        assert_eq!(ns, "payments");
+    });
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), FILE);
+}
+
+#[gpui::test]
+fn renaming_a_user_with_a_hidden_secret_needs_the_secret_revealed(cx: &mut TestAppContext) {
+    let s = setup(cx);
+    let path = s.owned.join("team.yaml");
+    std::fs::write(&path, FILE).unwrap();
+    let (editor, cx) = open(&path, cx);
+    editor.update_in(cx, |editor, window, cx| {
+        editor.set_tab(crate::editor::Tab::Yaml, window, cx)
+    });
+    cx.run_until_parked();
+    let text = editor.read_with(cx, |editor, cx| {
+        editor.yaml.editor.read(cx).value().to_string()
+    });
+    assert!(text.contains(crate::yaml_tab::MASK), "{text}");
+    // Renaming the user in the YAML tab would leave the mask as its token.
+    let edited = text.replace("- name: dev\n  user:", "- name: ops\n  user:");
+    assert_ne!(edited, text);
+    editor.update_in(cx, |editor, window, cx| {
+        editor
+            .yaml
+            .editor
+            .update(cx, |state, cx| state.set_value(edited, window, cx));
+        editor.yaml_typed_for_test(window, cx);
+    });
+    editor.read_with(cx, |editor, _| {
+        assert!(editor.yaml.parse_error.is_some());
+        // The document keeps the last good state: the user and its real token.
+        assert_eq!(
+            model::get_str(editor.doc.body(Kind::User, "dev").unwrap(), &["token"]),
+            "abc"
+        );
+        assert!(editor.doc.body(Kind::User, "ops").is_none());
+    });
+}

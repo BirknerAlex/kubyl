@@ -519,7 +519,7 @@ pub fn yaml_path(doc: &Doc, problem: &Problem) -> kubyl_yaml::parse::Path {
     match &problem.entry {
         Some(entry) => {
             segs.push(Seg::Key(entry.kind.list_key().into()));
-            if let Some(ix) = doc.names(entry.kind).iter().position(|n| n == &entry.name) {
+            if let Some(ix) = doc.index(entry.kind, &entry.name) {
                 segs.push(Seg::Index(ix));
                 match &problem.field {
                     Some(field) => {
@@ -610,5 +610,23 @@ users:
             of_entry(&problems, &EntryRef::new(Kind::Context, "b"))[0],
         );
         assert_eq!(path.to_string(), "contexts[1].context.cluster");
+    }
+
+    #[test]
+    fn yaml_paths_count_unnamed_entries() {
+        let doc = Doc::parse(
+            "clusters:\n- cluster: {server: https://a}\n- name: b\n  cluster: {server: \"ftp://b\"}\n",
+        )
+        .unwrap();
+        let problem = Problem {
+            severity: Severity::Error,
+            entry: Some(EntryRef::new(Kind::Cluster, "b")),
+            field: Some("server".into()),
+            message: String::new(),
+        };
+        assert_eq!(
+            yaml_path(&doc, &problem).to_string(),
+            "clusters[1].cluster.server"
+        );
     }
 }

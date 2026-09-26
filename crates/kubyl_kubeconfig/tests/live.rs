@@ -479,7 +479,15 @@ async fn kind_service_account_kubeconfigs_work() {
     .unwrap();
     println!("created: {:?}, expires {:?}", sa.created, sa.expires);
     assert!(sa.expires.is_some_and(|at| at > jiff::Timestamp::now()));
-    let doc = import::service_account_doc(&source, &context_name(), ns, name, &sa.token).unwrap();
+    let doc = import::service_account_doc(
+        &source,
+        &kubeconfig_path(),
+        &context_name(),
+        ns,
+        name,
+        &sa.token,
+    )
+    .unwrap();
     let context = doc.current_context().unwrap().to_string();
     let report = test(doc, &context, &file, false).await;
     assert!(report.passed(), "{}", report.summary());
@@ -507,8 +515,15 @@ async fn kind_service_account_kubeconfigs_work() {
     .await
     .unwrap();
     assert!(secret.expires.is_none());
-    let doc =
-        import::service_account_doc(&source, &context_name(), ns, name, &secret.token).unwrap();
+    let doc = import::service_account_doc(
+        &source,
+        &kubeconfig_path(),
+        &context_name(),
+        ns,
+        name,
+        &secret.token,
+    )
+    .unwrap();
     assert!(test(doc, &context, &file, false).await.passed());
 
     // Clean up.

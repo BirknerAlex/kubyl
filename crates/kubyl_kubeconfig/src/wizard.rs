@@ -135,6 +135,8 @@ pub struct Wizard {
     target: Option<PathBuf>,
     pub(crate) connect: bool,
     open_editor: bool,
+    /// The document the last test ran on: going back and changing it tests again.
+    tested: Option<Doc>,
     error: Option<String>,
     saving: bool,
     focus: FocusHandle,
@@ -241,6 +243,7 @@ impl Wizard {
             exec: None,
             target: None,
             connect: true,
+            tested: None,
             open_editor: false,
             error: None,
             saving: false,
@@ -557,6 +560,7 @@ impl Wizard {
             file: self.target_path(cx),
             allow_exec: true,
         };
+        self.tested = Some(doc.clone());
         let global = Kubeconfigs::global(cx);
         match global.read(cx).needs_consent(&doc, None, &context) {
             None => global.update(cx, |g, cx| g.test(key, input, cx)),
@@ -583,8 +587,10 @@ impl Wizard {
             input.update(cx, |state, cx| state.focus(window, cx));
         }
         if step == Step::Test {
-            let global = Kubeconfigs::global(cx);
-            if global.read(cx).report(&self.test_key(cx)).is_none() {
+            // A changed document restarts a test that's still running for the old one.
+            let key = self.test_key(cx);
+            let tested = Kubeconfigs::global(cx).read(cx).report(&key).is_some();
+            if !tested || self.tested.as_ref() != Some(&self.doc(cx)) {
                 self.run_test(window, cx);
             }
         }

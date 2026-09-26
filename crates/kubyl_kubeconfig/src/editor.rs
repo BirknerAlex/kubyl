@@ -308,18 +308,21 @@ impl KubeconfigEditor {
     /// Checks the file for changes by other tools. Without unsaved changes the editor just
     /// reloads; with them it shows the banner.
     fn start_disk_poll(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let path = self.path.clone();
         self._tasks.push(cx.spawn_in(window, async move |this, cx| {
             loop {
                 cx.background_executor().timer(DISK_POLL).await;
-                let path = path.clone();
+                // The path of now: "Save as a Kubyl copy" moves the editor to another file.
+                let Ok(path) = this.read_with(cx, |this, _| this.path.clone()) else {
+                    break;
+                };
+                let read_path = path.clone();
                 let read = cx
                     .background_executor()
-                    .spawn(async move { files::read(&path).ok() })
+                    .spawn(async move { files::read(&read_path).ok() })
                     .await;
                 let Some(disk) = read else { continue };
                 let alive = this.update_in(cx, |this, window, cx| {
-                    if this.saving || this.draft.is_some() || this.loading {
+                    if this.path != path || this.saving || this.draft.is_some() || this.loading {
                         return;
                     }
                     let known = this.snapshot.as_ref().and_then(|s| s.hash.clone());
@@ -715,17 +718,25 @@ impl KubeconfigEditor {
             .spawn(async move { files::save(&path, &write_text, &options) });
         self.saving = true;
         cx.notify();
+        let path = self.path.clone();
         cx.spawn_in(window, async move |this, cx| {
             let result = write.await;
+            // Changed on disk: show the banner right away instead of at the next poll.
+            let disk = match &result {
+                Err(files::SaveError::Changed { .. }) => {
+                    cx.background_executor()
+                        .spawn(async move { files::read(&path).ok() })
+                        .await
+                }
+                _ => None,
+            };
             this.update_in(cx, |this, window, cx| {
                 this.saving = false;
                 match &result {
                     Ok(saved) => this.saved(saved.clone(), text, window, cx),
                     Err(files::SaveError::Changed { .. }) => {
-                        // Show the banner right away instead of at the next poll.
-                        let path = this.path.clone();
-                        if let Ok(disk) = files::read(&path) {
-                            this.disk = Some(disk);
+                        if disk.is_some() {
+                            this.disk = disk;
                         }
                     }
                     Err(_) => {}
@@ -802,6 +813,7 @@ impl KubeconfigEditor {
         Kubeconfigs::global(cx).update(cx, |g, cx| g.forget(&old_key, cx));
         self.path = path;
         self.draft = None;
+        self.disk = None;
         self.title = file_title(&self.path);
         cx.notify();
     }

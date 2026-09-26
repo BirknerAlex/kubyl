@@ -124,7 +124,7 @@ impl YamlTab {
         let Some(root) = parsed.roots().next() else {
             return true;
         };
-        let Some(ix) = doc.names(entry.kind).iter().position(|n| n == &entry.name) else {
+        let Some(ix) = doc.index(entry.kind, &entry.name) else {
             return true;
         };
         let path = YPath(vec![
@@ -146,7 +146,9 @@ impl YamlTab {
         true
     }
 
-    /// The document for the buffer, with masked values put back. `Err`: it doesn't parse.
+    /// The document for the buffer, with masked values put back. `Err`: it doesn't parse, or
+    /// a masked value can't be put back (its user was renamed or it moved), which would
+    /// otherwise save the mask as the credential.
     pub fn parse(&self, cx: &App) -> Result<Doc, String> {
         let text = self.editor.read(cx).value().to_string();
         let mut doc = Doc::parse(&text)?;
@@ -158,6 +160,11 @@ impl YamlTab {
             {
                 *value = Value::String(original.clone());
             }
+        }
+        if contains_mask(&doc.0) {
+            return Err(format!(
+                "a hidden secret ({MASK}) moved or its user was renamed: reveal secrets to make this change"
+            ));
         }
         Ok(doc)
     }
@@ -241,6 +248,16 @@ fn find_range(root: &Node, path: &YPath) -> Option<Range<usize>> {
 
 /// Masks the secret values of `text` (the rendering of `doc`). Returns the new text and what
 /// was masked.
+/// Whether a mask is left anywhere in the document.
+fn contains_mask(value: &Value) -> bool {
+    match value {
+        Value::String(s) => s == MASK,
+        Value::Array(items) => items.iter().any(contains_mask),
+        Value::Object(map) => map.values().any(contains_mask),
+        _ => false,
+    }
+}
+
 pub fn mask(text: &str, doc: &Doc) -> (String, Vec<(String, Vec<String>, String)>) {
     let parsed = parse::parse(text);
     let Some(root) = parsed.roots().next() else {
