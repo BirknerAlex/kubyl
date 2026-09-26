@@ -125,6 +125,34 @@ pub fn init(cx: &mut App) {
     });
 }
 
+/// Opens a new-resource editor for `target` (a list ref: cluster, kind and namespace) with
+/// `text` in its buffer instead of the kind's template, and `note` in a banner above it (where
+/// the text came from). Nothing is applied until the user does. Used for operators' examples
+/// (`alm-examples`) and templates.
+pub fn open_draft(
+    target: ResourceRef,
+    text: String,
+    note: Option<String>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let target = ResourceRef {
+        name: None,
+        ..target
+    };
+    cx.default_global::<view::PendingDrafts>().0.push((
+        target.clone(),
+        view::Draft {
+            text,
+            note: note.map(Into::into),
+        },
+    ));
+    window.dispatch_action(
+        Box::new(OpenView(ViewRequest::for_resource(ViewKind::Yaml, target))),
+        cx,
+    );
+}
+
 /// Opens a view in the focused window. Deferred: global action handlers run while the
 /// dispatching window is being updated.
 fn open(request: ViewRequest, cx: &mut App) {

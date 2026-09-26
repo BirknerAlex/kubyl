@@ -86,6 +86,14 @@ fn administration_views() -> Vec<ViewEntry> {
             kind: ViewKind::Custom("operatorhub".into()),
             needs_olm: true,
         },
+        // Helm doesn't need OLM (phase 12 shows it next to the operators).
+        ViewEntry {
+            id: "helm",
+            label: "Helm Releases",
+            icon: IconName::Anchor,
+            kind: ViewKind::Custom("helm_releases".into()),
+            needs_olm: false,
+        },
         ViewEntry {
             id: "updates",
             label: "Cluster Updates",

@@ -81,6 +81,7 @@ ICONS = {
  "siren": '<path d="M7 18v-6a5 5 0 1 1 10 0v6"></path><path d="M5 21a1 1 0 0 1-1-1v-1a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v1a1 1 0 0 1-1 1z"></path><path d="M21 12h1"></path><path d="M18.5 4.5 18 5"></path><path d="M2 12h1"></path><path d="M12 2v1"></path><path d="m4.929 4.929.707.707"></path><path d="M12 12v6"></path>',
  "belloff": '<path d="M10.268 21a2 2 0 0 0 3.464 0"></path><path d="M17 17H4a1 1 0 0 1-.74-1.673C4.59 13.956 6 12.499 6 8a6 6 0 0 1 .258-1.742"></path><path d="m2 2 20 20"></path><path d="M8.668 3.01A6 6 0 0 1 18 8c0 2.687.77 4.653 1.707 6.05"></path>',
  "listchecks": '<path d="M13 5h8"></path><path d="M13 12h8"></path><path d="M13 19h8"></path><path d="m3 17 2 2 4-4"></path><path d="m3 7 2 2 4-4"></path>',
+ "anchor": '<path d="M12 22V8"></path><path d="M5 12H2a10 10 0 0 0 20 0h-3"></path><circle cx="12" cy="5" r="3"></circle>',
  "gear": '<circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>',
 }
 
@@ -296,7 +297,8 @@ def sidebar(active="Pods", cr_open=True, alerts=False):
         ti("Cluster", 1, open_=False),
         ti("Administration", 1, open_=True),
         ti("Installed Operators", 2, "blocks", "7", on=a("Operators")),
-        ti("OperatorHub", 2, "store"),
+        ti("OperatorHub", 2, "store", on=a("OperatorHub")),
+        ti("Helm Releases", 2, "anchor", on=a("Helm")),
         ti("Cluster Updates", 2, "up", extra=f'<span style="margin-right:2px">{dot(C["accent"])}</span>', on=a("Updates")),
         ti("Custom Resources", 1, open_=True),
         ti("cert-manager.io", 2, open_=True),
@@ -819,46 +821,452 @@ def palette_screen():
 </div>'''
     return page("Command palette — Kubyl", inner)
 
-# ---------- 7. Installed operators (OLM) ----------
-def operators_screen():
-    OC = "grid-template-columns: minmax(0,1.3fr) 110px 150px 110px 96px minmax(0,1.2fr)"
-    tile = lambda l, c: f'<span style="width:26px;height:26px;border-radius:6px;background:{c}22;color:{c};display:flex;align-items:center;justify-content:center;font-weight:600;font-size:11px;flex-shrink:0;border:1px solid {c}55">{l}</span>'
-    ops = [
-     ("cert-manager", "cert-manager", C["green"], "CM", "1.15.3", "Succeeded", "stable", "Automatic", ["Certificate", "Issuer", "ClusterIssuer"]),
-     ("Prometheus Operator", "prometheus-operator", C["orange"], "PR", "0.76.1", "Succeeded", "beta", "Automatic", ["Prometheus", "ServiceMonitor", "+5"]),
-     ("Strimzi", "strimzi-kafka-operator", C["cyan"], "SZ", "0.43.0", "Upgrade available", "stable", "Manual", ["Kafka", "KafkaTopic", "KafkaUser", "+6"]),
-     ("CloudNativePG", "cloudnative-pg", C["accent"], "PG", "1.24.1", "Succeeded", "stable-v1", "Automatic", ["Cluster", "Backup", "Pooler"]),
-     ("Argo CD", "argocd-operator", C["orange"], "AR", "0.11.0", "Succeeded", "alpha", "Automatic", ["ArgoCD", "Application"]),
-     ("External Secrets", "external-secrets-operator", C["purple"], "ES", "0.10.3", "Installing", "stable", "Automatic", ["ExternalSecret", "SecretStore"]),
-     ("Sail (Istio)", "sailoperator", C["accent"], "IS", "0.2.0", "Failed", "candidates", "Manual", ["Istio", "IstioRevision"]),
-    ]
-    rows = "".join(f'''<div class="tr{" on" if i==2 else ""}" style="{OC};height:46px">
-<div style="display:flex;gap:10px;align-items:center;min-width:0">{tile(t,c)}<div style="min-width:0"><div style="font-weight:500">{n}</div><div class="mono" style="font-size:11px;color:var(--dim)">{pkg}</div></div></div>
-<span class="mono">{v}</span>{st(s)}<span class="mono" style="color:var(--muted)">{ch}</span><span style="color:{C["yellow"] if ap=="Manual" else C["muted"]}">{ap}</span>
-<div style="display:flex;gap:4px;overflow:hidden">{"".join(f'<span class="chip">{a}</span>' for a in apis)}</div></div>''' for i, (n, pkg, c, t, v, s, ch, ap, apis) in enumerate(ops))
-    subtabs = f'''<div style="display:flex;gap:2px;padding:0 12px;border-bottom:1px solid var(--bv);height:36px;align-items:stretch">{"".join(f'<span style="display:flex;align-items:center;gap:6px;padding:0 10px;{"color:var(--text);box-shadow:inset 0 -2px 0 var(--accent)" if on else "color:var(--dim)"}">{t}</span>' for t, on in [("Installed","1"),("OperatorHub",""),("Install plans <span class=\"chip\" style=\"height:17px;color:var(--yellow)\">1 pending</span>",""),("Subscriptions",""),("Helm releases","")])}</div>'''
-    center = f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0">
-<div class="tool"><div class="crumb">{ic("blocks",14,C["accent"])}<b>Operators</b><span>·</span><span>OLM v0 detected in namespace olm · 7 installed</span></div><div style="flex:1"></div><div class="inp" style="width:220px">{ic("search",12)}Filter operators</div><button class="btn p">{ic("store",13,"#1b1e24")}Browse OperatorHub</button></div>
-{subtabs}
-<div class="th" style="{OC}"><span>NAME</span><span>VERSION</span><span>STATUS</span><span>CHANNEL</span><span>APPROVAL</span><span>PROVIDED APIS</span></div>
-<div style="flex:1;overflow:hidden">{rows}</div>
+# ---------- 7. Operators (OLM), OperatorHub and Helm releases (phase 12) ----------
+def op_tile(l, c, s=26):
+    """A package's letter tile (the catalog's icon when it has one)."""
+    return f'<span style="width:{s}px;height:{s}px;border-radius:6px;background:{c}22;color:{c};display:flex;align-items:center;justify-content:center;font-weight:600;font-size:{11 if s < 30 else 13}px;flex-shrink:0;border:1px solid {c}55">{l}</span>'
+
+def op_subtabs(active, pending=1, v1=False, counts=("7", "8", "5"), olm=True):
+    """The Operators tab's sub-tabs. OperatorHub is its own tab (the toolbar button opens it).
+    Without OLM only Installed (which explains it) and Helm releases."""
+    items = [("Installed", "blocks", counts[0]), ("Install plans", "listchecks", None), ("Subscriptions", "list", counts[1]), ("Helm releases", "anchor", counts[2])]
+    if not olm:
+        items = [items[0], items[3]]
+    if v1:
+        items.append(("Extensions", "blocks", "1"))
+    out = []
+    for t, i, n in items:
+        on = t == active
+        badge = ""
+        if t == "Install plans" and pending:
+            badge = f'<span class="chip" style="height:17px;color:var(--yellow)">{pending} pending</span>'
+        elif n:
+            badge = f'<span class="chip" style="height:17px">{n}</span>'
+        style = "color:var(--text);box-shadow:inset 0 -2px 0 var(--accent)" if on else "color:var(--dim)"
+        out.append(f'<span style="display:flex;align-items:center;gap:6px;padding:0 10px;white-space:nowrap;{style}">{ic(i,13,C["accent"] if on else C["dim"])}{t}{badge}</span>')
+    return f'<div style="display:flex;gap:2px;padding:0 8px;border-bottom:1px solid var(--bv);height:34px;align-items:stretch;flex-shrink:0">{"".join(out)}</div>'
+
+def op_header(summary, filter_text="Filter operators", button=True):
+    b = f'<button class="btn p">{ic("store",13,"#1b1e24")}Browse OperatorHub</button>' if button else ""
+    return (f'<div class="tool"><div class="crumb">{ic("blocks",14,C["accent"])}<b>Operators</b><span>·</span><span>{summary}</span></div><div style="flex:1"></div>'
+            f'<div class="inp" style="width:220px">{ic("search",12)}{filter_text}</div>{b}</div>')
+
+def op_shell(active, tabbar, content, overlay=""):
+    return f'''<div class="app">
+{titlebar()}
+<div class="body">
+{sidebar(active)}
+<main class="main">
+{tabbar}
+{content}
+</main>
+</div>
+{statusbar()}
+{overlay}
 </div>'''
-    api = lambda k, n: f'<div style="display:flex;align-items:center;gap:8px;padding:7px 10px;border:1px solid var(--bv);border-radius:6px;background:#2a2e36"><span class="mono" style="font-size:12px;flex:1">{k}</span><span style="font-size:11.5px;color:var(--dim)">{n}</span><button class="btn g" style="height:22px;padding:0 6px">{ic("plus",11)}Create</button></div>'
-    chg = lambda icon, col, t: f'<div style="display:flex;gap:8px;font-size:12px;align-items:flex-start;padding:3px 0">{ic(icon,13,col)}<span style="color:var(--muted)">{t}</span></div>'
-    dock = f'''<aside class="dock" style="width:350px">
-<div class="phead" style="border-bottom:1px solid var(--bv)">{tile("SZ",C["cyan"])}<span style="flex:1;color:var(--text);font-weight:500;margin-left:4px">Strimzi</span><span style="font-size:11.5px">kafka namespace</span></div>
-<div class="dsec" style="background:#35322a"><div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">{ic("up",14,C["yellow"])}<b style="font-weight:600;color:var(--yellow)">Upgrade pending approval</b></div>
-<div class="mono" style="font-size:12px;margin-bottom:10px">0.43.0 <span style="color:var(--dim)">→</span> <span style="color:var(--green)">0.44.0</span> <span style="color:var(--dim)">· installplan install-7qk2d</span></div>
-{chg("file",C["accent"],"3 CRDs updated · kafkas.kafka.strimzi.io schema adds <span class='mono' style='font-size:11px'>spec.kafka.tieredStorage</span>")}
-{chg("shield",C["yellow"],"RBAC: ClusterRole gains <span class='mono' style='font-size:11px'>get,list</span> on nodes")}
-{chg("ok",C["green"],"All 4 Kafka clusters on supported versions")}
-<div style="display:flex;gap:6px;margin-top:10px"><button class="btn p">Approve</button><button class="btn">{ic("code",12)}View YAML</button><button class="btn g">Diff CRDs</button></div></div>
-<div class="dsec"><p class="dtitle">Provided APIs</p><div style="display:flex;flex-direction:column;gap:6px">{api("Kafka","4 instances")}{api("KafkaTopic","112 instances")}{api("KafkaUser","38 instances")}{api("KafkaConnect","2 instances")}</div></div>
-<div class="dsec" style="border-bottom:0"><p class="dtitle">Subscription</p><dl class="kv" style="margin:0"><dt>Catalog</dt><dd>operatorhubio-catalog</dd><dt>Channel</dt><dd>stable</dd><dt>CSV</dt><dd class="mono" style="font-size:11.5px">strimzi-cluster-operator.v0.43.0</dd><dt>Approval</dt><dd style="color:var(--yellow)">Manual</dd></dl></div>
+
+def op_tabs(on):
+    return tabs([("blocks", "Operators", on == "ops"), ("store", "OperatorHub", on == "hub"), ("up", "Cluster Updates", False)])
+
+OPS = [
+ ("cert-manager", "cert-manager", C["green"], "CM", "1.16.5", "Succeeded", "stable", "Automatic", "operators", ["Certificate", "Issuer", "ClusterIssuer", "+3"]),
+ ("Prometheus Operator", "prometheus", C["orange"], "PR", "0.76.1", "Succeeded", "beta", "Automatic", "operators", ["Prometheus", "ServiceMonitor", "+5"]),
+ ("Strimzi", "strimzi-kafka-operator", C["cyan"], "SZ", "0.43.0", "Upgrade available", "stable", "Manual", "kafka", ["Kafka", "KafkaTopic", "KafkaUser", "+6"]),
+ ("CloudNativePG", "cloudnative-pg", C["accent"], "PG", "1.30.0", "Succeeded", "stable-v1", "Automatic", "databases", ["Cluster", "Backup", "Pooler", "+8"]),
+ ("Argo CD", "argocd-operator", C["orange"], "AR", "0.11.0", "Succeeded", "alpha", "Automatic", "operators", ["ArgoCD", "Application"]),
+ ("External Secrets", "external-secrets-operator", C["purple"], "ES", "0.10.3", "Installing", "stable", "Automatic", "operators", ["ExternalSecret", "SecretStore"]),
+ ("Sail (Istio)", "sailoperator", C["accent"], "IS", "0.2.0", "Failed", "candidates", "Manual", "istio-system", ["Istio", "IstioRevision"]),
+]
+OC = "grid-template-columns: minmax(190px,1.3fr) 76px 150px 90px 86px 96px minmax(0,1.1fr)"
+
+def op_rows(selected=2):
+    out = []
+    for i, (n, pkg, c, t, v, s, ch, ap, ns, apis) in enumerate(OPS):
+        chips = "".join(f'<span class="chip">{a}</span>' for a in apis)
+        apc = C["yellow"] if ap == "Manual" else C["muted"]
+        out.append(f'''<div class="tr{" on" if i == selected else ""}" style="{OC};height:46px">
+<div style="display:flex;gap:10px;align-items:center;min-width:0">{op_tile(t,c)}<div style="min-width:0"><div style="font-weight:500">{n}</div><div class="mono" style="font-size:11px;color:var(--dim)">{pkg}</div></div></div>
+<span class="mono">{v}</span>{st(s)}<span class="mono" style="color:var(--muted)">{ch}</span><span style="color:{apc}">{ap}</span><span class="mono" style="font-size:11.5px;color:var(--muted)">{ns}</span>
+<div style="display:flex;gap:4px;overflow:hidden">{chips}</div></div>''')
+    return "".join(out)
+
+OP_HEAD = f'<div class="th" style="{OC}"><span>NAME {ic("cd",10)}</span><span>VERSION</span><span>STATUS</span><span>CHANNEL</span><span>APPROVAL</span><span>NAMESPACE</span><span>PROVIDED APIS</span></div>'
+OP_HINTS = [("↵", "Details"), ("a", "Approve…"), ("d", "Review changes"), ("c", "Create instance…"), ("y", "View YAML"), ("⌃d", "Uninstall…"), ("/", "Filter")]
+
+def op_installed_center(selected=2):
+    return f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0">
+{op_header("OLM v0 · 7 installed · 1 upgrade waiting")}
+{op_subtabs("Installed")}
+{OP_HEAD}
+<div style="flex:1;overflow:hidden">{op_rows(selected)}</div>
+{hints(OP_HINTS)}
+</div>'''
+
+def op_api(k, n, g):
+    return (f'<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;border:1px solid var(--bv);border-radius:6px;background:#2a2e36">'
+            f'<div style="flex:1;min-width:0"><div class="mono" style="font-size:12px">{k}</div><div class="mono" style="font-size:10.5px;color:var(--dim)">{g}</div></div>'
+            f'<a href="#" style="font-size:11.5px;text-decoration:none">{n}</a><button class="btn g" style="height:22px;padding:0 6px">{ic("plus",11)}Create</button></div>')
+
+def op_chg(icon, col, t):
+    return f'<div style="display:flex;gap:8px;font-size:12px;align-items:flex-start;padding:3px 0">{ic(icon,13,col)}<span style="color:var(--muted)">{t}</span></div>'
+
+MONO11 = 'class="mono" style="font-size:11px"'
+
+def operators_screen():
+    dock = f'''<aside class="dock" style="width:360px">
+<div class="phead" style="border-bottom:1px solid var(--bv)">{op_tile("SZ",C["cyan"])}<div style="flex:1;margin-left:4px;min-width:0"><div style="color:var(--text);font-weight:500">Strimzi</div><div style="font-size:11px;color:var(--dim)">0.43.0 · kafka · Manual approval</div></div><button class="ib" aria-label="More">{ic("more",14)}</button><button class="ib" aria-label="Close">{ic("x",13)}</button></div>
+<div class="dsec" style="background:#35322a"><div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">{ic("up",14,C["yellow"])}<b style="font-weight:600;color:var(--yellow)">Upgrade waiting for approval</b></div>
+<div class="mono" style="font-size:12px;margin-bottom:10px">0.43.0 <span style="color:var(--dim)">→</span> <span style="color:var(--green)">0.44.0</span> <span style="color:var(--dim)">· install-7qk2d</span></div>
+{op_chg("file",C["accent"],f"3 CRDs change · kafkas.kafka.strimzi.io adds <span {MONO11}>spec.kafka.tieredStorage</span>")}
+{op_chg("shield",C["yellow"],f"RBAC: gains <span {MONO11}>get, list</span> on <span {MONO11}>nodes</span> (cluster-wide)")}
+{op_chg("ok",C["green"],"Kubernetes 1.30.4 meets minKubeVersion 1.25.0")}
+<div style="display:flex;gap:6px;margin-top:10px"><button class="btn p">{ic("check",12,"#1b1e24")}Approve…</button><button class="btn">{ic("diff",12)}Review changes</button><button class="btn g">{ic("code",12)}YAML</button></div></div>
+<div class="dsec"><p class="dtitle">Provided APIs</p><div style="display:flex;flex-direction:column;gap:6px">{op_api("Kafka","4 instances","kafka.strimzi.io/v1beta2")}{op_api("KafkaTopic","112 instances","kafka.strimzi.io/v1beta2")}{op_api("KafkaUser","38 instances","kafka.strimzi.io/v1beta2")}{op_api("KafkaConnect","none","kafka.strimzi.io/v1beta2")}</div></div>
+<div class="dsec"><p class="dtitle">Subscription</p><dl class="kv" style="margin:0"><dt>Catalog</dt><dd>operatorhubio-catalog <span style="color:var(--dim)">· olm</span></dd><dt>Channel</dt><dd>stable</dd><dt>Installed CSV</dt><dd class="mono" style="font-size:11.5px">strimzi-cluster-operator.v0.43.0</dd><dt>OperatorGroup</dt><dd class="mono" style="font-size:11.5px">kafka/kafka-og <span style="color:var(--dim);font-family:IBM Plex Sans">· OwnNamespace</span></dd></dl></div>
+<div class="dsec" style="border-bottom:0"><div style="display:flex;gap:6px"><button class="btn g" style="height:24px">{ic("code",12)}CSV YAML</button><button class="btn g" style="height:24px">{ic("list",12)}Operator logs</button><span style="flex:1"></span><button class="btn d" style="height:24px">{ic("trash",12,C["red"])}Uninstall…</button></div></div>
+</aside>'''
+    content = f'<div style="flex:1;display:flex;min-height:0">{op_installed_center()}{dock}</div>'
+    return page("Installed operators — Kubyl", op_shell("Operators", op_tabs("ops"), content))
+
+# name, provider, tile, color, description, capability, installed
+HUB = [
+ ("cert-manager", "The cert-manager maintainers", "CM", C["green"], "Cloud native certificate management: X.509 certificates from ACME, Vault, Venafi or self-signed.", "Deep Insights", True),
+ ("CloudNativePG", "CloudNativePG", "PG", C["accent"], "PostgreSQL clusters with streaming replication, backups to object storage and rolling updates.", "Auto Pilot", True),
+ ("Strimzi", "Strimzi", "SZ", C["cyan"], "Apache Kafka clusters, topics and users as Kubernetes resources.", "Deep Insights", True),
+ ("Grafana Operator", "Grafana Labs", "GR", C["orange"], "Deploys and manages Grafana instances, dashboards and data sources.", "Deep Insights", False),
+ ("Keycloak Operator", "Red Hat", "KC", C["red"], "An operator for Keycloak identity and access management servers and realms.", "Deep Insights", False),
+ ("MariaDB Operator", "mariadb-operator", "MD", C["purple"], "MariaDB and MaxScale clusters with backups, restores and replication.", "Seamless Upgrades", False),
+ ("OpenTelemetry Operator", "Community", "OT", C["yellow"], "Collectors and auto-instrumentation for OpenTelemetry.", "Seamless Upgrades", False),
+ ("Redis Operator", "OT-Container-Kit", "RD", C["red"], "Redis standalone, cluster and replication setups with sentinel.", "Basic Install", False),
+ ("Sealed Secrets", "Bitnami", "SS", C["accent"], "Encrypt Secrets into SealedSecrets, safe to store in Git.", "Basic Install", False),
+]
+
+def hub_card(n, prov, t, c, desc, cap, inst, on=False):
+    badge = f'<span class="chip" style="height:18px;color:var(--green)">{ic("check",10,C["green"],2.5)}Installed</span>' if inst else ""
+    border = C["accent"] if on else "var(--border)"
+    bg = "var(--sel)" if on else "#2a2e36"
+    return f'''<div style="display:flex;flex-direction:column;gap:8px;padding:12px;border:1px solid {border};background:{bg};border-radius:8px;min-width:0">
+<div style="display:flex;gap:10px;align-items:center">{op_tile(t,c,34)}<div style="flex:1;min-width:0"><div style="font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{n}</div><div style="font-size:11.5px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{prov}</div></div></div>
+<div style="font-size:12px;color:var(--muted);line-height:17px;height:34px;overflow:hidden">{desc}</div>
+<div style="display:flex;gap:4px;align-items:center"><span class="chip" style="height:18px">{cap}</span>{badge}</div></div>'''
+
+def hub_filters():
+    cats = [("All", 449, True), ("Cloud Provider", 87, False), ("Integration & Delivery", 76, False), ("Database", 61, False), ("Developer Tools", 54, False),
+            ("Security", 49, False), ("Monitoring", 45, False), ("Storage", 39, False), ("Networking", 31, False), ("Streaming & Messaging", 21, False), ("AI/Machine Learning", 19, False)]
+    crow = "".join(f'<div style="display:flex;align-items:center;height:24px;padding:0 8px;border-radius:5px;font-size:12.5px;{"background:var(--sel);color:var(--text)" if on else "color:var(--muted)"}"><span style="flex:1">{n.replace("&", "&amp;")}</span><span class="mono" style="font-size:11px;color:var(--dim)">{k}</span></div>' for n, k, on in cats)
+    caps = "".join(check(on, n) for n, on in [("Basic Install", False), ("Seamless Upgrades", False), ("Full Lifecycle", False), ("Deep Insights", True), ("Auto Pilot", True)])
+    return f'''<div style="width:220px;flex-shrink:0;border-right:1px solid var(--bv);padding:12px 10px;display:flex;flex-direction:column;gap:14px;overflow:hidden">
+<div><p class="dtitle" style="padding-left:8px">Category</p>{crow}</div>
+<div style="padding-left:8px"><p class="dtitle">Capability level</p><div style="display:flex;flex-direction:column;gap:6px">{caps}</div></div>
+<div style="padding-left:8px"><p class="dtitle">Provider</p><button class="btn" style="width:100%;justify-content:space-between;height:26px">Any provider{ic("cd",12)}</button></div>
+<div style="padding-left:8px"><p class="dtitle">Catalog</p><div style="display:flex;flex-direction:column;gap:6px">{check(True, "Community Operators", "olm/operatorhubio-catalog · READY")}</div></div>
+</div>'''
+
+def hub_center(selected=0, query=""):
+    cards = "".join(hub_card(*h, on=i == selected) for i, h in enumerate(HUB))
+    return f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0">
+<div class="tool"><div class="crumb">{ic("store",14,C["accent"])}<b>OperatorHub</b><span>·</span><span>449 packages from 1 catalog · 3 installed</span></div><div style="flex:1"></div>
+<div class="inp{" focus" if query else ""}" style="width:260px">{ic("search",12)}<span style="color:{"var(--text)" if query else "var(--dim)"}">{query or "Search packages, providers, APIs"}</span></div><button class="btn g" style="height:26px;padding:0 6px">Sort: Relevance{ic("cd",11)}</button></div>
+<div style="flex:1;display:flex;min-height:0">{hub_filters()}
+<div style="flex:1;min-width:0;padding:14px;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));grid-auto-rows:min-content;gap:12px;overflow:hidden">{cards}</div></div>
+{hints([("↵","Details"),("i","Install…"),("/","Search"),("⇧r","Reload catalogs")])}
+</div>'''
+
+def hub_details():
+    kinds = "".join(f'<span class="chip mchip">{k}</span>' for k in ["Certificate", "CertificateRequest", "Issuer", "ClusterIssuer", "Challenge", "Order"])
+    return f'''<aside class="dock" style="width:360px">
+<div class="phead" style="border-bottom:1px solid var(--bv);height:auto;padding:12px 12px 12px 14px;align-items:flex-start">{op_tile("CM",C["green"],34)}<div style="flex:1;margin-left:6px;min-width:0"><div style="color:var(--text);font-weight:600;font-size:14px">cert-manager</div><div style="font-size:11.5px;color:var(--dim)">The cert-manager maintainers · Community Operators</div></div><button class="ib" aria-label="Close">{ic("x",13)}</button></div>
+<div class="dsec"><div style="display:flex;gap:8px;align-items:center"><button class="btn p">{ic("download",13,"#1b1e24")}Install…</button><span style="font-size:12px;color:var(--green);display:flex;gap:5px;align-items:center">{ic("check",12,C["green"],2.5)}1.16.5 installed in operators</span></div></div>
+<div class="dsec"><dl class="kv" style="margin:0"><dt>Latest</dt><dd class="mono" style="font-size:11.5px">1.16.5 <span style="color:var(--dim);font-family:IBM Plex Sans">· stable (default)</span></dd><dt>Channels</dt><dd>stable · candidate</dd><dt>Capability</dt><dd>Deep Insights</dd><dt>Install modes</dt><dd>All namespaces</dd><dt>Min Kubernetes</dt><dd class="mono" style="font-size:11.5px">1.19.0</dd><dt>Repository</dt><dd><a href="#">github.com/cert-manager/cert-manager</a></dd></dl></div>
+<div class="dsec"><p class="dtitle">Description</p><div style="font-size:12.5px;line-height:18px;color:var(--muted)">cert-manager is a Kubernetes add-on to automate the management and issuance of TLS certificates from various issuing sources. It periodically ensures certificates are valid and up to date, and attempts to renew them before they expire. <a href="#" style="text-decoration:none">More</a></div></div>
+<div class="dsec" style="border-bottom:0"><p class="dtitle">Provided APIs</p><div style="display:flex;gap:4px;flex-wrap:wrap">{kinds}</div></div>
+</aside>'''
+
+def operatorhub_screen():
+    content = f'<div style="flex:1;display:flex;min-height:0">{hub_center()}{hub_details()}</div>'
+    return page("OperatorHub — Kubyl", op_shell("OperatorHub", op_tabs("hub"), content))
+
+def radio(on, label, sub=""):
+    dotc = '<span style="width:7px;height:7px;border-radius:50%;background:var(--accent)"></span>' if on else ""
+    border = C["accent"] if on else "var(--border)"
+    ring = C["accent"] if on else C["faint"]
+    subl = f'<div style="font-size:11.5px;color:var(--dim)">{sub}</div>' if sub else ""
+    return f'''<div style="display:flex;gap:10px;align-items:flex-start;padding:9px 10px;border-radius:7px;border:1px solid {border};{"background:var(--sel)" if on else ""}">
+<span style="margin-top:2px;width:14px;height:14px;border-radius:50%;border:1px solid {ring};display:flex;align-items:center;justify-content:center;flex-shrink:0;box-sizing:border-box">{dotc}</span>
+<div style="min-width:0"><div style="font-size:12.5px">{label}</div>{subl}</div></div>'''
+
+def form_row(k, v):
+    return f'<div style="display:flex;gap:12px;align-items:flex-start"><span style="width:104px;flex-shrink:0;font-size:12px;color:var(--dim);padding-top:5px">{k}</span><div style="flex:1;min-width:0">{v}</div></div>'
+
+def install_screen():
+    channel = f'<div style="display:flex;gap:8px"><button class="btn" style="width:190px;justify-content:space-between">v5 <span style="color:var(--dim)">(default)</span>{ic("cd",12)}</button><button class="btn" style="width:170px;justify-content:space-between"><span class="mono" style="font-size:12px">5.20.0</span> <span style="color:var(--dim)">latest</span>{ic("cd",12)}</button></div>'
+    mode = (radio(False, "All namespaces", f"Into <span {MONO11}>operators</span> with the OperatorGroup <span {MONO11}>global-operators</span>; watches every namespace")
+            + '<div style="height:6px"></div>' + radio(True, "A specific namespace", "The operator watches only the namespace it's installed in"))
+    ns = '<div class="inp focus" style="height:28px"><span class="mono" style="font-size:12.5px;color:var(--text)">grafana</span></div><div style="font-size:11.5px;color:var(--dim);margin-top:5px">Suggested by the operator. It doesn\'t exist yet: Kubyl creates it with an OperatorGroup for it.</div>'
+    approval = '<div style="display:flex;gap:6px"><span class="chip on" style="height:24px;padding:0 10px">Automatic</span><span class="chip" style="height:24px;padding:0 10px">Manual</span></div><div style="font-size:11.5px;color:var(--dim);margin-top:5px">Upgrades in the channel install as soon as the catalog has them.</div>'
+    creates = "".join(f'<div style="display:flex;gap:8px;align-items:center">{ic("plus",12,C["green"])}{k} <span class="mono" style="font-size:11.5px">{n}</span><span style="color:var(--dim)">{d}</span></div>'
+                      for k, n, d in [("Namespace", "grafana", ""), ("OperatorGroup", "grafana/grafana", "· targets grafana"), ("Subscription", "grafana/grafana-operator", "· v5 · Automatic · starts at 5.20.0")])
+    modal = f'''<div style="position:absolute;inset:0;background:rgba(15,17,21,.55);display:flex;align-items:flex-start;justify-content:center;padding-top:70px">
+<div role="dialog" aria-label="Install Grafana Operator" style="width:600px;background:#2f343e;border:1px solid var(--border);border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,.5);overflow:hidden">
+<div style="display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--bv)">{op_tile("GR",C["orange"])}<b style="font-weight:600;flex:1">Install Grafana Operator</b><span style="font-size:12px;color:var(--dim)">Community Operators</span></div>
+<div style="padding:16px;display:flex;flex-direction:column;gap:14px">
+{form_row("Channel", channel)}
+{form_row("Install mode", mode)}
+{form_row("Namespace", ns)}
+{form_row("Approval", approval)}
+<div class="card" style="background:#2a2e36;padding:10px 12px;display:flex;flex-direction:column;gap:5px;font-size:12.5px">
+<div style="font-size:11px;font-weight:600;letter-spacing:.06em;color:var(--dim);text-transform:uppercase;margin-bottom:2px">What Kubyl creates</div>
+{creates}
+<div style="color:var(--dim);font-size:12px;margin-top:2px">OLM then installs the CRDs, a Deployment and its RBAC (the install plan lists them).</div></div>
+</div>
+<div style="display:flex;align-items:center;gap:8px;padding:12px 16px;border-top:1px solid var(--bv)"><span style="font-size:11.5px;color:var(--dim)">prod-eu-west-1 asks for its name on the next step</span><span style="flex:1"></span><button class="btn g">Cancel</button><button class="btn p">{ic("download",12,"#1b1e24")}Install</button></div>
+</div></div>'''
+    content = f'<div style="flex:1;display:flex;min-height:0">{hub_center(3, "grafana")}</div>'
+    return page("Install an operator — Kubyl", op_shell("OperatorHub", op_tabs("hub"), content, modal))
+
+def diff_line(kind, text):
+    bg, fg = {"+": ("#2f3b2c", C["green"]), "-": ("#3e2c2f", C["red"]), " ": ("transparent", C["muted"]), "@": ("#2a2e36", C["dim"])}[kind]
+    sign = kind if kind in "+-" else ""
+    return f'<div class="mono" style="display:flex;height:20px;align-items:center;font-size:12px;white-space:pre;background:{bg};color:{fg}"><span style="width:18px;text-align:center;color:var(--faint)">{sign}</span>{text}</div>'
+
+def upgrade_screen():
+    crds = [("kafkas.kafka.strimzi.io", "+ 6 lines · adds spec.kafka.tieredStorage", True), ("kafkanodepools.kafka.strimzi.io", "v1beta1 no longer served", False), ("kafkarebalances.kafka.strimzi.io", "~ 2 lines", False)]
+    clist = "".join(f'<div style="display:flex;flex-direction:column;padding:7px 10px;border-radius:6px;{"background:var(--sel);outline:1px solid var(--accent);outline-offset:-1px" if on else ""}"><span class="mono" style="font-size:11.5px">{n}</span><span style="font-size:11.5px;color:var(--dim)">{d}</span></div>' for n, d, on in crds)
+    lines = [("@", "   versions[v1beta2].schema.openAPIV3Schema.properties.spec.properties.kafka"), (" ", "   properties:"), (" ", "     storage:"), (" ", "       type: object"),
+             ("+", "     tieredStorage:"), ("+", "       description: Configure the tiered storage feature."), ("+", "       properties:"), ("+", "         remoteStorageManager:"), ("+", "           type: object"), ("+", "       type: object"),
+             (" ", "     version:"), (" ", "       type: string"), ("@", "   versions[v1beta1]"), ("-", " served: true"), ("+", " served: false"), (" ", " storage: false")]
+    dl = "".join(diff_line(k, t) for k, t in lines)
+    rbac = [("+", "get, list", "nodes", "", "cluster-wide"), ("+", "create", "events", "events.k8s.io", "kafka"), ("-", "delete", "pods/exec", "", "kafka")]
+    rl = "".join(f'<div style="display:grid;grid-template-columns:16px 110px minmax(0,1fr) 90px;gap:8px;align-items:center;font-size:12px;padding:4px 0;border-bottom:1px solid var(--bv)"><span style="color:{C["green"] if s == "+" else C["red"]};font-weight:600">{s}</span><span class="mono" style="font-size:11.5px">{v}</span><span class="mono" style="font-size:11.5px">{r}{f" <span style=color:var(--dim)>({g})</span>" if g else ""}</span><span style="color:var(--dim)">{sc}</span></div>' for s, v, r, g, sc in rbac)
+    modal = f'''<div style="position:absolute;inset:0;background:rgba(15,17,21,.55);display:flex;align-items:flex-start;justify-content:center;padding-top:50px">
+<div role="dialog" aria-label="Approve the Strimzi upgrade" style="width:1040px;background:#2f343e;border:1px solid var(--border);border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,.5);overflow:hidden">
+<div style="display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--bv)">{op_tile("SZ",C["cyan"])}<b style="font-weight:600">Upgrade Strimzi</b><span class="mono" style="font-size:12.5px">0.43.0 <span style="color:var(--dim)">→</span> <span style="color:var(--green)">0.44.0</span></span><span style="flex:1"></span><span style="font-size:12px;color:var(--dim)">install plan kafka/install-7qk2d · RequiresApproval</span><span class="prod" style="font-size:9.5px;padding:0 4px">PROD</span></div>
+<div style="display:flex;height:440px">
+<div style="width:250px;flex-shrink:0;border-right:1px solid var(--bv);padding:10px;display:flex;flex-direction:column;gap:4px">
+<p class="dtitle" style="padding-left:4px">CRDs · 3 of 4 change</p>{clist}
+<p class="dtitle" style="padding-left:4px;margin-top:10px">Also in the plan</p>
+<div style="font-size:12px;color:var(--muted);padding:0 4px;line-height:19px">CSV strimzi-cluster-operator.v0.44.0<br>2 ClusterRoles, 1 Role and their bindings<br>ServiceAccount strimzi-cluster-operator</div>
+<div style="flex:1"></div><div style="font-size:11px;color:var(--dim);padding:0 4px;line-height:16px">From the bundle OLM unpacked (ConfigMap in olm), compared with the live CRDs.</div></div>
+<div style="flex:1;min-width:0;display:flex;flex-direction:column">
+<div style="display:flex;align-items:center;gap:8px;height:34px;padding:0 12px;border-bottom:1px solid var(--bv);font-size:12px"><span class="mono">kafkas.kafka.strimzi.io</span><span style="color:var(--dim)">· live → bundle</span><span style="flex:1"></span><span class="chip on" style="height:18px">spec only</span><span class="chip" style="height:18px">side by side</span></div>
+<div style="flex:1;overflow:hidden;padding:4px 0">{dl}</div></div>
+<div style="width:330px;flex-shrink:0;border-left:1px solid var(--bv);padding:12px 14px;display:flex;flex-direction:column;gap:12px">
+<div><p class="dtitle">RBAC · operator service account</p>{rl}</div>
+<div><p class="dtitle">Compatibility</p>
+{op_chg("ok",C["green"],"Kubernetes 1.30.4 meets minKubeVersion 1.25.0")}
+{op_chg("alert",C["yellow"],"kafkanodepools: v1beta1 stops being served, but is still in storedVersions")}
+{op_chg("ok",C["green"],"Install mode OwnNamespace is still supported")}</div>
+<div><p class="dtitle">Instances</p><div style="font-size:12px;color:var(--muted);line-height:18px">4 Kafka, 112 KafkaTopic, 38 KafkaUser in 3 namespaces keep running; the new operator reconciles them.</div></div></div>
+</div>
+<div style="display:flex;align-items:center;gap:10px;padding:12px 16px;border-top:1px solid var(--bv)"><span style="font-size:12px;color:var(--muted)">Type <span class="mono" style="color:var(--text)">strimzi-kafka-operator</span> to approve on prod-eu-west-1</span><div class="inp focus" style="width:220px;height:28px"><span class="mono" style="font-size:12.5px;color:var(--text)">strimzi-kafka</span></div><span style="flex:1"></span><button class="btn g">{ic("code",12)}Plan YAML</button><button class="btn g">Close</button><button class="btn p" style="opacity:.55">{ic("check",12,"#1b1e24")}Approve</button></div>
+</div></div>'''
+    content = f'<div style="flex:1;display:flex;min-height:0">{op_installed_center()}</div>'
+    return page("Approve an operator upgrade — Kubyl", op_shell("Operators", op_tabs("ops"), content, modal))
+
+def yl(key, ind=0, val=None, vc=None):
+    vc = vc or C["green"]
+    out = " " * ind + f'<span style="color:{C["red"]}">{key}</span><span style="color:var(--muted)">:</span>'
+    if val is not None:
+        out += f' <span style="color:{vc}">{val}</span>'
+    return out
+
+def create_screen():
+    N = C["orange"]
+    L = [yl("apiVersion", 0, "kafka.strimzi.io/v1beta2"), yl("kind", 0, "Kafka"), yl("metadata"), yl("name", 2, "my-cluster"), yl("namespace", 2, "kafka"), yl("spec"), yl("kafka", 2), yl("version", 4, "3.8.0"),
+         yl("replicas", 4, "3", N), yl("listeners", 4), '    <span style="color:var(--faint)">- </span>' + yl("name", 0, "plain"), yl("port", 6, "9092", N), yl("type", 6, "internal"), yl("tls", 6, "false", N),
+         yl("config", 4), yl("offsets.topic.replication.factor", 6, "3", N), yl("storage", 4), yl("type", 6, "ephemeral"), yl("zookeeper", 2), yl("replicas", 4, "3", N), yl("storage", 4), yl("type", 6, "ephemeral"),
+         yl("entityOperator", 2), yl("topicOperator", 4, "{}", C["muted"]), yl("userOperator", 4, "{}", C["muted"])]
+    rows = "".join(f'<div class="mono" style="display:flex;height:22px;align-items:center;font-size:13px;white-space:pre"><span style="width:44px;text-align:right;padding-right:12px;color:var(--faint)">{i + 1}</span><span style="width:3px;height:22px;background:{C["green"]}"></span><span style="padding-left:14px">{t}</span></div>' for i, t in enumerate(L))
+    editor = f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0">
+<div class="tool"><div class="crumb mono" style="font-size:12px">{ic("fileplus",13,C["accent"])}<span>kafka.strimzi.io/v1beta2</span><span>›</span><b>New Kafka</b><span style="font-family:IBM Plex Sans">in</span><b>kafka</b></div><div style="flex:1"></div>
+<button class="btn g">{ic("play",12)}Dry run</button><button class="btn p">Apply{ic("cd",11,"#1b1e24")}</button></div>
+<div style="display:flex;gap:10px;align-items:center;padding:8px 14px;background:#2d3b4d;border-bottom:1px solid #3f5a78;font-size:12.5px">{ic("info",14,C["accent"])}<span style="flex:1">Example from <b style="font-weight:500">strimzi-cluster-operator.v0.43.0</b> (alm-examples). Review it before applying: examples are often minimal.</span></div>
+<div style="flex:1;overflow:hidden;padding-top:6px;background:var(--bg)">{rows}</div>
+<div class="hints"><span><b>⌘S</b>Apply</span><span><b>⌘⇧S</b>Dry run</span><span><b>⌘⇧M</b>Problems</span><span style="color:var(--green);display:flex;gap:5px;align-items:center">{ic("ok",12,C["green"])}valid against the CRD schema</span></div></div>'''
+    apis = [("Kafka", "4 instances"), ("KafkaTopic", "112 instances"), ("KafkaUser", "38 instances"), ("KafkaConnect", "none"), ("KafkaNodePool", "6 instances"), ("KafkaRebalance", "none")]
+    dock = f'''<aside class="dock" style="width:330px">
+<div class="phead" style="border-bottom:1px solid var(--bv)">{op_tile("SZ",C["cyan"])}<span style="flex:1;color:var(--text);font-weight:500;margin-left:4px">Strimzi</span><span style="font-size:11.5px">0.43.0 · kafka</span></div>
+<div class="dsec"><p class="dtitle">Provided APIs</p><div style="display:flex;flex-direction:column;gap:6px">{"".join(op_api(k, n, "kafka.strimzi.io/v1beta2") for k, n in apis)}</div>
+<div style="font-size:11.5px;color:var(--dim);margin-top:8px;line-height:17px">Create opens the YAML editor with the operator's example for the kind (its <span class="mono">alm-examples</span>), in the namespace the operator watches. Kinds without an example get the schema skeleton.</div></div>
+</aside>'''
+    content = f'<div style="flex:1;display:flex;min-height:0">{editor}{dock}</div>'
+    tb = tabs([("blocks", "Operators", False), ("fileplus", "New Kafka", True, True), ("store", "OperatorHub", False)])
+    return page("Create an instance from alm-examples — Kubyl", op_shell("Operators", tb, content))
+
+PLANS = [
+ ("install-7qk2d", "kafka", "strimzi-cluster-operator.v0.44.0", "Manual", "RequiresApproval", "12m"),
+ ("install-54wd4", "databases", "cloudnative-pg.v1.30.1", "Manual", "RequiresApproval", "3h"),
+ ("install-hx9f2", "operators", "external-secrets-operator.v0.10.3", "Automatic", "Installing", "2m"),
+ ("install-sb2lq", "istio-system", "sailoperator.v0.2.0", "Manual", "Failed", "1d"),
+ ("install-fq4sx", "databases", "cloudnative-pg.v1.30.0", "Manual", "Complete", "3h"),
+ ("install-9zzt4", "operators", "cert-manager.v1.16.5", "Automatic", "Complete", "2d"),
+ ("install-mk2c7", "operators", "prometheusoperator.0.76.1", "Automatic", "Complete", "6d"),
+ ("install-7w2vn", "kafka", "strimzi-cluster-operator.v0.43.0", "Manual", "Complete", "21d"),
+]
+PC = "grid-template-columns: 130px 110px minmax(0,1.4fr) 90px 150px 60px"
+
+def plans_screen():
+    pcol = {"RequiresApproval": C["yellow"], "Installing": C["accent"], "Failed": C["red"], "Complete": C["green"]}
+    def prow(i, n, ns, csv, ap, ph, age):
+        return (f'<div class="tr{" on" if i == 0 else ""}" style="{PC};height:32px"><span class="mono">{n}</span><span class="mono" style="color:var(--muted)">{ns}</span><span class="mono" style="font-size:11.5px">{csv}</span>'
+                f'<span style="color:{C["yellow"] if ap == "Manual" else C["muted"]}">{ap}</span><span class="pill">{dot(pcol[ph])}<span style="color:{pcol[ph]}">{ph}</span></span><span class="mono" style="color:var(--muted)">{age}</span></div>')
+    group = lambda t: f'<div class="tr" style="{PC};height:26px;background:#2a2e36"><span style="grid-column:1/-1;font-size:11.5px;color:var(--dim)">{t}</span></div>'
+    rows = [prow(i, *p) for i, p in enumerate(PLANS)]
+    body = group("Waiting for approval · 2") + "".join(rows[:2]) + group("Installing and failed · 2") + "".join(rows[2:4]) + group("Complete · 4") + "".join(rows[4:])
+    steps = [("CustomResourceDefinition", "kafkas.kafka.strimzi.io", "update"), ("CustomResourceDefinition", "kafkanodepools.kafka.strimzi.io", "update"), ("CustomResourceDefinition", "kafkarebalances.kafka.strimzi.io", "update"),
+             ("ClusterServiceVersion", "strimzi-cluster-operator.v0.44.0", "create"), ("ClusterRole", "strimzi-cluster-operator.v0.44.0-7hd…", "create"), ("ClusterRoleBinding", "strimzi-cluster-operator.v0.44.0-7hd…", "create"), ("ServiceAccount", "strimzi-cluster-operator", "update")]
+    srows = "".join(f'<div style="display:grid;grid-template-columns:minmax(0,1fr) 54px;gap:6px;align-items:center;font-size:12px;padding:4px 0;border-bottom:1px solid var(--bv)"><div style="min-width:0"><div style="color:var(--dim);font-size:11px">{k}</div><div class="mono" style="font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{n}</div></div><span style="color:{C["accent"] if a == "update" else C["green"]};font-size:11.5px">{a}</span></div>' for k, n, a in steps)
+    center = f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0">
+{op_header("OLM v0 · 8 install plans · 2 waiting", "Filter install plans")}
+{op_subtabs("Install plans", 2)}
+<div class="th" style="{PC}"><span>NAME</span><span>NAMESPACE</span><span>CLUSTER SERVICE VERSIONS</span><span>APPROVAL</span><span>PHASE</span><span>AGE</span></div>
+<div style="flex:1;overflow:hidden">{body}</div>
+{hints([("↵","Details"),("a","Approve…"),("d","Review changes"),("y","View YAML"),("/","Filter")])}
+</div>'''
+    dock = f'''<aside class="dock" style="width:340px">
+<div class="phead" style="border-bottom:1px solid var(--bv)"><span style="flex:1;color:var(--text);font-weight:500" class="mono">install-7qk2d</span><span style="font-size:11.5px">kafka</span><button class="ib" aria-label="Close">{ic("x",13)}</button></div>
+<div class="dsec"><div style="display:flex;gap:10px;align-items:center;margin-bottom:10px">{st("Upgrade available")}<span style="font-size:12px;color:var(--dim)">Manual approval · created 12m ago</span></div>
+<dl class="kv" style="margin:0"><dt>Operator</dt><dd>Strimzi <span class="mono" style="font-size:11.5px;color:var(--dim)">0.43.0 → 0.44.0</span></dd><dt>Subscription</dt><dd><a href="#">kafka/strimzi-kafka-operator</a></dd><dt>Catalog</dt><dd>operatorhubio-catalog</dd></dl>
+<div style="display:flex;gap:6px;margin-top:10px"><button class="btn p">{ic("check",12,"#1b1e24")}Approve…</button><button class="btn">{ic("diff",12)}Review changes</button><button class="btn g">{ic("code",12)}YAML</button></div></div>
+<div class="dsec" style="border-bottom:0"><p class="dtitle">Steps · 24 resources</p>{srows}<div style="font-size:11.5px;color:var(--dim);padding-top:6px">and 17 more</div></div>
 </aside>'''
     content = f'<div style="flex:1;display:flex;min-height:0">{center}{dock}</div>'
-    tb = tabs([("blocks", "Installed Operators", True), ("up", "Cluster Updates", False), ("gauge", "Overview", False)])
-    return page("Installed operators — Kubyl", shell("Operators", tb, content))
+    return page("Install plans — Kubyl", op_shell("Operators", op_tabs("ops"), content))
+
+SUBS = [
+ ("cert-manager", "operators", "stable", "operatorhubio-catalog", "Automatic", "cert-manager.v1.16.5", "AtLatestKnown"),
+ ("cloudnative-pg", "databases", "stable-v1", "operatorhubio-catalog", "Manual", "cloudnative-pg.v1.30.0", "UpgradePending"),
+ ("external-secrets-operator", "operators", "stable", "operatorhubio-catalog", "Automatic", "external-secrets-operator.v0.10.3", "UpgradePending"),
+ ("prometheus", "operators", "beta", "operatorhubio-catalog", "Automatic", "prometheusoperator.0.76.1", "AtLatestKnown"),
+ ("sailoperator", "istio-system", "candidates", "operatorhubio-catalog", "Manual", "—", "ResolutionFailed"),
+ ("strimzi-kafka-operator", "kafka", "stable", "operatorhubio-catalog", "Manual", "strimzi-cluster-operator.v0.43.0", "UpgradePending"),
+ ("argocd-operator", "operators", "alpha", "operatorhubio-catalog", "Automatic", "argocd-operator.v0.11.0", "AtLatestKnown"),
+ ("grafana-operator", "grafana", "v5", "operatorhubio-catalog", "Automatic", "grafana-operator.v5.20.0", "AtLatestKnown"),
+]
+SC = "grid-template-columns: minmax(0,1fr) 100px 90px minmax(0,1fr) 86px minmax(0,1.3fr) 130px"
+
+def subscriptions_screen():
+    scol = {"AtLatestKnown": C["green"], "UpgradePending": C["yellow"], "ResolutionFailed": C["red"]}
+    rows = "".join(f'<div class="tr{" on" if i == 4 else ""}" style="{SC};height:32px"><span class="mono">{n}</span><span class="mono" style="color:var(--muted)">{ns}</span><span class="mono" style="color:var(--muted)">{ch}</span><span class="mono" style="font-size:11.5px;color:var(--muted)">{src}</span><span style="color:{C["yellow"] if ap == "Manual" else C["muted"]}">{ap}</span><span class="mono" style="font-size:11.5px">{csv}</span><span class="pill">{dot(scol[stt])}<span style="color:{scol[stt]}">{stt}</span></span></div>' for i, (n, ns, ch, src, ap, csv, stt) in enumerate(SUBS))
+    center = f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0">
+{op_header("OLM v0 · 8 subscriptions · 1 failing", "Filter subscriptions")}
+{op_subtabs("Subscriptions", 2)}
+<div class="th" style="{SC}"><span>NAME</span><span>NAMESPACE</span><span>CHANNEL</span><span>CATALOG</span><span>APPROVAL</span><span>INSTALLED CSV</span><span>STATE</span></div>
+<div style="flex:1;overflow:hidden">{rows}</div>
+{hints([("↵","Details"),("y","View YAML"),("e","Edit YAML"),("⌃d","Uninstall…"),("/","Filter")])}
+</div>'''
+    cond = lambda ok, t, m: f'<div style="display:flex;gap:8px;font-size:12px;padding:5px 0;border-bottom:1px solid var(--bv);align-items:flex-start">{ic("ok" if ok else "err",13,C["green"] if ok else C["red"])}<div style="min-width:0"><div>{t}</div><div style="color:var(--dim);font-size:11.5px;line-height:16px">{m}</div></div></div>'
+    dock = f'''<aside class="dock" style="width:350px">
+<div class="phead" style="border-bottom:1px solid var(--bv)"><span style="flex:1;color:var(--text);font-weight:500" class="mono">sailoperator</span><span style="font-size:11.5px">istio-system</span><button class="ib" aria-label="Close">{ic("x",13)}</button></div>
+<div class="dsec"><div style="display:flex;gap:10px;align-items:center;margin-bottom:10px">{st("Failed")}<span style="font-size:12px;color:var(--dim)">no CSV installed</span></div>
+<dl class="kv" style="margin:0"><dt>Package</dt><dd>sailoperator</dd><dt>Channel</dt><dd>candidates</dd><dt>Catalog</dt><dd>operatorhubio-catalog <span style="color:var(--dim)">· olm</span></dd><dt>Starting CSV</dt><dd class="mono" style="font-size:11.5px">sailoperator.v0.2.0</dd><dt>Approval</dt><dd style="color:var(--yellow)">Manual</dd></dl></div>
+<div class="dsec"><p class="dtitle">Conditions</p>
+{cond(False, "ResolutionFailed", "constraints not satisfiable: no operators found in channel candidates of package sailoperator in the catalog referenced by subscription sailoperator")}
+{cond(True, "CatalogSourcesUnhealthy · False", "all available catalogsources are healthy")}</div>
+<div class="dsec" style="border-bottom:0"><div style="display:flex;gap:6px"><button class="btn g" style="height:24px">{ic("code",12)}YAML</button><button class="btn g" style="height:24px">{ic("store",12)}Open in OperatorHub</button><span style="flex:1"></span><button class="btn d" style="height:24px">{ic("trash",12,C["red"])}Uninstall…</button></div></div>
+</aside>'''
+    content = f'<div style="flex:1;display:flex;min-height:0">{center}{dock}</div>'
+    return page("Subscriptions — Kubyl", op_shell("Operators", op_tabs("ops"), content))
+
+HELM = [
+ ("kube-prometheus-stack", "monitoring", "kube-prometheus-stack-84.1.0", "v0.86.1", "6", "deployed", "7h"),
+ ("metrics-server", "kube-system", "metrics-server-3.13.0", "0.8.0", "3", "deployed", "29h"),
+ ("ingress-nginx", "ingress-nginx", "ingress-nginx-4.13.3", "1.13.3", "12", "deployed", "4d"),
+ ("payments-api", "payments", "payments-api-2.14.1", "2.14.1", "41", "failed", "38m"),
+ ("redis-payments", "payments", "redis-21.2.13", "8.2.1", "7", "pending-upgrade", "2m"),
+]
+HC = "grid-template-columns: minmax(0,1.1fr) 110px minmax(0,1.2fr) 86px 76px 140px 70px"
+
+def helm_status(s):
+    col = {"deployed": C["green"], "failed": C["red"], "pending-upgrade": C["accent"], "superseded": C["dim"], "uninstalling": C["yellow"]}.get(s, C["muted"])
+    return f'<span class="pill">{dot(col)}<span style="color:{col}">{s}</span></span>'
+
+def helm_screen():
+    rows = "".join(f'<div class="tr{" on" if i == 0 else ""}" style="{HC};height:32px"><span class="mono">{n}</span><span class="mono" style="color:var(--muted)">{ns}</span><span class="mono" style="font-size:11.5px">{ch}</span><span class="mono" style="color:var(--muted)">{av}</span><span class="mono" style="text-align:right;padding-right:16px">{rev}</span>{helm_status(s)}<span class="mono" style="color:var(--muted)">{up}</span></div>' for i, (n, ns, ch, av, rev, s, up) in enumerate(HELM))
+    center = f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0">
+{op_header("5 Helm releases in 5 namespaces", "Filter releases", False)}
+{op_subtabs("Helm releases", 2)}
+<div class="th" style="{HC}"><span>NAME</span><span>NAMESPACE</span><span>CHART</span><span>APP VERSION</span><span style="text-align:right;padding-right:16px">REVISION</span><span>STATUS</span><span>UPDATED</span></div>
+<div style="flex:1;overflow:hidden">{rows}</div>
+{hints([("↵","Open release"),("v","Values"),("m","Manifest"),("h","History"),("c","Copy helm command"),("/","Filter")])}
+</div>'''
+    hist = [("6", "deployed", "Upgrade complete", "7h"), ("5", "superseded", "Upgrade complete", "7h"), ("4", "superseded", "Upgrade complete", "24h"), ("3", "superseded", "Upgrade complete", "25h")]
+    hrows = "".join(f'<div style="display:grid;grid-template-columns:26px 100px minmax(0,1fr) 34px;gap:6px;align-items:center;font-size:12px;padding:4px 0;border-bottom:1px solid var(--bv)"><span class="mono">{r}</span>{helm_status(s)}<span style="color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{d}</span><span class="mono" style="color:var(--dim)">{a}</span></div>' for r, s, d, a in hist)
+    res = [("layers", "Deployment", "kube-prometheus-stack-operator"), ("db", "StatefulSet", "prometheus-kube-prometheus-stack-prometheus"), ("server", "DaemonSet", "kube-prometheus-stack-prometheus-node-exporter"), ("network", "Service", "kube-prometheus-stack-prometheus"), ("file", "ConfigMap", "kube-prometheus-stack-grafana")]
+    rrows = "".join(f'<div style="display:flex;gap:8px;align-items:center;font-size:12px;padding:3px 0">{ic(i,12,C["accent"])}<span style="color:var(--dim);width:84px;flex-shrink:0">{k}</span><a href="#" class="mono" style="font-size:11.5px;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{n}</a></div>' for i, k, n in res)
+    dock = f'''<aside class="dock" style="width:350px">
+<div class="phead" style="border-bottom:1px solid var(--bv)">{ic("anchor",14,C["accent"])}<span style="flex:1;color:var(--text);font-weight:500;margin-left:4px" class="mono">kube-prometheus-stack</span><span style="font-size:11.5px">monitoring</span></div>
+<div class="dsec"><div style="display:flex;gap:10px;align-items:center;margin-bottom:10px">{helm_status("deployed")}<span style="font-size:12px;color:var(--dim)">revision 6 · 7h ago</span></div>
+<dl class="kv" style="margin:0"><dt>Chart</dt><dd class="mono" style="font-size:11.5px">kube-prometheus-stack 84.1.0</dd><dt>App version</dt><dd class="mono" style="font-size:11.5px">v0.86.1</dd><dt>First deployed</dt><dd>29h ago</dd><dt>Description</dt><dd>Upgrade complete</dd></dl>
+<div style="display:flex;gap:6px;margin-top:10px"><button class="btn p">{ic("anchor",12,"#1b1e24")}Open release</button><button class="btn">{ic("copy",12)}Copy helm command{ic("cd",11)}</button></div></div>
+<div class="dsec"><p class="dtitle">History</p>{hrows}</div>
+<div class="dsec" style="border-bottom:0"><p class="dtitle">Resources · 118</p>{rrows}<div style="font-size:11.5px;color:var(--dim);padding-top:4px">and 113 more</div></div>
+</aside>'''
+    content = f'<div style="flex:1;display:flex;min-height:0">{center}{dock}</div>'
+    return page("Helm releases — Kubyl", op_shell("Helm", op_tabs("ops"), content))
+
+def helm_release_screen():
+    N = C["orange"]
+    M = '<span style="color:var(--dim);letter-spacing:1px">••••••••</span>'
+    dash = '<span style="color:var(--faint)">- </span>'
+    L = [yl("alertmanager"), yl("enabled", 2, "true", N), yl("alertmanagerSpec", 2), yl("replicas", 4, M), yl("config", 2), yl("route", 4), yl("receiver", 6, M), yl("receivers", 4),
+         "      " + dash + yl("name", 0, M), "        " + yl("pagerduty_configs", 0), "          " + dash + yl("routing_key", 0, M), yl("grafana"), yl("enabled", 2, "true", N), yl("adminPassword", 2, M),
+         yl("ingress", 2), yl("enabled", 4, "false", N), yl("prometheus"), yl("prometheusSpec", 2), yl("retention", 4, M), yl("serviceMonitorSelectorNilUsesHelmValues", 4, "false", N),
+         yl("storageSpec", 4), yl("volumeClaimTemplate", 6), yl("spec", 8), yl("resources", 10), yl("requests", 12), yl("storage", 14, M)]
+    rows = "".join(f'<div class="mono" style="display:flex;height:22px;align-items:center;font-size:13px;white-space:pre"><span style="width:44px;text-align:right;padding-right:12px;color:var(--faint)">{i + 1}</span><span style="padding-left:14px">{t}</span></div>' for i, t in enumerate(L))
+    sub = "".join(f'<span style="display:flex;align-items:center;gap:6px;padding:0 10px;{"color:var(--text);box-shadow:inset 0 -2px 0 var(--accent)" if t == "Values" else "color:var(--dim)"}">{t}</span>' for t in ["Values", "Manifest", "Notes", "History", "Resources"])
+    center = f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0">
+<div style="display:flex;align-items:center;gap:10px;padding:0 12px 0 16px;height:44px;flex-shrink:0;border-bottom:1px solid var(--bv)">{ic("anchor",15,C["accent"])}<span class="mono" style="font-size:14px;font-weight:600">kube-prometheus-stack</span><span style="color:var(--dim)">monitoring</span>{helm_status("deployed")}<span class="mono" style="font-size:12px;color:var(--muted)">kube-prometheus-stack-84.1.0 · app v0.86.1 · revision</span><button class="btn" style="height:24px;padding:0 8px"><span class="mono" style="font-size:12px">6</span>{ic("cd",11)}</button><div style="flex:1"></div><button class="btn g" style="height:26px">{ic("copy",12)}Copy helm command{ic("cd",11)}</button></div>
+<div style="display:flex;gap:2px;padding:0 8px;border-bottom:1px solid var(--bv);height:34px;align-items:stretch;flex-shrink:0">{sub}</div>
+<div style="display:flex;gap:10px;align-items:center;padding:0 14px;height:36px;border-bottom:1px solid var(--bv);font-size:12.5px"><span class="chip on" style="height:22px">User-supplied</span><span class="chip" style="height:22px">All (with chart defaults)</span><span style="flex:1"></span><span style="display:flex;gap:6px;align-items:center;color:var(--dim)">{ic("lock",12)}Values can hold passwords: strings and numbers are masked</span><button class="btn" style="height:24px">{ic("eye",12)}Reveal</button><button class="btn g" style="height:24px">{ic("copy",12)}Copy</button></div>
+<div style="flex:1;overflow:hidden;padding-top:6px">{rows}</div>
+{hints([("1–5","Tabs"),("r","Reveal/mask"),("[ ]","Older/newer revision"),("c","Copy helm command"),("⌘F","Find")])}
+</div>'''
+    cmds = [("Rollback to revision 5", "helm rollback kube-prometheus-stack 5 -n monitoring --kube-context kind-kubyl-dev"), ("Uninstall", "helm uninstall kube-prometheus-stack -n monitoring --kube-context kind-kubyl-dev"),
+            ("Get values", "helm get values kube-prometheus-stack -n monitoring --kube-context kind-kubyl-dev"), ("History", "helm history kube-prometheus-stack -n monitoring --kube-context kind-kubyl-dev")]
+    items = "".join(f'<div style="display:flex;flex-direction:column;padding:5px 8px;border-radius:5px;{"background:var(--sel)" if i == 0 else ""}"><span style="font-size:12.5px">{t}</span><span class="mono" style="font-size:11px;color:var(--dim)">{c}</span></div>' for i, (t, c) in enumerate(cmds))
+    menu = f'''<div style="position:absolute;right:14px;top:150px;width:490px;background:#353b45;border:1px solid var(--border);border-radius:7px;box-shadow:0 10px 30px rgba(0,0,0,.45);padding:4px">
+{items}
+<div style="font-size:11.5px;color:var(--dim);padding:6px 8px 4px;border-top:1px solid var(--bv);margin-top:4px">Kubyl shows Helm releases read-only. The command goes to the clipboard; run it in a terminal.</div></div>'''
+    tb = tabs([("blocks", "Operators", False), ("anchor", "kube-prometheus-stack", True), ("store", "OperatorHub", False)])
+    content = f'<div style="flex:1;display:flex;min-height:0">{center}</div>'
+    return page("Helm release values — Kubyl", op_shell("Helm", tb, content, menu))
+
+def olm_states_screen():
+    none = f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0;border-right:1px solid var(--border)">
+{tabs([("blocks", "Operators · homelab-k3s", True)], tools=False)}
+{op_subtabs("Installed", 0, counts=(None, None, "3"), olm=False)}
+<div style="flex:1;display:flex;flex-direction:column;gap:14px;padding:30px 34px">
+<div style="display:flex;gap:12px;align-items:center">{ic("blocks",22,C["dim"])}<div><div style="font-size:16px;font-weight:600">OLM isn't installed on this cluster</div><div style="font-size:12.5px;color:var(--muted);margin-top:2px">No <span class="mono" style="font-size:11.5px">operators.coreos.com</span> or <span class="mono" style="font-size:11.5px">olm.operatorframework.io</span> APIs. Helm releases work without it.</div></div></div>
+<div class="card" style="padding:10px 14px;display:flex;flex-direction:column;gap:6px;font-size:12.5px;color:var(--muted);line-height:19px">
+<div><b style="font-weight:500;color:var(--text)">OpenShift</b> ships OLM. Other clusters install it from the operator-framework releases:</div>
+<div class="mono" style="font-size:11.5px;padding:6px 8px;border-radius:5px;background:#23272e">operator-sdk olm install <span style="color:var(--dim)"># or the release's install.sh</span></div>
+<div>Kubyl's dev cluster: <span class="mono" style="font-size:11.5px;color:var(--text)">script/olm-dev.sh</span> (OLM, the operatorhub.io catalog and a subscription waiting for approval).</div></div>
+<div style="display:flex;gap:8px"><button class="btn">{ic("anchor",13)}Show Helm releases</button><button class="btn g">{ic("ext",13)}OLM documentation</button></div>
+</div></div>'''
+    XC = "grid-template-columns: minmax(0,1fr) minmax(0,1fr) 80px 120px 130px"
+    ext = [("kubyl-v1-sample", "argocd-operator", "0.13.0", "kubyl-v1-sample", "Succeeded"), ("grafana", "grafana-operator", "5.20.0", "grafana", "Installing")]
+    xrows = "".join(f'<div class="tr{" on" if i == 0 else ""}" style="{XC};height:32px"><span class="mono">{n}</span><span class="mono" style="color:var(--muted)">{p}</span><span class="mono">{v}</span><span class="mono" style="color:var(--muted)">{ns}</span>{st(s)}</div>' for i, (n, p, v, ns, s) in enumerate(ext))
+    cats = f'<div class="tr" style="{XC};height:32px"><span class="mono">operatorhubio</span><span class="mono" style="font-size:11.5px;color:var(--muted)">quay.io/operatorhubio/catalog:latest</span><span></span><span style="color:var(--muted)">every 10m</span>{st("Ready")}</div>'
+    v1 = f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0">
+{tabs([("blocks", "Operators · staging", True)], tools=False)}
+{op_subtabs("Extensions", 0, True)}
+<div style="display:flex;gap:8px;align-items:center;padding:8px 14px;border-bottom:1px solid var(--bv);font-size:12.5px;color:var(--muted)">{ic("info",13,C["accent"])}<span style="flex:1">OLM v1: Kubyl lists extensions and catalogs. Install or upgrade one from a YAML template.</span><button class="btn" style="height:24px">{ic("fileplus",12)}New ClusterExtension…</button></div>
+<div class="th" style="{XC}"><span>CLUSTEREXTENSION</span><span>PACKAGE</span><span>VERSION</span><span>NAMESPACE</span><span>STATUS</span></div>
+{xrows}
+<div class="th" style="{XC};margin-top:14px"><span>CLUSTERCATALOG</span><span>IMAGE</span><span></span><span>POLL</span><span>STATUS</span></div>
+{cats}
+<div style="flex:1"></div>
+<div class="dsec" style="border-top:1px solid var(--bv);border-bottom:0"><p class="dtitle">kubyl-v1-sample · conditions</p>
+<div style="display:flex;flex-direction:column;gap:4px;font-size:12px">{op_chg("ok",C["green"],"Installed · True · Installed bundle quay.io/operatorhubio/argocd-operator@sha256:… successfully")}{op_chg("ok",C["green"],"Progressing · True · Desired state reached")}</div>
+<div style="font-size:11.5px;color:var(--dim);margin-top:8px">Upgrade: edit <span class="mono">spec.source.catalog.version</span> in the YAML (Edit YAML, <span class="mono">e</span>).</div></div>
+</div>'''
+    inner = f'''<div class="app">
+{titlebar("staging-eu-west-1", "payments", False, "EKS · v1.30.4")}
+<div class="body">{sidebar("")}<main class="main" style="flex-direction:row">{none}{v1}</main></div>
+{statusbar()}
+</div>'''
+    return page("OLM not installed; OLM v1 extensions — Kubyl", inner)
 
 # ---------- 8. Cluster updates ----------
 def updates_screen():
@@ -2407,7 +2815,16 @@ SCREENS = [
  ("Overview.dc.html", "4 · Overview, Prometheus metrics, events", overview_screen),
  ("Clusters.dc.html", "5 · Kubeconfigs, contexts, OIDC sign-in", clusters_screen),
  ("Palette.dc.html", "6 · Command palette (:resources, @contexts)", palette_screen),
- ("Operators.dc.html", "7 · Operators (OLM) — OpenShift-style", operators_screen),
+ ("Operators.dc.html", "7 · Installed operators: pending upgrade, provided APIs", operators_screen),
+ ("OperatorHub.dc.html", "7 · OperatorHub: catalog with search, categories, provider, capability level", operatorhub_screen),
+ ("OperatorInstall.dc.html", "7 · Install an operator: channel, install mode, approval, namespace", install_screen),
+ ("OperatorUpgrade.dc.html", "7 · Approve an upgrade: CRD schema diff, RBAC changes, compatibility", upgrade_screen),
+ ("OperatorCreate.dc.html", "7 · Provided APIs: Create from alm-examples", create_screen),
+ ("InstallPlans.dc.html", "7 · Install plans (pending first)", plans_screen),
+ ("Subscriptions.dc.html", "7 · Subscriptions", subscriptions_screen),
+ ("HelmReleases.dc.html", "7 · Helm releases", helm_screen),
+ ("HelmRelease.dc.html", "7 · Helm release: values (masked), manifest, notes, history", helm_release_screen),
+ ("OlmStates.dc.html", "7 · OLM not installed, and OLM v1 extensions", olm_states_screen),
  ("Updates.dc.html", "8 · Cluster updates — OpenShift-style", updates_screen),
  ("Files.dc.html", "9 · Pod file browser — drag & drop upload/download", files_screen),
  ("Webview.dc.html", "10 · Service web view over a temporary port-forward", webview_screen),
