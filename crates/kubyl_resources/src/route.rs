@@ -6,7 +6,8 @@
 //! - [`url`]: what a browser opens (none for wildcard hosts), [`services_label`]: the backends
 //!   with weights like `oc get routes` (`shop-web(80%),shop-canary(20%)`).
 //! - [`resolve_target_port`]: the Service port a Route's target port selects, like OpenShift's
-//!   router does (what a Service port-forward or web view needs).
+//!   router does (what a Service port-forward or web view needs); [`resolve_target_port_with`]
+//!   also reads the endpoints, for numeric target ports behind named Service target ports.
 //! - [`has_inline_key`] / [`mask_inline_key`]: `spec.tls.key` holds a private key. It's masked
 //!   like Secret data wherever Kubyl shows or copies an object, unless the user reveals it.
 
@@ -415,6 +416,72 @@ pub fn resolve_target_port(
     })
 }
 
+/// The ports a Service's endpoints serve, as `(Service port name, number)`: from its
+/// EndpointSlices (`ports[]`, matched by the `kubernetes.io/service-name` label) or its
+/// Endpoints object (`subsets[].ports[]`) among `objects`.
+pub fn endpoint_ports<'a>(
+    objects: impl IntoIterator<Item = &'a Value>,
+    service: &str,
+) -> Vec<(String, u16)> {
+    let mut out = Vec::new();
+    for object in objects {
+        let ports: Vec<&Value> = if str_at(object, "/metadata/labels/kubernetes.io~1service-name")
+            == service
+        {
+            array_at(object, "/ports").iter().collect()
+        } else if object.get("subsets").is_some() && str_at(object, "/metadata/name") == service {
+            array_at(object, "/subsets")
+                .iter()
+                .flat_map(|s| array_at(s, "/ports"))
+                .collect()
+        } else {
+            continue;
+        };
+        for port in ports {
+            if let Some(number) = port
+                .get("port")
+                .and_then(Value::as_u64)
+                .and_then(|p| u16::try_from(p).ok())
+            {
+                let entry = (str_at(port, "/name").to_string(), number);
+                if !out.contains(&entry) {
+                    out.push(entry);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// [`resolve_target_port`] the way the router sees it, with the Service's [`endpoint_ports`]:
+/// a numeric target port also matches a Service port whose `targetPort` names a container
+/// port, when the endpoints serve that name on that number (`targetPort: http` → 8080).
+pub fn resolve_target_port_with(
+    target: Option<&TargetPort>,
+    service: &Value,
+    endpoints: &[(String, u16)],
+) -> Result<ServicePortMatch, String> {
+    let err = match resolve_target_port(target, service) {
+        Ok(matched) => return Ok(matched),
+        Err(err) => err,
+    };
+    let Some(TargetPort::Number(number)) = target else {
+        return Err(err);
+    };
+    endpoints
+        .iter()
+        .filter(|(_, port)| i64::from(*port) == *number)
+        .find_map(|(name, _)| {
+            let named = TargetPort::Name(name.clone());
+            resolve_target_port(Some(&named), service).ok()
+        })
+        .map(|matched| ServicePortMatch {
+            target: number.to_string(),
+            ..matched
+        })
+        .ok_or(err)
+}
+
 /// The inline private key (`spec.tls.key`) of a Route, for an explicit reveal or copy only.
 pub fn inline_key(object: &Value) -> Option<&str> {
     if !is_route_object(object) {
@@ -650,6 +717,39 @@ mod tests {
             resolve_target_port(None, &service(json!([]))).unwrap_err(),
             "Service shop-web has no ports"
         );
+    }
+
+    #[test]
+    fn numeric_target_ports_resolve_through_the_endpoints() {
+        // `oc expose`-style Services target a container port by name; the Route names the
+        // number the pods listen on.
+        let svc = json!({"metadata": {"name": "shop-tls"}, "spec": {"ports": [
+            {"name": "https", "port": 443, "targetPort": "https"}]}});
+        let slices = [
+            json!({"metadata": {"labels": {"kubernetes.io/service-name": "shop-tls"}},
+                "ports": [{"name": "https", "port": 8443, "protocol": "TCP"}]}),
+            json!({"metadata": {"labels": {"kubernetes.io/service-name": "other"}},
+                "ports": [{"name": "https", "port": 9443}]}),
+        ];
+        let endpoints = endpoint_ports(&slices, "shop-tls");
+        assert_eq!(endpoints, [("https".to_string(), 8443)]);
+        let target = TargetPort::Number(8443);
+        assert_eq!(
+            resolve_target_port(Some(&target), &svc).unwrap_err(),
+            "target port 8443 not found on Service shop-tls"
+        );
+        let matched = resolve_target_port_with(Some(&target), &svc, &endpoints).unwrap();
+        assert_eq!(matched.port, 443);
+        assert_eq!(matched.label(), "443/TCP → 8443");
+        assert_eq!(
+            resolve_target_port_with(Some(&TargetPort::Number(9443)), &svc, &endpoints)
+                .unwrap_err(),
+            "target port 9443 not found on Service shop-tls"
+        );
+        // Core Endpoints work too.
+        let legacy = [json!({"metadata": {"name": "shop-tls"},
+            "subsets": [{"ports": [{"name": "https", "port": 8443}]}]})];
+        assert_eq!(endpoint_ports(&legacy, "shop-tls"), endpoints);
     }
 
     #[test]
