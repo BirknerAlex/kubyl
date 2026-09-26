@@ -608,7 +608,8 @@ impl AlertsService {
                 self.settings.background_refresh()
             };
             let rediscover = match state.phase {
-                Phase::Unknown => true,
+                // Also while waiting for phase 07's Prometheus (nothing in flight yet).
+                Phase::Unknown | Phase::Discovering => true,
                 Phase::NoSource => state.discovered_at.is_some_and(|t| {
                     Timestamp::now().duration_since(t).as_secs() >= REDISCOVER.as_secs() as i64
                 }),
@@ -916,6 +917,7 @@ impl AlertsService {
             a.ends_at
                 .is_some_and(|t| now.duration_since(t).as_secs() < RESOLVED_KEEP.as_secs() as i64)
         });
+        resolved.sort_by(|a, b| a.name.cmp(&b.name));
         for alert in resolved.iter().rev() {
             state.resolved.insert(0, alert.clone());
         }
@@ -935,12 +937,35 @@ impl AlertsService {
         cx.notify();
     }
 
+    /// Puts a cluster with an Alertmanager into the cache (tests of the views).
+    #[cfg(test)]
+    pub fn insert_for_test(
+        &mut self,
+        cluster: &ClusterId,
+        alerts: Vec<Alert>,
+        cx: &mut Context<Self>,
+    ) {
+        let generation = self.generation;
+        let state = self
+            .clusters
+            .entry(cluster.clone())
+            .or_insert_with(|| ClusterAlerts::new(generation));
+        state.phase = Phase::Ready;
+        state.checked_at = Some(Timestamp::now());
+        state.alerts = Arc::new(alerts);
+        state.revision += 1;
+        cx.notify();
+    }
+
     // ----- Notifications -----
 
     fn notify_cluster(&self, cluster: &ClusterId, cx: &App) -> bool {
         let notify = &self.settings.notify;
         if !notify.enabled {
             return false;
+        }
+        if notify.clusters == NotifyClusters::All {
+            return true;
         }
         let Some(manager) = ConnectionManager::try_global(cx) else {
             return false;
@@ -1626,6 +1651,201 @@ pub fn namespace_counts(alerts: &[Alert], namespace: Option<&str>) -> Counts {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    use gpui::TestAppContext;
+
+    fn firing(name: &str, severity: Severity) -> Alert {
+        let mut labels = std::collections::BTreeMap::new();
+        labels.insert("alertname".to_string(), name.to_string());
+        labels.insert("namespace".to_string(), "payments".to_string());
+        Alert {
+            fingerprint: format!("fp-{name}"),
+            name: name.into(),
+            labels,
+            annotations: Default::default(),
+            severity,
+            state: AlertState::Firing,
+            silenced_by: Vec::new(),
+            inhibited_by: Vec::new(),
+            starts_at: Some(Timestamp::now()),
+            starts_approx: false,
+            active_at: None,
+            updated_at: None,
+            ends_at: None,
+            receivers: Vec::new(),
+            generator_url: None,
+            value: None,
+            source: "monitoring/am".into(),
+            target: None,
+        }
+    }
+
+    fn output(alerts: Vec<Alert>) -> FetchOutput {
+        FetchOutput {
+            sources: Vec::new(),
+            silences: Vec::new(),
+            rules: None,
+            merged: Some(merge::Merged {
+                alerts,
+                heartbeat: None,
+            }),
+            error: None,
+            now: Timestamp::now(),
+        }
+    }
+
+    fn setup(
+        cx: &mut TestAppContext,
+        settings: serde_json::Value,
+    ) -> (tempfile::TempDir, Entity<AlertsService>) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("settings.json"), settings.to_string()).unwrap();
+        let service = cx.update(|cx| {
+            kubyl_core::init(cx);
+            kubyl_settings::init_with_dir(cx, dir.path());
+            Settings::register::<AlertsSettings>(cx);
+            AlertsService::install(false, cx)
+        });
+        (dir, service)
+    }
+
+    #[gpui::test]
+    fn only_alerts_that_start_after_the_first_read_notify(cx: &mut TestAppContext) {
+        let (_dir, service) = setup(
+            cx,
+            serde_json::json!({"alerts": {"notify": {"enabled": true, "clusters": "all", "min_severity": "warning", "resolved": true}}}),
+        );
+        let cluster = ClusterId::new("c");
+        let before = cx.update(|cx| NotificationCenter::global(cx).latest_id());
+        service.update(cx, |s, cx| {
+            s.insert_for_test(&cluster, Vec::new(), cx);
+            let generation = s.clusters[&cluster].generation;
+            // The first read is the baseline: nothing is new.
+            s.fetched(
+                &cluster,
+                generation,
+                output(vec![firing("Old", Severity::Critical)]),
+                cx,
+            );
+            s.flush_notices(cx);
+        });
+        let after_baseline = cx.update(|cx| NotificationCenter::global(cx).latest_id());
+        assert_eq!(
+            after_baseline, before,
+            "no toast for alerts firing when Kubyl first looked"
+        );
+
+        service.update(cx, |s, cx| {
+            let generation = s.clusters[&cluster].generation;
+            s.fetched(
+                &cluster,
+                generation,
+                output(vec![
+                    firing("Old", Severity::Critical),
+                    firing("New", Severity::Warning),
+                    firing("Quiet", Severity::Info),
+                ]),
+                cx,
+            );
+            s.flush_notices(cx);
+        });
+        let messages: Vec<String> = cx.update(|cx| {
+            NotificationCenter::global(cx)
+                .since(after_baseline)
+                .map(|(_, n)| n.message.to_string())
+                .collect()
+        });
+        assert_eq!(
+            messages,
+            ["New started firing"],
+            "info is below min_severity"
+        );
+
+        // Resolved: listed for a while, and batched into the next toast (a minute later).
+        service.update(cx, |s, cx| {
+            let generation = s.clusters[&cluster].generation;
+            s.fetched(
+                &cluster,
+                generation,
+                output(vec![firing("New", Severity::Warning)]),
+                cx,
+            );
+            s.flush_notices(cx);
+            let state = &s.clusters[&cluster];
+            let resolved: Vec<&str> = state.resolved.iter().map(|a| a.name.as_str()).collect();
+            assert_eq!(resolved, ["Old", "Quiet"]);
+            assert!(
+                state
+                    .resolved
+                    .iter()
+                    .all(|a| a.state == AlertState::Resolved && a.ends_at.is_some())
+            );
+            assert!(
+                s.notices.contains_key(&cluster),
+                "held back: one toast per minute"
+            );
+        });
+        // A stale generation is dropped.
+        service.update(cx, |s, cx| {
+            let generation = s.clusters[&cluster].generation;
+            s.fetched(&cluster, generation + 1, output(Vec::new()), cx);
+            assert_eq!(s.clusters[&cluster].alerts.len(), 1);
+        });
+    }
+
+    #[gpui::test]
+    fn writes_show_right_away_and_read_again(cx: &mut TestAppContext) {
+        let (_dir, service) = setup(cx, serde_json::json!({}));
+        let cluster = ClusterId::new("c");
+        service.update(cx, |s, cx| {
+            s.insert_for_test(
+                &cluster,
+                vec![
+                    firing("A", Severity::Critical),
+                    firing("B", Severity::Warning),
+                ],
+                cx,
+            );
+            let matchers = [Matcher::new(
+                "alertname",
+                crate::matchers::MatchOp::Equal,
+                "A",
+            )];
+            let now = Timestamp::now();
+            let body = crate::client::silence_body(
+                None,
+                &matchers,
+                now,
+                now.checked_add(jiff::SignedDuration::from_hours(1))
+                    .unwrap(),
+                "alice@example.com",
+                "test",
+            );
+            s.silence_written(&cluster, "monitoring/am", "s1", Some(&body), cx);
+            let state = &s.clusters[&cluster];
+            assert!(
+                state.refetch_at.is_some(),
+                "read again shortly (HA replicas)"
+            );
+            let a = state.alerts.iter().find(|a| a.name == "A").unwrap();
+            assert_eq!(a.state, AlertState::Silenced);
+            assert_eq!(a.silenced_by, ["s1"]);
+            assert_eq!(
+                state.alerts.iter().find(|a| a.name == "B").unwrap().state,
+                AlertState::Firing
+            );
+            assert_eq!(state.silences[0].id, "s1");
+            assert_eq!(state.silences[0].state, "active");
+
+            s.silence_written(&cluster, "monitoring/am", "s1", None, cx);
+            let state = &s.clusters[&cluster];
+            assert_eq!(
+                state.alerts.iter().find(|a| a.name == "A").unwrap().state,
+                AlertState::Firing
+            );
+            assert_eq!(state.silences[0].state, "expired");
+        });
+    }
 
     #[test]
     fn nodes_by_name_and_address() {

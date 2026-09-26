@@ -380,7 +380,7 @@ impl AlertsView {
                 "Value",
                 div()
                     .font_family(fonts::MONO)
-                    .child(value.clone())
+                    .child(widgets::format_value(value))
                     .into_any_element(),
             ));
         }

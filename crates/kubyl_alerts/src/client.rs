@@ -670,6 +670,43 @@ mod tests {
         assert_eq!(url_segment("0f3a-12/../x"), "0f3a-12x");
     }
 
+    #[tokio::test]
+    async fn no_secret_reaches_debug_output() {
+        let header = SecretString::from("Bearer kubyl-secret-header".to_string());
+        let transport = Transport::external(
+            "https://alertmanager.example.com",
+            Some(&header),
+            &ExternalTls::default(),
+        )
+        .unwrap();
+        let conn = AmConn {
+            target: AmTarget::Url {
+                url: "https://alertmanager.example.com".into(),
+                tenant: None,
+                ca_file: None,
+                client_certificate: None,
+                client_key: None,
+                insecure: false,
+            },
+            transport,
+            via: Via::Url,
+            status: AmStatus::default(),
+        };
+        let debug = format!("{conn:?} {:?}", Probed::Connected(Box::new(conn.clone())));
+        assert!(!debug.contains("kubyl-secret-header"), "{debug}");
+        let token = BearerToken::Static(SecretString::from("kubyl-secret-token".to_string()));
+        let direct = Transport::direct(
+            "https://127.0.0.1:9443",
+            None,
+            Some("am.monitoring.svc".into()),
+            Bearer::User(token),
+        )
+        .unwrap();
+        let debug = format!("{direct:?}");
+        assert!(!debug.contains("kubyl-secret-token"), "{debug}");
+        assert!(debug.contains("your token"));
+    }
+
     /// A look-alike Service outside the trusted namespaces never gets a token: after its 401 the
     /// probe stops instead of calling its Route. (The fake API server answers 401 to the proxy
     /// request and would record any other request.)

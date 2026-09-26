@@ -121,6 +121,32 @@ pub fn local_and_utc(time: Timestamp) -> String {
     }
 }
 
+/// A Prometheus value, readable: `10.3`, `0.0213`, `1.2e+09`.
+pub fn format_value(value: &str) -> String {
+    let Ok(number) = value.parse::<f64>() else {
+        return value.to_string();
+    };
+    if !number.is_finite() {
+        return value.to_string();
+    }
+    let magnitude = number.abs();
+    if magnitude != 0.0 && !(1e-4..1e9).contains(&magnitude) {
+        return format!("{number:.3e}");
+    }
+    if number.fract() == 0.0 {
+        return format!("{number:.0}");
+    }
+    let digits = if magnitude >= 100.0 {
+        1
+    } else if magnitude >= 1.0 {
+        3
+    } else {
+        4
+    };
+    let text = format!("{number:.digits$}");
+    text.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
 pub fn column_cell(def: &ColumnDef) -> gpui::Div {
     let cell = div().min_w_0().overflow_hidden().pr(u(8.0));
     match def.width {
@@ -252,7 +278,8 @@ pub fn label_chip(name: &str, value: &str, colors: &Colors) -> gpui::Div {
         .font_family(fonts::MONO)
         .text_size(u(11.0))
         .text_color(colors.text_muted)
-        .whitespace_nowrap()
+        .max_w_full()
+        .truncate()
         .child(format!("{name}={value}"))
 }
 
@@ -314,6 +341,16 @@ pub fn open_url(url: &str, cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn values() {
+        assert_eq!(format_value("1.0297191939677406e+01"), "10.297");
+        assert_eq!(format_value("1"), "1");
+        assert_eq!(format_value("0.02134"), "0.0213");
+        assert_eq!(format_value("1234567890123"), "1.235e12");
+        assert_eq!(format_value("NaN"), "NaN");
+        assert_eq!(format_value("x"), "x");
+    }
 
     #[test]
     fn short_durations() {

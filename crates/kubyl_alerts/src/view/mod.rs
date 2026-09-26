@@ -155,6 +155,8 @@ pub struct AlertsView {
     pub(crate) alert_clusters: Vec<ClusterId>,
     pub(crate) resolved_clusters: Vec<ClusterId>,
     revisions: Vec<(ClusterId, u64)>,
+    /// Alertmanagers behind the shown alerts (a SOURCE column for more than one).
+    pub(crate) sources: usize,
     /// Fingerprint of the selected alert.
     pub(crate) selected: Option<String>,
     pub(crate) details_open: bool,
@@ -168,6 +170,8 @@ pub struct AlertsView {
     pub(crate) selected_silence: Option<String>,
     pub(crate) expired_open: bool,
     pub(crate) selected_rule: Option<(String, String)>,
+    /// Rule groups the user collapsed.
+    pub(crate) collapsed_rule_groups: HashSet<String>,
     pub(crate) rule_details_open: bool,
     pub(crate) details_state: details::DetailsState,
     /// A filter text to put into the input on the next render.
@@ -252,6 +256,7 @@ impl AlertsView {
             alert_clusters: Vec::new(),
             resolved_clusters: Vec::new(),
             revisions: Vec::new(),
+            sources: 0,
             selected: None,
             details_open: true,
             filter_input,
@@ -264,6 +269,7 @@ impl AlertsView {
             selected_silence: None,
             expired_open: false,
             selected_rule: None,
+            collapsed_rule_groups: HashSet::new(),
             rule_details_open: true,
             details_state: details::DetailsState::default(),
             pending_input: None,
@@ -343,11 +349,13 @@ impl AlertsView {
             return;
         }
         let mut alerts = Vec::new();
+        let mut sources = 0;
         let mut alert_clusters = Vec::new();
         let mut resolved = Vec::new();
         let mut resolved_clusters = Vec::new();
         for cluster in &clusters {
             if let Some(state) = service.cluster(cluster, Pace::View) {
+                sources += state.sources.len() + usize::from(state.has_rules());
                 alerts.extend(state.alerts.iter().cloned());
                 alert_clusters.extend(std::iter::repeat_n(cluster.clone(), state.alerts.len()));
                 resolved.extend(state.resolved.iter().cloned());
@@ -369,6 +377,7 @@ impl AlertsView {
             (alerts, alert_clusters) = paired.into_iter().unzip();
         }
         self.alerts = alerts;
+        self.sources = sources;
         self.alert_clusters = alert_clusters;
         self.resolved = resolved;
         self.resolved_clusters = resolved_clusters;
@@ -642,10 +651,12 @@ impl AlertsView {
                     }
                     (None, crate::client::Via::Url) => "An external URL".into(),
                 };
+                let tooltip: SharedString = format!("{text}\n{tooltip}").into();
                 chips.push(
                     h_flex()
                         .id(("am-source", i))
-                        .flex_none()
+                        .flex_shrink(1.0)
+                        .min_w(u(120.0))
                         .h(u(22.0))
                         .px(u(7.0))
                         .gap(u(5.0))
@@ -656,6 +667,8 @@ impl AlertsView {
                         .child(Icon::new(IconName::Siren).size(11.0).color(color))
                         .child(
                             div()
+                                .min_w_0()
+                                .truncate()
                                 .font_family(fonts::MONO)
                                 .text_size(u(11.0))
                                 .child(text),
@@ -710,13 +723,20 @@ impl AlertsView {
                     .child(Self::cluster_name(&cluster, cx)),
             )
             .when(self.production(&cluster, cx), |this| this.child(ProdBadge))
-            .children(chips)
-            .child(div().flex_1())
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap(u(8.0))
+                    .overflow_hidden()
+                    .children(chips),
+            )
             .when_some(ui, |this, conn| {
                 this.child(
                     h_flex()
                         .id("open-am-ui")
                         .flex_none()
+                        .ml(u(8.0))
                         .gap(u(6.0))
                         .text_size(u(12.5))
                         .text_color(colors.text_muted)
@@ -872,11 +892,14 @@ impl AlertsView {
     }
 
     pub(crate) fn hints(&self, context: &str, cx: &App) -> Vec<(SharedString, SharedString)> {
-        let read_only = self
+        let cluster = self
             .selected_entry()
-            .map(|e| self.read_only(&e.cluster, cx))
-            .or_else(|| self.cluster.as_ref().map(|c| self.read_only(c, cx)))
-            .unwrap_or(false);
+            .map(|e| e.cluster)
+            .or_else(|| self.cluster.clone());
+        // Writes need a writable cluster with an Alertmanager.
+        let read_only = cluster.as_ref().is_none_or(|c| {
+            self.read_only(c, cx) || !self.state(c, cx).is_some_and(|s| s.has_alertmanager())
+        });
         kubyl_core::ActionRegistry::global(cx)
             .hints(context)
             .into_iter()
@@ -960,5 +983,111 @@ impl Render for AlertsView {
             .child(tabs)
             .child(div().flex_1().min_h_0().flex().child(body))
             .child(kubyl_ui::KeyHints::new(hints))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{AlertState, Severity};
+    use gpui::TestAppContext;
+
+    fn alert(i: usize) -> Alert {
+        let name = format!("Alert{i:05}");
+        let mut labels = std::collections::BTreeMap::new();
+        labels.insert("alertname".to_string(), name.clone());
+        labels.insert("namespace".to_string(), format!("ns-{}", i % 7));
+        Alert {
+            fingerprint: format!("fp{i}"),
+            name,
+            labels,
+            annotations: Default::default(),
+            severity: match i % 3 {
+                0 => Severity::Critical,
+                1 => Severity::Warning,
+                _ => Severity::Info,
+            },
+            state: AlertState::Firing,
+            silenced_by: Vec::new(),
+            inhibited_by: Vec::new(),
+            starts_at: None,
+            starts_approx: false,
+            active_at: None,
+            updated_at: None,
+            ends_at: None,
+            receivers: Vec::new(),
+            generator_url: None,
+            value: None,
+            source: String::new(),
+            target: None,
+        }
+    }
+
+    #[gpui::test]
+    fn five_thousand_alerts_keep_the_selection(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let service = cx.update(|cx| {
+            kubyl_core::init(cx);
+            kubyl_settings::init_with_dir(cx, dir.path());
+            kubyl_ui::init(cx);
+            kubyl_settings::Settings::register::<crate::settings::AlertsSettings>(cx);
+            AlertsService::install(false, cx)
+        });
+        let cluster = ClusterId::new("c");
+        let mut alerts: Vec<Alert> = (0..5000).map(alert).collect();
+        crate::merge::sort(&mut alerts);
+        service.update(cx, |s, cx| s.insert_for_test(&cluster, alerts.clone(), cx));
+        let slot: std::rc::Rc<std::cell::RefCell<Option<Entity<AlertsView>>>> = Default::default();
+        let (_root, cx) = cx.add_window_view({
+            let slot = slot.clone();
+            let cluster = cluster.clone();
+            move |window, cx| {
+                let view = cx.new(|cx| AlertsView::new(Some(cluster), window, cx));
+                *slot.borrow_mut() = Some(view.clone());
+                gpui_component::Root::new(view, window, cx)
+            }
+        });
+        let view = slot.borrow().clone().unwrap();
+        cx.run_until_parked();
+        view.update(cx, |view, cx| {
+            assert_eq!(view.rows.len(), 5000);
+            let index = view
+                .rows
+                .iter()
+                .position(|r| {
+                    rows::alert_of(r, &view.alerts, &view.resolved)
+                        .is_some_and(|a| a.fingerprint == "fp2500")
+                })
+                .unwrap();
+            view.select_row(index, cx);
+        });
+        // New alerts arrive and the order changes: the same alert stays selected.
+        let mut changed: Vec<Alert> = (0..5200).rev().map(alert).collect();
+        crate::merge::sort(&mut changed);
+        let start = std::time::Instant::now();
+        service.update(cx, |s, cx| s.insert_for_test(&cluster, changed, cx));
+        cx.run_until_parked();
+        view.update(cx, |view, _| {
+            assert_eq!(view.rows.len(), 5200);
+            assert_eq!(view.selected.as_deref(), Some("fp2500"));
+            let index = view.selected_index().unwrap();
+            let shown = rows::alert_of(&view.rows[index], &view.alerts, &view.resolved).unwrap();
+            assert_eq!(shown.fingerprint, "fp2500");
+        });
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(2),
+            "{:?}",
+            start.elapsed()
+        );
+        // Filtering 5,000 rows by a matcher.
+        view.update(cx, |view, cx| {
+            view.filters.query = Query::parse(r#"namespace="ns-3""#);
+            view.rebuild(cx);
+            assert!(
+                view.rows.len() > 700 && view.rows.len() < 800,
+                "{}",
+                view.rows.len()
+            );
+        });
     }
 }

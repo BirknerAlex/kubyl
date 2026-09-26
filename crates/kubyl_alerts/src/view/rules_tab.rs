@@ -148,6 +148,7 @@ pub(crate) enum RuleRow {
     Group {
         cluster: ClusterId,
         name: String,
+        collapsed: bool,
         count: usize,
         firing: usize,
         pending: usize,
@@ -186,14 +187,19 @@ impl AlertsView {
                 if rules.is_empty() {
                     continue;
                 }
+                let collapsed = self.collapsed_rule_groups.contains(&group.name);
                 rows.push(RuleRow::Group {
                     cluster: cluster.clone(),
                     name: group.name.clone(),
+                    collapsed,
                     count: group.rules.len(),
                     firing: group.rules.iter().filter(|r| r.state == "firing").count(),
                     pending: group.rules.iter().filter(|r| r.state == "pending").count(),
                     failing: group.rules.iter().filter(|r| r.failing()).count(),
                 });
+                if collapsed {
+                    continue;
+                }
                 for rule in rules {
                     rows.push(RuleRow::Rule {
                         cluster: cluster.clone(),
@@ -425,6 +431,7 @@ impl AlertsView {
                     RuleRow::Group {
                         cluster,
                         name,
+                        collapsed,
                         count,
                         firing,
                         pending,
@@ -441,12 +448,24 @@ impl AlertsView {
                         if failing > 0 {
                             meta.push_str(&format!(" · {failing} failing"));
                         }
+                        let toggle = name.clone();
                         widgets::row(("rule-group", index), false, ROW_HEIGHT, &colors)
                             .gap(u(8.0))
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if !this.collapsed_rule_groups.remove(&toggle) {
+                                    this.collapsed_rule_groups.insert(toggle.clone());
+                                }
+                                cx.notify();
+                            }))
                             .child(
-                                Icon::new(IconName::ChevronDown)
-                                    .size(12.0)
-                                    .color(colors.text_dim),
+                                Icon::new(if collapsed {
+                                    IconName::ChevronRight
+                                } else {
+                                    IconName::ChevronDown
+                                })
+                                .size(12.0)
+                                .color(colors.text_dim),
                             )
                             .child(div().font_weight(FontWeight::SEMIBOLD).child(name.clone()))
                             .when(self.cluster.is_none(), |this| {

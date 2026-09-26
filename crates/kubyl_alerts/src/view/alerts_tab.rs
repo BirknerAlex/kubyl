@@ -61,6 +61,13 @@ impl AlertsView {
             ColumnDef::new("summary", "Summary", flex(1.6, 120.0)),
             ColumnDef::new("target", "Target", flex(1.2, 110.0)),
         ]);
+        if !details && self.sources > 1 {
+            columns.push(ColumnDef::new(
+                "source",
+                "Source",
+                ColumnWidth::Fixed(150.0),
+            ));
+        }
         if !details {
             columns.extend([
                 ColumnDef::new("namespace", "Namespace", ColumnWidth::Fixed(110.0)),
@@ -195,15 +202,19 @@ impl AlertsView {
             parts.push(sep());
             parts.push(bold(format!("{} pending", counts.pending), colors.yellow));
         }
-        let suppressed = counts.silenced + counts.inhibited;
-        if suppressed > 0 {
-            parts.push(sep());
-            parts.push(
-                div()
-                    .text_color(colors.text_muted)
-                    .child(format!("{} silenced", counts.silenced))
-                    .into_any_element(),
-            );
+        for (count, label) in [
+            (counts.silenced, "silenced"),
+            (counts.inhibited, "inhibited"),
+        ] {
+            if count > 0 {
+                parts.push(sep());
+                parts.push(
+                    div()
+                        .text_color(colors.text_muted)
+                        .child(format!("{count} {label}"))
+                        .into_any_element(),
+                );
+            }
         }
         let now = Timestamp::now();
         let mut right: Vec<AnyElement> = Vec::new();
@@ -835,6 +846,11 @@ impl AlertsView {
                 .truncate()
                 .text_color(colors.text_muted)
                 .child(alert.namespace().unwrap_or("—").to_string())
+                .into_any_element(),
+            "source" => div()
+                .truncate()
+                .text_color(colors.text_muted)
+                .child(alert.source.clone())
                 .into_any_element(),
             "receivers" => div()
                 .truncate()
