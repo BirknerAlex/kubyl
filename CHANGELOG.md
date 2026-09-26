@@ -2,6 +2,56 @@
 
 All notable changes to Kubyl are documented here.
 
+## [0.2.1] - 2026-09-26
+
+### AGENTS.md
+
+- Gotchas for dialogs in GPUI tests and on_next_frame on macOS ([be1191c](https://github.com/BirknerAlex/kubyl/commit/be1191cfb7d2b749b6788332f12bea486d874cd8))
+
+### Design
+
+- Board 11 · kubeconfig editor (form, YAML and test results, wizard, save preview and exec consent) ([ad00be5](https://github.com/BirknerAlex/kubyl/commit/ad00be5ba4c760c032d8179e36ae9095156e861f))
+- Phase 11 screenshots (kubeconfig editor, test, wizard, save, consent) ([8f888ea](https://github.com/BirknerAlex/kubyl/commit/8f888eabdc6649afa1541dbb984258125ceac9f2))
+
+### Kubyl
+
+- "New kubeconfig…" in the Explorer's + menu ([cb2ec15](https://github.com/BirknerAlex/kubyl/commit/cb2ec153097d7be381091ee82ed1b9640a3edf66))
+
+### Kubyl_core
+
+- ViewRequest::for_path, NewKubeconfig and EditKubeconfig actions ([30aeebd](https://github.com/BirknerAlex/kubyl/commit/30aeebd81f6052c7698e017f33d7b4a246bab816))
+
+### Kubyl_kube
+
+- Context_info for kubeconfigs that aren't loaded, move_context_settings ([735bc4a](https://github.com/BirknerAlex/kubyl/commit/735bc4a5cd52079bafdcb957368755ddabd30f5a))
+- Open the kubeconfig editor from the Clusters tab; proxy helpers public ([4f530a8](https://github.com/BirknerAlex/kubyl/commit/4f530a88aa433717c1451b94dbde07b76fd9ba4e))
+- Pasted kubeconfigs list their exec plugins and need trust ([389b149](https://github.com/BirknerAlex/kubyl/commit/389b149020961ac6e7f14e77a4938d8c0f33ec06))
+
+### Kubyl_kubeconfig
+
+- Stub crate for the kubeconfig editor (phase 11) ([88aca01](https://github.com/BirknerAlex/kubyl/commit/88aca01e9d92b55cb464e6ac88fc1d8ec8a628b2))
+- Document model, comment-preserving writer, atomic saves with backups, certificates, TLS checks and CA fetch ([98b64b2](https://github.com/BirknerAlex/kubyl/commit/98b64b221ad66bc10dc2fd00529594b7cc826430))
+- Editor tab, forms, YAML tab, connection test panel, dialogs, wizard, imports ([4c68f44](https://github.com/BirknerAlex/kubyl/commit/4c68f448efc0fe5ec8ba6ab0c87495a9bfbdbf43))
+- Save through the editor, folders from the global, editor and live UI tests ([953e430](https://github.com/BirknerAlex/kubyl/commit/953e430e083ae041e208f9fe5584a68985eaa6fd))
+- Polish from the screenshots, service-account live test ([e082caa](https://github.com/BirknerAlex/kubyl/commit/e082caa24f2955acd96179ac847f0ac9220fd443))
+- Live test for OIDC sign-in from the connection test ([df356f6](https://github.com/BirknerAlex/kubyl/commit/df356f639f594306c98757036d9e976b2abe7f5c))
+- Fix an unused variable in a files test on Windows ([92846a3](https://github.com/BirknerAlex/kubyl/commit/92846a348f335960ee77b40a7948fbfefc5a83a5))
+- Review fixes ([3155bef](https://github.com/BirknerAlex/kubyl/commit/3155befbc68a7d0ce455ae8fbade104e44d73e58))
+- The wizard counts a test only once it ran ([6309333](https://github.com/BirknerAlex/kubyl/commit/6309333148145913201efbe6419d40abcf8c1e49))
+
+### Plans
+
+- Phase 11 decisions: which kubeconfigs Kubyl writes, comments, credentials, consent ([050fcac](https://github.com/BirknerAlex/kubyl/commit/050fcac4372e5345c565445cdbcf6de5fa501679))
+- Phase 14, alerts (Alertmanager) ([37d61b2](https://github.com/BirknerAlex/kubyl/commit/37d61b2b1ba3c3b584e1c45b64eca0e48cd3c64d))
+- Phase 15, polish (connection dots, context grouping, ConfigMap data) ([757852f](https://github.com/BirknerAlex/kubyl/commit/757852f6abe26552e034238ae3246c94a8d72bfe))
+- Phase 11 done (handoff log, decisions, extension points) ([c0951b3](https://github.com/BirknerAlex/kubyl/commit/c0951b3cff6f612a24d4ee3a7ca80797ea4ceb42))
+- Phase 15 label examples with made-up hosts and user ([66341f6](https://github.com/BirknerAlex/kubyl/commit/66341f68166ea1561e5e204dd98a550310fd0af9))
+- Phase 11 handoff and decision table: second hash check, masks ([a5e5c3a](https://github.com/BirknerAlex/kubyl/commit/a5e5c3a3028a2a7836068cf1db0b786fcd41f2f1))
+
+### Workspace
+
+- Rustls, rustls-pki-types and tokio-rustls as direct dependencies (versions and features kube already uses) ([239c382](https://github.com/BirknerAlex/kubyl/commit/239c3821e2ca1107b56d9f18ea7c68d942ca52b7))
+
 ## [0.2.0] - 2026-09-25
 
 ### Design
