@@ -136,18 +136,25 @@ pub struct Candidate {
 }
 
 /// Targets named in settings.
+/// The URL an external Alertmanager's API lives at: `url` without a trailing slash, plus `path`.
+/// `None` for Service entries.
+pub fn url_of(config: &AlertmanagerConfig) -> Option<String> {
+    let url = config.url.as_deref().filter(|u| !u.is_empty())?;
+    Some(format!(
+        "{}{}",
+        url.trim_end_matches('/'),
+        normalize(config.path.as_deref().unwrap_or(""))
+    ))
+}
+
 pub fn from_settings(configs: &[AlertmanagerConfig]) -> Vec<Candidate> {
     configs
         .iter()
         .filter_map(|c| {
             let tenant = c.tenant.clone().filter(|t| !t.is_empty());
-            let target = match (&c.url, &c.service) {
-                (Some(url), _) if !url.is_empty() => AmTarget::Url {
-                    url: format!(
-                        "{}{}",
-                        url.trim_end_matches('/'),
-                        normalize(c.path.as_deref().unwrap_or(""))
-                    ),
+            let target = match (url_of(c), &c.service) {
+                (Some(url), _) => AmTarget::Url {
+                    url,
                     tenant,
                     ca_file: c.ca_file.clone().filter(|p| !p.is_empty()),
                     client_certificate: c.client_certificate.clone().filter(|p| !p.is_empty()),

@@ -228,7 +228,7 @@ pub fn parse_duration(text: &str) -> Option<Duration> {
         }
         let n: u64 = number.parse().ok()?;
         number.clear();
-        total += n * match c {
+        let unit = match c {
             's' => 1,
             'm' => 60,
             'h' => 3600,
@@ -236,6 +236,8 @@ pub fn parse_duration(text: &str) -> Option<Duration> {
             'w' => 604_800,
             _ => return None,
         };
+        // Typed input (the silence editor's custom end): overflow is invalid, not a panic.
+        total = total.checked_add(n.checked_mul(unit)?)?;
     }
     if !number.is_empty() {
         return None;
@@ -341,6 +343,12 @@ mod tests {
         assert_eq!(parse_duration("2h30m"), Some(Duration::from_secs(9000)));
         assert_eq!(parse_duration("1w"), Some(Duration::from_secs(604_800)));
         assert_eq!(parse_duration("1x"), None);
+        assert_eq!(parse_duration("99999999999999w"), None, "overflow");
+        assert_eq!(
+            parse_duration("18446744073709551615s1s"),
+            None,
+            "overflow in the sum"
+        );
         assert_eq!(parse_duration("15"), None);
         assert_eq!(parse_duration(""), None);
     }

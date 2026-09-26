@@ -679,10 +679,11 @@ impl AlertsService {
         stop_forwards(old_forwards, cx);
         let user_token = ConnectionManager::global(cx).read(cx).bearer_token(cluster);
         // Keychain entries for external URLs: the entry's id first, then its members' ids.
-        let urls: Vec<String> = cluster_settings
+        // (the URL as in settings, the keychain's key; the API URL a probe compares against)
+        let urls: Vec<(String, String)> = cluster_settings
             .alertmanagers
             .iter()
-            .filter_map(|a| a.url.clone())
+            .filter_map(|a| Some((a.url.clone()?, crate::discover::url_of(a)?)))
             .collect();
         let id_keys: Vec<String> = keys.iter().filter(|k| k.contains('@')).cloned().collect();
         let settings = self.settings.clone();
@@ -935,6 +936,16 @@ impl AlertsService {
         }
         crate::changed(cx);
         cx.notify();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn forget_demand_for_test(&mut self) {
+        self.demand.borrow_mut().clear();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn wanted_for_test(&self, cluster: &ClusterId) -> bool {
+        self.demand.borrow().contains_key(cluster)
     }
 
     /// Puts a cluster with an Alertmanager into the cache (tests of the views).
@@ -1240,28 +1251,39 @@ fn stop_forwards(forwards: Vec<ForwardId>, cx: &mut App) {
     });
 }
 
-/// Authorization headers for `urls` from the keychain (first id with an entry wins).
-async fn read_headers(ids: &[String], urls: &[String]) -> Vec<(String, SecretString)> {
+/// Authorization headers for `urls` from the keychain (first id with an entry wins). The
+/// keychain key uses the URL as written in settings; the result is keyed by the API URL the
+/// probe compares against (with `path`, without a trailing slash).
+async fn read_headers(ids: &[String], urls: &[(String, String)]) -> Vec<(String, SecretString)> {
     if urls.is_empty() {
         return Vec::new();
     }
     let ids = ids.to_vec();
     let urls = urls.to_vec();
     tokio::task::spawn_blocking(move || {
-        urls.iter()
-            .filter_map(|url| {
-                ids.iter().find_map(|id| {
-                    kubyl_kube::auth::store::get(&auth_key(id, url))
-                        .inspect_err(|e| tracing::warn!("keychain: {e}"))
-                        .ok()
-                        .flatten()
-                        .map(|header| (url.clone(), header))
-                })
-            })
-            .collect()
+        headers_for(&ids, &urls, |key| {
+            kubyl_kube::auth::store::get(key)
+                .inspect_err(|e| tracing::warn!("keychain: {e}"))
+                .ok()
+                .flatten()
+        })
     })
     .await
     .unwrap_or_default()
+}
+
+fn headers_for(
+    ids: &[String],
+    urls: &[(String, String)],
+    get: impl Fn(&str) -> Option<SecretString>,
+) -> Vec<(String, SecretString)> {
+    urls.iter()
+        .filter_map(|(raw, api)| {
+            ids.iter()
+                .find_map(|id| get(&auth_key(id, raw)))
+                .map(|header| (api.clone(), header))
+        })
+        .collect()
 }
 
 async fn read_nodes(client: &kube::Client) -> NodeMap {
@@ -1903,6 +1925,32 @@ mod tests {
         assert_eq!(counts.inhibited, 1);
         assert_eq!(counts.worst(), Some(Severity::Critical));
         assert_eq!(Counts::default().worst(), None);
+    }
+
+    #[test]
+    fn headers_are_keyed_by_the_url_the_probe_uses() {
+        use secrecy::ExposeSecret as _;
+        let config = crate::settings::AlertmanagerConfig {
+            url: Some("https://mimir.example.com/".into()),
+            path: Some("alertmanager".into()),
+            ..Default::default()
+        };
+        let api = crate::discover::url_of(&config).unwrap();
+        assert_eq!(api, "https://mimir.example.com/alertmanager");
+        let target = crate::discover::from_settings(std::slice::from_ref(&config))
+            .remove(0)
+            .target;
+        assert!(matches!(&target, AmTarget::Url { url, .. } if *url == api));
+        let ids = vec!["shop/c/u@/k".to_string()];
+        let urls = vec![(config.url.clone().unwrap(), api.clone())];
+        // Saved under the URL as written in settings (what "Set … Header" stores).
+        let saved = auth_key(&ids[0], "https://mimir.example.com/");
+        let headers = headers_for(&ids, &urls, |key| {
+            (key == saved).then(|| SecretString::from("Bearer t".to_string()))
+        });
+        assert_eq!(headers.len(), 1);
+        assert_eq!(headers[0].0, api, "the probe finds it by the API URL");
+        assert_eq!(headers[0].1.expose_secret(), "Bearer t");
     }
 
     #[test]

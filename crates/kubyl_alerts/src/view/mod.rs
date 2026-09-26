@@ -340,7 +340,11 @@ impl AlertsView {
             .map(|c| {
                 (
                     c.clone(),
-                    service.cluster(c, Pace::View).map_or(0, |s| s.revision),
+                    // Not `Pace::View`: this runs on every service update, shown or not; the
+                    // render path keeps the fast pace for what is on screen.
+                    service
+                        .cluster(c, Pace::Background)
+                        .map_or(0, |s| s.revision),
                 )
             })
             .collect();
@@ -354,7 +358,7 @@ impl AlertsView {
         let mut resolved = Vec::new();
         let mut resolved_clusters = Vec::new();
         for cluster in &clusters {
-            if let Some(state) = service.cluster(cluster, Pace::View) {
+            if let Some(state) = service.cluster(cluster, Pace::Background) {
                 sources += state.sources.len() + usize::from(state.has_rules());
                 alerts.extend(state.alerts.iter().cloned());
                 alert_clusters.extend(std::iter::repeat_n(cluster.clone(), state.alerts.len()));
@@ -1066,6 +1070,17 @@ mod tests {
                 })
                 .unwrap();
             view.select_row(index, cx);
+        });
+        // Updates from the service don't count as looking: only rendering keeps the fast pace.
+        // (Checked inside one update: the test window redraws after it.)
+        let service_entity = service.clone();
+        view.update(cx, |view, cx| {
+            service_entity.update(cx, |s, _| s.forget_demand_for_test());
+            view.revisions.clear();
+            view.sync(cx);
+            assert!(!service_entity.read(cx).wanted_for_test(&cluster));
+            view.state(&cluster, cx);
+            assert!(service_entity.read(cx).wanted_for_test(&cluster));
         });
         // New alerts arrive and the order changes: the same alert stays selected.
         let mut changed: Vec<Alert> = (0..5200).rev().map(alert).collect();
