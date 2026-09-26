@@ -2,6 +2,61 @@
 
 All notable changes to Kubyl are documented here.
 
+## [0.2.3] - 2026-09-26
+
+### Bug Fixes
+
+- Data protection keychain for release builds, no more keychain prompts ([3362bb0](https://github.com/BirknerAlex/kubyl/commit/3362bb07e5eb13e566ad681f3b47f9859243757f))
+
+### Design
+
+- Phase 12 screenshots (Operators, OperatorHub, upgrade review, Helm releases, states) ([66b9c32](https://github.com/BirknerAlex/kubyl/commit/66b9c32bca4b59cfe5ce6c8593af4f73227ef687))
+
+### Kubyl_explorer
+
+- Helm Releases row under Administration, not gated on OLM (phase 12) ([2951c8f](https://github.com/BirknerAlex/kubyl/commit/2951c8f25af23b860e4ae723b1ee8b1041fdf0eb))
+
+### Kubyl_operators
+
+- OLM and Helm data layer ([b2d3718](https://github.com/BirknerAlex/kubyl/commit/b2d3718b22ffd017c580d0fa7481a27a30008182))
+- Services, views and dialogs ([e27e4bd](https://github.com/BirknerAlex/kubyl/commit/e27e4bde6a7716ac70fe3d0acd2b3e42f608b9cd))
+- Live tests; icons, plain-text descriptions, transient ResolutionFailed, review order, dialog focus ([ff2b54d](https://github.com/BirknerAlex/kubyl/commit/ff2b54dba6c78cab68af40077da60e1ca3561a84))
+- Release tabs wait for their cluster, OLM v1 template without installer accounts, 5,000-row test; olm-dev.sh --reset-manual and v1 with any cert-manager namespace; docs ([a74cb12](https://github.com/BirknerAlex/kubyl/commit/a74cb12866a89fd3fd107881d80ad4a4e342035b))
+- OLM v1 condition tones and Retrying, tab title follows the sub-tab, no list hints on blocking states, plain-word RBAC hints; olm-dev.sh v1 sample grafana-operator ([d814250](https://github.com/BirknerAlex/kubyl/commit/d814250b3115c3716c2ab5181cc9352c6d831f34))
+- Live tests point at olm-dev.sh --reset-manual ([af01a14](https://github.com/BirknerAlex/kubyl/commit/af01a1441ffa9ef5092868aea9d5fd1112f73fb1))
+- Loading until discovery is known; History loads revisions as they arrive (review) ([65c0472](https://github.com/BirknerAlex/kubyl/commit/65c04725c3acf554fab2dd713f31fe50f91343a5))
+- Only Subscription and CSV watches block api::installed; Helm watch errors before the scope; OperatorHub's installed filter follows subscriptions; v1 banner matches the template (review) ([fadb0d0](https://github.com/BirknerAlex/kubyl/commit/fadb0d05a175c8a822122212eeddac6f0afe8a69))
+
+### Kubyl_ui
+
+- Anchor icon (Helm releases, phase 12) ([fcd7c34](https://github.com/BirknerAlex/kubyl/commit/fcd7c34504ed74f6248c977ee9bce392eaafa3fa))
+
+### Kubyl_yaml
+
+- Open_draft opens a new-resource editor with given text and a note (for phase 12's operator examples) ([0152b96](https://github.com/BirknerAlex/kubyl/commit/0152b96acd713fbd3d49edcf983f367c7ec3015e))
+
+### Mockups
+
+- Board 7 frames for OperatorHub, install, upgrade review, alm-examples, install plans, subscriptions, Helm releases and the OLM states ([2373161](https://github.com/BirknerAlex/kubyl/commit/2373161b2a720bb6842c21d7cdb7516d06de15db))
+
+### Olm-dev.sh
+
+- --delete removes only a cert-manager --v1 installed, and operator-controller's CA where it went; plans: PROD confirmation per write (review) ([4d9ee19](https://github.com/BirknerAlex/kubyl/commit/4d9ee199940e996a1706bd177b0dd61a7e0ece3c))
+- --delete removes only what the script installed (marked namespaces); waits for a running cert-manager's webhook and retries operator-controller's apply (review) ([ad06856](https://github.com/BirknerAlex/kubyl/commit/ad06856c805f1eefeaa00133e07da99fe68643d4))
+
+### Plans
+
+- Phase 12 decisions (OLM data and joins, upgrade review sources, OperatorHub, install/uninstall, OLM v1, Helm, views) ([2236c0e](https://github.com/BirknerAlex/kubyl/commit/2236c0e4c747858dd640bb62b5a73d4ae50c7c1a))
+- Phase 12 done (checkboxes, handoff log; Operators views and OLM v1 rows) ([566557f](https://github.com/BirknerAlex/kubyl/commit/566557f816c9988fbb7b0dcf1c8db977bd16d289))
+
+### Release.yml
+
+- Sign with the certificate the provisioning profile names, fail on an expired profile (review) ([50fb698](https://github.com/BirknerAlex/kubyl/commit/50fb698555a70c602c82384e735d40184b27a2f9))
+
+### Workspace
+
+- Flate2 for gzip-encoded Helm releases and OLM bundles (phase 12) ([182ab96](https://github.com/BirknerAlex/kubyl/commit/182ab963a4911ad7369d2f5fec340b1959c97b51))
+
 ## [0.2.2] - 2026-09-26
 
 ### Cargo.lock
