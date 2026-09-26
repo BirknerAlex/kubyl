@@ -2,7 +2,7 @@
 //! the YAML template that installs one.
 
 use jiff::Timestamp;
-use kubyl_core::Gvr;
+use kubyl_core::{Gvr, Tone};
 use serde_json::Value;
 
 use super::model::{Condition, conditions, string_at, time_at};
@@ -64,19 +64,43 @@ impl ClusterExtension {
         self.conditions.iter().find(|c| c.kind == kind)
     }
 
-    /// `Installed`, `Installing`, `Failed` (`Installed=False` with a reason other than
-    /// progress), `Deprecated` stays a note.
-    pub fn status(&self) -> (&'static str, kubyl_core::Tone) {
-        use kubyl_core::Tone;
+    /// `Installed`, `Blocked`, `Retrying` (operator-controller keeps retrying an error, like a
+    /// CRD another installer owns), `Installing`, `Failed`; `Deprecated` stays a note.
+    pub fn status(&self) -> (&'static str, Tone) {
         let installed = self.condition("Installed");
         let progressing = self.condition("Progressing");
         match (installed, progressing) {
             (Some(i), _) if i.is_true() => ("Installed", Tone::Good),
             (_, Some(p)) if p.reason.as_deref() == Some("Blocked") => ("Blocked", Tone::Bad),
+            (_, Some(p)) if p.reason.as_deref() == Some("Retrying") => ("Retrying", Tone::Warning),
             (_, Some(p)) if p.is_true() => ("Installing", Tone::Info),
             (Some(i), _) if i.status == "False" => ("Failed", Tone::Bad),
             _ => ("Unknown", Tone::Muted),
         }
+    }
+}
+
+/// How a ClusterExtension condition reads: the `*Deprecated` ones are good when false,
+/// `Progressing` by its reason, the rest good when true.
+pub fn condition_tone(condition: &Condition) -> Tone {
+    let unknown = condition.status != "True" && condition.status != "False";
+    match condition.kind.as_str() {
+        _ if unknown => Tone::Muted,
+        kind if kind.ends_with("Deprecated") => {
+            if condition.is_true() {
+                Tone::Warning
+            } else {
+                Tone::Good
+            }
+        }
+        "Progressing" => match condition.reason.as_deref() {
+            Some("Succeeded") => Tone::Good,
+            Some("Blocked") => Tone::Bad,
+            Some("Retrying") => Tone::Warning,
+            _ => Tone::Info,
+        },
+        _ if condition.is_true() => Tone::Good,
+        _ => Tone::Bad,
     }
 }
 
@@ -160,6 +184,23 @@ mod tests {
         assert_eq!(ext.package.as_deref(), Some("argocd-operator"));
         assert_eq!(ext.version.as_deref(), Some("0.13.0"));
         assert_eq!(ext.status().0, "Installed");
+        // A CRD conflict: operator-controller retries, the extension isn't installing.
+        let retrying = ClusterExtension::parse(&json!({
+            "metadata": {"name": "argocd"},
+            "status": {"conditions": [
+                {"type": "Deprecated", "status": "False", "reason": "NotDeprecated"},
+                {"type": "BundleDeprecated", "status": "Unknown", "reason": "Absent"},
+                {"type": "Installed", "status": "False", "reason": "Failed"},
+                {"type": "Progressing", "status": "True", "reason": "Retrying"}]}
+        }))
+        .unwrap();
+        assert_eq!(retrying.status(), ("Retrying", Tone::Warning));
+        let tones: Vec<Tone> = retrying.conditions.iter().map(condition_tone).collect();
+        assert_eq!(
+            tones,
+            [Tone::Good, Tone::Muted, Tone::Bad, Tone::Warning],
+            "not deprecated is good, retrying warns"
+        );
         let catalog = ClusterCatalog::parse(&json!({
             "metadata": {"name": "operatorhubio"},
             "spec": {"source": {"type": "Image", "image": {"ref": "quay.io/operatorhubio/catalog:latest", "pollIntervalMinutes": 10}}},

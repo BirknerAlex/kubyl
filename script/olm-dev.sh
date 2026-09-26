@@ -8,7 +8,8 @@
 #   Operators view shows "Upgrade available" and Approve can be tried:
 #   `kubyl-manual/<package>` in its own namespace with an OwnNamespace OperatorGroup.
 # - With --v1: OLM v1 as well (operator-controller and catalogd from the operator-controller
-#   release, the operatorhub.io ClusterCatalog, and a ClusterExtension (argocd-operator).
+#   release, the operatorhub.io ClusterCatalog, and a ClusterExtension (grafana-operator; the
+#   dev cluster's Argo CD owns the CRDs argocd-operator would install).
 #   operator-controller needs cert-manager: the one running in the cluster
 #   is used (install cert-manager from OperatorHub in Kubyl first, that's the phase 12 test),
 #   else cert-manager's release manifests are applied.
@@ -214,7 +215,7 @@ if $V1; then
     sh -c "kubectl --context '$CONTEXT' get clustercatalog operatorhubio -o jsonpath='{.status.conditions[?(@.type==\"Serving\")].status}' | grep -qx True"
   # operator-controller 1.12+ installs with its own service account (spec.serviceAccount is
   # deprecated and ignored).
-  log "ClusterExtension kubyl-v1-sample (argocd-operator)"
+  log "ClusterExtension kubyl-v1-sample (grafana-operator)"
   k apply -f - >/dev/null <<'EOF'
 apiVersion: v1
 kind: Namespace
@@ -230,7 +231,7 @@ spec:
   source:
     sourceType: Catalog
     catalog:
-      packageName: argocd-operator
+      packageName: grafana-operator
 EOF
 fi
 

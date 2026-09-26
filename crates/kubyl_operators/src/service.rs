@@ -649,7 +649,7 @@ fn build(state: &ClusterOlm, cx: &App) -> Snapshot {
         match store.status() {
             StoreStatus::Waiting | StoreStatus::Loading => snapshot.loading = true,
             StoreStatus::Forbidden => snapshot.problems.push(format!(
-                "Forbidden: you can't list {what} cluster-wide. Ask for a role with `list` and `watch` on `{what}`."
+                "Forbidden: you can't list {what} cluster-wide. Ask for a role that can list and watch {what}."
             )),
             StoreStatus::Error(err) if !store.status().is_settled() || store.is_empty() => {
                 snapshot.problems.push(format!("{what}: {err}"))

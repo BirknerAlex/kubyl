@@ -1700,10 +1700,14 @@ impl Render for UninstallDialog {
                 let count = match watch {
                     Some((_, _, handle)) => {
                         let store = handle.read(cx);
-                        if store.status().is_settled() {
-                            format!("{} instances", store.len())
-                        } else {
-                            "…".into()
+                        match store.status() {
+                            kubyl_resources::StoreStatus::Forbidden => "no access".into(),
+                            status if !status.is_settled() => "…".into(),
+                            _ => match store.len() {
+                                0 => "no instances".into(),
+                                1 => "1 instance".into(),
+                                n => format!("{n} instances"),
+                            },
                         }
                     }
                     None => "not served".into(),

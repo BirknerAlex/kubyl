@@ -139,7 +139,7 @@ pub fn plan_install(
                 None => {
                     // Vanilla OLM ships `operators/global-operators`; recreate that.
                     if groups.iter().any(|g| g.namespace == "operators") {
-                        return Err("No OperatorGroup targets all namespaces, and `operators` has one that doesn't. Pick a namespace.".into());
+                        return Err("No OperatorGroup targets all namespaces, and the operators namespace has one that doesn't. Pick a namespace.".into());
                     }
                     (
                         "operators".to_string(),
@@ -156,7 +156,7 @@ pub fn plan_install(
             let ns = ns.trim().to_string();
             if !valid_namespace(&ns) {
                 return Err(format!(
-                    "`{ns}` isn't a valid namespace name (lowercase letters, digits and dashes)."
+                    "\"{ns}\" isn't a valid namespace name (lowercase letters, digits and dashes)."
                 ));
             }
             let here: Vec<&OperatorGroup> = groups.iter().filter(|g| g.namespace == ns).collect();

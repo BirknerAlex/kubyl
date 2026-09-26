@@ -11,7 +11,7 @@ pub fn describe(err: &kube::Error, verb: &str, resource: &str, namespace: Option
     match err {
         kube::Error::Api(status) if status.code == 403 => {
             format!(
-                "Forbidden: you can't {verb} {resource} {scope}. Ask for a role with `{verb}` on `{resource}`."
+                "Forbidden: you can't {verb} {resource} {scope}. Ask for a role that can {verb} {resource}."
             )
         }
         kube::Error::Api(status) if status.code == 404 => {
@@ -59,7 +59,7 @@ mod tests {
         let text = describe(&err, "list", "secrets", Some("shop"));
         assert_eq!(
             text,
-            "Forbidden: you can't list secrets in shop. Ask for a role with `list` on `secrets`."
+            "Forbidden: you can't list secrets in shop. Ask for a role that can list secrets."
         );
         assert!(is_forbidden(&err));
         assert!(describe(&api(403, ""), "get", "configmaps", None).contains("cluster-wide"));

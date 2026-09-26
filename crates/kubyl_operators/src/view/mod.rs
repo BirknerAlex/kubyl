@@ -390,6 +390,8 @@ pub struct OperatorsView {
     pub(crate) details_open: bool,
     /// The keys of the selectable rows of the current sub-tab, in order (keyboard navigation).
     pub(crate) keys: Vec<String>,
+    /// The sub-tab shows a state instead of its list (no OLM, loading…): no list key hints.
+    blocked: bool,
     /// Namespace the Helm list is limited to (opened from a favorite).
     pub(crate) helm_namespace: Option<String>,
     pub(crate) instances: Option<Instances>,
@@ -451,6 +453,7 @@ impl OperatorsView {
             selected: HashMap::new(),
             details_open: true,
             keys: Vec::new(),
+            blocked: false,
             helm_namespace: None,
             instances: None,
             helm_resources: None,
@@ -825,6 +828,9 @@ impl OperatorsView {
     }
 
     pub(crate) fn hints(&self, cx: &App) -> Vec<(SharedString, SharedString)> {
+        if self.blocked {
+            return Vec::new();
+        }
         let read_only = self.read_only(cx);
         let mut hints: Vec<(SharedString, SharedString)> = ActionRegistry::global(cx)
             .hints(self.tab.context())
@@ -1002,10 +1008,11 @@ impl Focusable for OperatorsView {
 
 impl TabView for OperatorsView {
     fn tab_title(&self, cx: &App) -> SharedString {
-        let base = if self.has_olm(cx) {
-            "Operators"
-        } else {
+        // Like the toolbar: the Helm releases sub-tab is the Helm Releases row's tab.
+        let base = if self.tab == SubTab::Helm {
             "Helm Releases"
+        } else {
+            "Operators"
         };
         let active =
             ActiveContext::global(cx).cluster.as_ref().map(|c| &c.id) == Some(&self.cluster);
@@ -1016,11 +1023,11 @@ impl TabView for OperatorsView {
         }
     }
 
-    fn tab_icon(&self, cx: &App) -> Option<SharedString> {
-        Some(if self.has_olm(cx) {
-            IconName::Blocks.path()
-        } else {
+    fn tab_icon(&self, _: &App) -> Option<SharedString> {
+        Some(if self.tab == SubTab::Helm {
             IconName::Anchor.path()
+        } else {
+            IconName::Blocks.path()
         })
     }
 
@@ -1046,9 +1053,13 @@ impl Render for OperatorsView {
         let toolbar = self.render_toolbar(cx);
         let tabs = self.render_tabs(window, cx);
         let availability = self.availability(cx);
-        let body: AnyElement = if self.tab.needs_olm()
-            && let Some(state) = states::blocking(availability, &self.snapshot(cx))
-        {
+        let blocking = self
+            .tab
+            .needs_olm()
+            .then(|| states::blocking(availability, &self.snapshot(cx)))
+            .flatten();
+        self.blocked = blocking.is_some();
+        let body: AnyElement = if let Some(state) = blocking {
             self.keys.clear();
             self.render_state(state, cx)
         } else {

@@ -32,7 +32,7 @@ impl Driver {
 /// Why a release couldn't be read. Never contains any of the release's content.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum DecodeError {
-    #[error("no `release` key in the {0}")]
+    #[error("no release key in the {0}")]
     Missing(&'static str),
     #[error("the release isn't valid base64")]
     Base64,

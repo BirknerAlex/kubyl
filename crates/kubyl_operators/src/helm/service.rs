@@ -485,10 +485,10 @@ impl Helm {
             .collect();
         let problem = match (secrets.status(), &state.scope) {
             (StoreStatus::Forbidden, Some(ns)) => Some(format!(
-                "Helm stores releases in Secrets, and you can't list secrets in {ns} either. Ask for a role with `list` and `watch` on `secrets`."
+                "Helm stores releases in Secrets, and you can't list secrets in {ns} either. Ask for a role that can list and watch secrets."
             )),
             (StoreStatus::Forbidden, None) => Some(
-                "Helm stores releases in Secrets, and you can't list secrets cluster-wide. Ask for a role with `list` and `watch` on `secrets`, or pick a namespace you can read."
+                "Helm stores releases in Secrets, and you can't list secrets cluster-wide. Ask for a role that can list and watch secrets, or pick a namespace you can read."
                     .to_string(),
             ),
             (_, Some(ns)) => Some(format!(

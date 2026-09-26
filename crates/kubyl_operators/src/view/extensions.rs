@@ -3,10 +3,10 @@
 use gpui::{AnyElement, Context, FontWeight, IntoElement, Window, div, prelude::*};
 use kubyl_core::actions::OpenView;
 use kubyl_core::{ColumnDef, ColumnWidth, ResourceRef, Tone, ViewKind, ViewRequest};
-use kubyl_ui::{ActiveColors, Button, IconName, fonts, h_flex, u, v_flex};
+use kubyl_ui::{ActiveColors, Button, IconName, fonts, h_flex, tone_color, u, v_flex};
 
 use super::{OperatorsView, SubTab};
-use crate::olm::v1::{ClusterCatalog, ClusterExtension};
+use crate::olm::v1::{ClusterCatalog, ClusterExtension, condition_tone};
 use crate::widgets;
 
 fn extension_key(ext: &ClusterExtension) -> String {
@@ -164,14 +164,14 @@ impl OperatorsView {
             );
             let mut section = widgets::section(format!("{} · conditions", ext.name), &colors);
             for condition in &ext.conditions {
-                let good = condition.is_true() && condition.kind != "Deprecated";
+                let tone = condition_tone(condition);
                 section = section.child(widgets::note(
-                    if good {
-                        IconName::CircleCheck
-                    } else {
-                        IconName::TriangleAlert
+                    match tone {
+                        Tone::Good => IconName::CircleCheck,
+                        Tone::Bad | Tone::Warning => IconName::TriangleAlert,
+                        _ => IconName::Info,
                     },
-                    if good { colors.green } else { colors.yellow },
+                    tone_color(tone, &colors),
                     format!(
                         "{} · {}{}",
                         condition.kind,
