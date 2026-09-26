@@ -472,7 +472,9 @@ pub(crate) mod tests {
         // Contexts without siblings keep their id; groups get a group id.
         assert!(entries[5].id.as_str().starts_with("ns-0/"));
         assert!(entries[0].id.as_str().starts_with(GROUP_PREFIX));
-        assert!(entries[0].id.as_str().ends_with("/config/"));
+        // `<file>/`: the file's path (with the platform's separators), then `/`.
+        assert!(entries[0].id.as_str().ends_with("config/"));
+        assert!(!entries[0].id.as_str().ends_with("config"));
     }
 
     #[test]
