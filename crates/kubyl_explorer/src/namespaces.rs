@@ -11,7 +11,7 @@ use kubyl_core::{ActiveContext, ClusterId, Notification, NotificationCenter};
 use kubyl_kube::ConnectionManager;
 use kubyl_ui::{ActiveColors, Icon, IconButton, IconName, Kbd, fonts, h_flex, u, v_flex};
 
-use crate::favorites::{Favorite, Favorites};
+use crate::favorites::Favorites;
 
 actions!(
     namespace_switcher,
@@ -144,9 +144,8 @@ impl NamespaceSwitcher {
         else {
             return;
         };
-        let favorite = Favorite::new(&context, namespace);
         Favorites::global(cx).update(cx, |f, cx| {
-            f.toggle(favorite, cx);
+            f.toggle_namespace(&context, namespace, cx);
         });
     }
 
@@ -171,14 +170,23 @@ impl Render for NamespaceSwitcher {
         let items = self.items(cx);
         self.selected = self.selected.min(items.len().saturating_sub(1));
         let manager = ConnectionManager::global(cx);
-        let (cluster_name, listed) = {
+        let (cluster_name, listed, from_kubeconfig) = {
             let m = manager.read(cx);
+            let namespaces = m.namespaces(&self.cluster);
+            // The namespaces of a group's contexts (`oc project`), or of the kubeconfig while
+            // listing is forbidden, are marked.
+            let group = m.context(&self.cluster).is_some_and(|c| c.is_group());
+            let from_kubeconfig = if group || !namespaces.listed {
+                namespaces.kubeconfig
+            } else {
+                Vec::new()
+            };
             (
                 m.display_name(&self.cluster),
-                m.namespaces(&self.cluster).listed,
+                namespaces.listed,
+                from_kubeconfig,
             )
         };
-        let context = manager.read(cx).context(&self.cluster).cloned();
         let current = ActiveContext::global(cx).namespace.clone();
         let favorites = Favorites::global(cx);
         let mut list = v_flex().p(u(6.0));
@@ -186,10 +194,16 @@ impl Render for NamespaceSwitcher {
             let selected = ix == self.selected;
             let hover = colors.hover;
             let is_current = *item == current;
-            let starred = match (item, &context) {
-                (Some(ns), Some(context)) => favorites.read(cx).contains_namespace(context, ns),
-                _ => false,
+            let starred = match item {
+                Some(ns) => favorites
+                    .read(cx)
+                    .namespace_position(&self.cluster, ns, cx)
+                    .is_some(),
+                None => false,
             };
+            let kubeconfig = item
+                .as_ref()
+                .is_some_and(|ns| from_kubeconfig.iter().any(|k| k == ns.as_ref()));
             let label = item.clone().unwrap_or_else(|| "All namespaces".into());
             let row = h_flex()
                 .id(("namespace", ix))
@@ -222,7 +236,16 @@ impl Render for NamespaceSwitcher {
                         })
                         .when(is_current, |this| this.text_color(colors.accent))
                         .child(label),
-                );
+                )
+                .when(kubeconfig, |this| {
+                    this.child(
+                        div()
+                            .flex_none()
+                            .text_size(u(11.5))
+                            .text_color(colors.text_dim)
+                            .child("from kubeconfig"),
+                    )
+                });
             let row = match item.clone() {
                 Some(ns) => row.child(
                     IconButton::new(

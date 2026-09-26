@@ -151,7 +151,11 @@ impl ClustersSection {
         if let Some(manager) = ConnectionManager::try_global(cx) {
             subscriptions.push(
                 cx.subscribe(&manager, |this, _, event: &ConnectionEvent, cx| {
-                    if matches!(event, ConnectionEvent::ContextsChanged) {
+                    if matches!(
+                        event,
+                        ConnectionEvent::ContextsChanged | ConnectionEvent::Rekeyed { .. }
+                    ) {
+                        this.migrate_ids(cx);
                         this.connect_expanded(cx);
                     }
                     if matches!(
@@ -183,9 +187,39 @@ impl ClustersSection {
             _subscriptions: subscriptions,
         };
         // Expanded roots connect on start (now, or once the kubeconfigs are loaded).
+        this.migrate_ids(cx);
         this.connect_expanded(cx);
         this.schedule_count_sync(cx);
         this
+    }
+
+    /// Keeps expanded roots and groups under the current cluster ids (contexts were grouped,
+    /// an entry was re-keyed).
+    fn migrate_ids(&mut self, cx: &mut Context<Self>) {
+        let Some(manager) = ConnectionManager::try_global(cx) else {
+            return;
+        };
+        let manager = manager.read(cx);
+        if manager.is_loading() {
+            return;
+        }
+        let resolve = |id: &str| manager.resolve(&ClusterId::new(id)).to_string();
+        let roots: std::collections::BTreeSet<String> =
+            self.state.roots.iter().map(|r| resolve(r)).collect();
+        let groups: std::collections::BTreeSet<String> = self
+            .state
+            .groups
+            .iter()
+            .map(|key| match key.rsplit_once('|') {
+                Some((cluster, group)) => format!("{}|{group}", resolve(cluster)),
+                None => key.clone(),
+            })
+            .collect();
+        if roots != self.state.roots || groups != self.state.groups {
+            self.state.roots = roots;
+            self.state.groups = groups;
+            self.save(cx);
+        }
     }
 
     /// Connects expanded roots that weren't connected yet this session.
@@ -824,6 +858,13 @@ impl ClustersSection {
                 .context_menu(move |menu, _, cx| {
                     let connected = ConnectionManager::try_global(cx)
                         .is_some_and(|m| m.read(cx).state(&cluster).is_connected());
+                    // A group can show its contexts separately; a context of such a group can
+                    // go back to one entry.
+                    let grouping = ConnectionManager::try_global(cx).and_then(|m| {
+                        let entry = m.read(cx).context(&cluster)?;
+                        let group = entry.group.clone()?;
+                        Some((group, entry.is_group()))
+                    });
                     let switch = cluster.clone();
                     let toggle = cluster.clone();
                     let favorite = cluster.clone();
@@ -864,6 +905,19 @@ impl ClustersSection {
                             crate::actions::add_favorite(&favorite, &namespace, cx);
                         }),
                     )
+                    .when_some(grouping, |menu, (group, grouped)| {
+                        menu.item(
+                            gpui_component::menu::PopupMenuItem::new(if grouped {
+                                "Show Contexts Separately"
+                            } else {
+                                "Show as One Cluster"
+                            })
+                            .on_click(move |_, _, cx| {
+                                ConnectionManager::global(cx)
+                                    .update(cx, |m, cx| m.set_group_separate(&group, grouped, cx));
+                            }),
+                        )
+                    })
                     .separator()
                     .menu(
                         "Clusters & Kubeconfigs…",
@@ -1017,10 +1071,17 @@ fn cluster_tooltip(cluster: &ClusterId, cx: &App) -> gpui::AnyElement {
     let source = info
         .map(|c| kubyl_kube::settings::display_path(&c.file))
         .unwrap_or_default();
-    v_flex()
+    let mono = |text: String, color| {
+        div()
+            .font_family(fonts::MONO)
+            .text_size(u(11.0))
+            .text_color(color)
+            .child(text)
+    };
+    let mut tip = v_flex()
         .py(u(4.0))
         .gap(u(3.0))
-        .max_w(u(420.0))
+        .max_w(u(460.0))
         .text_size(u(12.0))
         .child(
             div()
@@ -1033,15 +1094,47 @@ fn cluster_tooltip(cluster: &ClusterId, cx: &App) -> gpui::AnyElement {
                 .text_color(colors.text_muted)
                 .children(dot.map(StatusDot::new))
                 .child(div().min_w_0().child(state_line(&state))),
-        )
-        .child(
+        );
+    let Some(info) = info.filter(|i| i.is_group()) else {
+        return tip.child(mono(source, colors.text_dim)).into_any_element();
+    };
+    // A group: who it signs in as, and the contexts it stands for.
+    tip = tip
+        .child(div().text_color(colors.text_dim).child(format!(
+            "User {} on {}",
+            info.user.clone().unwrap_or_default(),
+            info.server.clone().unwrap_or_default()
+        )))
+        .child(div().pt(u(3.0)).text_color(colors.text_dim).child(format!(
+            "{} contexts in {source}, shown as one cluster:",
+            info.members.len()
+        )));
+    const SHOWN: usize = 6;
+    for member in info.members.iter().take(SHOWN) {
+        tip = tip.child(
+            h_flex()
+                .gap(u(10.0))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(mono(member.context.clone(), colors.text_muted)),
+                )
+                .child(mono(
+                    member.namespace.clone().unwrap_or_else(|| "default".into()),
+                    colors.text_dim,
+                )),
+        );
+    }
+    if info.members.len() > SHOWN {
+        tip = tip.child(
             div()
-                .font_family(fonts::MONO)
-                .text_size(u(11.0))
                 .text_color(colors.text_dim)
-                .child(source),
-        )
-        .into_any_element()
+                .child(format!("and {} more", info.members.len() - SHOWN)),
+        );
+    }
+    tip.into_any_element()
 }
 
 impl Focusable for ClustersSection {

@@ -225,16 +225,45 @@ impl Favorites {
         self.changed(cx);
     }
 
-    /// Whether `namespace` on `cluster` is a favorite (the namespace switcher's star).
-    pub fn contains_namespace(&self, context: &ContextInfo, namespace: &str) -> bool {
-        self.position(&Favorite::new(context, namespace)).is_some()
+    /// The favorite of `namespace` on the cluster entry `cluster` (saved with any of its
+    /// contexts), without a kind or selector: the namespace switcher's star.
+    pub fn namespace_position(
+        &self,
+        cluster: &ClusterId,
+        namespace: &str,
+        cx: &App,
+    ) -> Option<usize> {
+        self.state.items.iter().position(|f| {
+            f.namespace == namespace
+                && f.kind.is_none()
+                && f.selector.is_none()
+                && cluster_of(f, cx).as_ref() == Some(cluster)
+        })
+    }
+
+    /// Adds or removes the namespace favorite of a cluster entry. Returns whether it's a
+    /// favorite now.
+    pub fn toggle_namespace(
+        &mut self,
+        context: &ContextInfo,
+        namespace: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        match self.namespace_position(&context.id, namespace, cx) {
+            Some(index) => {
+                self.remove(index, cx);
+                false
+            }
+            None => self.add(Favorite::new(context, namespace), cx),
+        }
     }
 }
 
-/// The cluster a favorite resolves to right now.
+/// The cluster entry a favorite resolves to right now (the group of a grouped context).
 pub fn cluster_of(favorite: &Favorite, cx: &App) -> Option<ClusterId> {
     let manager = kubyl_kube::ConnectionManager::try_global(cx)?;
-    resolve(favorite, manager.read(cx).all_contexts()).map(|c| c.id.clone())
+    let manager = manager.read(cx);
+    resolve(favorite, manager.all_contexts()).map(|c| manager.resolve(&c.id))
 }
 
 #[cfg(test)]
@@ -261,6 +290,8 @@ mod tests {
             tls_server_name: None,
             ca: CaSource::System,
             error: None,
+            members: Vec::new(),
+            group: None,
         }
     }
 
