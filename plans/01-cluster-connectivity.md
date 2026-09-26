@@ -116,7 +116,11 @@ because phase 00's `dispatch_or_explain` only saw element action handlers, not t
 - kube needs a crypto backend for rustls: `ring` (builds everywhere without cmake/nasm). kube 4.2
   pins serde-saphyr 0.0.29, which needs `smallvec < 1.16`; the workspace pin moved to 1.15.2.
 - `cargo deny` ignores RUSTSEC-2023-0071 (`rsa` via openidconnect, only public-key verification).
-- Credential store: OS keychain via `keyring` 4 (v1 API). `KUBYL_CREDENTIAL_STORE=file` uses
+- Credential store: OS keychain via `keyring` 4 (v1 API). On macOS, release builds (with the
+  provisioning profile that grants `keychain-access-groups`, see `docs/RELEASING.md`) use the
+  data protection keychain through `apple-native-keyring-store`'s `protected` store: no prompts,
+  also not after updates. Everything else uses the login keychain; items earlier releases left
+  there aren't migrated. `KUBYL_CREDENTIAL_STORE=file` uses
   `<config dir>/dev-credentials.json` (0600, plain text, dev only; logs a warning),
   `=memory` keeps secrets for the run (tests, screenshots).
 
@@ -154,7 +158,9 @@ The Clusters tab is `ViewKind::Custom("clusters")` (`kubyl_kube::ui::clusters_vi
   large ID tokens aren't persisted there (the refresh token is; the next start refreshes).
 - Linux: the keychain is the Secret Service over D-Bus (zbus); without a running secret service
   the store fails and a warning is logged — sign-in still works for the session.
-- macOS: unsigned dev builds trigger keychain prompts on every rebuild; use
+- macOS: the login keychain trusts apps by code signature, and `cargo` builds are only ad-hoc
+  signed (a new cdhash per build); writing an item also resets its partition list to the writer.
+  So unsigned dev builds trigger keychain prompts on every rebuild; use
   `KUBYL_CREDENTIAL_STORE=file` (or `memory`) in development. Apps started from Finder get the
   login shell's `PATH` (`$SHELL -l -c`, 5 s timeout, run once in the background).
 - `script/oidc-dev.sh` uses `dex.127.0.0.1.nip.io` (public wildcard DNS → 127.0.0.1) as the

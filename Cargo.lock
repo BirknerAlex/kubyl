@@ -5063,6 +5063,7 @@ name = "kubyl_kube"
 version = "0.2.2"
 dependencies = [
  "anyhow",
+ "apple-native-keyring-store",
  "base64 0.22.1",
  "dirs 7.0.0",
  "futures",
