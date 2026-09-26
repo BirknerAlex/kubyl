@@ -110,10 +110,11 @@ macOS kills Kubyl at launch unless a provisioning profile embedded in the app gr
    base64 -i Kubyl_Developer_ID.provisionprofile | gh secret set MACOS_PROVISIONING_PROFILE
    ```
 
-The workflow embeds it as `Kubyl.app/Contents/embedded.provisionprofile` and fails before
-signing when the secret is missing or the profile doesn't grant what `entitlements.plist`
-claims. macOS checks the profile at every launch: a new or revoked certificate needs a new
-profile (Developer ID profiles themselves are valid for about 18 years).
+The workflow embeds it as `Kubyl.app/Contents/embedded.provisionprofile`, signs with the
+certificate the profile names, and fails before signing when the secret is missing, the profile
+has expired, doesn't name the certificate in `MACOS_CERTIFICATE_P12`, or doesn't grant what
+`entitlements.plist` claims. macOS checks the profile at every launch: a new or revoked
+certificate needs a new profile (Developer ID profiles themselves are valid for about 18 years).
 
 Builds without the profile (`cargo run`, local builds) can't use the data protection keychain
 and fall back to the login keychain, which asks after every rebuild; use
