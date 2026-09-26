@@ -37,6 +37,7 @@ use kubyl_resources::format::{
     parse_quantity, seconds_since, str_at, timestamp,
 };
 use kubyl_resources::metrics::{Metrics, SourceStatus};
+use kubyl_resources::route;
 use kubyl_resources::{
     ResourceSelection, ResourceStore, ResourceStores, StoreHandle, StoreKey, object_key,
 };
@@ -50,6 +51,7 @@ use crate::catalog;
 use crate::dialogs::{self, ConfirmSpec};
 
 mod data;
+mod routes;
 
 /// How long the selection must stay put before related objects are loaded.
 const SETTLE: Duration = Duration::from_millis(250);
@@ -166,6 +168,9 @@ struct Related {
     replica_sets: Option<StoreHandle>,
     endpoints: Option<StoreHandle>,
     volume: Option<StoreHandle>,
+    /// A Route's backends: the namespace's Services and the backends' EndpointSlices.
+    services: Option<StoreHandle>,
+    endpoint_slices: Option<StoreHandle>,
     /// Stores of owners, one per level of the chain.
     owners: Vec<StoreHandle>,
     _observers: Vec<Subscription>,
@@ -471,6 +476,31 @@ impl DetailsContent {
                 let key = StoreKey::new(cluster.clone(), core("endpoints"), ns.clone())
                     .fields(format!("metadata.name={}", target.name));
                 self.related.endpoints = Some(self.acquire(key, cx));
+            }
+            // Backend Services → their EndpointSlices and pods.
+            "Route" if target.gvr.group == route::GROUP => {
+                let services: Vec<String> = route::Route::parse(&object)
+                    .services()
+                    .map(|b| b.name.clone())
+                    .collect();
+                if let Some(ns) = &ns
+                    && !services.is_empty()
+                {
+                    let key = StoreKey::new(cluster.clone(), core("services"), Some(ns.clone()));
+                    self.related.services = Some(self.acquire(key, cx));
+                    let key = StoreKey::new(
+                        cluster.clone(),
+                        Gvr::new("discovery.k8s.io", "v1", "endpointslices"),
+                        Some(ns.clone()),
+                    )
+                    .labels(format!(
+                        "kubernetes.io/service-name in ({})",
+                        services.join(",")
+                    ));
+                    self.related.endpoint_slices = Some(self.acquire(key, cx));
+                    let pods = StoreKey::new(cluster.clone(), core("pods"), Some(ns.clone()));
+                    self.related.pods = Some(self.acquire(pods, cx));
+                }
             }
             // Who uses them ("Used by").
             "ConfigMap" | "Secret" => {
@@ -964,6 +994,9 @@ impl DetailsContent {
                     );
                 }
             }
+            "Route" if target.gvr.group == route::GROUP => {
+                pills = routes::route_pills(&route::Route::parse(object), pills);
+            }
             _ => {
                 if let Some(phase) = object.pointer("/status/phase").and_then(Value::as_str) {
                     pills = pills.child(StatusPill::new(phase.to_string(), status_tone(phase)));
@@ -1065,6 +1098,9 @@ impl DetailsContent {
             "Service" => out.extend(self.render_service(object, target, &colors, cx)),
             "PersistentVolumeClaim" => out.extend(self.render_pvc(object, target, &colors, cx)),
             "Ingress" => out.extend(self.render_ingress(object, target, &colors)),
+            "Route" if target.gvr.group == route::GROUP => {
+                out.extend(self.render_route(object, target, &colors, cx));
+            }
             "ConfigMap" | "Secret" => {
                 let secret = target.kind == "Secret";
                 out.extend(self.render_data(object, target, secret, &colors, cx));
@@ -1089,6 +1125,15 @@ impl DetailsContent {
                     Box::new(move |pod| uses_claim(pod, &claim)),
                     "No pod uses this claim.",
                 ))
+            }
+            // The pods behind a Route's backend Services.
+            "Route" if target.gvr.group == route::GROUP => {
+                let selectors = self.route_selectors(object, cx);
+                (!selectors.is_empty()).then(|| {
+                    let filter: PodFilter =
+                        Box::new(move |pod| selectors.iter().any(|s| matches_selector(pod, s)));
+                    (filter, "No pods match the backend Services' selectors.")
+                })
             }
             kind => selector_of(kind, object).map(|selector| {
                 let filter: PodFilter = Box::new(move |pod| matches_selector(pod, &selector));
@@ -1998,8 +2043,22 @@ impl DetailsContent {
             target.namespace.clone(),
             target.name.clone(),
         );
+        self.forward_rows(reference, ports, label, "", colors, cx)
+    }
+
+    /// [`Self::port_list`] for the ports of `reference` (the shown object, or e.g. a Route's
+    /// backend Service). `id`: a prefix that keeps element ids unique when several lists show.
+    fn forward_rows(
+        &self,
+        reference: ResourceRef,
+        ports: Vec<PortRow>,
+        label: Option<&'static str>,
+        id: &str,
+        colors: &Colors,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let can_forward = !ConnectionManager::try_global(cx)
-            .map(|m| m.read(cx).caps(&target.cluster))
+            .map(|m| m.read(cx).caps(&reference.cluster))
             .unwrap_or_default()
             .read_only
             && !self.gone;
@@ -2019,7 +2078,7 @@ impl DetailsContent {
                             Some(local) => {
                                 let text = url.clone().unwrap_or_else(|| local.clone());
                                 div()
-                                    .id(SharedString::from(format!("forward-open-{ix}")))
+                                    .id(SharedString::from(format!("{id}forward-open-{ix}")))
                                     .font_family(fonts::MONO)
                                     .text_size(u(11.5))
                                     .text_color(colors.green)
@@ -2058,11 +2117,14 @@ impl DetailsContent {
                         .child(tooltip_wrap(
                             "forward-stop-tip",
                             "Stop the port-forward",
-                            IconButton::new(("forward-stop", ix), IconName::X)
-                                .icon_size(11.0)
-                                .on_click(move |_, window, cx| {
-                                    window.dispatch_action(Box::new(StopForward(id)), cx)
-                                }),
+                            IconButton::new(
+                                SharedString::from(format!("{id}forward-stop-{ix}")),
+                                IconName::X,
+                            )
+                            .icon_size(11.0)
+                            .on_click(move |_, window, cx| {
+                                window.dispatch_action(Box::new(StopForward(id)), cx)
+                            }),
                         ))
                         .into_any_element(),
                 )
@@ -2071,7 +2133,7 @@ impl DetailsContent {
                 let port = row.port;
                 Some(
                     row_button(
-                        format!("forward-{ix}"),
+                        format!("{id}forward-{ix}"),
                         IconName::ArrowRight,
                         "Forward",
                         colors,
@@ -2717,6 +2779,65 @@ mod tests {
         assert!(selector_of("ConfigMap", &deployment).is_none());
         let service = json!({"spec": {"selector": {"app": "web"}}});
         assert_eq!(selector_of("Service", &service).unwrap().len(), 1);
+    }
+
+    #[gpui::test]
+    fn route_keys_stay_masked_until_revealed(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            kubyl_core::init(cx);
+            kubyl_settings::init_with_dir(cx, dir.path());
+            kubyl_ui::init(cx);
+            kubyl_resources::init(cx);
+        });
+        let cluster = ClusterId::new("c");
+        let gvr = Gvr::new("route.openshift.io", "v1", "routes");
+        let key = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBg\n-----END PRIVATE KEY-----\n";
+        let object = json!({"apiVersion": "route.openshift.io/v1", "kind": "Route",
+            "metadata": {"name": "secure", "namespace": "shop",
+                         "creationTimestamp": "2026-09-26T10:00:00Z"},
+            "spec": {"host": "secure.apps.example.com", "to": {"kind": "Service", "name": "api"},
+                     "tls": {"termination": "reencrypt", "certificate": "CERT", "key": key}},
+            "status": {"ingress": [{"routerName": "default", "host": "secure.apps.example.com",
+                "conditions": [{"type": "Admitted", "status": "True"}]}]}});
+        let store_key = StoreKey::new(cluster.clone(), gvr.clone(), Some("shop".into()));
+        let target = Target {
+            cluster,
+            gvr,
+            kind: "Route".into(),
+            namespace: Some("shop".into()),
+            name: "secure".into(),
+        };
+        let (content, cx) = cx.add_window_view(|_, cx| {
+            let store = cx.new(|_| ResourceStore::from_objects(store_key, [object]));
+            let mut content = DetailsContent::new(Mode::Summary, cx);
+            content.set_target(Some(target), None, Some(store), cx);
+            content
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("route-key-masked").is_some());
+        assert!(cx.debug_bounds("route-key-revealed").is_none());
+
+        // The eye reveals the key; clicking it again masks it.
+        let reveal = cx.debug_bounds("route-key-reveal").expect("reveal button");
+        cx.simulate_click(reveal.center(), gpui::Modifiers::none());
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("route-key-revealed").is_some());
+        assert!(cx.debug_bounds("route-key-masked").is_none());
+        content.update(cx, |content, _| {
+            assert!(content.revealed.contains(routes::KEY_REVEAL));
+        });
+        let reveal = cx.debug_bounds("route-key-reveal").expect("reveal button");
+        cx.simulate_click(reveal.center(), gpui::Modifiers::none());
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("route-key-masked").is_some());
+
+        // Another object forgets the reveal.
+        content.update(cx, |content, cx| {
+            content.revealed.insert(routes::KEY_REVEAL.to_string());
+            content.set_target(None, None, None, cx);
+            assert!(content.revealed.is_empty());
+        });
     }
 
     #[test]

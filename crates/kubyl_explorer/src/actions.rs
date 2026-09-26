@@ -872,17 +872,36 @@ fn copy_yaml(cx: &mut App) {
         let result = task.await;
         cx.update(|cx| match result {
             Ok(objects) => {
-                let yaml: Vec<String> = objects.iter().map(format::to_yaml).collect();
+                let (yaml, masked) = copyable_yaml(objects);
                 cx.write_to_clipboard(ClipboardItem::new_string(yaml.join("---\n")));
-                NotificationCenter::push(
-                    cx,
-                    Notification::info(format!("Copied YAML of {} object(s)", objects.len())),
-                );
+                let mut message = format!("Copied YAML of {} object(s)", yaml.len());
+                if masked > 0 {
+                    message.push_str(
+                        " with the Route TLS key masked (reveal it in the details to copy it)",
+                    );
+                }
+                NotificationCenter::push(cx, Notification::info(message));
             }
             Err(err) => error(cx, err),
         });
     })
     .detach();
+}
+
+/// The objects as YAML for the clipboard, and how many had an inline Route key masked: a
+/// private key is only copied by an explicit action (the details' copy button).
+fn copyable_yaml(objects: Vec<serde_json::Value>) -> (Vec<String>, usize) {
+    let mut masked = 0;
+    let yaml = objects
+        .into_iter()
+        .map(|mut object| {
+            if kubyl_resources::route::mask_inline_key(&mut object) {
+                masked += 1;
+            }
+            format::to_yaml(&object)
+        })
+        .collect();
+    (yaml, masked)
 }
 
 /// Adds `namespace` on `cluster` to the favorites.
@@ -910,6 +929,21 @@ pub fn add_favorite(cluster: &ClusterId, namespace: &str, cx: &mut App) {
 mod tests {
     use super::*;
     use kubyl_core::Gvr;
+
+    #[test]
+    fn copied_yaml_masks_route_keys() {
+        let route = serde_json::json!({"apiVersion": "route.openshift.io/v1", "kind": "Route",
+            "metadata": {"name": "secure"},
+            "spec": {"to": {"name": "api"}, "tls": {"termination": "reencrypt",
+                "key": "-----BEGIN PRIVATE KEY-----\nMIIEvQ\n-----END PRIVATE KEY-----\n"}}});
+        let config = serde_json::json!({"apiVersion": "v1", "kind": "ConfigMap",
+            "metadata": {"name": "c"}, "data": {"key": "value"}});
+        let (yaml, masked) = copyable_yaml(vec![route, config]);
+        assert_eq!(masked, 1);
+        assert!(!yaml[0].contains("MIIEvQ"), "{}", yaml[0]);
+        assert!(yaml[0].contains("key: ••••••••"), "{}", yaml[0]);
+        assert!(yaml[1].contains("key: value"));
+    }
 
     #[test]
     fn access_queries() {
