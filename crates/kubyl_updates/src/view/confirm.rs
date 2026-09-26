@@ -349,7 +349,7 @@ impl Render for ConfirmDialog {
                     .text_size(u(12.0))
                     .text_color(colors.text_muted)
                     .child(Icon::new(IconName::Info).size(12.0).color(colors.text_dim))
-                    .child(div().flex_1().child(note.clone())),
+                    .child(div().flex_1().min_w_0().child(note.clone())),
             );
         }
         // Each risk is its own explicit step.
@@ -376,6 +376,7 @@ impl Render for ConfirmDialog {
                     .child(
                         v_flex()
                             .flex_1()
+                            .min_w_0()
                             .gap(u(3.0))
                             .text_size(u(12.0))
                             .child(
@@ -426,6 +427,7 @@ impl Render for ConfirmDialog {
                     .child(
                         div()
                             .flex_1()
+                            .min_w_0()
                             .child(
                                 div()
                                     .font_weight(FontWeight::MEDIUM)

@@ -223,6 +223,10 @@ impl UpdatesView {
         let Some(status) = updates.read(cx).status(&self.cluster) else {
             return;
         };
+        // Nothing can start while an update runs.
+        if status.updating() {
+            return;
+        }
         let Some(target) = self.check_target(&status) else {
             return;
         };
@@ -352,13 +356,20 @@ impl UpdatesView {
         if blocked {
             return Vec::new();
         }
-        let read_only = self.read_only(cx);
+        let status = self.status(cx);
+        // Writes are hidden on read-only clusters and where the provider can't write.
+        let writable = !self.read_only(cx)
+            && status
+                .as_ref()
+                .is_some_and(|s| s.writes.control_plane || s.writes.pools);
         let mut hints: Vec<(SharedString, SharedString)> = ActionRegistry::global(cx)
             .hints(CONTEXT)
             .into_iter()
-            .filter(|(_, hint)| !read_only || !WRITE_HINTS.contains(&hint.as_ref()))
+            .filter(|(_, hint)| writable || !WRITE_HINTS.contains(&hint.as_ref()))
             .collect();
-        hints.push(("↑↓".into(), "Select version".into()));
+        if status.is_some_and(|s| s.targets.len() > 1) {
+            hints.push(("↑↓".into(), "Select version".into()));
+        }
         hints
     }
 
@@ -662,6 +673,24 @@ impl UpdatesView {
             page = page.child(cards::progress(status, progress, &colors));
         }
         let target = self.check_target(status);
+        let updating = status.updating();
+        // While an update runs, what it rolls through comes first; nothing new can start, so
+        // no pre-flight.
+        if updating {
+            if !status.components.is_empty() {
+                page = page.child(cards::components_card(self, status, cx));
+            }
+            if !status.pools.is_empty() {
+                page = page.child(cards::pools_card(
+                    self,
+                    status,
+                    target.as_deref(),
+                    read_only,
+                    window,
+                    cx,
+                ));
+            }
+        }
         page = page.child(
             h_flex()
                 .items_start()
@@ -675,13 +704,13 @@ impl UpdatesView {
                     cx,
                 )),
         );
-        if let Some(target) = &target {
+        if let Some(target) = target.as_ref().filter(|_| !updating) {
             page = page.child(cards::preflight_card(self, status, target, cx));
         }
-        if !status.components.is_empty() {
+        if !updating && !status.components.is_empty() {
             page = page.child(cards::components_card(self, status, cx));
         }
-        if !status.pools.is_empty() {
+        if !updating && !status.pools.is_empty() {
             page = page.child(cards::pools_card(
                 self,
                 status,

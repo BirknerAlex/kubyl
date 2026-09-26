@@ -54,9 +54,9 @@ async fn inputs(client: Client, provider: ProviderKind, target: &str, helm: Helm
         target: target.to_string(),
         target_kube: preflight::target_kube_minor(provider, target),
         prometheus: None,
-        api_request_counts: discovery
-            .preferred()
-            .any(|r| r.gvr.group == "apiserver.openshift.io" && r.gvr.resource == "apirequestcounts"),
+        api_request_counts: discovery.preferred().any(|r| {
+            r.gvr.group == "apiserver.openshift.io" && r.gvr.resource == "apirequestcounts"
+        }),
         scan: preflight::scan_kinds(&discovery),
         helm,
         client,
@@ -77,11 +77,20 @@ async fn kind_read_only_and_preflight() {
         Vec::new(),
     );
     let status = provider.read().await.unwrap();
-    println!("kind: {} · pools {:?}", status.current.version, status.pools.iter().map(|p| &p.name).collect::<Vec<_>>());
+    println!(
+        "kind: {} · pools {:?}",
+        status.current.version,
+        status.pools.iter().map(|p| &p.name).collect::<Vec<_>>()
+    );
     assert!(status.current.version.starts_with("v1."));
     assert!(status.targets.is_empty());
     assert!(!status.writes.any());
-    assert!(status.pools.iter().any(|p| p.kind == PoolKind::ControlPlane));
+    assert!(
+        status
+            .pools
+            .iter()
+            .any(|p| p.kind == PoolKind::ControlPlane)
+    );
 
     let next = kubyl_updates::version::next_minor(&status.current.version).unwrap();
     let helm = HelmInput::Releases(vec![ReleaseRef {
@@ -97,10 +106,23 @@ async fn kind_read_only_and_preflight() {
     }
     let pdb = checks.iter().find(|c| c.id == "pdb").unwrap();
     assert_eq!(pdb.status, CheckStatus::Fail);
-    assert!(pdb.details.iter().any(|d| d.text.contains("kubyl-updates/ledger-writer-pdb")));
+    assert!(
+        pdb.details
+            .iter()
+            .any(|d| d.text.contains("kubyl-updates/ledger-writer-pdb"))
+    );
     let helm = checks.iter().find(|c| c.id == "removed-apis-helm").unwrap();
-    assert!(matches!(helm.status, CheckStatus::Warn | CheckStatus::Fail), "{helm:?}");
-    assert!(helm.details[0].sub.as_deref().unwrap().contains("extensions/v1beta1 Ingress"));
+    assert!(
+        matches!(helm.status, CheckStatus::Warn | CheckStatus::Fail),
+        "{helm:?}"
+    );
+    assert!(
+        helm.details[0]
+            .sub
+            .as_deref()
+            .unwrap()
+            .contains("extensions/v1beta1 Ingress")
+    );
     let skew = checks.iter().find(|c| c.id == "version-skew").unwrap();
     assert_eq!(skew.status, CheckStatus::Pass, "{skew:?}");
 }
@@ -117,19 +139,38 @@ async fn ocp_reads_cluster_version_operators_and_pools() {
     assert!(status.current.channels.iter().any(|c| c == "stable-4.18"));
     assert!(!status.components.is_empty());
     assert!(status.pools.iter().any(|p| p.name == "worker"));
-    let recommended = status.targets.iter().find(|t| t.kind == TargetKind::Recommended).unwrap();
+    let recommended = status
+        .targets
+        .iter()
+        .find(|t| t.kind == TargetKind::Recommended)
+        .unwrap();
     println!(
         "ocp: {} → {:?}",
         status.current.version,
-        status.targets.iter().map(|t| (&t.version, t.kind)).collect::<Vec<_>>()
+        status
+            .targets
+            .iter()
+            .map(|t| (&t.version, t.kind))
+            .collect::<Vec<_>>()
     );
-    assert!(status.targets.iter().any(|t| t.kind == TargetKind::Conditional && !t.risks.is_empty()));
+    assert!(
+        status
+            .targets
+            .iter()
+            .any(|t| t.kind == TargetKind::Conditional && !t.risks.is_empty())
+    );
     let blocked = status.targets.iter().find(|t| t.minor).unwrap();
     assert_eq!(blocked.kind, TargetKind::Blocked);
 
     let target = recommended.version.clone();
     let mut checks = preflight::run(
-        inputs(client.clone(), ProviderKind::OpenShift, &target, HelmInput::Releases(Vec::new())).await,
+        inputs(
+            client.clone(),
+            ProviderKind::OpenShift,
+            &target,
+            HelmInput::Releases(Vec::new()),
+        )
+        .await,
     )
     .await;
     checks.extend(provider.preflight_extras(&status, &target).await);
@@ -137,11 +178,22 @@ async fn ocp_reads_cluster_version_operators_and_pools() {
         println!("{:?} {}: {}", check.status, check.title, check.summary);
     }
     let deprecated = checks.iter().find(|c| c.id == "deprecated-apis").unwrap();
-    assert!(deprecated.summary.contains("APIRequestCount"), "{deprecated:?}");
-    assert!(checks.iter().any(|c| c.id == "cluster-operators" && c.status == CheckStatus::Pass));
+    assert!(
+        deprecated.summary.contains("APIRequestCount"),
+        "{deprecated:?}"
+    );
+    assert!(
+        checks
+            .iter()
+            .any(|c| c.id == "cluster-operators" && c.status == CheckStatus::Pass)
+    );
     // The minor update needs the admin ack.
     let minor = provider.preflight_extras(&status, &blocked.version).await;
-    assert!(minor.iter().any(|c| c.id == "upgradeable" && c.status == CheckStatus::Fail));
+    assert!(
+        minor
+            .iter()
+            .any(|c| c.id == "upgradeable" && c.status == CheckStatus::Fail)
+    );
 }
 
 #[tokio::test]
@@ -152,12 +204,20 @@ async fn ocp_update_is_tracked() {
     };
     let provider = kubyl_updates::openshift::OpenShift::new(client.clone());
     let status = provider.read().await.unwrap();
-    assert!(status.progress.is_none(), "reset the fake cluster first (script/updates-dev.sh --ocp-reset)");
-    let plan = provider.plan(&status, &Scope::ControlPlane, "4.17.10", "ocp").unwrap();
-    provider.start(&plan).await.unwrap();
-    let cv = kubyl_updates::kube_api::get(&client, "/apis/config.openshift.io/v1/clusterversions/version")
-        .await
+    assert!(
+        status.progress.is_none(),
+        "reset the fake cluster first (script/updates-dev.sh --ocp-reset)"
+    );
+    let plan = provider
+        .plan(&status, &Scope::ControlPlane, "4.17.10", "ocp")
         .unwrap();
+    provider.start(&plan).await.unwrap();
+    let cv = kubyl_updates::kube_api::get(
+        &client,
+        "/apis/config.openshift.io/v1/clusterversions/version",
+    )
+    .await
+    .unwrap();
     assert_eq!(cv["spec"]["desiredUpdate"]["version"], "4.17.10");
     assert_eq!(cv["spec"]["desiredUpdate"]["force"], false);
     if std::env::var("KUBYL_TEST_FAKE_CVO").is_ok() {
@@ -174,7 +234,11 @@ async fn ocp_update_is_tracked() {
                     progress.message,
                     status.components.iter().filter(|c| c.updated).count(),
                     status.components.len(),
-                    status.pools.iter().map(|p| (&p.name, p.updated, p.nodes, &p.draining)).collect::<Vec<_>>()
+                    status
+                        .pools
+                        .iter()
+                        .map(|p| (&p.name, p.updated, p.nodes, &p.draining))
+                        .collect::<Vec<_>>()
                 );
             } else if seen_progress && status.current.version == "4.17.10" {
                 assert!(status.history[0].completed());
@@ -206,11 +270,23 @@ async fn k3s_plans_and_progress() {
     println!(
         "k3s: {} → {:?} · plans {:?}",
         status.current.version,
-        status.targets.iter().map(|t| (&t.version, t.kind)).collect::<Vec<_>>(),
-        status.pools.iter().map(|p| (&p.name, p.updated, p.nodes, &p.version)).collect::<Vec<_>>()
+        status
+            .targets
+            .iter()
+            .map(|t| (&t.version, t.kind))
+            .collect::<Vec<_>>(),
+        status
+            .pools
+            .iter()
+            .map(|p| (&p.name, p.updated, p.nodes, &p.version))
+            .collect::<Vec<_>>()
     );
     assert!(status.current.version.contains("+k3s"));
-    let plans: Vec<_> = status.pools.iter().filter(|p| p.kind == PoolKind::Plan).collect();
+    let plans: Vec<_> = status
+        .pools
+        .iter()
+        .filter(|p| p.kind == PoolKind::Plan)
+        .collect();
     assert_eq!(plans.len(), 2);
     for plan in plans {
         assert_eq!(plan.updated, plan.nodes, "{plan:?}");
@@ -232,7 +308,13 @@ async fn openshift_read_only() {
     // Pre-flight only reads (lists and gets); Helm releases aren't decoded here.
     if let Some(target) = status.suggested().map(|t| t.version.clone()) {
         let mut checks = preflight::run(
-            inputs(client, ProviderKind::OpenShift, &target, HelmInput::Releases(Vec::new())).await,
+            inputs(
+                client,
+                ProviderKind::OpenShift,
+                &target,
+                HelmInput::Releases(Vec::new()),
+            )
+            .await,
         )
         .await;
         checks.extend(provider.preflight_extras(&status, &target).await);
@@ -241,9 +323,17 @@ async fn openshift_read_only() {
         }
     }
     println!("Cluster version is {}", status.current.version);
-    println!("Channel: {}", status.current.channel.clone().unwrap_or_default());
+    println!(
+        "Channel: {}",
+        status.current.channel.clone().unwrap_or_default()
+    );
     for target in &status.targets {
-        println!("  {} {:?} {:?}", target.version, target.kind, target.risks.iter().map(|r| &r.name).collect::<Vec<_>>());
+        println!(
+            "  {} {:?} {:?}",
+            target.version,
+            target.kind,
+            target.risks.iter().map(|r| &r.name).collect::<Vec<_>>()
+        );
     }
     for entry in status.history.iter().take(5) {
         println!("  history {} {}", entry.version, entry.state);
@@ -251,7 +341,11 @@ async fn openshift_read_only() {
     println!(
         "operators {} · pools {:?}",
         status.components.len(),
-        status.pools.iter().map(|p| (&p.name, p.updated, p.nodes)).collect::<Vec<_>>()
+        status
+            .pools
+            .iter()
+            .map(|p| (&p.name, p.updated, p.nodes))
+            .collect::<Vec<_>>()
     );
     assert!(!status.current.version.is_empty());
 }

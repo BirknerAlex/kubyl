@@ -25,7 +25,9 @@ use crate::view::widgets::{
 /// Height of one target row of the update path.
 const ROW: f32 = 30.0;
 /// Where the target column starts (the current version sits left of it).
-const TARGETS_X: f32 = 120.0;
+const TARGETS_X: f32 = 160.0;
+/// The center of the current version's node.
+const CURRENT_X: f32 = 116.0;
 
 /// A note or warning across the page (credentials missing, read-only, a stale read).
 pub fn banner(
@@ -267,7 +269,8 @@ pub fn version_card(
                 )
             })
             .when_some(current.cluster_id.clone(), |this, id| {
-                let short = if id.len() > 13 {
+                // UUIDs are shortened; ARNs and names aren't.
+                let short = if id.len() > 13 && !id.contains(':') && !id.contains('/') {
                     format!("{}…{}", &id[..8], &id[id.len() - 4..])
                 } else {
                     id.clone()
@@ -278,7 +281,7 @@ pub fn version_card(
                         .text_size(u(11.5))
                         .text_color(colors.text_dim)
                         .child("Cluster ID")
-                        .child(mono(short).text_size(u(11.5)))
+                        .child(mono(short).text_size(u(11.5)).min_w_0().truncate())
                         .child(
                             div()
                                 .id("copy-cluster-id")
@@ -472,11 +475,11 @@ fn edges(targets: Vec<(TargetKind, bool)>, colors: Colors) -> impl IntoElement {
                 )
             };
             let total = targets.len() as f32 * ROW;
-            let from = at(76.0, total / 2.0);
+            let from = at(CURRENT_X, total / 2.0);
             for (ix, (kind, selected)) in targets.iter().enumerate() {
                 let y = ix as f32 * ROW + ROW / 2.0;
                 let to = at(TARGETS_X + 4.0, y);
-                let mid = (76.0 + TARGETS_X) / 2.0;
+                let mid = (CURRENT_X + TARGETS_X) / 2.0;
                 let width = if *selected { 2.0 } else { 1.25 };
                 let mut path = PathBuilder::stroke(px(width * scale));
                 if matches!(kind, TargetKind::Conditional | TargetKind::Blocked) {
@@ -571,11 +574,14 @@ pub fn path_card(
             v_flex()
                 .absolute()
                 .left_0()
-                .w(u(90.0))
+                .w(u(CURRENT_X - 12.0))
                 .top(u(status.targets.len() as f32 * ROW / 2.0 - 16.0))
                 .items_end()
-                .pr(u(22.0))
-                .child(mono(status.current.version.clone()).font_weight(FontWeight::MEDIUM))
+                .child(
+                    mono(status.current.version.clone())
+                        .font_weight(FontWeight::MEDIUM)
+                        .whitespace_nowrap(),
+                )
                 .child(
                     div()
                         .text_size(u(11.0))
@@ -586,7 +592,7 @@ pub fn path_card(
         .child(
             div()
                 .absolute()
-                .left(u(70.0))
+                .left(u(CURRENT_X - 6.0))
                 .top(u(status.targets.len() as f32 * ROW / 2.0 - 6.0))
                 .size(u(12.0))
                 .rounded_full()
@@ -828,7 +834,7 @@ fn target_details(target: &Target, colors: &Colors, cx: &mut Context<UpdatesView
                 .gap(u(6.0))
                 .text_size(u(12.0))
                 .child(Icon::new(IconName::CircleX).size(12.0).color(colors.red))
-                .child(div().flex_1().child(reason.clone())),
+                .child(div().flex_1().min_w_0().child(reason.clone())),
         );
     }
     for (ix, risk) in target.risks.iter().enumerate() {
@@ -1396,7 +1402,11 @@ pub fn pools_card(
         let action: AnyElement = if can_write && pool.updatable {
             let id = pool.id.clone();
             let pool_version = pool.version.clone().unwrap_or_default();
-            let default_target = target.map(str::to_string);
+            // A cloud node pool follows its control plane; Plans move to the selected version.
+            let default_target = match pool.kind {
+                PoolKind::NodePool => Some(status.current.version.clone()),
+                _ => target.map(str::to_string),
+            };
             let name = pool.name.clone();
             row_button(("pool-update", ix), "Update…", &colors)
                 .on_click(cx.listener(move |view, _, window, cx| {

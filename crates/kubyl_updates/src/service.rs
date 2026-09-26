@@ -498,13 +498,21 @@ impl Updates {
         let id = cluster.clone();
         let target = target.to_string();
         let task = cx.spawn(async move |this, cx| {
-            // The Helm list must have listed, or its check would pass on nothing.
+            // The Helm list must have listed, or its check would pass on nothing; and phase 07
+            // must have looked for Prometheus, or deprecated APIs come from /metrics only.
             let deadline = Instant::now() + HELM_WAIT;
             loop {
                 let ready = cx.update(|cx| {
-                    Helm::global(cx)
+                    let helm = Helm::global(cx)
                         .and_then(|h| h.read(cx).snapshot(&id, cx))
-                        .is_none_or(|s| !s.loading)
+                        .is_none_or(|s| !s.loading);
+                    let metrics = kubyl_metrics::MetricsService::global(cx).is_none_or(|m| {
+                        !matches!(
+                            m.read(cx).source(&id),
+                            kubyl_metrics::Source::Unknown | kubyl_metrics::Source::Detecting
+                        )
+                    });
+                    helm && metrics
                 });
                 if ready || Instant::now() > deadline {
                     break;
