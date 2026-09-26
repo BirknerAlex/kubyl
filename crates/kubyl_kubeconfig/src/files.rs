@@ -425,8 +425,9 @@ mod tests {
             let mut opts = options(snap.hash, dir.path(), 2);
             opts.private = true;
             let saved = save(&path, &format!("a: {i}\n"), &opts).unwrap();
-            #[cfg(unix)]
-            assert_eq!(saved.mode, Some(0o600));
+            if cfg!(unix) {
+                assert_eq!(saved.mode, Some(0o600));
+            }
         }
         let kept = backups_of(&dir.path().join("backups"), &path);
         assert_eq!(kept.len(), 2);
