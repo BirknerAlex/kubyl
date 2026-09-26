@@ -969,17 +969,6 @@ impl YamlEditor {
             .collect();
     }
 
-    fn history_key(&self) -> Option<String> {
-        let target = self.object.as_ref()?;
-        Some(ApplyHistory::key(
-            target.cluster.as_str(),
-            &target.gvr.group,
-            &target.gvr.resource,
-            target.namespace.as_deref(),
-            target.name.as_deref().unwrap_or_default(),
-        ))
-    }
-
     pub(crate) fn has_workload_history(&self) -> bool {
         self.object
             .as_ref()
@@ -987,30 +976,28 @@ impl YamlEditor {
     }
 
     pub(crate) fn load_history(&mut self, cx: &mut Context<Self>) {
-        if let Some(key) = self.history_key() {
-            self.local_history = ApplyHistory::entries(cx, &key);
-        }
-        // Applies recorded under a context's own id before it was grouped with its siblings.
-        if self.local_history.is_empty()
-            && let (Some(target), Some(manager)) =
-                (self.object.as_ref(), ConnectionManager::try_global(cx))
-        {
-            let keys = manager.read(cx).settings_keys(&target.cluster);
-            for cluster in keys.iter().skip(1) {
-                let key = ApplyHistory::key(
+        let Some(target) = self.object.as_ref() else {
+            return;
+        };
+        // The entry's own applies, and those recorded under its contexts' ids before they were
+        // grouped (`settings_keys`: the entry id first), combined.
+        let clusters = ConnectionManager::try_global(cx)
+            .map(|m| m.read(cx).settings_keys(&target.cluster))
+            .filter(|keys| !keys.is_empty())
+            .unwrap_or_else(|| vec![target.cluster.to_string()]);
+        let keys: Vec<String> = clusters
+            .iter()
+            .map(|cluster| {
+                ApplyHistory::key(
                     cluster,
                     &target.gvr.group,
                     &target.gvr.resource,
                     target.namespace.as_deref(),
                     target.name.as_deref().unwrap_or_default(),
-                );
-                let entries = ApplyHistory::entries(cx, &key);
-                if !entries.is_empty() {
-                    self.local_history = entries;
-                    break;
-                }
-            }
-        }
+                )
+            })
+            .collect();
+        self.local_history = ApplyHistory::entries_of(cx, &keys);
         if !self.has_workload_history() {
             return;
         }
