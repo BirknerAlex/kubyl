@@ -310,6 +310,11 @@ impl KubeconfigEditor {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn yaml_typed_for_test(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.yaml_typed(window, cx);
+    }
+
     pub(crate) fn toggle_secrets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.yaml.revealed = !self.yaml.revealed;
         self.show_yaml(window, cx);

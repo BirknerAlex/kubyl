@@ -433,7 +433,7 @@ impl SaView {
                         crate::actions::open_draft(
                             Draft {
                                 path: files::new_owned_path(
-                                    &files::owned_dir(),
+                                    &crate::state::Kubeconfigs::dirs(cx).owned,
                                     &format!("{name}-{}", info.context),
                                 ),
                                 title: format!("{name}@{}", info.context),
@@ -947,7 +947,10 @@ impl CloudView {
                     Ok(doc) => {
                         crate::actions::open_draft(
                             Draft {
-                                path: files::new_owned_path(&files::owned_dir(), &name),
+                                path: files::new_owned_path(
+                                    &crate::state::Kubeconfigs::dirs(cx).owned,
+                                    &name,
+                                ),
                                 title: name.clone(),
                                 doc,
                             },

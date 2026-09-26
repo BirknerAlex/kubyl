@@ -719,46 +719,22 @@ fn changed_exec(doc: &Doc, base: Option<&Doc>) -> Vec<(String, ExecSpec)> {
 
 impl SaveView {
     fn save(&mut self, opt_in: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(editor) = self.editor.upgrade() else {
+            return;
+        };
         if opt_in {
-            crate::settings::set_opt_in(&self.path, true, cx);
             self.editable = true;
         }
         self.saving = true;
         self.error = None;
-        let path = self.path.clone();
         let text = self.text.clone();
-        let keep = Settings::get::<KubeconfigSettings>(cx).backups_kept;
-        let options = SaveOptions {
-            expected: if self.draft {
-                None
-            } else {
-                self.expected.clone()
-            },
-            backups: Some(Backups {
-                dir: files::backup_dir(),
-                keep,
-            }),
-            private: self.private,
-        };
-        let save = cx
-            .background_executor()
-            .spawn(async move { files::save(&path, &text, &options) });
-        let editor = self.editor.clone();
-        let text = self.text.clone();
+        let save = editor.update(cx, |editor, cx| editor.save_file(text, opt_in, window, cx));
         self._task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = save.await;
             this.update_in(cx, |this, window, cx| {
                 this.saving = false;
                 match result {
-                    Ok(saved) => {
-                        editor
-                            .update(cx, |editor, cx| {
-                                editor.saving = false;
-                                editor.saved(saved, text.clone(), window, cx);
-                            })
-                            .ok();
-                        window.close_dialog(cx);
-                    }
+                    Ok(_) => window.close_dialog(cx),
                     Err(SaveError::Changed { .. }) => {
                         this.error = Some(
                             "The file changed on disk since you opened it (another tool wrote it). Kubyl didn't overwrite it: close this and use Reload or Keep mine."
@@ -818,7 +794,7 @@ impl Render for SaveView {
         } else {
             format!(
                 "{}{}{}<timestamp>.yaml (0600)",
-                display_path(&files::backup_dir()),
+                display_path(&Kubeconfigs::dirs(cx).backups),
                 std::path::MAIN_SEPARATOR,
                 files::backup_prefix(&files::target(&self.path))
             )
@@ -979,7 +955,7 @@ pub(crate) fn opt_in(editor: WeakEntity<KubeconfigEditor>, window: &mut Window, 
         "Every save shows the changes first.".into(),
         format!(
             "The old file is kept in {} (0600).",
-            display_path(&files::backup_dir())
+            display_path(&Kubeconfigs::dirs(cx).backups)
         )
         .into(),
         "Files are replaced atomically; comments and key order stay.".into(),
@@ -1137,7 +1113,7 @@ pub(crate) fn save_copy(editor: WeakEntity<KubeconfigEditor>, window: &mut Windo
     } else {
         stem
     };
-    let target = files::new_owned_path(&files::owned_dir(), &stem);
+    let target = files::new_owned_path(&Kubeconfigs::dirs(cx).owned, &stem);
     let mut spec = ConfirmSpec::new("Save as a Kubyl copy?", "Save copy");
     spec.lines = vec![
         format!("Writes {} (0600).", display_path(&target)).into(),
@@ -1323,7 +1299,7 @@ pub(crate) fn split(editor: WeakEntity<KubeconfigEditor>, window: &mut Window, c
     if contexts.is_empty() {
         return;
     }
-    let dir = files::owned_dir();
+    let dir = Kubeconfigs::dirs(cx).owned;
     let mut spec = ConfirmSpec::new(format!("Split into {} files?", contexts.len()), "Split");
     spec.lines = contexts
         .iter()
@@ -1379,7 +1355,7 @@ pub(crate) fn split(editor: WeakEntity<KubeconfigEditor>, window: &mut Window, c
                         cx,
                         Notification::success(format!(
                             "Wrote {ok} kubeconfigs to {}",
-                            display_path(&files::owned_dir())
+                            display_path(&Kubeconfigs::dirs(cx).owned)
                         )),
                     );
                     if let Some(m) = ConnectionManager::try_global(cx) {
@@ -1547,7 +1523,7 @@ pub(crate) fn copy_to(
     let Some(this) = editor.upgrade() else { return };
     let current = this.read(cx).path.clone();
     let settings = Settings::get::<KubeconfigSettings>(cx).clone();
-    let owned_dir = files::owned_dir();
+    let owned_dir = Kubeconfigs::dirs(cx).owned;
     let mut targets: Vec<(PathBuf, bool)> = ConnectionManager::try_global(cx)
         .map(|m| {
             m.read(cx)
@@ -1587,8 +1563,10 @@ impl CopyToView {
         let context = self.context.clone();
         let keep = Settings::get::<KubeconfigSettings>(cx).backups_kept;
         let new_target = target.is_none();
-        let target = target.unwrap_or_else(|| files::new_owned_path(&files::owned_dir(), &context));
+        let target =
+            target.unwrap_or_else(|| files::new_owned_path(&Kubeconfigs::dirs(cx).owned, &context));
         let path = target.clone();
+        let backup_dir = Kubeconfigs::dirs(cx).backups;
         let write = cx.background_executor().spawn(async move {
             let snapshot = files::read(&path).map_err(|e| e.to_string())?;
             let mut into = if snapshot.hash.is_some() {
@@ -1610,7 +1588,7 @@ impl CopyToView {
                 &SaveOptions {
                     expected: snapshot.hash,
                     backups: Some(Backups {
-                        dir: files::backup_dir(),
+                        dir: backup_dir,
                         keep,
                     }),
                     private: new_target || into.has_inline_credentials(),

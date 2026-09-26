@@ -68,8 +68,33 @@ pub struct Draft {
     pub title: String,
 }
 
+/// Where Kubyl keeps its own kubeconfigs and backups.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Dirs {
+    /// Kubyl-owned kubeconfigs (pasted or created in Kubyl), a phase 01 source.
+    pub owned: PathBuf,
+    pub backups: PathBuf,
+}
+
+impl Dirs {
+    /// In the config dir (`$KUBYL_CONFIG_DIR` or the platform's).
+    pub fn from_config_dir() -> Self {
+        Self {
+            owned: crate::files::owned_dir(),
+            backups: crate::files::backup_dir(),
+        }
+    }
+}
+
+impl Default for Dirs {
+    fn default() -> Self {
+        Self::from_config_dir()
+    }
+}
+
 #[derive(Default)]
 pub struct Kubeconfigs {
+    pub dirs: Dirs,
     tests: HashMap<TestKey, TestRun>,
     sign_ins: HashMap<TestKey, SignInRun>,
     /// Exec plugins the user agreed to run in this session ([`ExecSpec::consent_key`]).
@@ -86,9 +111,24 @@ impl Global for GlobalKubeconfigs {}
 
 impl Kubeconfigs {
     pub fn install(cx: &mut App) -> Entity<Self> {
-        let entity = cx.new(|_| Self::default());
+        Self::install_with(Dirs::from_config_dir(), cx)
+    }
+
+    /// With explicit folders (tests).
+    pub fn install_with(dirs: Dirs, cx: &mut App) -> Entity<Self> {
+        let entity = cx.new(|_| Self {
+            dirs,
+            ..Default::default()
+        });
         cx.set_global(GlobalKubeconfigs(entity.clone()));
         entity
+    }
+
+    /// The folders in use.
+    pub fn dirs(cx: &App) -> Dirs {
+        Self::try_global(cx)
+            .map(|g| g.read(cx).dirs.clone())
+            .unwrap_or_default()
     }
 
     pub fn global(cx: &App) -> Entity<Self> {

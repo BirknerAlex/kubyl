@@ -77,6 +77,7 @@ impl KubeconfigEditor {
         let more = {
             let weak = weak.clone();
             let can_opt_in = !owned && settings.allow_external_edits && !self.is_draft();
+            let backups = self.dirs.backups.clone();
             let opted_in = !owned && editable;
             MenuButton::new("kc-more")
                 .ghost()
@@ -125,14 +126,15 @@ impl KubeconfigEditor {
                             ),
                         );
                     }
+                    let backups = backups.clone();
                     menu.separator()
-                        .item(
-                            PopupMenuItem::new("Open the backups folder").on_click(|_, _, _| {
-                                let dir = crate::files::backup_dir();
+                        .item(PopupMenuItem::new("Open the backups folder").on_click(
+                            move |_, _, _| {
+                                let dir = backups.clone();
                                 std::fs::create_dir_all(&dir).ok();
                                 open::that_detached(dir).ok();
-                            }),
-                        )
+                            },
+                        ))
                 })
         };
         h_flex()
@@ -429,7 +431,7 @@ impl KubeconfigEditor {
                     .text_color(colors.text_dim)
                     .child(format!(
                         "Comments and key order are kept. Backups: {}",
-                        display_path(&crate::files::backup_dir())
+                        display_path(&self.dirs.backups)
                     )),
             )
     }

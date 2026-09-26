@@ -74,6 +74,8 @@ pub enum Tab {
 pub struct KubeconfigEditor {
     /// The file; for a draft, where it's saved by default.
     pub(crate) path: PathBuf,
+    /// Kubyl's own and backup folders.
+    pub(crate) dirs: crate::state::Dirs,
     /// An unsaved new document (`kubyl-draft:<id>`).
     pub(crate) draft: Option<u64>,
     pub(crate) title: String,
@@ -135,7 +137,9 @@ impl KubeconfigEditor {
             subscriptions.push(cx.observe(&manager, |_, _, cx| cx.notify()));
         }
         let yaml = YamlTab::new(cx.weak_entity(), window, cx);
+        let dirs = Kubeconfigs::dirs(cx);
         let mut this = Self {
+            dirs,
             path: draft
                 .as_ref()
                 .map(|d| d.path.clone())
@@ -196,7 +200,7 @@ impl KubeconfigEditor {
 
     /// Kubyl created the file (or will): edited freely.
     pub fn is_owned(&self) -> bool {
-        self.draft.is_some() || files::is_owned(&self.path, &files::owned_dir())
+        self.draft.is_some() || files::is_owned(&self.path, &self.dirs.owned)
     }
 
     /// Saving writes the file in place.
@@ -656,6 +660,78 @@ impl KubeconfigEditor {
     }
 
     // ----- Saving -----
+
+    /// Writes the document to its file: what the save preview showed (`text`), with a backup,
+    /// atomically, refusing when the file changed since it was loaded. `opt_in` turns editing
+    /// on for a file Kubyl doesn't own first.
+    pub fn save_file(
+        &mut self,
+        text: String,
+        opt_in: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<files::Saved, files::SaveError>> {
+        if opt_in {
+            crate::settings::set_opt_in(&self.path, true, cx);
+        }
+        if !self.is_editable(cx) && !opt_in {
+            return Task::ready(Err(files::SaveError::Io(
+                "Kubyl doesn't edit this file until you allow it".into(),
+            )));
+        }
+        let keep = Settings::get::<KubeconfigSettings>(cx).backups_kept;
+        let options = files::SaveOptions {
+            expected: if self.draft.is_some() {
+                None
+            } else {
+                self.snapshot.as_ref().and_then(|s| s.hash.clone())
+            },
+            backups: Some(files::Backups {
+                dir: self.dirs.backups.clone(),
+                keep,
+            }),
+            private: self.draft.is_some() || self.doc.has_inline_credentials(),
+        };
+        let path = self.path.clone();
+        let write_text = text.clone();
+        let write = cx
+            .background_executor()
+            .spawn(async move { files::save(&path, &write_text, &options) });
+        self.saving = true;
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = write.await;
+            this.update_in(cx, |this, window, cx| {
+                this.saving = false;
+                match &result {
+                    Ok(saved) => this.saved(saved.clone(), text, window, cx),
+                    Err(files::SaveError::Changed { .. }) => {
+                        // Show the banner right away instead of at the next poll.
+                        let path = this.path.clone();
+                        if let Ok(disk) = files::read(&path) {
+                            this.disk = Some(disk);
+                        }
+                    }
+                    Err(_) => {}
+                }
+                cx.notify();
+            })
+            .ok();
+            result
+        })
+    }
+
+    /// The text a save writes now (comments kept where possible).
+    pub fn text_to_save(&self) -> crate::yaml::Written {
+        match &self.snapshot {
+            Some(snapshot) => crate::yaml::write(&snapshot.text, &self.doc.0),
+            None => crate::yaml::Written {
+                text: crate::yaml::render(&self.doc.0),
+                in_place: false,
+                lost_comments: Vec::new(),
+            },
+        }
+    }
 
     /// Finishes a save: new base, overrides moved, phase 01 reloads.
     pub(crate) fn saved(

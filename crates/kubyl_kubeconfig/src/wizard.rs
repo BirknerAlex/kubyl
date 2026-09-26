@@ -34,7 +34,7 @@ use crate::validate::Severity;
 use crate::widgets;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Step {
+pub(crate) enum Step {
     Name,
     Cluster,
     Credentials,
@@ -70,7 +70,7 @@ impl Step {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CaMode {
+pub(crate) enum CaMode {
     System,
     File,
     Paste,
@@ -78,7 +78,7 @@ enum CaMode {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Auth {
+pub(crate) enum Auth {
     ClientCertificate,
     Token,
     TokenFile,
@@ -110,7 +110,7 @@ impl Auth {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PemInput {
+pub(crate) enum PemInput {
     File,
     Paste,
 }
@@ -120,20 +120,20 @@ pub struct Wizard {
     step: Step,
     inputs: std::collections::HashMap<&'static str, Entity<InputState>>,
     areas: std::collections::HashMap<&'static str, Entity<TextareaState>>,
-    ca_mode: CaMode,
-    ca: CaState,
-    ca_confirmed: bool,
+    pub(crate) ca_mode: CaMode,
+    pub(crate) ca: CaState,
+    pub(crate) ca_confirmed: bool,
     /// The server the fetched CA belongs to (a changed server needs a new fetch).
     ca_server: String,
     advanced: bool,
     insecure: bool,
-    auth: Auth,
-    cert_input: PemInput,
-    key_input: PemInput,
+    pub(crate) auth: Auth,
+    pub(crate) cert_input: PemInput,
+    pub(crate) key_input: PemInput,
     exec: Option<Value>,
     /// Where it's saved (`None`: a Kubyl-owned path).
     target: Option<PathBuf>,
-    connect: bool,
+    pub(crate) connect: bool,
     open_editor: bool,
     error: Option<String>,
     saving: bool,
@@ -181,7 +181,7 @@ const FIELDS: &[(&str, &str, bool)] = &[
 ];
 
 impl Wizard {
-    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let id = Kubeconfigs::try_global(cx)
             .map(|g| g.update(cx, |g, _| g.next_id()))
             .unwrap_or_default();
@@ -264,7 +264,7 @@ impl Wizard {
             .unwrap_or_default()
     }
 
-    fn set(&self, key: &str, value: &str, window: &mut Window, cx: &mut App) {
+    pub(crate) fn set(&self, key: &str, value: &str, window: &mut Window, cx: &mut App) {
         if let Some(state) = self.inputs.get(key) {
             let value = value.to_string();
             state.update(cx, |s, cx| s.set_value(value, window, cx));
@@ -272,7 +272,7 @@ impl Wizard {
     }
 
     /// The name fills in the cluster, user and context names until those are edited.
-    fn input_changed(
+    pub(crate) fn input_changed(
         &mut self,
         key: &'static str,
         value: String,
@@ -311,7 +311,7 @@ impl Wizard {
             .is_some_and(|base| name.starts_with(base) && name.len() <= base.len() + 1)
     }
 
-    fn fetch_ca(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn fetch_ca(&mut self, cx: &mut Context<Self>) {
         let server = self.value("server", cx);
         let tls = self.value("tls-name", cx);
         self.ca = CaState::Fetching;
@@ -332,7 +332,7 @@ impl Wizard {
     }
 
     /// Why the current step can't be left yet.
-    fn blocker(&self, cx: &App) -> Option<String> {
+    pub(crate) fn blocker(&self, cx: &App) -> Option<String> {
         match self.step {
             Step::Name => self
                 .value("name", cx)
@@ -538,12 +538,12 @@ impl Wizard {
     }
 
     fn target_path(&self, cx: &App) -> PathBuf {
-        self.target
-            .clone()
-            .unwrap_or_else(|| files::new_owned_path(&files::owned_dir(), &self.value("name", cx)))
+        self.target.clone().unwrap_or_else(|| {
+            files::new_owned_path(&Kubeconfigs::dirs(cx).owned, &self.value("name", cx))
+        })
     }
 
-    fn test_key(&self, cx: &App) -> TestKey {
+    pub(crate) fn test_key(&self, cx: &App) -> TestKey {
         TestKey::new(format!("wizard:{}", self.id), self.value("context", cx))
     }
 
@@ -570,7 +570,7 @@ impl Wizard {
         cx.notify();
     }
 
-    fn go(&mut self, step: Step, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn go(&mut self, step: Step, window: &mut Window, cx: &mut Context<Self>) {
         self.step = step;
         self.error = None;
         if step == Step::Test {
@@ -582,22 +582,26 @@ impl Wizard {
         cx.notify();
     }
 
-    fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let doc = self.doc(cx);
         let path = self.target_path(cx);
-        let external = self.target.is_some() && !files::is_owned(&path, &files::owned_dir());
+        let external =
+            self.target.is_some() && !files::is_owned(&path, &Kubeconfigs::dirs(cx).owned);
         let text = doc.to_yaml();
         let context = self.value("context", cx);
         let connect = self.connect;
         let open_editor = self.open_editor;
         self.saving = true;
         let save_path = path.clone();
+        let backup_dir = Kubeconfigs::dirs(cx).backups;
+        let keep =
+            kubyl_settings::Settings::get::<crate::settings::KubeconfigSettings>(cx).backups_kept;
         let write = cx.background_executor().spawn(async move {
             // The OS picker already asked before replacing a file.
             let expected = files::read(&save_path).ok().and_then(|s| s.hash);
-            let backups = expected.is_some().then(|| files::Backups {
-                dir: files::backup_dir(),
-                keep: 10,
+            let backups = expected.is_some().then_some(files::Backups {
+                dir: backup_dir,
+                keep,
             });
             files::save(
                 &save_path,
@@ -1456,7 +1460,13 @@ mod tests {
             kubyl_settings::init_with_dir(cx, dir.path());
             kubyl_ui::init(cx);
             gpui_component::init(cx);
-            Kubeconfigs::install(cx);
+            Kubeconfigs::install_with(
+                crate::state::Dirs {
+                    owned: dir.path().join("kubeconfigs"),
+                    backups: dir.path().join("backups"),
+                },
+                cx,
+            );
         });
         dir
     }
@@ -1492,7 +1502,7 @@ mod tests {
             );
             assert!(doc.has_inline_credentials());
             let path = this.target_path(cx);
-            assert!(path.ends_with("lab.yaml"));
+            assert!(path.ends_with("kubeconfigs/lab.yaml"), "{path:?}");
         });
     }
 }

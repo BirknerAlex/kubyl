@@ -16,10 +16,14 @@ pub mod certs;
 pub mod conntest;
 mod dialogs;
 pub mod editor;
+#[cfg(test)]
+mod editor_tests;
 mod editor_ui;
 pub mod files;
 pub(crate) mod forms;
 pub mod import;
+#[cfg(test)]
+mod live_ui_tests;
 pub mod model;
 pub mod panel;
 pub mod schema;
