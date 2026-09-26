@@ -316,6 +316,9 @@ impl YamlEditor {
                     "Deleted on the server. Apply creates it again.".into(),
                     Vec::new(),
                 )
+            } else if let Some(note) = self.draft_note.clone().filter(|_| self.is_new()) {
+                // Where a draft's text came from (an operator's example…).
+                (IconName::Info, colors.accent, note, Vec::new())
             } else {
                 // Another crate's note about the object (managed by Argo CD…).
                 let notice = self.edit_notice(cx)?;

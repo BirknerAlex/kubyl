@@ -177,6 +177,8 @@ one list. That list is the only shared line, and it is append-only.
 - YAML (phase 04): open `ViewKind::Yaml` with an object ref (edit) or a list ref / no target
   (new resource); `kubyl_yaml::{parse, schema, validate, diff, apply, render}` are usable without
   the view (see plans/04-yaml-editor.md, "API for later phases").
+  `kubyl_yaml::open_draft(list_ref, text, note, window, cx)` opens a new-resource editor with
+  that text and an info banner instead of the kind's template (phase 12: operator examples).
 - Confirmations (phase 02/04): `kubyl_explorer::dialogs::confirm(ConfirmSpec { typed, lines, .. })`,
   one-line input: `kubyl_explorer::dialogs::prompt_text`.
 - Dock panels (phase 05): dispatch `kubyl_core::actions::ActivateDockPanel(id)` to show the dock

@@ -178,6 +178,8 @@ pub struct YamlEditor {
     pub(crate) cursor_path: Option<String>,
 
     // New resource.
+    /// A note shown above a draft's buffer (where its text came from), see [`crate::open_draft`].
+    pub(crate) draft_note: Option<SharedString>,
     pub(crate) picker_open: bool,
     pub(crate) picker_query: Entity<InputState>,
     generated: Option<(Gvk, String)>,
@@ -204,6 +206,7 @@ impl YamlEditor {
         });
         let picker_query = cx.new(|cx| InputState::new(window, cx).placeholder("Any kind…"));
         let active = ActiveContext::global(cx).clone();
+        let target_key = target.clone().filter(|t| !t.is_object());
         let (cluster, namespace, object, gvr) = match target {
             Some(t) if t.is_object() => (
                 Some(t.cluster.clone()),
@@ -333,6 +336,7 @@ impl YamlEditor {
             ref_stores: Vec::new(),
             expanded: ["spec".to_string()].into_iter().collect(),
             cursor_path: None,
+            draft_note: None,
             picker_open: false,
             picker_query,
             generated: None,
@@ -340,6 +344,11 @@ impl YamlEditor {
         };
         if this.object.is_some() {
             this.load(window, cx);
+        } else if let Some(draft) = target_draft(&target_key, cx) {
+            this.gvk = this.kind_of_gvr(cx);
+            this.draft_note = draft.note;
+            this.panel_tab = PanelTab::Problems;
+            this.set_buffer(&draft.text, false, window, cx);
         } else {
             this.gvk = this.kind_of_gvr(cx);
             match this.gvr.clone() {
@@ -1878,9 +1887,77 @@ impl TabView for YamlEditor {
     }
 }
 
+/// Text for the next new-resource editor of a target (see [`crate::open_draft`]).
+pub(crate) struct Draft {
+    pub text: String,
+    pub note: Option<SharedString>,
+}
+
+/// Drafts waiting for their editor, by target (cluster, kind and namespace).
+#[derive(Default)]
+pub(crate) struct PendingDrafts(pub Vec<(ResourceRef, Draft)>);
+
+impl gpui::Global for PendingDrafts {}
+
+/// Takes the draft queued for a new-resource editor of `target`, if any.
+fn target_draft(target: &Option<ResourceRef>, cx: &mut App) -> Option<Draft> {
+    let target = target.as_ref()?;
+    let drafts = &mut cx.default_global::<PendingDrafts>().0;
+    let index = drafts.iter().position(|(t, _)| t == target)?;
+    Some(drafts.remove(index).1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A queued draft fills the next new-resource editor of its target (and only that one),
+    /// with its note.
+    #[gpui::test]
+    fn drafts_fill_the_next_editor_of_their_target(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            kubyl_core::init(cx);
+            kubyl_settings::init_with_dir(cx, dir.path());
+            kubyl_ui::init(cx);
+            Settings::register::<YamlSettings>(cx);
+        });
+        let cluster = ClusterId::new("c");
+        let target = ResourceRef::list(
+            cluster.clone(),
+            Gvr::new("cert-manager.io", "v1", "certificates"),
+            Some("shop".into()),
+        );
+        let text =
+            "apiVersion: cert-manager.io/v1\nkind: Certificate\nmetadata:\n  name: example\n";
+        cx.update(|cx| {
+            cx.default_global::<PendingDrafts>().0.push((
+                target.clone(),
+                Draft {
+                    text: text.into(),
+                    note: Some("From the operator's examples.".into()),
+                },
+            ));
+        });
+        let (editor, cx) =
+            cx.add_window_view(|window, cx| YamlEditor::new(Some(target.clone()), window, cx));
+        editor.update(cx, |editor, cx| {
+            assert_eq!(editor.text(cx), text);
+            assert_eq!(
+                editor.draft_note.as_deref(),
+                Some("From the operator's examples.")
+            );
+            assert!(editor.is_new());
+        });
+        cx.update(|_, cx| assert!(cx.global::<PendingDrafts>().0.is_empty()));
+        // The next editor of the same kind starts from its template again.
+        let (second, cx) =
+            cx.add_window_view(|window, cx| YamlEditor::new(Some(target.clone()), window, cx));
+        second.update(cx, |editor, cx| {
+            assert_ne!(editor.text(cx), text);
+            assert!(editor.draft_note.is_none());
+        });
+    }
 
     #[test]
     fn finds_every_documents_kind() {
