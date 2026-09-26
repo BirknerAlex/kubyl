@@ -1,6 +1,6 @@
 # Phase 12: Operators (OLM) and Helm releases
 
-**Status:** not started
+**Status:** in progress
 **Depends on:** 02, 04 (YAML view/diff for InstallPlans and CR creation)
 **Owns:** `crates/kubyl_operators`
 **Mockups:** board 7 · Operators (OLM), OpenShift-style
