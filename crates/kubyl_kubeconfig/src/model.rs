@@ -138,6 +138,17 @@ impl Doc {
             .collect()
     }
 
+    /// Every entry's name and body in file order, duplicates included.
+    pub fn bodies(&self, kind: Kind) -> Vec<(String, Option<&Map<String, Value>>)> {
+        self.list(kind)
+            .iter()
+            .filter_map(|e| {
+                let name = e.get("name").and_then(Value::as_str)?.to_string();
+                Some((name, e.get(kind.body_key()).and_then(Value::as_object)))
+            })
+            .collect()
+    }
+
     fn index(&self, kind: Kind, name: &str) -> Option<usize> {
         self.list(kind)
             .iter()
@@ -406,6 +417,52 @@ impl Doc {
     /// The YAML of the document rendered from scratch (new files).
     pub fn to_yaml(&self) -> String {
         crate::yaml::render(&self.0)
+    }
+}
+
+/// A file path from a kubeconfig, resolved like kubectl does: relative to the kubeconfig's
+/// folder.
+pub fn resolve_path(path: &str, dir: Option<&std::path::Path>) -> std::path::PathBuf {
+    let p = std::path::Path::new(path);
+    match dir {
+        Some(dir) if p.is_relative() => dir.join(p),
+        _ => p.to_path_buf(),
+    }
+}
+
+impl Doc {
+    /// Makes relative file paths absolute against `dir` (what kube's `read_from` does), for
+    /// building a client from a document that isn't read from disk. Exec commands only when
+    /// they contain a path separator (bare names are looked up in `PATH`).
+    pub fn absolutize_paths(&mut self, dir: &std::path::Path) {
+        let fix = |map: &mut Map<String, Value>, key: &str| {
+            if let Some(Value::String(path)) = map.get_mut(key)
+                && !path.is_empty()
+                && std::path::Path::new(path.as_str()).is_relative()
+            {
+                *path = dir.join(path.as_str()).to_string_lossy().into_owned();
+            }
+        };
+        for name in self.names(Kind::Cluster) {
+            if let Some(body) = self.body_mut(Kind::Cluster, &name) {
+                fix(body, CA_FILE);
+            }
+        }
+        for name in self.names(Kind::User) {
+            if let Some(body) = self.body_mut(Kind::User, &name) {
+                fix(body, CERT_FILE);
+                fix(body, KEY_FILE);
+                fix(body, "tokenFile");
+                if let Some(exec) = body.get_mut("exec").and_then(Value::as_object_mut)
+                    && exec
+                        .get("command")
+                        .and_then(Value::as_str)
+                        .is_some_and(|c| c.contains(std::path::MAIN_SEPARATOR))
+                {
+                    fix(exec, "command");
+                }
+            }
+        }
     }
 }
 

@@ -221,7 +221,7 @@ pub fn write_atomic(path: &Path, bytes: &[u8], mode: Option<u32>) -> std::io::Re
 }
 
 /// `<stem>-<hash of the path>-` : the prefix of a file's backups.
-fn backup_prefix(path: &Path) -> String {
+pub fn backup_prefix(path: &Path) -> String {
     let stem = path
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())

@@ -50,6 +50,49 @@ pub fn pem_blocks(text: &str) -> Vec<PemBlock> {
     out
 }
 
+/// PEM text as pasted: also accepts PEM whose line breaks were lost (a one-line input).
+pub fn normalize_pem(text: &str) -> String {
+    let text = text.trim();
+    if text.contains('\n') || !text.starts_with("-----BEGIN ") {
+        return text.to_string();
+    }
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("-----BEGIN ") {
+        let after = &rest[start + 11..];
+        let Some(label_end) = after.find("-----") else {
+            break;
+        };
+        let label = &after[..label_end];
+        let body_start = start + 11 + label_end + 5;
+        let end_marker = format!("-----END {label}-----");
+        let Some(end) = rest[body_start..].find(&end_marker) else {
+            break;
+        };
+        let body: String = rest[body_start..body_start + end]
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        out.push_str(&der_to_pem_text(label, &body));
+        rest = &rest[body_start + end + end_marker.len()..];
+    }
+    if out.is_empty() {
+        text.to_string()
+    } else {
+        out
+    }
+}
+
+fn der_to_pem_text(label: &str, base64: &str) -> String {
+    let mut out = format!("-----BEGIN {label}-----\n");
+    for chunk in base64.as_bytes().chunks(64) {
+        out.push_str(std::str::from_utf8(chunk).unwrap_or_default());
+        out.push('\n');
+    }
+    out.push_str(&format!("-----END {label}-----\n"));
+    out
+}
+
 /// PEM text from a kubeconfig `*-data` value (base64 of PEM). Also accepts raw PEM pasted by
 /// mistake.
 pub fn pem_from_data(data: &str) -> Result<String, String> {
@@ -266,5 +309,9 @@ pub(crate) mod tests {
         assert_eq!(pem_from_data(&data).unwrap().trim(), CA.trim());
         assert_eq!(pem_from_data(CA).unwrap().trim(), CA.trim());
         assert_eq!(certificates(&ca.pem()).unwrap()[0].sha256, ca.sha256);
+        // A PEM pasted into a one-line input.
+        let flat = CLIENT_KEY.replace('\n', "");
+        assert!(check_private_key(&normalize_pem(&flat)).is_ok());
+        assert_eq!(normalize_pem(CA), CA.trim());
     }
 }
