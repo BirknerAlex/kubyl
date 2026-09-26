@@ -1,0 +1,25 @@
+{
+  "id": "/subscriptions/00000000-0000-0000-0000-000000000002/resourcegroups/rg-prod/providers/Microsoft.ContainerService/managedClusters/prod-westeurope/agentPools/user",
+  "name": "user",
+  "type": "Microsoft.ContainerService/managedClusters/agentPools",
+  "properties": {
+    "count": 4,
+    "vmSize": "Standard_E8s_v5",
+    "osDiskSizeGB": 128,
+    "type": "VirtualMachineScaleSets",
+    "availabilityZones": ["1", "2", "3"],
+    "enableAutoScaling": true,
+    "minCount": 2,
+    "maxCount": 8,
+    "provisioningState": "Succeeded",
+    "powerState": {"code": "Running"},
+    "orchestratorVersion": "1.29.7",
+    "currentOrchestratorVersion": "1.29.7",
+    "mode": "User",
+    "osType": "Linux",
+    "osSKU": "Ubuntu",
+    "nodeImageVersion": "AKSUbuntu-2204gen2containerd-202409.04.0",
+    "upgradeSettings": {"maxSurge": "1", "maxUnavailable": "0", "drainTimeoutInMinutes": 30},
+    "eTag": "d9b2e7a3-0000-4000-8000-000000000002"
+  }
+}

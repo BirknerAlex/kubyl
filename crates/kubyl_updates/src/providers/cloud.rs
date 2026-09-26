@@ -1102,6 +1102,44 @@ users:
         );
     }
 
+    #[tokio::test]
+    async fn http_round_trip() {
+        let (base, seen) = mock::serve(vec![(
+            "PUT",
+            "/v1/things/a".into(),
+            200,
+            r#"{"ok": true}"#.into(),
+        )])
+        .await;
+        let http = Http::new().unwrap();
+        let token = BearerToken(SecretString::from("t0k"));
+        let request = Request::new(
+            Method::PUT,
+            url(&base, "/v1/things/a", &[("api-version", "1")]).unwrap(),
+        )
+        .bearer(&token)
+        .json(&serde_json::json!({"x": 1}));
+        let response = http.send(request).await.unwrap();
+        assert!(response.ok());
+        let value: serde_json::Value = response.json("the answer").unwrap();
+        assert_eq!(value["ok"], true);
+        let first = seen.lock().unwrap()[0].clone();
+        assert_eq!(first.target, "/v1/things/a?api-version=1");
+        assert_eq!(first.header("authorization"), Some("Bearer t0k"));
+        assert_eq!(first.body, br#"{"x":1}"#);
+
+        // Nothing listens: Unavailable, naming the host.
+        let closed = Url::parse("http://127.0.0.1:9").unwrap();
+        let err = http
+            .send(Request::new(Method::GET, closed))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, ProviderError::Unavailable(m) if m.contains("127.0.0.1")),
+            "{err:?}"
+        );
+    }
+
     #[test]
     fn endpoint_overrides() {
         for ok in [
