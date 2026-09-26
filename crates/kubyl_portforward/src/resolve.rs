@@ -8,7 +8,10 @@ use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, StatefulSet};
 use k8s_openapi::api::core::v1::{Pod, Service};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector;
 use kube::Api;
-use kube::api::ListParams;
+use kube::api::{DynamicObject, ListParams};
+use kube::discovery::ApiResource;
+use kubyl_resources::route;
+use serde_json::Value;
 
 /// What to forward to.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -258,6 +261,34 @@ fn container_port_choices(spec: Option<&k8s_openapi::api::core::v1::PodSpec>) ->
     choices
 }
 
+/// The TCP ports of a Service, for the port picker.
+fn service_port_choices(service: &Service) -> Vec<PortChoice> {
+    service
+        .spec
+        .as_ref()
+        .and_then(|s| s.ports.clone())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| p.protocol.as_deref().unwrap_or("TCP") == "TCP")
+        .filter_map(|p| {
+            let number = u16::try_from(p.port).ok()?;
+            let target = p.target_port.map(|t| match t {
+                k8s_openapi::apimachinery::pkg::util::intstr::IntOrString::Int(n) => n.to_string(),
+                k8s_openapi::apimachinery::pkg::util::intstr::IntOrString::String(s) => s,
+            });
+            let (http, https) = http_kind(number, p.name.as_deref(), p.app_protocol.as_deref());
+            Some(PortChoice {
+                port: number,
+                name: p.name,
+                target,
+                protocol: "TCP".into(),
+                http,
+                https,
+            })
+        })
+        .collect()
+}
+
 /// The TCP ports `resource/name` exposes, for the port picker.
 pub async fn list_ports(
     client: kube::Client,
@@ -274,32 +305,7 @@ pub async fn list_ports(
             let service = Api::<Service>::namespaced(client, namespace)
                 .get(name)
                 .await?;
-            service
-                .spec
-                .and_then(|s| s.ports)
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|p| p.protocol.as_deref().unwrap_or("TCP") == "TCP")
-                .filter_map(|p| {
-                    let number = u16::try_from(p.port).ok()?;
-                    let target = p.target_port.map(|t| match t {
-                        k8s_openapi::apimachinery::pkg::util::intstr::IntOrString::Int(n) => {
-                            n.to_string()
-                        }
-                        k8s_openapi::apimachinery::pkg::util::intstr::IntOrString::String(s) => s,
-                    });
-                    let (http, https) =
-                        http_kind(number, p.name.as_deref(), p.app_protocol.as_deref());
-                    Some(PortChoice {
-                        port: number,
-                        name: p.name,
-                        target,
-                        protocol: "TCP".into(),
-                        http,
-                        https,
-                    })
-                })
-                .collect()
+            service_port_choices(&service)
         }
         "deployments" => container_port_choices(
             Api::<Deployment>::namespaced(client, namespace)
@@ -476,6 +482,212 @@ pub async fn workload_selector(
         })
 }
 
+// ----- Routes and Ingresses -----
+
+/// Kinds that forward through a backend Service: `(group, resource, kind)`.
+pub const BACKEND_KINDS: &[(&str, &str, &str)] = &[
+    (route::GROUP, route::RESOURCE, route::KIND),
+    ("networking.k8s.io", "ingresses", "Ingress"),
+];
+
+/// Whether `group`/`resource` forwards through its backend Service (a Route or an Ingress).
+pub fn forwards_to_backend(group: &str, resource: &str) -> bool {
+    BACKEND_KINDS
+        .iter()
+        .any(|(g, r, _)| *g == group && *r == resource)
+}
+
+/// What ⇧F on a Route or Ingress forwards: its backend Service at the port it uses.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BackendForward {
+    pub service: String,
+    /// The Service port (what a Service forward asks for).
+    pub port: u16,
+    /// Every TCP port of the Service, for the dialog.
+    pub ports: Vec<PortChoice>,
+    /// How the port was found, for the dialog: `Route shop → Service shop-web · target port
+    /// http is Service port 80.`
+    pub note: String,
+}
+
+/// An Ingress backend's port: a Service port number or name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum IngressPort {
+    Number(i64),
+    Name(String),
+}
+
+/// The first Service backend of an Ingress (`networking.k8s.io/v1`): the rules' paths in
+/// order, then the default backend.
+fn ingress_backend(ingress: &Value) -> Option<(String, IngressPort)> {
+    let backend = |b: &Value| -> Option<(String, IngressPort)> {
+        let service = b.get("service")?;
+        let name = service.get("name")?.as_str()?.to_string();
+        let port = match service.pointer("/port/number").and_then(Value::as_i64) {
+            Some(n) => IngressPort::Number(n),
+            None => IngressPort::Name(service.pointer("/port/name")?.as_str()?.to_string()),
+        };
+        Some((name, port))
+    };
+    ingress
+        .pointer("/spec/rules")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .flat_map(|rule| {
+            rule.pointer("/http/paths")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .find_map(|path| path.get("backend").and_then(backend))
+        .or_else(|| ingress.pointer("/spec/defaultBackend").and_then(backend))
+}
+
+/// The Service a Route (`spec.to`) or Ingress (its first backend) sends traffic to.
+pub fn backend_service(resource: &str, name: &str, object: &Value) -> Result<String, String> {
+    let found = match resource {
+        route::RESOURCE => route::Route::parse(object)
+            .services()
+            .next()
+            .map(|b| b.name.clone()),
+        _ => ingress_backend(object).map(|(service, _)| service),
+    };
+    found.ok_or_else(|| match resource {
+        route::RESOURCE => format!("Route {name} has no Service backend"),
+        _ => format!("Ingress {name} has no Service backend"),
+    })
+}
+
+/// The Service port a Route or Ingress uses on `service` (its backend), and a note on how it
+/// was found. Routes resolve like OpenShift's router ([`route::resolve_target_port`]); an
+/// Ingress names a Service port by number or name.
+pub fn backend_port(
+    resource: &str,
+    name: &str,
+    object: &Value,
+    service: &Value,
+) -> Result<(u16, String), String> {
+    let service_name = service
+        .pointer("/metadata/name")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if resource == route::RESOURCE {
+        let parsed = route::Route::parse(object);
+        let matched = route::resolve_target_port(parsed.target_port.as_ref(), service)?;
+        let mut note = match &parsed.target_port {
+            Some(target) => format!(
+                "Route {name} → Service {service_name} · target port {target} is Service port {}.",
+                matched.port
+            ),
+            None => format!(
+                "Route {name} → Service {service_name} · no target port: the Service's first port {}.",
+                matched.port
+            ),
+        };
+        let alternates: Vec<&str> = parsed.services().skip(1).map(|b| b.name.as_str()).collect();
+        if !alternates.is_empty() {
+            note.push_str(&format!(
+                " The alternate backends ({}) forward from the Route's details.",
+                alternates.join(", ")
+            ));
+        }
+        return Ok((matched.port, note));
+    }
+    let (_, port) =
+        ingress_backend(object).ok_or_else(|| format!("Ingress {name} has no Service backend"))?;
+    let ports = service
+        .pointer("/spec/ports")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let found = ports.iter().find(|p| match &port {
+        IngressPort::Number(n) => p.get("port").and_then(Value::as_i64) == Some(*n),
+        IngressPort::Name(n) => p.get("name").and_then(Value::as_str) == Some(n.as_str()),
+    });
+    let number = found
+        .and_then(|p| p.get("port")?.as_u64())
+        .and_then(|p| u16::try_from(p).ok())
+        .ok_or_else(|| match &port {
+            IngressPort::Number(n) => format!("port {n} not found on Service {service_name}"),
+            IngressPort::Name(n) => format!("port {n} not found on Service {service_name}"),
+        })?;
+    let note = match &port {
+        IngressPort::Name(port) => format!(
+            "Ingress {name} → Service {service_name} · port {port} is Service port {number}."
+        ),
+        IngressPort::Number(_) => {
+            format!("Ingress {name} → Service {service_name} port {number} (its first backend).")
+        }
+    };
+    Ok((number, note))
+}
+
+/// What a kube error means for a Route/Ingress/Service lookup.
+fn lookup_error(err: kube::Error, what: &str, name: &str, namespace: &str) -> String {
+    match err {
+        kube::Error::Api(status) if status.code == 403 => {
+            format!("you may not get {what} in {namespace}")
+        }
+        kube::Error::Api(status) if status.code == 404 => {
+            format!("{} {name} not found in {namespace}", title_case(what))
+        }
+        other => other.to_string(),
+    }
+}
+
+fn title_case(what: &str) -> String {
+    match what {
+        "routes" => "Route".into(),
+        "ingresses" => "Ingress".into(),
+        "services" => "Service".into(),
+        other => other.into(),
+    }
+}
+
+/// Resolves ⇧F on a Route or Ingress: fetches it and its backend Service (on Tokio) and finds
+/// the Service port it uses. Errors name what's missing.
+pub async fn backend_forward(
+    client: kube::Client,
+    namespace: &str,
+    resource: &str,
+    name: &str,
+) -> Result<BackendForward, String> {
+    let Some((group, resource, kind)) = BACKEND_KINDS
+        .iter()
+        .copied()
+        .find(|(_, r, _)| *r == resource)
+    else {
+        return Err(format!("port-forwarding isn't supported for {resource}"));
+    };
+    let api_resource = ApiResource {
+        group: group.into(),
+        version: "v1".into(),
+        api_version: format!("{group}/v1"),
+        kind: kind.into(),
+        plural: resource.into(),
+    };
+    let object: Api<DynamicObject> = Api::namespaced_with(client.clone(), namespace, &api_resource);
+    let object = object
+        .get(name)
+        .await
+        .map_err(|err| lookup_error(err, resource, name, namespace))?;
+    let object = serde_json::to_value(&object).map_err(|e| e.to_string())?;
+    let service_name = backend_service(resource, name, &object)?;
+    let service = Api::<Service>::namespaced(client, namespace)
+        .get(&service_name)
+        .await
+        .map_err(|err| lookup_error(err, "services", &service_name, namespace))?;
+    let service_json = serde_json::to_value(&service).map_err(|e| e.to_string())?;
+    let (port, note) = backend_port(resource, name, &object, &service_json)?;
+    Ok(BackendForward {
+        service: service_name,
+        port,
+        ports: service_port_choices(&service),
+        note,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -517,6 +729,91 @@ mod tests {
         assert_eq!(
             resolve_target_port(&TargetPort::Name("missing".into()), &container_ports),
             None
+        );
+    }
+
+    #[test]
+    fn routes_forward_their_primary_backend_at_the_resolved_port() {
+        let route = serde_json::json!({"metadata": {"name": "shop"}, "spec": {
+            "to": {"kind": "Service", "name": "shop-web", "weight": 80},
+            "alternateBackends": [{"kind": "Service", "name": "shop-canary", "weight": 20}],
+            "port": {"targetPort": "http"}}});
+        let service = serde_json::json!({"metadata": {"name": "shop-web"}, "spec": {"ports": [
+            {"name": "metrics", "port": 9090},
+            {"name": "http", "port": 80, "targetPort": 8080}]}});
+        assert_eq!(
+            backend_service("routes", "shop", &route).unwrap(),
+            "shop-web"
+        );
+        let (port, note) = backend_port("routes", "shop", &route, &service).unwrap();
+        assert_eq!(port, 80);
+        assert_eq!(
+            note,
+            "Route shop → Service shop-web · target port http is Service port 80. The \
+             alternate backends (shop-canary) forward from the Route's details."
+        );
+        // Numeric target ports match the Service's targetPort; no spec.port: the first port.
+        let numeric = serde_json::json!({"spec": {"to": {"name": "shop-web"},
+            "port": {"targetPort": 8080}}});
+        assert_eq!(
+            backend_port("routes", "n", &numeric, &service).unwrap().0,
+            80
+        );
+        let all = serde_json::json!({"spec": {"to": {"name": "shop-web"}}});
+        assert_eq!(backend_port("routes", "a", &all, &service).unwrap().0, 9090);
+        let missing = serde_json::json!({"spec": {"to": {"name": "shop-web"},
+            "port": {"targetPort": "https"}}});
+        assert_eq!(
+            backend_port("routes", "m", &missing, &service).unwrap_err(),
+            "port https not found on Service shop-web"
+        );
+        assert_eq!(
+            backend_service("routes", "empty", &serde_json::json!({"spec": {}})).unwrap_err(),
+            "Route empty has no Service backend"
+        );
+        assert!(forwards_to_backend("route.openshift.io", "routes"));
+        assert!(forwards_to_backend("networking.k8s.io", "ingresses"));
+        assert!(!forwards_to_backend("serving.knative.dev", "routes"));
+    }
+
+    #[test]
+    fn ingresses_forward_their_first_backend() {
+        let service = serde_json::json!({"metadata": {"name": "web"}, "spec": {"ports": [
+            {"name": "http", "port": 80, "targetPort": 8080}, {"name": "admin", "port": 9000}]}});
+        let ingress = |backend: serde_json::Value| {
+            serde_json::json!({"spec": {"rules": [{"host": "web.example.com", "http": {"paths": [
+                {"path": "/", "backend": backend}]}}]}})
+        };
+        let named =
+            ingress(serde_json::json!({"service": {"name": "web", "port": {"name": "admin"}}}));
+        assert_eq!(backend_service("ingresses", "i", &named).unwrap(), "web");
+        assert_eq!(
+            backend_port("ingresses", "i", &named, &service).unwrap().0,
+            9000
+        );
+        let numbered =
+            ingress(serde_json::json!({"service": {"name": "web", "port": {"number": 80}}}));
+        assert_eq!(
+            backend_port("ingresses", "i", &numbered, &service)
+                .unwrap()
+                .0,
+            80
+        );
+        let missing =
+            ingress(serde_json::json!({"service": {"name": "web", "port": {"number": 8080}}}));
+        assert_eq!(
+            backend_port("ingresses", "i", &missing, &service).unwrap_err(),
+            "port 8080 not found on Service web"
+        );
+        let default = serde_json::json!({"spec": {"defaultBackend":
+            {"service": {"name": "fallback", "port": {"number": 80}}}}});
+        assert_eq!(
+            backend_service("ingresses", "d", &default).unwrap(),
+            "fallback"
+        );
+        assert_eq!(
+            backend_service("ingresses", "none", &serde_json::json!({"spec": {}})).unwrap_err(),
+            "Ingress none has no Service backend"
         );
     }
 

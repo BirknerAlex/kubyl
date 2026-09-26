@@ -94,17 +94,36 @@ pub fn forward(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let view = cx.new(|cx| ForwardDialog::new(target, Rc::new(on_start), window, cx));
+    forward_to(target, ports, None, None, on_start, window, cx);
+}
+
+/// [`forward`] with `preselect` chosen once the ports load (e.g. the Service port a Route
+/// uses) and a `note` under the title saying where it came from.
+pub fn forward_to(
+    target: ResourceRef,
+    ports: gpui::Task<anyhow::Result<Vec<PortChoice>>>,
+    preselect: Option<u16>,
+    note: Option<String>,
+    on_start: impl Fn(ForwardChoice, &mut Window, &mut App) + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let view = cx.new(|cx| {
+        let mut dialog = ForwardDialog::new(target, Rc::new(on_start), window, cx);
+        dialog.note = note;
+        dialog
+    });
     let weak = view.downgrade();
     cx.spawn(async move |cx| {
         let ports = ports.await;
         weak.update(cx, |this, cx| {
             match ports {
                 Ok(ports) => {
-                    // HTTP ports first, so "open in browser" targets are one click away.
-                    this.selected = ports
-                        .iter()
-                        .position(|p| p.http)
+                    // The asked-for port, else HTTP ports first, so "open in browser" targets
+                    // are one click away.
+                    this.selected = preselect
+                        .and_then(|port| ports.iter().position(|p| p.port == port))
+                        .or_else(|| ports.iter().position(|p| p.http))
                         .or((!ports.is_empty()).then_some(0));
                     this.ports = Some(ports);
                 }
@@ -136,6 +155,8 @@ struct ForwardDialog {
     save: bool,
     auto_start: bool,
     error: Option<String>,
+    /// Where the target came from (a Route or Ingress backend).
+    note: Option<String>,
     on_start: OnStart,
     focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
@@ -184,6 +205,7 @@ impl ForwardDialog {
             save: false,
             auto_start: false,
             error: None,
+            note: None,
             on_start,
             focus: cx.focus_handle(),
             _subscriptions: subscriptions,
@@ -344,6 +366,19 @@ impl Render for ForwardDialog {
                 v_flex()
                     .p(u(16.0))
                     .gap(u(12.0))
+                    .when_some(self.note.clone(), |this, note| {
+                        this.child(
+                            h_flex()
+                                .items_start()
+                                .gap(u(6.0))
+                                .text_size(u(12.0))
+                                .text_color(colors.text_dim)
+                                .child(div().pt(u(2.0)).child(
+                                    Icon::new(IconName::Route).size(12.0).color(colors.text_dim),
+                                ))
+                                .child(div().flex_1().min_w_0().child(note)),
+                        )
+                    })
                     .child(
                         v_flex()
                             .gap(u(4.0))
