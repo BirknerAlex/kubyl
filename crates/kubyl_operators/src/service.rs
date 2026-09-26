@@ -331,18 +331,22 @@ impl Olm {
 
     /// What `cluster` has of OLM.
     pub fn availability(&self, cluster: &ClusterId, cx: &App) -> Availability {
-        let Some(manager) = ConnectionManager::try_global(cx) else {
-            return Availability::NotConnected;
-        };
-        let manager = manager.read(cx);
-        if manager.client(cluster).is_none() {
-            return Availability::NotConnected;
-        }
-        let Some(discovery) = manager.discovery(cluster) else {
-            return Availability::Loading;
-        };
-        if !discovery.has_group(model::GROUP) && !discovery.has_group(v1::GROUP) {
-            return Availability::NoOlm;
+        match ConnectionManager::try_global(cx) {
+            Some(manager) => {
+                let manager = manager.read(cx);
+                if manager.client(cluster).is_none() {
+                    return Availability::NotConnected;
+                }
+                let Some(discovery) = manager.discovery(cluster) else {
+                    return Availability::Loading;
+                };
+                if !discovery.has_group(model::GROUP) && !discovery.has_group(v1::GROUP) {
+                    return Availability::NoOlm;
+                }
+            }
+            // Without connections (GPUI tests) only filled-in clusters exist.
+            None if !self.clusters.contains_key(cluster) => return Availability::NotConnected,
+            None => {}
         }
         match self.snapshot(cluster, cx) {
             Some(s) if !s.loading => Availability::Ready,
@@ -370,6 +374,48 @@ impl Olm {
         let snapshot = Arc::new(build(state, cx));
         *state.snapshot.borrow_mut() = Some((generations, snapshot.clone()));
         Some(snapshot)
+    }
+
+    /// Fills a cluster's watches by hand (GPUI tests: no cluster, no network).
+    #[cfg(test)]
+    pub(crate) fn insert_for_test(
+        &mut self,
+        cluster: &ClusterId,
+        subscriptions: Vec<Value>,
+        csvs: Vec<Value>,
+        plans: Vec<Value>,
+        cx: &mut Context<Self>,
+    ) {
+        use kubyl_resources::ResourceStore;
+        let mut store = |gvr: kubyl_core::Gvr, objects: Vec<Value>| {
+            let key = StoreKey::new(cluster.clone(), gvr, None);
+            Some(StoreHandle::detached(
+                cx.new(|_| ResourceStore::from_objects(key, objects)),
+            ))
+        };
+        let stores = Stores {
+            subscriptions: store(model::subscriptions(), subscriptions),
+            csvs: store(model::csvs(), csvs),
+            plans: store(model::install_plans(), plans),
+            catalogs: store(model::catalog_sources(), Vec::new()),
+            groups: store(model::operator_groups(), Vec::new()),
+            extensions: None,
+            cluster_catalogs: None,
+        };
+        self.clusters.insert(
+            cluster.clone(),
+            ClusterOlm {
+                stores,
+                v0: true,
+                v1: false,
+                lease: Rc::new(()),
+                wanted_until: Instant::now() + KEEP,
+                snapshot: RefCell::new(None),
+                csv_cache: RefCell::new(HashMap::new()),
+                _observers: Vec::new(),
+            },
+        );
+        cx.notify();
     }
 
     // ----- OperatorHub -----

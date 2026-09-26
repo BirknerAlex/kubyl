@@ -622,7 +622,8 @@ impl OperatorsView {
                 ),
             );
         let cluster = self.cluster.clone();
-        let show_hub = self.has_olm(cx) && self.snapshot(cx).is_some_and(|s| s.v0);
+        let helm = self.tab == SubTab::Helm;
+        let show_hub = !helm && self.has_olm(cx) && self.snapshot(cx).is_some_and(|s| s.v0);
         h_flex()
             .flex_none()
             .h(u(40.0))
@@ -631,7 +632,15 @@ impl OperatorsView {
             .border_b_1()
             .border_color(colors.border_variant)
             .overflow_hidden()
-            .child(Icon::new(IconName::Blocks).size(14.0).color(colors.accent))
+            .child(
+                Icon::new(if helm {
+                    IconName::Anchor
+                } else {
+                    IconName::Blocks
+                })
+                .size(14.0)
+                .color(colors.accent),
+            )
             .child(div().flex_none().font_weight(FontWeight::MEDIUM).child(
                 if self.tab == SubTab::Helm {
                     "Helm releases"
@@ -1064,5 +1073,101 @@ impl Render for OperatorsView {
             .child(tabs)
             .child(div().flex_1().min_h_0().flex().child(body))
             .child(kubyl_ui::KeyHints::new(hints))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::TestAppContext;
+    use serde_json::{Value, json};
+
+    fn objects(count: usize) -> (Vec<Value>, Vec<Value>) {
+        (0..count)
+            .map(|i| {
+                let name = format!("op-{i:05}");
+                let csv = format!("{name}.v1.0.0");
+                (
+                    json!({"metadata": {"name": name, "namespace": "ops"},
+                           "spec": {"name": name, "channel": "stable"},
+                           "status": {"installedCSV": csv}}),
+                    json!({"metadata": {"name": csv, "namespace": "ops"},
+                           "spec": {"displayName": format!("Operator {i:05}"), "version": "1.0.0"},
+                           "status": {"phase": "Succeeded"}}),
+                )
+            })
+            .unzip()
+    }
+
+    /// 5,000 operators: the list builds fast, keeps the selection when operators come and go,
+    /// and filters.
+    #[gpui::test]
+    fn five_thousand_operators_keep_the_selection(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let olm = cx.update(|cx| {
+            kubyl_core::init(cx);
+            kubyl_settings::init_with_dir(cx, dir.path());
+            kubyl_ui::init(cx);
+            kubyl_resources::init(cx);
+            let olm = Olm::install(false, cx);
+            Helm::install(false, cx);
+            init(cx);
+            olm
+        });
+        let cluster = ClusterId::new("c");
+        let (subs, csvs) = objects(5000);
+        olm.update(cx, |o, cx| {
+            o.insert_for_test(&cluster, subs, csvs, Vec::new(), cx)
+        });
+        let slot: std::rc::Rc<std::cell::RefCell<Option<Entity<OperatorsView>>>> =
+            Default::default();
+        let (_root, cx) = cx.add_window_view({
+            let slot = slot.clone();
+            let cluster = cluster.clone();
+            move |window, cx| {
+                let view = cx.new(|cx| OperatorsView::new(cluster, window, cx));
+                *slot.borrow_mut() = Some(view.clone());
+                gpui_component::Root::new(view, window, cx)
+            }
+        });
+        let view = slot.borrow().clone().unwrap();
+        cx.run_until_parked();
+        let start = std::time::Instant::now();
+        view.update_in(cx, |view, window, cx| {
+            view.render_installed(window, cx);
+            assert_eq!(view.installed_rows.len(), 5000);
+            assert_eq!(view.installed_rows[0].display_name(), "Operator 00000");
+            view.select("sub:ops/op-02500".into(), cx);
+        });
+        // More operators arrive; the same one stays selected.
+        let (subs, csvs) = objects(5200);
+        olm.update(cx, |o, cx| {
+            o.insert_for_test(&cluster, subs, csvs, Vec::new(), cx)
+        });
+        cx.run_until_parked();
+        view.update_in(cx, |view, window, cx| {
+            view.render_installed(window, cx);
+            assert_eq!(view.installed_rows.len(), 5200);
+            assert_eq!(
+                view.selected_key().map(String::as_str),
+                Some("sub:ops/op-02500")
+            );
+            assert_eq!(
+                view.selected_operator(cx).map(|o| o.display_name()),
+                Some("Operator 02500".to_string())
+            );
+            view.filter
+                .update(cx, |input, cx| input.set_value("op-0250", window, cx));
+        });
+        cx.run_until_parked();
+        view.update_in(cx, |view, window, cx| {
+            view.render_installed(window, cx);
+            assert_eq!(view.installed_rows.len(), 10);
+        });
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            start.elapsed()
+        );
     }
 }

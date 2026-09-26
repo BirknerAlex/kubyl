@@ -279,6 +279,20 @@ pub fn manifest_objects(manifest: &str) -> Vec<ManifestObject> {
         .collect()
 }
 
+/// Where a kind sorts in a release's resources: workloads first, then what exposes and
+/// configures them, then the rest.
+pub fn kind_rank(kind: &str) -> u8 {
+    match kind {
+        "Deployment" | "StatefulSet" | "DaemonSet" => 0,
+        "Job" | "CronJob" | "Pod" => 1,
+        "Service" | "Ingress" | "Route" | "HTTPRoute" => 2,
+        "ConfigMap" | "Secret" | "PersistentVolumeClaim" => 3,
+        "ServiceAccount" | "Role" | "RoleBinding" | "ClusterRole" | "ClusterRoleBinding" => 5,
+        "CustomResourceDefinition" => 6,
+        _ => 4,
+    }
+}
+
 /// A `helm` command for the clipboard: what it does and the command line.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Command {

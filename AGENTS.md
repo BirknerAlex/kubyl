@@ -68,9 +68,17 @@ cargo run -p kubyl
   one alert per pod of `load-pods.sh`.
 - Context grouping: `script/oc-contexts-dev.sh` writes a scratch kubeconfig with 33 `oc`-style
   contexts (never `~/.kube/config`).
+- Operators: `script/olm-dev.sh` installs OLM v0 from the operator-framework release (with the
+  operatorhub.io catalog; its image is large, the first run takes a few minutes) and a
+  manual-approval Subscription `kubyl-manual/cloudnative-pg` pinned to the version before the
+  channel head, so an upgrade waits for approval. `--reset-manual` makes a new one wait after
+  it was approved, `--v1` adds OLM v1 (operator-controller, the operatorhub.io ClusterCatalog,
+  a ClusterExtension; it uses the cert-manager already running, e.g. one installed from
+  OperatorHub in Kubyl), `--delete` removes it all. Helm releases come from
+  `prometheus-dev.sh`.
 - Live tests against those clusters are ignored by default: see the header of
   `crates/kubyl_kube/tests/live.rs` (and of `crates/kubyl_metrics/tests/live.rs`,
-  `crates/kubyl_alerts/tests/live.rs`).
+  `crates/kubyl_alerts/tests/live.rs`, `crates/kubyl_operators/tests/live.rs`).
 - Web views: `script/webview-dev.sh` (after `prometheus-dev.sh`) adds Grafana, an Ingress, a
   self-signed HTTPS service and a non-HTTP-looking port. Real web views are tested by
   `KUBYL_TEST_WEBVIEW=1 cargo test -p kubyl_webview --test live_webview` (needs a display; on

@@ -112,36 +112,19 @@ impl ClusterCatalog {
     }
 }
 
-/// A ClusterExtension with the installer ServiceAccount it needs. OLM v1 installs with that
-/// account's permissions: the template binds `cluster-admin` and says to narrow it.
+/// A ClusterExtension and the namespace it installs into. operator-controller 1.12 and newer
+/// install with their own service account (`spec.serviceAccount` is deprecated and ignored);
+/// the template says what older releases need.
 pub fn extension_template(package: &str, namespace: &str) -> String {
     format!(
-        r#"# OLM v1 installs an extension with the permissions of its installer service account.
-# cluster-admin is the simplest start; narrow it to what the bundle needs for production.
+        r#"# OLM v1 installs the package's bundle into spec.namespace.
 # Upgrade later by editing spec.source.catalog.version (a version or a range like ">=1.2 <2").
+# operator-controller before 1.12 also needs spec.serviceAccount: an installer service account
+# in that namespace with the permissions the bundle needs.
 apiVersion: v1
 kind: Namespace
 metadata:
   name: {namespace}
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: {package}-installer
-  namespace: {namespace}
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: {package}-installer
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: cluster-admin
-subjects:
-  - kind: ServiceAccount
-    name: {package}-installer
-    namespace: {namespace}
 ---
 apiVersion: olm.operatorframework.io/v1
 kind: ClusterExtension
@@ -149,8 +132,6 @@ metadata:
   name: {package}
 spec:
   namespace: {namespace}
-  serviceAccount:
-    name: {package}-installer
   source:
     sourceType: Catalog
     catalog:
@@ -187,10 +168,12 @@ mod tests {
         .unwrap();
         assert!(catalog.serving());
         assert_eq!(catalog.poll_minutes, Some(10));
-        // The template is valid YAML with four documents.
+        // The template is valid YAML: the namespace and the extension.
         let docs: Vec<Value> =
             serde_saphyr::from_multiple(&extension_template("argocd-operator", "argocd")).unwrap();
-        assert_eq!(docs.len(), 4);
-        assert_eq!(docs[3]["kind"], "ClusterExtension");
+        assert_eq!(docs.len(), 2);
+        assert_eq!(docs[1]["kind"], "ClusterExtension");
+        assert_eq!(docs[1]["spec"]["namespace"], "argocd");
+        assert!(docs[1]["spec"].get("serviceAccount").is_none());
     }
 }

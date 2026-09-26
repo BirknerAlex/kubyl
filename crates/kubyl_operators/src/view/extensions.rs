@@ -156,18 +156,31 @@ impl OperatorsView {
             selected.and_then(|k| extensions.iter().find(|e| extension_key(e) == k).cloned());
         let cluster = self.cluster.clone();
         let details = selected_ext.map(|ext| {
-            let yaml_ref = ResourceRef::object(cluster.clone(), crate::olm::v1::cluster_extensions(), None, ext.name.clone());
+            let yaml_ref = ResourceRef::object(
+                cluster.clone(),
+                crate::olm::v1::cluster_extensions(),
+                None,
+                ext.name.clone(),
+            );
             let mut section = widgets::section(format!("{} · conditions", ext.name), &colors);
             for condition in &ext.conditions {
                 let good = condition.is_true() && condition.kind != "Deprecated";
                 section = section.child(widgets::note(
-                    if good { IconName::CircleCheck } else { IconName::TriangleAlert },
+                    if good {
+                        IconName::CircleCheck
+                    } else {
+                        IconName::TriangleAlert
+                    },
                     if good { colors.green } else { colors.yellow },
                     format!(
                         "{} · {}{}",
                         condition.kind,
                         condition.status,
-                        condition.message.as_ref().map(|m| format!(" · {m}")).unwrap_or_default()
+                        condition
+                            .message
+                            .as_ref()
+                            .map(|m| format!(" · {m}"))
+                            .unwrap_or_default()
                     ),
                     &colors,
                 ));
@@ -178,8 +191,11 @@ impl OperatorsView {
                         .text_size(u(11.5))
                         .text_color(colors.text_dim)
                         .child(format!(
-                            "Installer service account: {}. Upgrade by editing spec.source.catalog.version (Edit YAML, e).",
-                            ext.service_account.clone().unwrap_or_else(|| "—".into())
+                            "{}Upgrade by editing spec.source.catalog.version (Edit YAML, e).",
+                            ext.bundle
+                                .as_ref()
+                                .map(|b| format!("Installed bundle {b}. "))
+                                .unwrap_or_default()
                         )),
                 )
                 .child(
@@ -190,7 +206,10 @@ impl OperatorsView {
                             .label("Edit YAML")
                             .on_click(move |_, window, cx| {
                                 window.dispatch_action(
-                                    Box::new(OpenView(ViewRequest::for_resource(ViewKind::Yaml, yaml_ref.clone()))),
+                                    Box::new(OpenView(ViewRequest::for_resource(
+                                        ViewKind::Yaml,
+                                        yaml_ref.clone(),
+                                    ))),
                                     cx,
                                 )
                             }),

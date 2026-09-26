@@ -136,7 +136,7 @@ impl OperatorsView {
     pub(crate) fn render_helm(&mut self, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let colors = cx.colors().clone();
         let Some(snapshot) = self.helm_snapshot(cx) else {
-            return widgets::empty(format!("Connecting to {}…", self.cluster_name(cx)), &colors);
+            return widgets::empty("Connecting to the cluster…", &colors);
         };
         let query = self.query(cx);
         let namespace = self.helm_namespace.clone();
@@ -515,7 +515,8 @@ impl OperatorsView {
         }
         let resources = match self.helm_resources.as_ref().map(|(_, r)| r) {
             Some(HelmResources::Ready(objects)) => {
-                let own: Vec<&ManifestObject> = objects.iter().filter(|o| !o.hook).collect();
+                let mut own: Vec<&ManifestObject> = objects.iter().filter(|o| !o.hook).collect();
+                own.sort_by_key(|o| (present::kind_rank(&o.kind), o.kind.clone(), o.name.clone()));
                 let mut section = widgets::section(format!("Resources · {}", own.len()), &colors);
                 let discovery = ConnectionManager::try_global(cx)
                     .and_then(|m| m.read(cx).discovery(&self.cluster));

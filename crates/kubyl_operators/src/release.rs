@@ -161,6 +161,8 @@ struct Loaded {
 }
 
 enum State {
+    /// The cluster isn't connected yet (a restored tab): loads once it is.
+    Waiting,
     Loading(#[allow(dead_code)] Task<()>),
     Ready(Box<Loaded>),
     Failed(String),
@@ -204,6 +206,18 @@ impl ReleaseView {
         if let Some(helm) = Helm::global(cx) {
             subscriptions.push(cx.observe(&helm, |_, _, cx| cx.notify()));
         }
+        if let Some(manager) = ConnectionManager::try_global(cx) {
+            // A restored tab waits for its cluster.
+            subscriptions.push(cx.subscribe(&manager, |this: &mut Self, _, event, cx| {
+                if let kubyl_kube::ConnectionEvent::StateChanged(id) = event
+                    && id == &this.cluster
+                    && matches!(this.state, State::Waiting)
+                {
+                    this.load(cx);
+                    cx.notify();
+                }
+            }));
+        }
         let lease = Helm::watch(&target.cluster, cx);
         let tab = cx
             .try_global::<PendingTabs>()
@@ -220,7 +234,7 @@ impl ReleaseView {
             tab: tab.unwrap_or_default(),
             all_values: false,
             reveal: false,
-            state: State::Failed(String::new()),
+            state: State::Waiting,
             history: None,
             _history_task: None,
             focus: cx.focus_handle(),
@@ -241,12 +255,7 @@ impl ReleaseView {
         let Some(client) =
             ConnectionManager::try_global(cx).and_then(|m| m.read(cx).client(&self.cluster))
         else {
-            self.state = State::Failed(format!(
-                "Not connected to {}.",
-                ConnectionManager::try_global(cx)
-                    .map(|m| m.read(cx).display_name(&self.cluster).to_string())
-                    .unwrap_or_default()
-            ));
+            self.state = State::Waiting;
             return;
         };
         let (driver, namespace, object) =
@@ -982,6 +991,7 @@ impl Render for ReleaseView {
                 .child("The data of Secrets in the manifest is masked.")
         });
         let body: AnyElement = match &self.state {
+            State::Waiting => widgets::empty("Connecting to the cluster…", &colors),
             State::Loading(_) => widgets::empty("Reading the release…", &colors),
             State::Failed(err) if err.is_empty() => widgets::empty("", &colors),
             State::Failed(err) => v_flex()

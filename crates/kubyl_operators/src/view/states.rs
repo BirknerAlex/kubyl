@@ -39,7 +39,7 @@ impl OperatorsView {
         match state {
             Blocking::NotConnected => centered(
                 IconName::Blocks,
-                format!("Connecting to {}…", self.cluster_name(cx)),
+                "Connecting to the cluster…".into(),
                 cx,
             ),
             Blocking::Loading => centered(IconName::Blocks, "Loading operators…".into(), cx),
