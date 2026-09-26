@@ -54,6 +54,8 @@ tower = { version = "0.5.3", features = ["buffer", "filter"] }
 
 # Auth: OS keychain and OIDC (openidconnect brings its own reqwest, re-exported as `openidconnect::reqwest`).
 keyring = "4.2.0"
+# macOS data protection keychain (keyring's v1 API only has the login keychain).
+apple-native-keyring-store = { version = "1.0.2", features = ["protected"] }
 openidconnect = { version = "4.0.1", default-features = false, features = ["reqwest", "rustls-tls"] }
 secrecy = "0.10.3"
 # The OS trust store for HTTP clients outside kube (OpenShift's OAuth server).

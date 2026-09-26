@@ -100,8 +100,9 @@ cargo run -p kubyl
 - gpui-component dialogs: pass your view with `.content(..)`, not `.child(..)`. Children go into
   a scroll body whose height collapses, so presses on the footer reach the backdrop and close
   the dialog instead of clicking its buttons.
-- Dev builds on macOS trigger keychain prompts; use `KUBYL_CREDENTIAL_STORE=file` (plain text,
-  dev only) or `memory`.
+- Dev builds on macOS trigger keychain prompts (only release builds carry the provisioning
+  profile for the data protection keychain); use `KUBYL_CREDENTIAL_STORE=file` (plain text, dev
+  only) or `memory`.
 - GPUI tests of views that close a gpui-component dialog (`window.close_dialog`) need
   `gpui_component::Root` as the window's first view: build yours inside
   `add_window_view(|window, cx| Root::new(view, window, cx))`.

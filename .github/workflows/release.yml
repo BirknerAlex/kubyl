@@ -175,13 +175,63 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: \
             -s -k "$KEYCHAIN_PW" build.keychain
 
+      # The keychain entitlements in entitlements.plist are restricted: without a valid profile
+      # that grants them and names the signing certificate, macOS kills Kubyl at launch. Check
+      # before signing, not on users' Macs.
+      - name: Embed provisioning profile
+        env:
+          MACOS_PROVISIONING_PROFILE: ${{ secrets.MACOS_PROVISIONING_PROFILE }}
+        run: |
+          set -euo pipefail
+          if [ -z "$MACOS_PROVISIONING_PROFILE" ]; then
+            echo "::error::Secret MACOS_PROVISIONING_PROFILE is missing (docs/RELEASING.md, step 4)"
+            exit 1
+          fi
+          PROFILE="$APP/Contents/embedded.provisionprofile"
+          echo "$MACOS_PROVISIONING_PROFILE" | base64 --decode > "$PROFILE"
+          security cms -D -i "$PROFILE" > "$RUNNER_TEMP/profile.plist"
+          field() { /usr/libexec/PlistBuddy -c "Print :$1" "$2" 2>/dev/null || true; }
+          APP_ID="$(field com.apple.application-identifier packaging/macos/entitlements.plist)"
+          GROUP="$(field keychain-access-groups:0 packaging/macos/entitlements.plist)"
+          PROFILE_APP_ID="$(field Entitlements:com.apple.application-identifier "$RUNNER_TEMP/profile.plist")"
+          if [ "$PROFILE_APP_ID" != "$APP_ID" ]; then
+            echo "::error::The profile is for '$PROFILE_APP_ID', entitlements.plist claims '$APP_ID'"
+            exit 1
+          fi
+          if ! field Entitlements:keychain-access-groups "$RUNNER_TEMP/profile.plist" \
+            | tr -d ' ' | grep -qxF -e "$GROUP" -e "${APP_ID%%.*}.*"; then
+            echo "::error::The profile doesn't grant keychain access group '$GROUP'"
+            exit 1
+          fi
+          EXPIRES="$(plutil -extract ExpirationDate raw "$RUNNER_TEMP/profile.plist")"
+          EXPIRES_AT="$(date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$EXPIRES" +%s)"
+          if [ "$EXPIRES_AT" -le "$(date -u +%s)" ]; then
+            echo "::error::The profile expired on $EXPIRES"
+            exit 1
+          fi
+          # Sign with the certificate the profile names (by SHA-1), not just any Developer ID.
+          IDENTITY="$(security find-identity -v -p codesigning build.keychain \
+            | awk '/Developer ID Application/ { print $2; exit }')"
+          COUNT="$(plutil -extract DeveloperCertificates raw "$RUNNER_TEMP/profile.plist")"
+          PROFILE_CERTS="$(for ((i = 0; i < COUNT; i++)); do
+            plutil -extract "DeveloperCertificates.$i" raw "$RUNNER_TEMP/profile.plist" \
+              | base64 --decode | shasum -a 1 | awk '{ print toupper($1) }'
+          done)"
+          if [ -z "$IDENTITY" ] || ! grep -qxF "$IDENTITY" <<< "$PROFILE_CERTS"; then
+            echo "::error::The profile doesn't name the certificate in MACOS_CERTIFICATE_P12"
+            exit 1
+          fi
+          echo "SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+          echo "Profile '$(field Name "$RUNNER_TEMP/profile.plist")', expires $EXPIRES"
+
       - name: Codesign
         run: |
           set -euo pipefail
           codesign --deep --force --options runtime --timestamp \
             --entitlements packaging/macos/entitlements.plist \
-            --sign "Developer ID Application" "$APP"
+            --sign "$SIGNING_IDENTITY" "$APP"
           codesign --verify --deep --strict --verbose=2 "$APP"
+          codesign -d --entitlements - --xml "$APP" | grep -q keychain-access-groups
 
       - name: Create DMG
         run: |

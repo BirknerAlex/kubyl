@@ -15,6 +15,7 @@ a public 1.0: accessibility, performance budgets, crash reporting (opt-in) and d
 
 ### Packaging
 - [x] **macOS**: universal (arm64 + x86_64) `.app` with `kubyl.icns`, hardened runtime, Developer ID signing, notarization and stapling, `.dmg`. No custom DMG background yet
+- [x] **macOS keychain**: Developer ID provisioning profile embedded (`MACOS_PROVISIONING_PROFILE`), `keychain-access-groups` in `packaging/macos/entitlements.plist`, so Kubyl uses the data protection keychain without prompts
 - [ ] macOS Homebrew cask
 - [ ] **Windows**: MSI (WiX) or MSIX with `kubyl.ico`, Authenticode signing (Azure Trusted Signing or an EV cert), winget manifest. `.zip` for both archs ships unsigned today (`docs/RELEASING.md` tracks this gap)
 - [x] Windows arm64 build (`aarch64-pc-windows-msvc`, cross-compiled)
@@ -69,3 +70,13 @@ a public 1.0: accessibility, performance budgets, crash reporting (opt-in) and d
   repo secrets, so a real (non-dry-run) release will fail at the macOS signing step until that's
   done. Not implemented: Windows/EV signing, AppImage/Flatpak/MSI/winget/Homebrew, auto-update,
   SBOM/provenance, third-party notices — tracked as open checkboxes above.
+- **2026-09-26**: Keychain prompts on every launch/update: the login keychain trusts apps by code
+  signature, dev builds (ad-hoc, new cdhash per build) and releases shared the same items, and
+  each write reset an item's partition list to the writer, so releases asked again. Release
+  builds now embed a Developer ID provisioning profile and claim `keychain-access-groups`
+  (`<team ID>.io.github.birkneralex.Kubyl`); `kubyl_kube::auth::store` uses the data protection
+  keychain when `Contents/embedded.provisionprofile` exists, else the login keychain. No
+  migration of old items (sign in again once). The release job fails before signing without
+  the `MACOS_PROVISIONING_PROFILE` secret or when the profile doesn't grant the entitlements
+  (setup: `docs/RELEASING.md`, step 4). Not verified on a signed build yet: the first release
+  with the profile is the test.

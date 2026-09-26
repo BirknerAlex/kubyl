@@ -86,15 +86,45 @@ Used instead of an Apple ID + app-specific password so CI doesn't hit 2FA or exp
 ### 3. Team ID
 
 Shown on your [membership page](https://developer.apple.com/account/#/membership) (top right,
-a 10-character alphanumeric string). Not currently used directly by the workflow (there's only
-one Developer ID Application identity in the temporary keychain, so `codesign` finds it without
-needing the Team ID spelled out) — keep it noted for when Windows/other tooling needs it.
+a 10-character alphanumeric string). `codesign` finds the only Developer ID Application identity
+in the temporary keychain without it, but `packaging/macos/entitlements.plist` spells it out in
+the application identifier and keychain access group (`<team ID>.io.github.birkneralex.Kubyl`).
+
+### 4. Developer ID provisioning profile (keychain without prompts)
+
+Kubyl keeps tokens in the data protection keychain, where items belong to its keychain access
+group and macOS never asks for permission (the login keychain asks per item whenever the app's
+code signature changes). The `keychain-access-groups` entitlement that this needs is restricted:
+macOS kills Kubyl at launch unless a provisioning profile embedded in the app grants it.
+
+1. [Identifiers](https://developer.apple.com/account/resources/identifiers/list) → **+** →
+   **App IDs** → **App**. Description `Kubyl`, **Explicit** Bundle ID
+   `io.github.birkneralex.Kubyl`. No capabilities needed: the app's own keychain access group
+   is always granted.
+2. [Profiles](https://developer.apple.com/account/resources/profiles/list) → **+** →
+   Distribution → **Developer ID**. Pick the `Kubyl` App ID and the Developer ID Application
+   certificate from step 1 (the one in `MACOS_CERTIFICATE_P12`), name it `Kubyl Developer ID`,
+   generate and download the `.provisionprofile`.
+3. Add it as repo secret `MACOS_PROVISIONING_PROFILE`:
+   ```sh
+   base64 -i Kubyl_Developer_ID.provisionprofile | gh secret set MACOS_PROVISIONING_PROFILE
+   ```
+
+The workflow embeds it as `Kubyl.app/Contents/embedded.provisionprofile`, signs with the
+certificate the profile names, and fails before signing when the secret is missing, the profile
+has expired, doesn't name the certificate in `MACOS_CERTIFICATE_P12`, or doesn't grant what
+`entitlements.plist` claims. macOS checks the profile at every launch: a new or revoked
+certificate needs a new profile (Developer ID profiles themselves are valid for about 18 years).
+
+Builds without the profile (`cargo run`, local builds) can't use the data protection keychain
+and fall back to the login keychain, which asks after every rebuild; use
+`KUBYL_CREDENTIAL_STORE=file` or `memory` there.
 
 ### Adding secrets to GitHub
 
 **Settings → Secrets and variables → Actions → New repository secret** for each of:
-`MACOS_CERTIFICATE_P12`, `MACOS_CERTIFICATE_PASSWORD`, `APPLE_API_KEY_P8`, `APPLE_API_KEY_ID`,
-`APPLE_API_ISSUER`.
+`MACOS_CERTIFICATE_P12`, `MACOS_CERTIFICATE_PASSWORD`, `MACOS_PROVISIONING_PROFILE`,
+`APPLE_API_KEY_P8`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`.
 
 ### If notarization or launch fails
 
@@ -102,3 +132,8 @@ needing the Team ID spelled out) — keep it noted for when Windows/other toolin
   `xcrun notarytool log <submission-id> --key ... --key-id ... --issuer ...`.
 - If the app crashes on launch on a clean machine, check Console.app for a hardened-runtime
   entitlement violation and add the missing key to `packaging/macos/entitlements.plist`.
+- If macOS kills Kubyl right at launch ("Killed: 9", AMFI in Console.app), the embedded profile
+  doesn't match the signing certificate or the entitlements: regenerate it for the certificate
+  in `MACOS_CERTIFICATE_P12` (step 4). `codesign -d --entitlements - Kubyl.app` shows what the
+  app claims, `security cms -D -i Kubyl.app/Contents/embedded.provisionprofile` what the profile
+  grants.
