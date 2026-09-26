@@ -632,20 +632,17 @@ impl MetricsService {
             return;
         };
         let manager = ConnectionManager::global(cx);
-        let (context, metrics_server, user_token) = {
+        let (keys, metrics_server, user_token) = {
             let manager = manager.read(cx);
             (
-                manager
-                    .context(cluster)
-                    .map(|c| c.context.clone())
-                    .unwrap_or_default(),
+                manager.settings_keys(cluster),
                 manager.caps(cluster).metrics_server,
                 manager.bearer_token(cluster),
             )
         };
         let settings = self.settings.clone();
         let override_ = settings
-            .prometheus_for(cluster.as_str(), &context)
+            .prometheus_for_keys(&keys)
             .cloned()
             .unwrap_or_default();
         let generation = state.generation;
@@ -656,10 +653,15 @@ impl MetricsService {
             state.source.clone()
         };
         state.detected_at = Some(Instant::now());
-        let auth_key = auth_key(cluster);
+        // The header saved for the entry, else for one of its contexts (before grouping).
+        let auth_keys: Vec<String> = keys
+            .iter()
+            .filter(|k| k.contains('@'))
+            .map(|k| auth_key(&ClusterId::new(k.as_str())))
+            .collect();
         let task = spawn_kube(cx, async move {
             let auth = Credentials {
-                keychain_key: auth_key,
+                keychain_keys: auth_keys,
                 user_token,
             };
             detect(client, settings, override_, auth, metrics_server).await
@@ -1201,8 +1203,8 @@ enum Detected {
 
 /// What detection may authenticate with. Never logged.
 struct Credentials {
-    /// Keychain entry of the Authorization header for an external URL.
-    keychain_key: String,
+    /// Keychain entries of the Authorization header for an external URL, first found wins.
+    keychain_keys: Vec<String>,
     /// The user's own bearer token, for Services behind an auth proxy (OpenShift).
     user_token: Option<kubyl_kube::auth::BearerToken>,
 }
@@ -1279,12 +1281,15 @@ async fn find_prometheus(
         }
     };
     if let Some(url) = &override_.url {
-        let auth_key = auth.keychain_key.clone();
-        let header = tokio::task::spawn_blocking(move || kubyl_kube::auth::store::get(&auth_key))
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .flatten();
+        let auth_keys = auth.keychain_keys.clone();
+        let header = tokio::task::spawn_blocking(move || {
+            auth_keys
+                .iter()
+                .find_map(|key| kubyl_kube::auth::store::get(key).ok().flatten())
+        })
+        .await
+        .ok()
+        .flatten();
         let prom = PromClient::external(url, override_.insecure_skip_tls_verify, header.as_ref())
             .map_err(|e| format!("Prometheus at {url}: {e}"))?;
         return match prom.probe(Duration::from_secs(8)).await {
