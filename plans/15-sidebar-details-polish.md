@@ -1,6 +1,6 @@
 # Phase 15: Polish: connection dots, one entry per cluster and user, ConfigMap data
 
-**Status:** in progress (branch `phase/14-15-alerts-polish`, together with phase 14)
+**Status:** done (branch `phase/14-15-alerts-polish`, one PR with phase 14)
 **Depends on:** 01 (kubeconfig loading, `ConnectionManager`), 02 (sidebar, details), 03 (`@` contexts in the palette). Part 3 should start after phase 11 has merged: phase 11 is changing `kubyl_kube` and the Clusters & kubeconfigs tab right now.
 **Owns:** no crate of its own. Small, separate commits in shared crates: `kubyl_explorer` (sidebar, details), `kubyl_kube` (context grouping), `kubyl_palette` (`@` aliases), and settings lookups in `kubyl_metrics` (and `kubyl_alerts` once phase 14 exists)
 **Mockups:** board 17 · Cluster status and ConfigMap data, to be added to `design/mockups/generate.py` first: the sidebar with status dots and grouped cluster rows (with the tooltip listing their contexts), and a ConfigMap's details with its data. Also update the shared `sidebar()` helper so every board shows the dots.
@@ -28,7 +28,7 @@ connected, `…` while connecting, a yellow key when a sign-in is needed, and re
 - [x] Favorites: keep the cluster color dot; the cluster name is shown faint while that cluster isn't connected, and the tooltip gives the state
 - [x] The same green dot next to connected contexts in the palette's `@` list and the title bar cluster switcher, if they don't have one yet
 - [x] Optional: `explorer.cluster_order` = `name` (default) or `connected_first`, and a "Connected only" toggle in the Clusters section header (useful with 40 contexts)
-- [ ] Screenshot test with connected, connecting, sign-in, unreachable and disconnected rows, in dark and light themes
+- [x] Screenshot test with connected, connecting, sign-in, unreachable and disconnected rows, in dark and light themes
 
 ## 2. ConfigMap data in the details
 
@@ -262,3 +262,10 @@ only): 37 contexts, 5 cluster entries, 8 user entries → 8 rows, personal user 
 separate on each server. `script/oc-contexts-dev.sh` on kind: 33 contexts → 2 rows; adding a
 context and switching to it while Kubyl ran reloaded (34 contexts) without a reconnect or a new
 row.
+
+**Screenshots** (`design/screenshots/`, throwaway kubeconfigs with example.com names; the
+connected entries point at the kind dev cluster): `phase-15-status-dots-dark.png` and
+`phase-15-status-dots-light.png` (connected, connecting, sign-in, unreachable and disconnected
+rows, a grouped entry's tooltip), `phase-15-configmap-data.png` (typed keys, the YAML value
+highlighted, immutable), `phase-15-grouped-rows.png` (14 `oc`-style contexts as 4 rows, the
+members in the tooltip).

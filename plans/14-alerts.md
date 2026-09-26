@@ -1,6 +1,6 @@
 # Phase 14: Alerts (Alertmanager), silences, alerting rules
 
-**Status:** in progress (branch `phase/14-15-alerts-polish`, together with phase 15)
+**Status:** done (branch `phase/14-15-alerts-polish`, one PR with phase 15)
 **Depends on:** 02 (explorer, details sections, `ResourceStores`), 05 (temporary port-forwards), 07 (Prometheus discovery and client, OpenShift Route auth); 08 optional (Alertmanager and Prometheus UIs in a web view)
 **Owns:** `crates/kubyl_alerts` (new), `script/alertmanager-dev.sh`
 **Mockups:** board 16 · Alerts, to be added to `design/mockups/generate.py` before the UI work: the Alerts tab with the details pane, the all-clear and "no Alertmanager" states, Silences with the silence editor and its PROD confirmation, the Rules tab, the sidebar row badge and the status bar item.
@@ -244,7 +244,7 @@ In this order. Every candidate is probed with `GET <prefix>/api/v2/status`.
 - [x] `script/alertmanager-dev.sh` (run after `prometheus-dev.sh`). It turns Alertmanager on in kube-prometheus-stack (`prometheus-dev.sh` sets `alertmanager.enabled=false` today) and adds a `PrometheusRule` in `payments` with: an always-firing critical alert on a pod, a pending alert (`for: 1h`), a flapping alert, a rule with a broken expression (for rule health), and an inhibition. It also deploys a second Alertmanager behind kube-rbac-proxy (the auth-proxy path, named in settings) and one with `routePrefix: /am`. `memory-hog` already triggers `KubePodCrashLooping`. `--many` adds a rule that fires once per pod, for the 5,000-pod check with `load-pods.sh`
 - [x] Unit tests: discovery ranking, v2 and rules parsing, merging, severity and target mapping, the matcher parser and anchored matching, silence validation, heartbeat logic, the token rule, and that no keychain value ever reaches `Debug` output or logs
 - [x] Live tests (`crates/kubyl_alerts/tests/live.rs`, ignored by default): discovery finds both Alertmanagers; firing and pending alerts show with the right times; a silence round trip (create, alert silenced, expire); rules parse; the auth-proxy Alertmanager works with the token and the look-alike Service never receives it
-- [ ] Screenshots of every board 16 frame
+- [x] Screenshots of every board 16 frame
 
 ## Acceptance criteria
 
@@ -357,6 +357,13 @@ kube-rbac-proxy Alertmanager answers through a forward with `team-secure/am-read
 its CA from `openshift-service-ca.crt`, never for an unnamed Service. In the app on kind: sidebar
 badge, root siren, status bar, header chips, details (target Running, rule, runbook, timeline),
 Rules and Silences tabs.
+
+**Screenshots** (`design/screenshots/`, kind with `alertmanager-dev.sh`, example.com names):
+`phase-14-alerts.png` (alerts, details, sidebar badge and siren, status bar tooltip),
+`phase-14-alerts-silenced.png` (silenced alerts in the list with the silence on hover),
+`phase-14-alerts-states.png` (all clear next to "No Alertmanager found"),
+`phase-14-silences.png`, `phase-14-silence-editor.png`, `phase-14-silence-confirm.png` (PROD,
+typed name), `phase-14-rules.png` (a rule that fails to evaluate), `phase-14-overview-card.png`.
 
 **Deferred / notes.**
 - OpenShift: the user confirmed it works on their test cluster (2026-09-26). The forward path
