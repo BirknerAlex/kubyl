@@ -1,8 +1,9 @@
 //! A `kubectl describe`-like text rendering for any object, with related events.
 //!
-//! Pods, Deployments, Nodes, Services and Secrets get tailored sections; other kinds print
-//! their `spec` and `status` as nested fields, like kubectl's generic describer. Secret values
-//! are never printed, only their sizes.
+//! Pods, Deployments, Nodes, Services, Secrets and OpenShift Routes get tailored sections;
+//! other kinds print their `spec` and `status` as nested fields, like kubectl's generic
+//! describer. Secret values are never printed, only their sizes, and neither is a Route's inline
+//! TLS key.
 
 use std::fmt::Write as _;
 
@@ -10,7 +11,10 @@ use jiff::Timestamp;
 use serde_json::Value;
 
 use crate::columns::{event_message, event_time, node_roles, node_status, pod_status};
-use crate::format::{array_at, human_duration, int_at, map_pairs, seconds_since, str_at};
+use crate::format::{
+    array_at, human_duration, int_at, map_pairs, seconds_since, str_at, timestamp,
+};
+use crate::route::{self, Route};
 
 const KEY_WIDTH: usize = 20;
 
@@ -73,6 +77,16 @@ fn title_case(key: &str) -> String {
 
 /// Renders `object` (of `kind`) and its `events` like `kubectl describe`.
 pub fn describe(kind: &str, object: &Value, events: &[Value], now: Timestamp) -> String {
+    // Whatever describes it, a Route's inline key never reaches the text.
+    let masked;
+    let object = if route::has_inline_key(object) {
+        let mut copy = object.clone();
+        route::mask_inline_key(&mut copy);
+        masked = copy;
+        &masked
+    } else {
+        object
+    };
     let mut out = Out {
         text: String::new(),
     };
@@ -111,6 +125,7 @@ pub fn describe(kind: &str, object: &Value, events: &[Value], now: Timestamp) ->
         "Node" => describe_node(&mut out, object),
         "Service" => describe_service(&mut out, object),
         "Secret" => describe_secret(&mut out, object),
+        "Route" if route::is_route_object(object) => describe_route(&mut out, object, now),
         "ConfigMap" => {
             out.line(0, "");
             out.line(0, "Data");
@@ -575,6 +590,88 @@ fn describe_secret(out: &mut Out, secret: &Value) {
     }
 }
 
+/// Like `oc describe route`: the requested host and what each router made of it, TLS and the
+/// backends with their weights. Certificates only say whether they're set.
+fn describe_route(out: &mut Out, object: &Value, now: Timestamp) {
+    let route = Route::parse(object);
+    out.field(
+        0,
+        "Requested Host",
+        route.display_host().unwrap_or_else(|| "<none>".into()),
+    );
+    for router in &route.routers {
+        let host = router.host.as_deref().unwrap_or("<none>");
+        let canonical = router
+            .canonical_hostname
+            .as_deref()
+            .map(|c| format!(", router host {c}"))
+            .unwrap_or_default();
+        let admission = router.admitted.as_ref();
+        let ago = admission
+            .and_then(|a| a.last_transition.as_deref())
+            .and_then(timestamp)
+            .map(|t| format!(" {} ago", human_duration(seconds_since(t, now))))
+            .unwrap_or_default();
+        let verb = if router.is_admitted() {
+            "exposed on"
+        } else if router.is_rejected() {
+            "rejected by"
+        } else {
+            "pending on"
+        };
+        let reason = admission
+            .and_then(|a| a.reason.as_deref())
+            .filter(|_| !router.is_admitted())
+            .map(|r| format!(": {r}"))
+            .unwrap_or_default();
+        out.line(
+            KEY_WIDTH,
+            format!(
+                "{verb} router {}{reason} (host {host}{canonical}){ago}",
+                router.router
+            ),
+        );
+        if let Some(message) = admission
+            .and_then(|a| a.message.as_deref())
+            .filter(|_| !router.is_admitted())
+        {
+            out.line(KEY_WIDTH + 2, message.replace('\n', " "));
+        }
+    }
+    out.field(0, "Path", route.path.as_deref().unwrap_or("<none>"));
+    out.field(0, "Wildcard Policy", &route.wildcard_policy);
+    match &route.tls {
+        Some(tls) => {
+            out.field(0, "TLS Termination", &tls.termination);
+            out.field(
+                0,
+                "Insecure Policy",
+                tls.insecure_policy.as_deref().unwrap_or("<none>"),
+            );
+            let present = |set: bool| if set { "present" } else { "<none>" };
+            out.field(0, "Certificate", present(tls.certificate));
+            out.field(0, "Key", if tls.key { route::MASK } else { "<none>" });
+            out.field(0, "CA Certificate", present(tls.ca_certificate));
+            out.field(0, "Destination CA", present(tls.destination_ca_certificate));
+        }
+        None => out.field(0, "TLS Termination", "<none>"),
+    }
+    out.field(0, "Endpoint Port", route.target_port_label());
+    let weights = route::weights(&route);
+    for (backend, (_, percent)) in route.backends.iter().zip(weights) {
+        out.line(0, "");
+        out.field(0, &backend.kind, &backend.name);
+        out.field(
+            0,
+            "Weight",
+            match percent {
+                Some(p) => format!("{} ({p}%)", backend.weight),
+                None => backend.weight.to_string(),
+            },
+        );
+    }
+}
+
 fn describe_events(out: &mut Out, events: &[Value], now: Timestamp) {
     if events.is_empty() {
         out.field(0, "Events", "<none>");
@@ -663,6 +760,62 @@ mod tests {
         assert!(text.contains("password:  7 bytes"));
         assert!(!text.contains("aHVudGVyMg"));
         assert!(!text.contains("hunter2"));
+    }
+
+    #[test]
+    fn routes_describe_like_oc_without_their_key() {
+        let key = "-----BEGIN PRIVATE KEY-----\nMIIEvQ\n-----END PRIVATE KEY-----\n";
+        let object = json!({"apiVersion": "route.openshift.io/v1", "kind": "Route",
+        "metadata": {"name": "shop", "namespace": "shop", "annotations": {
+            "kubectl.kubernetes.io/last-applied-configuration": format!("{{\"key\":{key:?}}}")}},
+        "spec": {"host": "shop.apps.example.com",
+            "to": {"kind": "Service", "name": "shop-web", "weight": 80},
+            "alternateBackends": [{"kind": "Service", "name": "shop-canary", "weight": 20}],
+            "port": {"targetPort": "http"},
+            "tls": {"termination": "reencrypt", "insecureEdgeTerminationPolicy": "Redirect",
+                    "certificate": "CERT", "key": key}},
+        "status": {"ingress": [
+            {"routerName": "default", "host": "shop.apps.example.com",
+             "routerCanonicalHostname": "router-default.apps.example.com",
+             "conditions": [{"type": "Admitted", "status": "True",
+                             "lastTransitionTime": "2026-09-24T09:00:00Z"}]},
+            {"routerName": "sharded", "host": "shop.apps.example.com",
+             "conditions": [{"type": "Admitted", "status": "False",
+                             "reason": "HostAlreadyClaimed",
+                             "message": "a route in another namespace holds the host"}]}
+        ]}});
+        let text = describe(
+            "Route",
+            &object,
+            &[],
+            "2026-09-24T10:00:00Z".parse().unwrap(),
+        );
+        assert!(!text.contains("MIIEvQ"), "{text}");
+        assert!(
+            text.contains("Requested Host:     shop.apps.example.com"),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "exposed on router default (host shop.apps.example.com, router host \
+                 router-default.apps.example.com) 60m ago"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains("rejected by router sharded: HostAlreadyClaimed"),
+            "{text}"
+        );
+        assert!(text.contains("TLS Termination:    reencrypt"), "{text}");
+        assert!(text.contains("Key:                ••••••••"), "{text}");
+        assert!(text.contains("Endpoint Port:      http"), "{text}");
+        assert!(text.contains("Service:            shop-canary"), "{text}");
+        assert!(text.contains("Weight:             80 (80%)"), "{text}");
+        // A watch-cache copy without apiVersion still counts as a Route.
+        let other = json!({"kind": "Route", "metadata": {"name": "x"},
+            "spec": {"to": {"name": "web"}, "tls": {"key": key}}});
+        let text = describe("Route", &other, &[], Timestamp::now());
+        assert!(!text.contains("MIIEvQ"), "{text}");
     }
 
     #[test]
