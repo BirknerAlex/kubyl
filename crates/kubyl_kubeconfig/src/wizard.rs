@@ -573,6 +573,15 @@ impl Wizard {
     pub(crate) fn go(&mut self, step: Step, window: &mut Window, cx: &mut Context<Self>) {
         self.step = step;
         self.error = None;
+        let first = match step {
+            Step::Name => Some("name"),
+            Step::Cluster => Some("server"),
+            Step::Context => Some("namespace"),
+            Step::Credentials | Step::Test | Step::Save => None,
+        };
+        if let Some(input) = first.and_then(|key| self.inputs.get(key)) {
+            input.update(cx, |state, cx| state.focus(window, cx));
+        }
         if step == Step::Test {
             let global = Kubeconfigs::global(cx);
             if global.read(cx).report(&self.test_key(cx)).is_none() {

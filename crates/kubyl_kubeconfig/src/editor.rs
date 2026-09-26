@@ -64,6 +64,7 @@ actions!(
 /// How often the file is checked for changes by other tools.
 const DISK_POLL: Duration = Duration::from_secs(2);
 const VALIDATE_DELAY: Duration = Duration::from_millis(250);
+const REVEAL_RETRY: Duration = Duration::from_millis(16);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
@@ -104,6 +105,7 @@ pub struct KubeconfigEditor {
     pub(crate) change_count: usize,
     pub(crate) focus: FocusHandle,
     validate_task: Option<Task<()>>,
+    reveal_task: Option<Task<()>>,
     _tasks: Vec<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -170,6 +172,7 @@ impl KubeconfigEditor {
             change_count: 0,
             focus: cx.focus_handle(),
             validate_task: None,
+            reveal_task: None,
             _tasks: Vec::new(),
             _subscriptions: subscriptions,
         };
@@ -444,7 +447,20 @@ impl KubeconfigEditor {
                 self.show_yaml(window, cx);
                 self.yaml.refresh_diagnostics(&self.doc, &self.problems, cx);
                 if let Some(entry) = self.selection.clone() {
-                    self.yaml.reveal(&self.doc, &entry, window, cx);
+                    // The input scrolls only once it was laid out.
+                    self.reveal_task = Some(cx.spawn_in(window, async move |this, cx| {
+                        for _ in 0..50 {
+                            let done = this
+                                .update_in(cx, |this, window, cx| {
+                                    this.yaml.reveal(&this.doc, &entry, window, cx)
+                                })
+                                .unwrap_or(true);
+                            if done {
+                                break;
+                            }
+                            cx.background_executor().timer(REVEAL_RETRY).await;
+                        }
+                    }));
                 }
                 self.yaml.focus(window, cx);
             }

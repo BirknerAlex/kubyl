@@ -274,11 +274,23 @@ impl Run {
 
     /// Fails `kind` and skips everything after it.
     fn fail(&mut self, kind: StepKind, started: Instant, error: String, f: impl FnOnce(&mut Step)) {
+        self.fail_with(kind, started, error, "Skipped", f);
+    }
+
+    /// [`Self::fail`] with why the rest is skipped.
+    fn fail_with(
+        &mut self,
+        kind: StepKind,
+        started: Instant,
+        error: String,
+        note: &str,
+        f: impl FnOnce(&mut Step),
+    ) {
+        self.skip_rest(kind, note);
         self.finish(kind, Status::Fail, started, |step| {
             step.error = Some(error);
             f(step);
         });
-        self.skip_rest(kind, "Skipped");
     }
 
     fn skip_rest(&mut self, after: StepKind, note: &str) {
@@ -663,8 +675,13 @@ async fn tls_step(
         };
         match pem {
             Err(err) => {
-                run.fail(StepKind::Tls, t, err, |_| {});
-                run.skip_rest(StepKind::Tls, "Skipped: no credentials were sent");
+                run.fail_with(
+                    StepKind::Tls,
+                    t,
+                    err,
+                    "Skipped: no credentials were sent",
+                    |_| {},
+                );
                 return false;
             }
             Ok(Some(pem)) => {
@@ -699,17 +716,22 @@ async fn tls_step(
         }
         Err((err, served)) => {
             let fix = matches!(err, TlsError::UnknownIssuer).then_some(Fix::FetchCa);
-            run.fail(StepKind::Tls, t, err.message(), |s| {
-                s.fix = fix;
-                if let Some(leaf) = served.first() {
-                    s.lines = vec![format!(
-                        "the server presented {} issued by {}",
-                        leaf.common_name(),
-                        certs::common_name(&leaf.issuer)
-                    )];
-                }
-            });
-            run.skip_rest(StepKind::Tls, "Skipped: no credentials were sent");
+            run.fail_with(
+                StepKind::Tls,
+                t,
+                err.message(),
+                "Skipped: no credentials were sent",
+                |s| {
+                    s.fix = fix;
+                    if let Some(leaf) = served.first() {
+                        s.lines = vec![format!(
+                            "the server presented {} issued by {}",
+                            leaf.common_name(),
+                            certs::common_name(&leaf.issuer)
+                        )];
+                    }
+                },
+            );
             false
         }
     }
@@ -1119,6 +1141,10 @@ mod tests {
         assert_eq!(tls.fix, Some(Fix::FetchCa));
         assert!(tls.error.as_deref().unwrap().contains("unknown authority"));
         assert_eq!(report.step(StepKind::Credentials).status, Status::Skipped);
+        assert_eq!(
+            report.step(StepKind::Credentials).lines,
+            ["Skipped: no credentials were sent"]
+        );
         // Nothing was sent to the server.
         assert!(requests.lock().is_empty());
         assert!(report.summary().starts_with("Failed at TLS"));

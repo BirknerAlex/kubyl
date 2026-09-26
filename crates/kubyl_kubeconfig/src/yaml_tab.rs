@@ -107,33 +107,43 @@ impl YamlTab {
         window.focus(&focus, cx);
     }
 
-    /// Puts the cursor on an entry's `name:` line (the list's selection).
+    /// Puts the cursor on an entry's `name:` line (the list's selection) and scrolls there.
+    /// `false`: the editor wasn't laid out yet, try again after a frame.
     pub fn reveal(
         &self,
         doc: &Doc,
         entry: &crate::model::EntryRef,
         window: &mut Window,
         cx: &mut App,
-    ) {
+    ) -> bool {
+        let Some(line_height) = self.editor.read(cx).line_height() else {
+            return false;
+        };
         let text = self.editor.read(cx).value().to_string();
         let parsed = parse::parse(&text);
         let Some(root) = parsed.roots().next() else {
-            return;
+            return true;
         };
         let Some(ix) = doc.names(entry.kind).iter().position(|n| n == &entry.name) else {
-            return;
+            return true;
         };
         let path = YPath(vec![
             Seg::Key(entry.kind.list_key().into()),
             Seg::Index(ix),
             Seg::Key("name".into()),
         ]);
-        let Some(node) = root.find(&path) else { return };
+        let Some(node) = root.find(&path) else {
+            return true;
+        };
         let offset = node.span.start;
         self.editor.update(cx, |state, cx| {
             let position = state.text().offset_to_position(offset);
             state.set_cursor_position(position, window, cx);
+            // The entry a few lines below the top rather than at the bottom edge.
+            let top = position.line.saturating_sub(3) as f32;
+            state.set_scroll_offset(gpui::point(gpui::px(0.), -(line_height * top)), cx);
         });
+        true
     }
 
     /// The document for the buffer, with masked values put back. `Err`: it doesn't parse.

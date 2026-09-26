@@ -458,11 +458,13 @@ impl KubeconfigEditor {
             Kind::User => self.render_user(&entry, &body, &colors, window, cx),
         };
         let problems = self.render_problems(&entry, &colors);
+        let last_test = self.render_last_test(&entry, &colors, cx);
         v_flex()
             .gap(u(14.0))
             .child(header)
             .child(main)
             .children(problems)
+            .children(last_test)
             .into_any_element()
     }
 
@@ -486,7 +488,6 @@ impl KubeconfigEditor {
         let current =
             entry.kind == Kind::Context && self.doc.current_context() == Some(entry.name.as_str());
         h_flex()
-            .flex_wrap()
             .gap(u(8.0))
             .child(
                 div()
@@ -503,7 +504,8 @@ impl KubeconfigEditor {
                     .font_family(fonts::MONO)
                     .text_size(u(14.0))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .flex_none()
+                    .min_w_0()
+                    .truncate()
                     .child(entry.name.clone()),
             )
             .when(production, |this| this.child(kubyl_ui::ProdBadge))
@@ -513,14 +515,19 @@ impl KubeconfigEditor {
             .child(div().flex_1())
             .child({
                 let weak = weak.clone();
-                Button::new("kc-duplicate")
-                    .ghost()
-                    .icon(IconName::Copy)
-                    .label("Duplicate")
-                    .on_click(move |_, window, cx| {
-                        weak.update(cx, |this, cx| this.duplicate(&duplicate, window, cx))
-                            .ok();
+                div()
+                    .id("kc-duplicate-tip")
+                    .tooltip(|window, cx| {
+                        gpui_component::tooltip::Tooltip::new("Duplicate").build(window, cx)
                     })
+                    .child(
+                        kubyl_ui::IconButton::new("kc-duplicate", IconName::Copy).on_click(
+                            move |_, window, cx| {
+                                weak.update(cx, |this, cx| this.duplicate(&duplicate, window, cx))
+                                    .ok();
+                            },
+                        ),
+                    )
             })
             .child({
                 let weak = weak.clone();
@@ -1495,23 +1502,38 @@ impl KubeconfigEditor {
             .into_any_element()
     }
 
+    /// The entry's problems; for a context also its cluster's and user's.
     fn render_problems(&self, entry: &EntryRef, colors: &Colors) -> Option<AnyElement> {
-        let found = validate::of_entry(&self.problems, entry);
+        let mut found: Vec<(Option<String>, &validate::Problem)> =
+            validate::of_entry(&self.problems, entry)
+                .into_iter()
+                .map(|p| (None, p))
+                .collect();
+        if entry.kind == Kind::Context {
+            let (cluster, user) = self.doc.context_refs(&entry.name);
+            for (kind, name) in [(Kind::Cluster, cluster), (Kind::User, user)] {
+                let Some(name) = name else { continue };
+                for p in validate::of_entry(&self.problems, &EntryRef::new(kind, name.clone())) {
+                    found.push((Some(format!("{} {name}", title_case(kind.label()))), p));
+                }
+            }
+        }
         if found.is_empty() {
             return None;
         }
-        let mut card = widgets::card(
-            format!(
-                "Problems · {}",
-                found
-                    .iter()
-                    .filter(|p| p.severity != Severity::Info)
-                    .count()
-            ),
-            None,
-            colors,
-        );
-        for problem in found {
+        found.sort_by_key(|(_, p)| p.severity);
+        let count = found
+            .iter()
+            .filter(|(_, p)| p.severity != Severity::Info)
+            .count();
+        // Only notes (certificate expiry and the like): no "Problems · 0".
+        let title = if count == 0 {
+            "Notes".to_string()
+        } else {
+            format!("Problems · {count}")
+        };
+        let mut card = widgets::card(title, None, colors);
+        for (owner, problem) in found {
             let (color, icon) = widgets::severity_style(problem.severity, colors);
             card = card.child(
                 h_flex()
@@ -1523,15 +1545,92 @@ impl KubeconfigEditor {
                             .child(Icon::new(icon).size(13.0).color(color)),
                     )
                     .child(
-                        div()
+                        h_flex()
                             .flex_1()
+                            .flex_wrap()
+                            .gap(u(4.0))
                             .text_size(u(12.5))
+                            .children(owner.map(|o| {
+                                div()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(format!("{o}:"))
+                            }))
                             .child(problem.message.clone()),
                     ),
             );
         }
         Some(card.into_any_element())
     }
+
+    /// "Last test": the context's last result, if it was tested.
+    fn render_last_test(
+        &self,
+        entry: &EntryRef,
+        colors: &Colors,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if entry.kind != Kind::Context {
+            return None;
+        }
+        let report = Kubeconfigs::try_global(cx)?
+            .read(cx)
+            .report(&TestKey::new(self.doc_key(), entry.name.clone()))?
+            .clone();
+        let ago = (jiff::Timestamp::now().as_second() - report.started.as_second()).max(0);
+        let when = if ago < 60 {
+            "just now".to_string()
+        } else {
+            format!("{} min ago", ago / 60)
+        };
+        let weak = cx.entity().downgrade();
+        Some(
+            h_flex()
+                .gap(u(10.0))
+                .px(u(14.0))
+                .py(u(10.0))
+                .rounded(u(8.0))
+                .border_1()
+                .border_color(colors.border)
+                .bg(colors.panel)
+                .child(
+                    div()
+                        .text_size(u(11.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(colors.text_dim)
+                        .child(format!("LAST TEST · {}", when.to_uppercase())),
+                )
+                .child(crate::panel::badge(&report, colors))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(u(12.5))
+                        .child(report.summary()),
+                )
+                .child(widgets::link(
+                    "kc-last-test",
+                    "Details",
+                    colors,
+                    move |_, _, cx| {
+                        weak.update(cx, |this, cx| {
+                            this.show_test = true;
+                            cx.notify();
+                        })
+                        .ok();
+                    },
+                ))
+                .into_any_element(),
+        )
+    }
+}
+
+fn title_case(word: &str) -> String {
+    let mut chars = word.chars();
+    chars
+        .next()
+        .map(|c| c.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
 }
 
 fn pem_area(state: &Entity<TextareaState>, colors: &Colors) -> AnyElement {

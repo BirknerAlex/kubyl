@@ -244,7 +244,7 @@ impl Render for ConsentView {
         };
         let mut body = v_flex().gap(u(12.0)).p(u(16.0)).child(
             div().text_size(u(12.5)).child(
-                "These commands come from unsaved edits, an import or a new kubeconfig. Kubyl runs them only after you agree; they can do anything your user can. Check the command, its arguments and environment.",
+                "These commands come from unsaved edits, an import, a new kubeconfig or a file that isn't one of your kubeconfig sources. Kubyl runs them only after you agree; they can do anything your user can. Check the command, its arguments and environment.",
             ),
         );
         for (ix, (contexts, spec)) in self.asks.iter().enumerate() {

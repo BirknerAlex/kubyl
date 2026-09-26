@@ -433,3 +433,93 @@ async fn kind_editing_an_opted_in_file_changes_one_line_and_kubectl_still_works(
             .ends_with("# touched by another tool\n")
     );
 }
+
+async fn dev_client() -> kube::Client {
+    let config = kube::config::Kubeconfig::read_from(kubeconfig_path()).unwrap();
+    let options = kube::config::KubeConfigOptions {
+        context: Some(context_name()),
+        ..Default::default()
+    };
+    let config = kube::Config::from_custom_kubeconfig(config, &options)
+        .await
+        .unwrap();
+    kube::Client::try_from(config).unwrap()
+}
+
+/// A kubeconfig for a service account: TokenRequest with an expiry (the default), a
+/// RoleBinding to `view`; the test passes as the service account and can list pods. The token
+/// Secret variant works too. Everything created is deleted afterwards.
+#[tokio::test]
+#[ignore = "needs the kind dev cluster (script/dev-cluster.sh)"]
+async fn kind_service_account_kubeconfigs_work() {
+    use k8s_openapi::api::core::v1::{Secret, ServiceAccount};
+    use k8s_openapi::api::rbac::v1::RoleBinding;
+    use kube::Api;
+    use kube::api::DeleteParams;
+    use kubyl_kubeconfig::import::{self, Grant, TokenKind};
+
+    let client = dev_client().await;
+    let (ns, name) = ("default", "kubyl-live-sa");
+    let source = Doc::parse(&std::fs::read_to_string(kubeconfig_path()).unwrap()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("sa.yaml");
+
+    let sa = import::service_account_token(
+        client.clone(),
+        ns,
+        name,
+        true,
+        TokenKind::Request(3600),
+        Grant::Namespace("view"),
+    )
+    .await
+    .unwrap();
+    println!("created: {:?}, expires {:?}", sa.created, sa.expires);
+    assert!(sa.expires.is_some_and(|at| at > jiff::Timestamp::now()));
+    let doc = import::service_account_doc(&source, &context_name(), ns, name, &sa.token).unwrap();
+    let context = doc.current_context().unwrap().to_string();
+    let report = test(doc, &context, &file, false).await;
+    assert!(report.passed(), "{}", report.summary());
+    assert_eq!(
+        report.user.as_deref(),
+        Some("system:serviceaccount:default:kubyl-live-sa")
+    );
+    let pods = report
+        .step(StepKind::Permissions)
+        .checks
+        .iter()
+        .find(|c| c.label.starts_with("list pods"))
+        .unwrap()
+        .allowed;
+    assert_eq!(pods, Some(true), "view in default");
+
+    let secret = import::service_account_token(
+        client.clone(),
+        ns,
+        name,
+        false,
+        TokenKind::Secret,
+        Grant::None,
+    )
+    .await
+    .unwrap();
+    assert!(secret.expires.is_none());
+    let doc =
+        import::service_account_doc(&source, &context_name(), ns, name, &secret.token).unwrap();
+    assert!(test(doc, &context, &file, false).await.passed());
+
+    // Clean up.
+    let dp = DeleteParams::default();
+    Api::<RoleBinding>::namespaced(client.clone(), ns)
+        .delete(&format!("{name}-view"), &dp)
+        .await
+        .ok();
+    Api::<Secret>::namespaced(client.clone(), ns)
+        .delete(&format!("{name}-token"), &dp)
+        .await
+        .ok();
+    Api::<ServiceAccount>::namespaced(client, ns)
+        .delete(name, &dp)
+        .await
+        .ok();
+}
