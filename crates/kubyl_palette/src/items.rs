@@ -61,6 +61,8 @@ pub struct ContextEntry {
     pub connected: bool,
     pub connecting: bool,
     pub production: bool,
+    /// A group's contexts `(name, namespace)`: their names find the group too.
+    pub members: Vec<(String, Option<String>)>,
 }
 
 #[derive(Clone, Debug)]
@@ -188,6 +190,12 @@ pub enum Target {
         scope: Scope,
     },
     Context(ClusterId),
+    /// A cluster entry found by one of its contexts' names (`@dev-alex`): opens it in that
+    /// context's namespace.
+    ContextIn {
+        cluster: ClusterId,
+        namespace: Option<String>,
+    },
     Namespace(Option<String>),
     /// Index into `ActionRegistry::all()`.
     Action(usize),
@@ -548,27 +556,70 @@ impl Builder<'_> {
         let active = self.snapshot.cluster.as_ref().map(|(id, _)| id);
         for ctx in &self.snapshot.contexts {
             let server = ctx.server.clone().unwrap_or_default();
-            let Some(mut m) = q.score(&ctx.name, &[&ctx.context, &server]) else {
-                continue;
+            let direct = q.score(&ctx.name, &[&ctx.context, &server]);
+            // A group's member context names are aliases: `@dev-alex` finds the group and
+            // opens it in dev-alex (only when the query isn't a match of the label itself).
+            let alias = if q.is_empty() || ctx.members.len() < 2 {
+                None
+            } else {
+                ctx.members
+                    .iter()
+                    .filter_map(|(name, namespace)| {
+                        q.score(name, &[])
+                            .map(|m| (m, name.clone(), namespace.clone()))
+                    })
+                    .max_by_key(|(m, _, _)| m.score)
+            };
+            let (mut m, via) = match (direct, alias) {
+                (Some(direct), Some(alias)) if alias.0.score > direct.score => (
+                    Match {
+                        positions: Vec::new(),
+                        ..alias.0
+                    },
+                    Some((alias.1, alias.2)),
+                ),
+                (Some(direct), _) => (direct, None),
+                (None, Some(alias)) => (
+                    Match {
+                        positions: Vec::new(),
+                        ..alias.0
+                    },
+                    Some((alias.1, alias.2)),
+                ),
+                (None, None) => continue,
             };
             let current = active == Some(&ctx.id);
             // Nothing typed: the active context, then connected ones.
             if q.is_empty() {
                 m.score += u32::from(current) * 2 + u32::from(ctx.connected);
             }
+            let target = match &via {
+                Some((_, namespace)) => Target::ContextIn {
+                    cluster: ctx.id.clone(),
+                    namespace: namespace.clone(),
+                },
+                None => Target::Context(ctx.id.clone()),
+            };
             let mut item = Item::new(
                 Group::Contexts,
                 IconName::ShipWheel,
                 ctx.name.clone(),
-                Target::Context(ctx.id.clone()),
+                target,
             )
             .matched(m)
             .key(format!("ctx:{}", ctx.id));
-            item.detail = ctx.server.as_deref().map(host_of);
+            item.detail = match &via {
+                Some((name, _)) => Some(format!("context {name}")),
+                None => ctx.server.as_deref().map(host_of),
+            };
+            let state = match &via {
+                Some((_, Some(namespace))) => format!("opens in {namespace}"),
+                _ => ctx.state.clone(),
+            };
             item.trailing = Trailing::Text(if ctx.production {
-                format!("PROD · {}", ctx.state)
+                format!("PROD · {state}")
             } else {
-                ctx.state.clone()
+                state
             });
             item.color = Some(ctx.color);
             item.status = if ctx.connected {
@@ -1029,6 +1080,7 @@ mod tests {
                     connected: true,
                     connecting: false,
                     production: false,
+                    members: Vec::new(),
                 },
                 ContextEntry {
                     id: ClusterId::new("staging@/k"),
@@ -1040,6 +1092,7 @@ mod tests {
                     connected: false,
                     connecting: false,
                     production: true,
+                    members: Vec::new(),
                 },
             ],
             namespaces: vec!["default".into(), "kube-system".into(), "payments".into()],
@@ -1179,6 +1232,45 @@ mod tests {
         assert_eq!(
             items.last().unwrap().target,
             Target::Namespace(Some("team-a".into()))
+        );
+    }
+
+    #[test]
+    fn member_context_names_are_aliases_of_their_group() {
+        let mut s = snapshot();
+        s.contexts.push(ContextEntry {
+            id: ClusterId::new("group:c,u@/k/"),
+            name: "ocp.eu1.example.com · jane".into(),
+            context: "shop/api-ocp-eu1/jane".into(),
+            server: Some("https://api.ocp.eu1.example.com:6443".into()),
+            state: "Not connected".into(),
+            color: gpui::green(),
+            connected: false,
+            connecting: false,
+            production: false,
+            members: vec![
+                ("shop/api-ocp-eu1/jane".into(), Some("shop".into())),
+                ("dev-alex/api-ocp-eu1/jane".into(), Some("dev-alex".into())),
+            ],
+        });
+        let items = build(Mode::Contexts, "dev-alex", &s, Options::default());
+        assert_eq!(items[0].title, "ocp.eu1.example.com · jane");
+        assert_eq!(
+            items[0].target,
+            Target::ContextIn {
+                cluster: ClusterId::new("group:c,u@/k/"),
+                namespace: Some("dev-alex".into())
+            }
+        );
+        assert_eq!(
+            items[0].trailing,
+            Trailing::Text("opens in dev-alex".into())
+        );
+        // The label itself still opens the group as usual.
+        let items = build(Mode::Contexts, "ocp.eu1", &s, Options::default());
+        assert_eq!(
+            items[0].target,
+            Target::Context(ClusterId::new("group:c,u@/k/"))
         );
     }
 
