@@ -257,6 +257,11 @@ impl Pane {
         let had_focus = self.focus.contains_focused(window, cx);
         let mut changed = false;
         for index in 0..self.items.len() {
+            // Unsaved edits stay: the manager still resolves the old id, and the saved layout
+            // uses the current one.
+            if self.items[index].is_dirty(cx) {
+                continue;
+            }
             let Some(request) = self.items[index].view_request(cx) else {
                 continue;
             };
