@@ -899,13 +899,19 @@ pub(crate) mod mock {
         (base, seen)
     }
 
-    /// A fixture of `tests/fixtures/<dir>/<name>`.
+    /// A recorded response: the entry `name` of `tests/fixtures/<dir>.json` (one bundle per
+    /// cloud, keyed by response).
     pub fn fixture(dir: &str, name: &str) -> String {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures")
-            .join(dir)
-            .join(name);
-        std::fs::read_to_string(&path).unwrap_or_else(|err| panic!("{}: {err}", path.display()))
+            .join(format!("{dir}.json"));
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("{}: {err}", path.display()));
+        let bundle: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        let entry = bundle
+            .get(name)
+            .unwrap_or_else(|| panic!("{} has no {name}", path.display()));
+        serde_json::to_string_pretty(entry).expect("serializable")
     }
 }
 

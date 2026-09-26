@@ -1,4 +1,0 @@
-{
-  "__type": "AccessDeniedException",
-  "message": "User: arn:aws:sts::111122223333:assumed-role/Developer/alice is not authorized to perform: eks:UpdateClusterVersion on resource: arn:aws:eks:eu-west-1:111122223333:cluster/prod-eu-west-1"
-}

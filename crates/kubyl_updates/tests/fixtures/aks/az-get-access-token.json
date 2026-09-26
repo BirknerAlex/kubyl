@@ -1,8 +1,0 @@
-{
-  "accessToken": "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.fake-test-token.signature",
-  "expiresOn": "2026-09-27 13:00:00.000000",
-  "expires_on": 1790514000,
-  "subscription": "00000000-0000-0000-0000-000000000002",
-  "tenant": "11111111-1111-1111-1111-111111111111",
-  "tokenType": "Bearer"
-}

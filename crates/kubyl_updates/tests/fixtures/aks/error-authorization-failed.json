@@ -1,6 +1,0 @@
-{
-  "error": {
-    "code": "AuthorizationFailed",
-    "message": "The client 'alice@example.com' with object id '55555555-5555-5555-5555-555555555555' does not have authorization to perform action 'Microsoft.ContainerService/managedClusters/write' over scope '/subscriptions/00000000-0000-0000-0000-000000000002/resourcegroups/rg-prod/providers/Microsoft.ContainerService/managedClusters/prod-westeurope' or the scope is invalid. If access was recently granted, please refresh your credentials."
-  }
-}
