@@ -12,7 +12,8 @@
 #   dev cluster's Argo CD owns the CRDs argocd-operator would install).
 #   operator-controller needs cert-manager: the one running in the cluster
 #   is used (install cert-manager from OperatorHub in Kubyl first, that's the phase 12 test),
-#   else cert-manager's release manifests are applied.
+#   else cert-manager's release manifests are applied (and its namespace marked, so --delete
+#   removes only a cert-manager this script installed).
 #
 # Usage:
 #   script/olm-dev.sh                 OLM v0, the catalog and the manual-approval subscription
@@ -21,7 +22,8 @@
 #   script/olm-dev.sh --reset-manual  the manual subscription again (after its upgrade was
 #                                     approved: a new one waits for approval)
 #   script/olm-dev.sh --delete        remove everything above again (operators installed
-#                                     through OLM stay: uninstall them in Kubyl first)
+#                                     through OLM stay: uninstall them in Kubyl first; so
+#                                     does a cert-manager this script didn't install)
 #
 # The catalog image is large (quay.io/operatorhubio/catalog, several hundred MB unpacked): its
 # pod takes a few minutes to become READY the first time.
@@ -66,6 +68,25 @@ wait_for() {
   done
 }
 
+# The namespace cert-manager runs in, empty without one (OperatorHub installs it into
+# `operators`, its release manifests into `cert-manager`).
+cert_manager_namespace() {
+  k get deployment -A -o jsonpath='{range .items[*]}{.metadata.namespace} {.metadata.name}{"\n"}{end}' |
+    awk '$2 == "cert-manager-webhook" && !found { print $1; found = 1 }'
+}
+
+# operator-controller's release manifest. It puts its CA (a Certificate and a self-signed
+# Issuer) into cert-manager's namespace, assumed to be `cert-manager`: point them at $1.
+operator_controller_manifest() {
+  curl -fsSL "$OC_URL/operator-controller.yaml" |
+    sed -e "s#namespace: cert-manager\$#namespace: $1#" \
+      -e "s#inject-ca-from-secret: cert-manager/#inject-ca-from-secret: $1/#"
+}
+
+# Marks the cert-manager this script installs (with its version, for --delete).
+INSTALLED_BY="kubyl.dev/installed-by"
+CERT_MANAGER_VERSION_KEY="kubyl.dev/cert-manager-version"
+
 V1=false
 RESET=false
 for arg in "$@"; do
@@ -75,7 +96,21 @@ for arg in "$@"; do
       k delete clusterextension kubyl-v1-sample --ignore-not-found --wait=false >/dev/null 2>&1 || true
       k delete clustercatalog operatorhubio --ignore-not-found --wait=false >/dev/null 2>&1 || true
       k delete namespace kubyl-v1-sample --ignore-not-found --wait=false >/dev/null
-      k delete -f "$OC_URL/operator-controller.yaml" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+      if command -v curl >/dev/null 2>&1; then
+        cm_namespace="$(cert_manager_namespace)"
+        operator_controller_manifest "${cm_namespace:-cert-manager}" |
+          k delete --ignore-not-found --wait=false -f - >/dev/null 2>&1 || true
+      else
+        k delete -f "$OC_URL/operator-controller.yaml" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+      fi
+      # cert-manager only when --v1 installed it (a cert-manager that was there stays).
+      cm_by="$(k get namespace cert-manager -o jsonpath="{.metadata.annotations.kubyl\.dev/installed-by}" 2>/dev/null || true)"
+      if [[ "$cm_by" == olm-dev.sh ]]; then
+        cm_version="$(k get namespace cert-manager -o jsonpath="{.metadata.annotations.kubyl\.dev/cert-manager-version}")"
+        log "Removing cert-manager ${cm_version:-$CERT_MANAGER_VERSION} (installed by this script)"
+        k delete -f "https://github.com/cert-manager/cert-manager/releases/download/${cm_version:-$CERT_MANAGER_VERSION}/cert-manager.yaml" \
+          --ignore-not-found --wait=false >/dev/null 2>&1 || true
+      fi
       log "Removing the manual-approval subscription"
       k delete namespace "$MANUAL_NS" --ignore-not-found --wait=false >/dev/null
       log "Removing OLM v0"
@@ -190,23 +225,19 @@ fi
 
 if $V1; then
   command -v curl >/dev/null 2>&1 || die "curl is not installed"
-  # The namespace cert-manager runs in (OperatorHub installs it into `operators`).
-  cm_namespace="$(k get deployment -A -o jsonpath='{range .items[*]}{.metadata.namespace} {.metadata.name}{"\n"}{end}' |
-    awk '$2 == "cert-manager-webhook" { print $1; exit }')"
+  cm_namespace="$(cert_manager_namespace)"
   if [[ -n "$cm_namespace" ]]; then
     log "cert-manager runs in $cm_namespace; OLM v1 uses it"
   else
     log "Installing cert-manager $CERT_MANAGER_VERSION (operator-controller needs it)"
     k apply --server-side --force-conflicts -f "https://github.com/cert-manager/cert-manager/releases/download/${CERT_MANAGER_VERSION}/cert-manager.yaml" >/dev/null
+    k annotate namespace cert-manager --overwrite \
+      "$INSTALLED_BY=olm-dev.sh" "$CERT_MANAGER_VERSION_KEY=$CERT_MANAGER_VERSION" >/dev/null
     k -n cert-manager rollout status deployment/cert-manager-webhook --timeout=300s >/dev/null
     cm_namespace="cert-manager"
   fi
   log "Installing OLM v1 (operator-controller $OPERATOR_CONTROLLER_VERSION)"
-  # The release puts its CA (a Certificate and a self-signed Issuer) into cert-manager's
-  # namespace, assumed to be `cert-manager`: point them at the one it runs in.
-  curl -fsSL "$OC_URL/operator-controller.yaml" |
-    sed -e "s#namespace: cert-manager\$#namespace: $cm_namespace#" \
-      -e "s#inject-ca-from-secret: cert-manager/#inject-ca-from-secret: $cm_namespace/#" |
+  operator_controller_manifest "$cm_namespace" |
     k apply --server-side --force-conflicts -f - >/dev/null
   k -n olmv1-system rollout status deployment/catalogd-controller-manager --timeout=300s >/dev/null
   k -n olmv1-system rollout status deployment/operator-controller-controller-manager --timeout=300s >/dev/null
