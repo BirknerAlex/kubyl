@@ -620,10 +620,10 @@ fn route_columns() -> Vec<ColumnDef> {
     vec![
         name_column(),
         fixed("host", "Host", 240.0).mono(),
-        fixed("services", "Services", 190.0).mono(),
+        fixed("services", "Services", 230.0).mono(),
         fixed("target_port", "Target port", 90.0).mono(),
         fixed("tls", "TLS", 120.0).mono(),
-        fixed("admitted", "Admitted", 150.0),
+        fixed("admitted", "Admitted", 200.0),
         age_column(),
     ]
 }
