@@ -137,71 +137,71 @@ In this order. Every candidate is probed with `GET <prefix>/api/v2/status`.
 ## Tasks
 
 ### Shared-crate commits (each lands on its own, first)
-- [ ] `kubyl_metrics`: move the transport out of `PromClient` into a public module: service-proxy base path, external URL with header, direct client with bearer, roots and `tls_server_name`, plus `get`/`post`/`delete` with the existing error mapping and `credentials_allowed`. Make `openshift::through_route` take the probe path, and add `PromClient::api(path, params)` and `MetricsService::prometheus(cluster)`. Phase 07's tests keep passing unchanged
-- [ ] `kubyl_explorer`: top-level rows that other crates add to the cluster tree (`catalog::register_view_row(cx, ViewRow { id, after, label, icon, kind, visible, badge })`), with a count badge colored by tone, following `explorer.group_order` and `hidden_groups`. Also a marker on a cluster's root row (a red dot while something critical fires, visible when the cluster is collapsed) and, optionally, a badge on favorite namespace rows
-- [ ] `kubyl_core` + `kubyl_overview`: an `OverviewSection` extension point (`ChromeRegistry::add_overview_section`, built like `DetailsSection`), rendered below the KPI tiles in the cluster and namespace variants
-- [ ] Stub crate `kubyl_alerts` (workspace member and its `init` line in `crates/kubyl/src/main.rs`), then mockup board 16
+- [x] `kubyl_metrics`: move the transport out of `PromClient` into a public module: service-proxy base path, external URL with header, direct client with bearer, roots and `tls_server_name`, plus `get`/`post`/`delete` with the existing error mapping and `credentials_allowed`. Make `openshift::through_route` take the probe path, and add `PromClient::api(path, params)` and `MetricsService::prometheus(cluster)`. Phase 07's tests keep passing unchanged
+- [x] `kubyl_explorer`: top-level rows that other crates add to the cluster tree (`catalog::register_view_row(cx, ViewRow { id, after, label, icon, kind, visible, badge })`), with a count badge colored by tone, following `explorer.group_order` and `hidden_groups`. Also a marker on a cluster's root row (a red dot while something critical fires, visible when the cluster is collapsed) and, optionally, a badge on favorite namespace rows
+- [x] `kubyl_core` + `kubyl_overview`: an `OverviewSection` extension point (`ChromeRegistry::add_overview_section`, built like `DetailsSection`), rendered below the KPI tiles in the cluster and namespace variants
+- [x] Stub crate `kubyl_alerts` (workspace member and its `init` line in `crates/kubyl/src/main.rs`), then mockup board 16
 
 ### Sources (`kubyl_alerts::discover`, `alertmanager`, `rules`)
-- [ ] Discovery as described above, with ranking tests on real Service and CR fixtures: kube-prometheus-stack, OpenShift platform and user workload, the community chart, VictoriaMetrics, GMP, a `routePrefix`
-- [ ] Alertmanager v2 client: `GET /api/v2/alerts` (active, silenced, inhibited and unprocessed alerts; `filter` for the cluster's matchers), `/api/v2/silences`, `/api/v2/status`, `/api/v2/receivers`; `POST /api/v2/silences`; `DELETE /api/v2/silence/{id}`. Parsers accept unknown fields and states
-- [ ] Parsers for Prometheus `/api/v1/alerts`, `/api/v1/rules` and `/api/v1/alertmanagers`, with Prometheus 3.x and Thanos fixtures
-- [ ] Transport fallbacks and the token rule, with a test that a look-alike Service outside the trusted namespaces never receives a token (like phase 07's)
-- [ ] A clear message for every failure (see the 403 examples above)
+- [x] Discovery as described above, with ranking tests on real Service and CR fixtures: kube-prometheus-stack, OpenShift platform and user workload, the community chart, VictoriaMetrics, GMP, a `routePrefix`
+- [x] Alertmanager v2 client: `GET /api/v2/alerts` (active, silenced, inhibited and unprocessed alerts; `filter` for the cluster's matchers), `/api/v2/silences`, `/api/v2/status`, `/api/v2/receivers`; `POST /api/v2/silences`; `DELETE /api/v2/silence/{id}`. Parsers accept unknown fields and states
+- [x] Parsers for Prometheus `/api/v1/alerts`, `/api/v1/rules` and `/api/v1/alertmanagers`, with Prometheus 3.x and Thanos fixtures
+- [x] Transport fallbacks and the token rule, with a test that a look-alike Service outside the trusted namespaces never receives a token (like phase 07's)
+- [x] A clear message for every failure (see the 403 examples above)
 
 ### Model and service (`kubyl_alerts::model`, `service`)
-- [ ] `Alert`: fingerprint, alert name, labels, annotations, severity, state (firing, pending, silenced by, inhibited by, unprocessed), firing since (Alertmanager's `startsAt`), pending since (Prometheus's `activeAt`), last received (`updatedAt`), receivers, generator URL, value, source, rule and target object
-- [ ] Merge: a Prometheus alert matches the Alertmanager alert with the same name whose labels include all of the Prometheus alert's labels (Prometheus adds external labels when it sends). Without Alertmanager, "firing since" is `activeAt` plus the rule's `for`, marked as approximate
-- [ ] Severity from `alerts.severity_label` (default `severity`), mapped to critical, warning, info or none. `alerts.severities` maps custom values such as `page`, `P1` or `high`; unknown values sort after info
-- [ ] Target object from labels, most specific first: `exported_namespace`/`exported_pod` when present, then `pod` (with `container`), `deployment`, `statefulset`, `daemonset`, `replicaset`, `job_name` (not `job`, which is the scrape job), `cronjob`, `horizontalpodautoscaler`, `persistentvolumeclaim`, `node`, `instance` when it matches a node name or `<InternalIP>:<port>`, the OpenShift ClusterOperator (`name` on `ClusterOperator*` alerts), `service` only for alerts not derived from kube-state-metrics, and finally `namespace`. Tested against the kube-prometheus-stack and OpenShift rule sets
-- [ ] Heartbeat: `Watchdog` (`alerts.heartbeat_alerts`) doesn't count as a problem. It is the pipeline check instead: received within the last 5 min means OK. If Prometheus has the rule but Alertmanager doesn't have the alert: "Prometheus isn't delivering alerts to this Alertmanager" (and when `/api/v1/alertmanagers` is empty: "Prometheus has no Alertmanager configured"). `InfoInhibitor` is hidden by default (`alerts.hidden_alerts`)
-- [ ] `AlertsService` (a global entity), per cluster: sources, alerts, silences, rules, status and errors. Demand-driven like `MetricsService`: demand from views refreshes every `refresh_interval`, background demand every `background_refresh_interval`, rules every 2 min. It drops clusters nobody asked about, resets on disconnect and settings changes, and uses a generation counter to drop stale results
-- [ ] Transitions (started firing, resolved) are kept in memory per cluster while Kubyl watches it. Resolved alerts show as "resolved 4 min ago" for a while (Alertmanager's API doesn't return resolved alerts), and notifications know what is new. The first fetch is the baseline
-- [ ] Performance: 5,000 alerts are parsed off the UI thread; the view diffs by fingerprint and keeps the selection
+- [x] `Alert`: fingerprint, alert name, labels, annotations, severity, state (firing, pending, silenced by, inhibited by, unprocessed), firing since (Alertmanager's `startsAt`), pending since (Prometheus's `activeAt`), last received (`updatedAt`), receivers, generator URL, value, source, rule and target object
+- [x] Merge: a Prometheus alert matches the Alertmanager alert with the same name whose labels include all of the Prometheus alert's labels (Prometheus adds external labels when it sends). Without Alertmanager, "firing since" is `activeAt` plus the rule's `for`, marked as approximate
+- [x] Severity from `alerts.severity_label` (default `severity`), mapped to critical, warning, info or none. `alerts.severities` maps custom values such as `page`, `P1` or `high`; unknown values sort after info
+- [x] Target object from labels, most specific first: `exported_namespace`/`exported_pod` when present, then `pod` (with `container`), `deployment`, `statefulset`, `daemonset`, `replicaset`, `job_name` (not `job`, which is the scrape job), `cronjob`, `horizontalpodautoscaler`, `persistentvolumeclaim`, `node`, `instance` when it matches a node name or `<InternalIP>:<port>`, the OpenShift ClusterOperator (`name` on `ClusterOperator*` alerts), `service` only for alerts not derived from kube-state-metrics, and finally `namespace`. Tested against the kube-prometheus-stack and OpenShift rule sets
+- [x] Heartbeat: `Watchdog` (`alerts.heartbeat_alerts`) doesn't count as a problem. It is the pipeline check instead: received within the last 5 min means OK. If Prometheus has the rule but Alertmanager doesn't have the alert: "Prometheus isn't delivering alerts to this Alertmanager" (and when `/api/v1/alertmanagers` is empty: "Prometheus has no Alertmanager configured"). `InfoInhibitor` is hidden by default (`alerts.hidden_alerts`)
+- [x] `AlertsService` (a global entity), per cluster: sources, alerts, silences, rules, status and errors. Demand-driven like `MetricsService`: demand from views refreshes every `refresh_interval`, background demand every `background_refresh_interval`, rules every 2 min. It drops clusters nobody asked about, resets on disconnect and settings changes, and uses a generation counter to drop stale results
+- [x] Transitions (started firing, resolved) are kept in memory per cluster while Kubyl watches it. Resolved alerts show as "resolved 4 min ago" for a while (Alertmanager's API doesn't return resolved alerts), and notifications know what is new. The first fetch is the baseline
+- [x] Performance: 5,000 alerts are parsed off the UI thread; the view diffs by fingerprint and keeps the selection
 
 ### Alerts view (`ViewKind::Custom("alerts")`, one tab per cluster, cluster color as the tab dot)
-- [ ] Header: cluster, PROD badge, source chips (`Alertmanager monitoring/alertmanager-operated · v0.28 · 2/2 peers`, `Rules: Prometheus`) and "Open Alertmanager UI" (a phase 08 web view on the Service; for URL and Route sources the URL opens in the browser instead)
-- [ ] Summary line: `3 critical · 7 warning · 2 info firing · 4 pending · 5 silenced`, the heartbeat state, and rule health (`2 rules fail to evaluate`)
-- [ ] All clear: "No alerts firing", heartbeat OK with its time, the number of rules, the time of the last check. Every other state explains itself and never shows an empty list without a reason: not connected, loading, no Alertmanager found (what was tried, the best candidate's error, "Set Alertmanager…" and the settings key), sign-in needed, 403 with the missing role, stale data (time of the last success)
-- [ ] Filters: a text and matcher input (`alertname=~"Kube.*", namespace="payments"`, same parser as silences), severity chips with counts, state chips (Firing, Pending, Silenced, Inhibited), namespace scope (all namespaces, or the active one; alerts without a namespace go under "Cluster"), receiver. Silenced and inhibited alerts are hidden by default behind a "5 silenced" row
-- [ ] Group by alert name (default), namespace, severity, receiver, target, or not at all. Collapsible group rows: `KubePodCrashLooping ×4 · critical · oldest 2h 14m`
-- [ ] Columns: severity pill, alert, state, since (relative and live; local time and UTC on hover), summary (`summary`, else `message`, else `description`), target (a link), namespace, receivers, and the remaining labels as muted chips. Sorted by severity, then age
-- [ ] Keys, registered in the `ActionRegistry` and shown in the key-hint bar: `enter` details, `s` silence, `a` acknowledge, `o` go to the target, `l` logs of the target pod, `r` runbook, `y` copy the labels as matchers, `/` filter
-- [ ] View options (grouping, filters, "show silenced") are kept in `state.json`, alert data never is
+- [x] Header: cluster, PROD badge, source chips (`Alertmanager monitoring/alertmanager-operated · v0.28 · 2/2 peers`, `Rules: Prometheus`) and "Open Alertmanager UI" (a phase 08 web view on the Service; for URL and Route sources the URL opens in the browser instead)
+- [x] Summary line: `3 critical · 7 warning · 2 info firing · 4 pending · 5 silenced`, the heartbeat state, and rule health (`2 rules fail to evaluate`)
+- [x] All clear: "No alerts firing", heartbeat OK with its time, the number of rules, the time of the last check. Every other state explains itself and never shows an empty list without a reason: not connected, loading, no Alertmanager found (what was tried, the best candidate's error, "Set Alertmanager…" and the settings key), sign-in needed, 403 with the missing role, stale data (time of the last success)
+- [x] Filters: a text and matcher input (`alertname=~"Kube.*", namespace="payments"`, same parser as silences), severity chips with counts, state chips (Firing, Pending, Silenced, Inhibited), namespace scope (all namespaces, or the active one; alerts without a namespace go under "Cluster"), receiver. Silenced and inhibited alerts are hidden by default behind a "5 silenced" row
+- [x] Group by alert name (default), namespace, severity, receiver, target, or not at all. Collapsible group rows: `KubePodCrashLooping ×4 · critical · oldest 2h 14m`
+- [x] Columns: severity pill, alert, state, since (relative and live; local time and UTC on hover), summary (`summary`, else `message`, else `description`), target (a link), namespace, receivers, and the remaining labels as muted chips. Sorted by severity, then age
+- [x] Keys, registered in the `ActionRegistry` and shown in the key-hint bar: `enter` details, `s` silence, `a` acknowledge, `o` go to the target, `l` logs of the target pod, `r` runbook, `y` copy the labels as matchers, `/` filter
+- [x] View options (grouping, filters, "show silenced") are kept in `state.json`, alert data never is
 
 ### Alert details (a pane in the Alerts view)
-- [ ] Name, severity, state, firing or pending since, resolved at, duration, last received
-- [ ] Summary and description as plain text (no HTML or Markdown rendering), long text folded
-- [ ] Labels as chips (click adds a filter, alt-click excludes) and an annotations table
-- [ ] Target: a link to the object (details, logs for pods), checked against the live object; shows "not found" once the object is gone
-- [ ] Runbook (`runbook_url`) and generator URL: `http`/`https` only, full URL shown, opened in the system browser. "Open in Prometheus" opens a phase 08 web view on the Prometheus Service with the generator URL's path and query, when Prometheus is a Service
-- [ ] Routing: receivers; silenced by (a link to the silence, with its comment, creator and end); inhibited by (a link to the inhibiting alert)
-- [ ] Rule (with a rules source): group, expression (monospace, copyable), `for`, `keep_firing_for`, health, last error, last evaluation. "Edit rule" opens the `PrometheusRule` that defines it in the YAML editor (matched by group and alert name over a `ResourceStores` list of `monitoring.coreos.com/v1` `PrometheusRule`)
-- [ ] Timeline (with Prometheus): the last 24 h of `ALERTS{…}` as firing and pending segments; flapping alerts say "fired 6 times in 24 h"
-- [ ] Actions: Silence…, Acknowledge, Copy labels, Copy as an `amtool` filter
+- [x] Name, severity, state, firing or pending since, resolved at, duration, last received
+- [x] Summary and description as plain text (no HTML or Markdown rendering), long text folded
+- [x] Labels as chips (click adds a filter, alt-click excludes) and an annotations table
+- [x] Target: a link to the object (details, logs for pods), checked against the live object; shows "not found" once the object is gone
+- [x] Runbook (`runbook_url`) and generator URL: `http`/`https` only, full URL shown, opened in the system browser. "Open in Prometheus" opens a phase 08 web view on the Prometheus Service with the generator URL's path and query, when Prometheus is a Service
+- [x] Routing: receivers; silenced by (a link to the silence, with its comment, creator and end); inhibited by (a link to the inhibiting alert)
+- [x] Rule (with a rules source): group, expression (monospace, copyable), `for`, `keep_firing_for`, health, last error, last evaluation. "Edit rule" opens the `PrometheusRule` that defines it in the YAML editor (matched by group and alert name over a `ResourceStores` list of `monitoring.coreos.com/v1` `PrometheusRule`)
+- [x] Timeline (with Prometheus): the last 24 h of `ALERTS{…}` as firing and pending segments; flapping alerts say "fired 6 times in 24 h"
+- [x] Actions: Silence…, Acknowledge, Copy labels, Copy as an `amtool` filter
 
 ### Silences
-- [ ] Silences tab: active, pending and expired silences (expired collapsed, last 24 h by default). Columns: state, matchers (chips), comment, created by, start, end (`ends in 3h 12m`), alerts it matches now. Filter by matcher text
-- [ ] Editor (dialog): matchers with name and value completion from current alerts, operators `=` `!=` `=~` `!~`. From an alert, it starts with all of the alert's labels, with the alert name, namespace and target labels ticked and the rest unticked. Durations 1h, 2h, 4h, 1d, 1w or a custom end; a comment is required; "created by" is the user from `SelfSubjectReview` (else the kubeconfig user) and can be edited. Live preview: "matches 4 alerts: 1 critical, 3 warning", computed locally with regexes anchored like Alertmanager's (RE2 syntax through `regex`). Validation: at least one matcher that doesn't match the empty string (Alertmanager rejects anything else), valid regexes, end after start
-- [ ] Central Alertmanager: the cluster's `matchers` from settings are always added and can't be removed in the editor, so a silence never covers another cluster's alerts
-- [ ] Acknowledge: a silence of exactly this alert's labels for `alerts.ack_duration` (default 1 h), with the comment "Acknowledged in Kubyl by <user>"
-- [ ] Edit (POST with the id; say that Alertmanager replaces the silence with a new id when its matchers or start change), extend (+1h, +4h), expire (confirmed), recreate an expired silence, copy as `amtool silence add …`
-- [ ] Guards: no silence actions on read-only clusters. Every create and edit shows a summary first (matchers, matched alerts by severity, duration). On PROD the summary needs the typed cluster name when the silence matches a critical alert, matches more than 10 alerts, or has no `alertname` matcher. Writes with a service-account token ask for consent (see "Transports and auth")
-- [ ] After a write: the list updates right away and refetches; a toast offers "Undo" (expire the new silence, or recreate the expired one)
+- [x] Silences tab: active, pending and expired silences (expired collapsed, last 24 h by default). Columns: state, matchers (chips), comment, created by, start, end (`ends in 3h 12m`), alerts it matches now. Filter by matcher text
+- [x] Editor (dialog): matchers with name and value completion from current alerts, operators `=` `!=` `=~` `!~`. From an alert, it starts with all of the alert's labels, with the alert name, namespace and target labels ticked and the rest unticked. Durations 1h, 2h, 4h, 1d, 1w or a custom end; a comment is required; "created by" is the user from `SelfSubjectReview` (else the kubeconfig user) and can be edited. Live preview: "matches 4 alerts: 1 critical, 3 warning", computed locally with regexes anchored like Alertmanager's (RE2 syntax through `regex`). Validation: at least one matcher that doesn't match the empty string (Alertmanager rejects anything else), valid regexes, end after start
+- [x] Central Alertmanager: the cluster's `matchers` from settings are always added and can't be removed in the editor, so a silence never covers another cluster's alerts
+- [x] Acknowledge: a silence of exactly this alert's labels for `alerts.ack_duration` (default 1 h), with the comment "Acknowledged in Kubyl by <user>"
+- [x] Edit (POST with the id; say that Alertmanager replaces the silence with a new id when its matchers or start change), extend (+1h, +4h), expire (confirmed), recreate an expired silence, copy as `amtool silence add …`
+- [x] Guards: no silence actions on read-only clusters. Every create and edit shows a summary first (matchers, matched alerts by severity, duration). On PROD the summary needs the typed cluster name when the silence matches a critical alert, matches more than 10 alerts, or has no `alertname` matcher. Writes with a service-account token ask for consent (see "Transports and auth")
+- [x] After a write: the list updates right away and refetches; a toast offers "Undo" (expire the new silence, or recreate the expired one)
 
 ### Rules (tab, with a Prometheus rules source)
-- [ ] Alerting rules by group and file: state (inactive shown as OK, pending, firing), health, last error, last evaluation, evaluation time, `for`, expression. Filter "only firing, pending or failing". Link to the `PrometheusRule` object
-- [ ] Header line: `312 rules · 4 firing · 2 pending · 1 failing`
+- [x] Alerting rules by group and file: state (inactive shown as OK, pending, firing), health, last error, last evaluation, evaluation time, `for`, expression. Filter "only firing, pending or failing". Link to the `PrometheusRule` object
+- [x] Header line: `312 rules · 4 firing · 2 pending · 1 failing`
 
 ### Across Kubyl
-- [ ] Sidebar: an "Alerts" row under each cluster, after Overview (the new explorer hook). The badge is the number of firing alerts in the color of the most severe one (red for critical, yellow for warning, dim for info), a check when all is clear, nothing while unknown. The row shows only when the cluster has an alert source (`alerts.sidebar`: `auto`, `always`, `never`). A red dot marks the cluster's root row while a critical alert fires
-- [ ] Status bar: a bell with the count for the active cluster, in the same colors; the tooltip lists the top three alerts; clicking opens the Alerts view
-- [ ] Details section "Alerts" (`DetailsSection`) for pods, workloads, nodes, namespaces, PVCs and Services: the object's firing and pending alerts (severity, name, since, summary); clicking one opens it in the Alerts view. Workloads include the alerts of their pods. Renders nothing when there are none
-- [ ] Action "Show Alerts for Selection" in resource lists: the Alerts view filtered to that object
-- [ ] Overview card (`OverviewSection`): firing alerts by severity, the five most severe, the heartbeat, and the all-clear state. The namespace variant shows that namespace's alerts
-- [ ] Notifications (opt-in, `alerts.notify`): a toast per cluster when alerts of at least `min_severity` start firing, for the chosen clusters (active, favorites' clusters, production, all), batched per 60 s, with "Show". Optionally when they resolve. Never for alerts that were already firing when Kubyl first looked
-- [ ] All clusters: "Alerts: Show Alerts in All Clusters" opens the same table with a CLUSTER column over every connected cluster that has a source. Clusters without one, or with errors, are listed at the bottom
-- [ ] Palette: "Alerts: Show Alerts", "Alerts: Show Alerts in All Clusters", "Alerts: Show Silences", "Alerts: New Silence…", "Alerts: Look for Alertmanager Again", "Alerts: Set Alertmanager Authorization Header…", "Alerts: Clear Alertmanager Authorization Header"
+- [x] Sidebar: an "Alerts" row under each cluster, after Overview (the new explorer hook). The badge is the number of firing alerts in the color of the most severe one (red for critical, yellow for warning, dim for info), a check when all is clear, nothing while unknown. The row shows only when the cluster has an alert source (`alerts.sidebar`: `auto`, `always`, `never`). A red dot marks the cluster's root row while a critical alert fires
+- [x] Status bar: a bell with the count for the active cluster, in the same colors; the tooltip lists the top three alerts; clicking opens the Alerts view
+- [x] Details section "Alerts" (`DetailsSection`) for pods, workloads, nodes, namespaces, PVCs and Services: the object's firing and pending alerts (severity, name, since, summary); clicking one opens it in the Alerts view. Workloads include the alerts of their pods. Renders nothing when there are none
+- [x] Action "Show Alerts for Selection" in resource lists: the Alerts view filtered to that object
+- [x] Overview card (`OverviewSection`): firing alerts by severity, the five most severe, the heartbeat, and the all-clear state. The namespace variant shows that namespace's alerts
+- [x] Notifications (opt-in, `alerts.notify`): a toast per cluster when alerts of at least `min_severity` start firing, for the chosen clusters (active, favorites' clusters, production, all), batched per 60 s, with "Show". Optionally when they resolve. Never for alerts that were already firing when Kubyl first looked
+- [x] All clusters: "Alerts: Show Alerts in All Clusters" opens the same table with a CLUSTER column over every connected cluster that has a source. Clusters without one, or with errors, are listed at the bottom
+- [x] Palette: "Alerts: Show Alerts", "Alerts: Show Alerts in All Clusters", "Alerts: Show Silences", "Alerts: New Silence…", "Alerts: Look for Alertmanager Again", "Alerts: Set Alertmanager Authorization Header…", "Alerts: Clear Alertmanager Authorization Header"
 
 ### Settings (`"alerts"` section of settings.json)
 
@@ -241,9 +241,9 @@ In this order. Every candidate is probed with `GET <prefix>/api/v2/status`.
   keychain, never into this file.
 
 ### Dev setup and tests
-- [ ] `script/alertmanager-dev.sh` (run after `prometheus-dev.sh`). It turns Alertmanager on in kube-prometheus-stack (`prometheus-dev.sh` sets `alertmanager.enabled=false` today) and adds a `PrometheusRule` in `payments` with: an always-firing critical alert on a pod, a pending alert (`for: 1h`), a flapping alert, a rule with a broken expression (for rule health), and an inhibition. It also deploys a second Alertmanager behind kube-rbac-proxy (the auth-proxy path, named in settings) and one with `routePrefix: /am`. `memory-hog` already triggers `KubePodCrashLooping`. `--many` adds a rule that fires once per pod, for the 5,000-pod check with `load-pods.sh`
-- [ ] Unit tests: discovery ranking, v2 and rules parsing, merging, severity and target mapping, the matcher parser and anchored matching, silence validation, heartbeat logic, the token rule, and that no keychain value ever reaches `Debug` output or logs
-- [ ] Live tests (`crates/kubyl_alerts/tests/live.rs`, ignored by default): discovery finds both Alertmanagers; firing and pending alerts show with the right times; a silence round trip (create, alert silenced, expire); rules parse; the auth-proxy Alertmanager works with the token and the look-alike Service never receives it
+- [x] `script/alertmanager-dev.sh` (run after `prometheus-dev.sh`). It turns Alertmanager on in kube-prometheus-stack (`prometheus-dev.sh` sets `alertmanager.enabled=false` today) and adds a `PrometheusRule` in `payments` with: an always-firing critical alert on a pod, a pending alert (`for: 1h`), a flapping alert, a rule with a broken expression (for rule health), and an inhibition. It also deploys a second Alertmanager behind kube-rbac-proxy (the auth-proxy path, named in settings) and one with `routePrefix: /am`. `memory-hog` already triggers `KubePodCrashLooping`. `--many` adds a rule that fires once per pod, for the 5,000-pod check with `load-pods.sh`
+- [x] Unit tests: discovery ranking, v2 and rules parsing, merging, severity and target mapping, the matcher parser and anchored matching, silence validation, heartbeat logic, the token rule, and that no keychain value ever reaches `Debug` output or logs
+- [x] Live tests (`crates/kubyl_alerts/tests/live.rs`, ignored by default): discovery finds both Alertmanagers; firing and pending alerts show with the right times; a silence round trip (create, alert silenced, expire); rules parse; the auth-proxy Alertmanager works with the token and the look-alike Service never receives it
 - [ ] Screenshots of every board 16 frame
 
 ## Acceptance criteria
@@ -275,3 +275,97 @@ In this order. Every candidate is probed with `GET <prefix>/api/v2/status`.
 - The same CA and client-certificate options for phase 07's external Prometheus URL.
 
 ## Handoff log
+
+### 2026-09-26 (branch `phase/14-15-alerts-polish`, one PR with phase 15)
+
+**Shipped.** Shared-crate commits first: `kubyl_metrics` transport refactor (`transport::Transport`,
+`through_route(.., probe)`, `PromClient::api`, `MetricsService::prometheus`; phase 07's tests
+unchanged, its live tests pass), explorer view rows and root markers (reusing phase 15's status
+slot), `OverviewSection`, toast buttons (`Notification::action`), the siren, bell-off and
+list-checks icons, then the `kubyl_alerts` stub and the crate:
+
+- `discover`: settings, prometheus-operator objects (`spec.alerting`, `Alertmanager` objects with
+  `routePrefix`/`externalUrl`), Prometheus' `/api/v1/alertmanagers` (pod URLs through
+  EndpointSlices), Service names and labels; Services selecting the same pods count once
+  (ClusterIP over `-operated`); an Alertmanager seen twice (same gossip cluster name) too.
+- `client`: service proxy first; after a 401/403, and only for `token_allowed` targets
+  (`openshift-monitoring`, `openshift-user-workload-monitoring`, named in settings), the Route
+  (`through_route`) or, without a Route, a temporary forward (`ForwardSpec::ephemeral`, shown in
+  Active Sessions) verified against the `openshift-service-ca.crt` CA with
+  `<svc>.<ns>.svc` as TLS server name, with the user's token else the settings'
+  `service_account`. External URLs take the keychain header `alerts-auth:<cluster id>/<url>`
+  (not sent with `insecure_skip_tls_verify`), a CA file, client certificate and key, and
+  `X-Scope-OrgID`. Every failure says what's missing (403 → the role or `services/proxy`).
+- `model`, `matchers`, `merge`: Alertmanager v2 and Prometheus parsers (3.x, Thanos), anchored
+  matchers, the merge (a Prometheus alert joins the Alertmanager alert whose labels include its
+  own; without Alertmanager "firing since" = `activeAt` + `for`, marked `~`), severities with
+  `alerts.severities`, targets from labels, the heartbeat (`Watchdog`; "Prometheus isn't
+  delivering…", "…has no Alertmanager configured").
+- `service::AlertsService`: demand-driven polling (15 s while a view shows a cluster, 60 s for
+  everything else and while no window is active, rules every 2 min), parsing and merging on
+  Tokio, generation counters, transitions in memory (the first read is the baseline, resolved
+  alerts listed 15 min), notifications batched per cluster and minute with "Show", optimistic
+  writes plus a re-read after 2 s, reset on disconnect/settings, re-keyed with phase 15's
+  `Rekeyed`, rediscovery after 3 failures / every 5 min while nothing was found / on
+  `DiscoveryChanged` / from the palette.
+- The Alerts view (one tab per cluster, cluster color as tab dot; "Alerts: Show Alerts in All
+  Clusters" adds a CLUSTER column and lists clusters without a source at the bottom): header
+  with source chips and "Open Alertmanager UI" (web view on the Service, browser for Routes and
+  URLs), summary line with heartbeat and rule health, filters (matchers or text, severity and
+  state chips with counts, namespace incl. "Cluster" and "the active namespace", receiver),
+  grouping (name, namespace, severity, receiver, target, none; info groups start collapsed),
+  suppressed alerts behind "5 silenced · Show", resolved ones below, the all-clear and every
+  empty state (not connected, loading, off, no Alertmanager with what was tried and a settings
+  snippet, sign in again / failures). The details pane: times (local and UTC), summary and
+  description (plain text, folded), target checked against the live object ("not found"),
+  labels (click filters, alt-click excludes), annotations, runbook and generator URL (http(s)
+  only; "Open in Prometheus" as a web view), routing (silenced by, inhibited by), the rule
+  (expression, `for`, health, last error, the defining `PrometheusRule` → YAML editor) and the
+  last 24 h from `ALERTS` ("fired 6 times in 24 h"). Silences tab (active, pending, expired of
+  the last 24 h collapsed; matches now; edit, +1h/+4h, expire, recreate, copy as `amtool`) and
+  Rules tab (groups with their `PrometheusRule`, only problems, details). Keys through the
+  `ActionRegistry` (`enter s a o l r y /`, `enter e ctrl-d n c`, `enter e a y`), bound on the
+  lists only, so typing in the filters never triggers them.
+- Silences (`silence.rs`): editor with label/value completion from current alerts, ticked
+  labels from an alert, durations or a custom end, required comment, creator from
+  `SelfSubjectReview`, live preview; the cluster's `matchers` are fixed rows. Every create and
+  edit (also acknowledge and extend) shows the summary; on PROD the typed cluster name when a
+  critical alert matches, more than 10 match or there's no `alertname` matcher; consent for
+  service-account writes; Undo toasts (expire the new one, recreate the expired one). Nothing on
+  read-only clusters or without an Alertmanager.
+- Chrome: the "Alerts" sidebar row after Overview (`alerts.sidebar` auto/always/never) with the
+  count in the worst severity's tone or a check, the red siren on root rows while something
+  critical fires, the status bar siren with the top three in its tooltip, the "Alerts" details
+  section (pods, workloads incl. their pods, nodes, namespaces, PVCs, Services, HPAs), the
+  overview card (cluster and namespace variants), "Alerts: Show Alerts for Selection" in lists,
+  and the palette actions (show, all clusters, silences, new silence, look again,
+  set/clear the Authorization header).
+- `script/alertmanager-dev.sh` (see its header) and `crates/kubyl_alerts/tests/live.rs`.
+
+**Verified.** 42 unit/GPUI tests (discovery ranking fixtures, parsers, merge, targets, anchored
+matchers, silence validation and the PROD rule, heartbeat, the token rule with a fake API server
+that records every request, no secret in `Debug`, transitions/notification baseline, optimistic
+writes, 5,000 alerts keeping the selection). Live on kind (`--ignored`, 5/5): discovery finds
+`monitoring/kube-prometheus-stack-alertmanager` and `team-am/prefixed-alertmanager` (`/am`), the
+look-alike `monitoring-evil/alertmanager-main` is tried and its access log shows no
+`Authorization`; `KubylDevCritical`'s "firing since" equals `startsAt`, `KubylDevPending` is
+pending with `activeAt`, `KubylDevInhibited` inhibited, Watchdog is the heartbeat; the broken
+rule fails; a silence round trip (silenced within 10 s, expired brings it back); the
+kube-rbac-proxy Alertmanager answers through a forward with `team-secure/am-reader`'s token and
+its CA from `openshift-service-ca.crt`, never for an unnamed Service. In the app on kind: sidebar
+badge, root siren, status bar, header chips, details (target Running, rule, runbook, timeline),
+Rules and Silences tabs.
+
+**Deferred / notes.**
+- OpenShift acceptance (platform alerts through `alertmanager-main`'s Route with an `oc login`
+  token and with a client-certificate kubeconfig, rules from thanos-querier, a 403 for silences
+  without `monitoring-alertmanager-edit`, user workload through the forward): the user tests it
+  on their cluster. The forward path itself is covered by the kube-rbac-proxy fixture.
+- No default service account for user workload monitoring (as the plan says: only once one is
+  verified on a real cluster); name one in `alerts.clusters.<cluster>.alertmanagers`.
+- Optional explorer badge on favorite namespace rows: not done.
+- A 401 on a Route or forward isn't retried with a refreshed token right away: the read fails,
+  three failures rediscover (a fresh service-account token), and the view offers "Sign in
+  again".
+- The published mockup artifact (claude.ai) doesn't have boards 11–17 yet: republish it from
+  `design/mockups/generate.py`.

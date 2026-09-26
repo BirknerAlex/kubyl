@@ -60,8 +60,17 @@ cargo run -p kubyl
   `script/oidc-dev.sh` (Dex + an OIDC-enabled kind cluster). `script/load-pods.sh` adds 5,000
   pods (and `--churn`) for list performance checks. Point `KUBECONFIG` at a scratch file so the
   user's `~/.kube/config` isn't modified.
+- Alerts: `script/alertmanager-dev.sh` (after `prometheus-dev.sh`) turns Alertmanager on and adds
+  test alerts (critical, pending, flapping, inhibited, a rule that fails to evaluate), an
+  Alertmanager with `routePrefix: /am`, one behind kube-rbac-proxy (the forward path with a
+  service-account token, once named in settings; see the script's header) and a look-alike
+  `monitoring-evil/alertmanager-main` that logs any Authorization header it gets. `--many` adds
+  one alert per pod of `load-pods.sh`.
+- Context grouping: `script/oc-contexts-dev.sh` writes a scratch kubeconfig with 33 `oc`-style
+  contexts (never `~/.kube/config`).
 - Live tests against those clusters are ignored by default: see the header of
-  `crates/kubyl_kube/tests/live.rs`.
+  `crates/kubyl_kube/tests/live.rs` (and of `crates/kubyl_metrics/tests/live.rs`,
+  `crates/kubyl_alerts/tests/live.rs`).
 - Web views: `script/webview-dev.sh` (after `prometheus-dev.sh`) adds Grafana, an Ingress, a
   self-signed HTTPS service and a non-HTTP-looking port. Real web views are tested by
   `KUBYL_TEST_WEBVIEW=1 cargo test -p kubyl_webview --test live_webview` (needs a display; on
@@ -87,6 +96,11 @@ cargo run -p kubyl
 - GPUI tests of views that close a gpui-component dialog (`window.close_dialog`) need
   `gpui_component::Root` as the window's first view: build yours inside
   `add_window_view(|window, cx| Root::new(view, window, cx))`.
+- Key bindings win over text input: a single-key binding (`s`, `/`, `j`) in a context that
+  also contains an input eats that character while typing. Give the list its own key context
+  and focus handle, and keep inputs outside of it.
+- Screenshot runs stall while the Mac's screen is locked (no step runs, not even with an empty
+  config); run them while someone is at the machine.
 - `window.on_next_frame` doesn't fire while macOS doesn't drive frames (hidden or occluded
   window, screenshot runs). An input only scrolls to its cursor once it was laid out: retry on
   a short timer until `InputState::line_height()` is `Some`.

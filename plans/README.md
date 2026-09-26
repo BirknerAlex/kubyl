@@ -251,6 +251,36 @@ one list. That list is the only shared line, and it is append-only.
   X.509 details), `files::save` (atomic, backup, hash check), `yaml::write` (comment-preserving
   writes). `kubyl_kube::kubeconfig::context_info` builds a `ContextInfo` from any in-memory
   kubeconfig; `ConnectionManager::move_context_settings` moves a context's overrides.
+- Cluster ids (phase 15): a grouped entry's id is `group:…`, its members keep theirs. Anything
+  that reads a persisted cluster id goes through `ConnectionManager::resolve` (or
+  `kubyl_core::ClusterIds::resolve` without the manager: `ViewRegistry::build` does it for
+  restored tabs; observe `ClusterIds` for changes). Settings keyed by cluster look up
+  `ConnectionManager::settings_keys(id)` (entry id, member ids, member context names), state that
+  must survive `oc project` uses `kubyl_kube::kubeconfig::stable_key`, and
+  `ConnectionEvent::Rekeyed { from, to }` says a live connection moved to a new id.
+- Status dots and rows (phase 15): `kubyl_ui::StatusDot::pulsing(id)` (connecting),
+  `TreeRow::tooltip`, `SectionHeader::end_child`.
+- Sidebar rows (phase 14): `kubyl_explorer::catalog::register_view_row(cx, ViewRow { id, after,
+  label, icon, kind, visible, badge })` adds a top-level row under every cluster (it follows
+  `explorer.group_order` and `hidden_groups` under its id and opens `kind` for the cluster);
+  `register_root_marker(cx, |cluster, cx| Option<RootMarker>)` puts an icon on cluster root
+  rows (visible while collapsed). Call `catalog::view_rows_changed(cx)` when badges or markers
+  change.
+- Overview sections (phase 14): `ChromeRegistry::add_overview_section(cx, impl
+  OverviewSection)` adds a view below the KPI tiles of the cluster and namespace overviews.
+- Toast buttons (phase 14): `Notification::action(label, |window, cx| …)` ("Undo", "Show"); a
+  toast with a button stays until closed.
+- HTTP transports (phase 14): `kubyl_metrics::transport::Transport` (`service_proxy`, `direct`
+  with a bearer, roots and `tls_server_name`, `external` with a keychain header, `with_header`;
+  `get`/`post_json`/`delete` with Prometheus-style error mapping) for any in-cluster HTTP API.
+  `kubyl_metrics::openshift::through_route(.., probe_path)` reaches a Service behind an OpenShift
+  auth proxy through its Route (callers decide whether it may get a token);
+  `MetricsService::prometheus(cluster)` hands out the Prometheus client phase 07 found.
+- Alerts (phase 14): `kubyl_alerts::AlertsService::global(cx)`: `cluster(id, Pace)` (a view's
+  read keeps the 15 s pace), `counts`, `phase`, `has_source`; `service::alerts_for(cluster,
+  &ObjectFilter, cx)` for an object's alerts. `kubyl_alerts::view::open(cluster, tab, …)` and
+  `open_with(cluster, Pending { tab, query, object, select }, …)` open the Alerts tab filtered
+  or on one alert.
 
 ### UX principles (from the mockups)
 
