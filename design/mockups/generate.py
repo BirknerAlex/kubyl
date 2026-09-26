@@ -261,8 +261,8 @@ def alert_badge(n, col):
     return f'<span class="mono" style="font-size:10.5px;font-weight:600;line-height:15px;padding:0 5px;border-radius:8px;background:{col};color:#1e2127">{n}</span>'
 
 def root(name, state=None, open_=False, color=C["dim"], prod=False, marker="", on=False):
-    faint = state == "err"
-    return ti(name, 0, "wheel", open_=open_, root=True, color=C["faint"] if faint else color, on=on,
+    """A cluster root: the icon keeps the cluster's color tag in every state."""
+    return ti(name, 0, "wheel", open_=open_, root=True, color=color, on=on,
               extra=(PROD_MINI if prod else "") + marker + status_slot(state))
 
 def sidebar(active="Pods", cr_open=True, alerts=False):
