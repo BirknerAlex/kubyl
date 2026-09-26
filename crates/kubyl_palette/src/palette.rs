@@ -23,8 +23,8 @@ use kubyl_ui::{ActiveColors, Icon, IconName, Kbd, fonts, h_flex, u, v_flex};
 
 use crate::command::{Mode, Scope};
 use crate::items::{
-    self, ActionEntry, ContextEntry, FavoriteEntry, Item, KindEntry, ObjectEntry, Options,
-    ResolvedRef, Snapshot, Target, Trailing,
+    self, ActionEntry, ContextEntry, ContextStatus, FavoriteEntry, Item, KindEntry, ObjectEntry,
+    Options, ResolvedRef, Snapshot, Target, Trailing,
 };
 use crate::matcher::byte_ranges;
 use crate::recent::Recent;
@@ -227,6 +227,7 @@ impl CommandPalette {
                     state: state.label(),
                     color: manager.color(&c.id, cx),
                     connected: state.is_connected(),
+                    connecting: state == kubyl_kube::ConnectionState::Connecting,
                     production: manager.caps(&c.id).production,
                 }
             })
@@ -961,6 +962,26 @@ impl CommandPalette {
                     .child(aliases)
             }))
             .children(trailing)
+            .when(matches!(item.target, Target::Context(_)), |this| {
+                let dot = match item.status {
+                    Some(ContextStatus::Connected) => {
+                        Some(kubyl_ui::StatusDot::new(colors.green).into_any_element())
+                    }
+                    Some(ContextStatus::Connecting) => Some(
+                        kubyl_ui::StatusDot::new(colors.text_dim)
+                            .pulsing(("palette-connecting", ix))
+                            .into_any_element(),
+                    ),
+                    None => None,
+                };
+                this.child(
+                    h_flex()
+                        .flex_none()
+                        .w(u(12.0))
+                        .justify_center()
+                        .children(dot),
+                )
+            })
     }
 
     fn render_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {

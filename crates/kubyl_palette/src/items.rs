@@ -59,6 +59,7 @@ pub struct ContextEntry {
     pub state: String,
     pub color: Hsla,
     pub connected: bool,
+    pub connecting: bool,
     pub production: bool,
 }
 
@@ -245,8 +246,17 @@ pub struct Item {
     pub target: Target,
     /// Color dot (contexts).
     pub color: Option<Hsla>,
+    /// The connection state of a context, like the sidebar's status slot.
+    pub status: Option<ContextStatus>,
     /// The active context/namespace.
     pub current: bool,
+}
+
+/// The status slot of a context row: a green dot when connected, a pulsing one while connecting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContextStatus {
+    Connected,
+    Connecting,
 }
 
 impl Item {
@@ -263,6 +273,7 @@ impl Item {
             key: None,
             target,
             color: None,
+            status: None,
             current: false,
         }
     }
@@ -560,6 +571,13 @@ impl Builder<'_> {
                 ctx.state.clone()
             });
             item.color = Some(ctx.color);
+            item.status = if ctx.connected {
+                Some(ContextStatus::Connected)
+            } else if ctx.connecting {
+                Some(ContextStatus::Connecting)
+            } else {
+                None
+            };
             item.current = current;
             self.push(item);
         }
@@ -1009,6 +1027,7 @@ mod tests {
                     state: "connected".into(),
                     color: gpui::red(),
                     connected: true,
+                    connecting: false,
                     production: false,
                 },
                 ContextEntry {
@@ -1019,6 +1038,7 @@ mod tests {
                     state: "disconnected".into(),
                     color: gpui::blue(),
                     connected: false,
+                    connecting: false,
                     production: true,
                 },
             ],
@@ -1160,6 +1180,23 @@ mod tests {
             items.last().unwrap().target,
             Target::Namespace(Some("team-a".into()))
         );
+    }
+
+    #[test]
+    fn contexts_show_their_connection_state() {
+        let mut s = snapshot();
+        s.contexts[1].connecting = true;
+        let items = build(Mode::Contexts, "", &s, Options::default());
+        let status = |title: &str| items.iter().find(|i| i.title == title).unwrap().status;
+        assert_eq!(status("kind-dev"), Some(ContextStatus::Connected));
+        assert_eq!(status("staging-eu-west-1"), Some(ContextStatus::Connecting));
+        s.contexts[1].connecting = false;
+        let items = build(Mode::Contexts, "", &s, Options::default());
+        let staging = items
+            .iter()
+            .find(|i| i.title == "staging-eu-west-1")
+            .unwrap();
+        assert_eq!(staging.status, None);
     }
 
     #[test]
