@@ -133,6 +133,12 @@ impl Workspace {
         let subscriptions = vec![
             cx.observe_global_in::<NotificationCenter>(window, Self::show_new_notifications),
             cx.observe_global::<ActiveContext>(|_, cx| cx.notify()),
+            // Tabs follow when their cluster's id changes (grouped contexts).
+            cx.observe_global_in::<kubyl_core::ClusterIds>(window, |this, window, cx| {
+                for pane in this.center.panes() {
+                    pane.update(cx, |pane, cx| pane.refresh_clusters(window, cx));
+                }
+            }),
             cx.observe_window_bounds(window, |this, window, cx| this.save_layout(window, cx)),
             cx.observe_window_appearance(window, |_, _, cx| kubyl_ui::apply_theme(cx)),
         ];
@@ -678,6 +684,65 @@ mod tests {
                 let titles: Vec<_> = pane.items().iter().map(|i| i.title(cx)).collect();
                 assert_eq!(titles.len(), 1);
                 assert_eq!(titles[0].as_ref(), "Welcome");
+            })
+            .unwrap();
+    }
+
+    /// Tabs whose cluster id changed (a context got grouped) are rebuilt with the new id and
+    /// saved with it.
+    #[gpui::test]
+    fn tabs_follow_cluster_ids(cx: &mut TestAppContext) {
+        use kubyl_core::{ClusterId, ClusterIds, Gvr, ResourceRef, ViewKind};
+        let _dir = init(cx);
+        let old = ClusterId::new("shop/c/u@/k");
+        let tab = ViewRequest::for_resource(
+            ViewKind::Custom("not-registered".into()),
+            ResourceRef::list(old.clone(), Gvr::new("", "v1", "pods"), None),
+        );
+        let layout = WorkspaceLayout {
+            center: PaneLayout::Pane {
+                tabs: vec![tab],
+                active: 0,
+            },
+            ..Default::default()
+        };
+        let window = open(cx, layout);
+        let cluster_of = |cx: &mut TestAppContext| {
+            window
+                .update(cx, |workspace, _, cx| {
+                    let pane = workspace.active_pane.read(cx);
+                    pane.items()[0]
+                        .view_request(cx)
+                        .and_then(|r| r.target)
+                        .map(|t| t.cluster)
+                })
+                .unwrap()
+        };
+        assert_eq!(cluster_of(cx), Some(old.clone()));
+        cx.update(|cx| {
+            ClusterIds::install(cx, |id, _| {
+                if id.as_str() == "shop/c/u@/k" {
+                    ClusterId::new("group:c,u@/k/")
+                } else {
+                    id.clone()
+                }
+            });
+            ClusterIds::changed(cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            cluster_of(cx).map(|c| c.to_string()).as_deref(),
+            Some("group:c,u@/k/")
+        );
+        window
+            .update(cx, |workspace, _, cx| {
+                let PaneLayout::Pane { tabs, .. } = workspace.center.layout(cx) else {
+                    panic!("one pane");
+                };
+                assert_eq!(
+                    tabs[0].target.as_ref().unwrap().cluster.as_str(),
+                    "group:c,u@/k/"
+                );
             })
             .unwrap();
     }
