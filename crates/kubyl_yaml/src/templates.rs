@@ -108,6 +108,33 @@ spec:
         },
     },
     Template {
+        title: "Route",
+        gvk: ("route.openshift.io", "v1", "Route"),
+        body: |ns| {
+            // Edge TLS with the router's default certificate; plain HTTP redirects to HTTPS.
+            format!(
+                "apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: web
+  namespace: {ns}
+spec:
+  host: web.apps.example.com
+  to:
+    kind: Service
+    name: web
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+  wildcardPolicy: None
+"
+            )
+        },
+    },
+    Template {
         title: "CronJob",
         gvk: ("batch", "v1", "CronJob"),
         body: |ns| {
@@ -270,6 +297,15 @@ mod tests {
             assert_eq!(root["kind"], template.gvk.2);
             assert_eq!(root["metadata"]["namespace"], "payments");
         }
+        let route = template_for(&Gvk::new("route.openshift.io", "v1", "Route")).unwrap();
+        let object = parse(&route.text("shop")).roots().next().unwrap().to_json();
+        assert_eq!(object["spec"]["tls"]["termination"], "edge");
+        assert_eq!(
+            object["spec"]["tls"]["insecureEdgeTerminationPolicy"],
+            "Redirect"
+        );
+        assert_eq!(object["spec"]["port"]["targetPort"], "http");
+        assert_eq!(object["spec"]["wildcardPolicy"], "None");
     }
 
     #[test]

@@ -115,9 +115,10 @@ impl ApplyHistory {
         entries
     }
 
-    /// Records an apply. `kind` guards against ever storing Secret data.
+    /// Records an apply. `kind` guards against ever storing Secret data, [`recordable`] against
+    /// storing a Route's inline TLS key.
     pub fn record(cx: &mut App, key: String, kind: &str, yaml: String) {
-        if kind == "Secret" || yaml.len() > HISTORY_MAX_BYTES {
+        if !recordable(kind, &yaml) {
             return;
         }
         let entry = HistoryEntry {
@@ -146,9 +147,40 @@ impl ApplyHistory {
     }
 }
 
+/// Whether an applied document may go into state.json: not a Secret (its buffer may hold
+/// decoded values), not a Route with an inline TLS key (revealed, typed or masked), not huge.
+pub fn recordable(kind: &str, yaml: &str) -> bool {
+    if kind == "Secret" || yaml.len() > HISTORY_MAX_BYTES {
+        return false;
+    }
+    !(kind == kubyl_resources::route::KIND
+        && crate::parse::parse(yaml).roots().any(|root| {
+            root.find_entry(&crate::parse::Path::keys(&["spec", "tls", "key"]))
+                .is_some()
+        }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn secrets_and_route_keys_are_never_recorded() {
+        let route = |tls: &str| {
+            format!(
+                "apiVersion: route.openshift.io/v1\nkind: Route\nmetadata:\n  name: web\nspec:\n  to:\n    name: web\n  tls:\n    termination: edge\n{tls}"
+            )
+        };
+        assert!(recordable("Route", &route("")));
+        assert!(!recordable(
+            "Route",
+            &route("    key: |\n      -----BEGIN PRIVATE KEY-----\n")
+        ));
+        assert!(!recordable("Route", &route("    key: ••••••••\n")));
+        assert!(!recordable("Secret", "kind: Secret\n"));
+        assert!(recordable("ConfigMap", "kind: ConfigMap\n"));
+        assert!(!recordable("ConfigMap", &"x".repeat(HISTORY_MAX_BYTES + 1)));
+    }
 
     #[test]
     fn histories_of_an_entry_and_its_former_contexts_combine() {
