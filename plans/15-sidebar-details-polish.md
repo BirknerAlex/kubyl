@@ -1,6 +1,6 @@
 # Phase 15: Polish: connection dots, one entry per cluster and user, ConfigMap data
 
-**Status:** not started
+**Status:** in progress (branch `phase/14-15-alerts-polish`, together with phase 14)
 **Depends on:** 01 (kubeconfig loading, `ConnectionManager`), 02 (sidebar, details), 03 (`@` contexts in the palette). Part 3 should start after phase 11 has merged: phase 11 is changing `kubyl_kube` and the Clusters & kubeconfigs tab right now.
 **Owns:** no crate of its own. Small, separate commits in shared crates: `kubyl_explorer` (sidebar, details), `kubyl_kube` (context grouping), `kubyl_palette` (`@` aliases), and settings lookups in `kubyl_metrics` (and `kubyl_alerts` once phase 14 exists)
 **Mockups:** board 17 · Cluster status and ConfigMap data, to be added to `design/mockups/generate.py` first: the sidebar with status dots and grouped cluster rows (with the tooltip listing their contexts), and a ConfigMap's details with its data. Also update the shared `sidebar()` helper so every board shows the dots.

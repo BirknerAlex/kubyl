@@ -1,6 +1,6 @@
 # Phase 14: Alerts (Alertmanager), silences, alerting rules
 
-**Status:** not started
+**Status:** in progress (branch `phase/14-15-alerts-polish`, together with phase 15)
 **Depends on:** 02 (explorer, details sections, `ResourceStores`), 05 (temporary port-forwards), 07 (Prometheus discovery and client, OpenShift Route auth); 08 optional (Alertmanager and Prometheus UIs in a web view)
 **Owns:** `crates/kubyl_alerts` (new), `script/alertmanager-dev.sh`
 **Mockups:** board 16 · Alerts, to be added to `design/mockups/generate.py` before the UI work: the Alerts tab with the details pane, the all-clear and "no Alertmanager" states, Silences with the silence editor and its PROD confirmation, the Rules tab, the sidebar row badge and the status bar item.
