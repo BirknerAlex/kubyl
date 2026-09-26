@@ -1,6 +1,6 @@
-//! Pickers: `> Web View: Open…` (web ports of the Services in the active namespace), the port
-//! choice of `w` on an object with several ports, and "Open as web view…" (scheme and start
-//! path for a port that doesn't look like HTTP).
+//! Pickers: `> Web View: Open…` (web ports of the Services and Route backends in the active
+//! namespace), the port choice of `w` on an object with several ports, and "Open as web view…"
+//! (scheme and start path for a port that doesn't look like HTTP).
 
 use gpui::{
     App, AppContext as _, Context, Entity, FocusHandle, Focusable, FontWeight, IntoElement,
@@ -10,13 +10,17 @@ use gpui::{
 use gpui_component::WindowExt as _;
 use gpui_component::input::{Input, InputEvent, InputState};
 use kubyl_core::{ActiveContext, Gvr, Notification, NotificationCenter, ResourceRef};
+use kubyl_kube::ConnectionManager;
+use kubyl_resources::route::{self, Route};
 use kubyl_resources::store::{ResourceStores, StoreHandle, StoreKey};
 use kubyl_ui::{ActiveColors, Button, Chip, Icon, IconName, fonts, h_flex, u, v_flex};
 use serde_json::Value;
 
 use crate::target::{Scheme, TargetKind, ports_of};
 use crate::view::OpenRequest;
-use crate::{backend_port, backends, cached_object, open_in, request_for};
+use crate::{
+    backend_port, backend_service_ref, backends, cached_object, open_in, request_for, route_request,
+};
 
 actions!(webview_picker, [SelectNext, SelectPrevious]);
 
@@ -43,8 +47,36 @@ pub struct PickerRow {
     pub request: OpenRequest,
 }
 
-/// The ports of a Service or Pod, or the backends of an Ingress, as picker rows.
+/// The ports of a Service or Pod, or the backends of an Ingress or Route, as picker rows.
 pub fn rows_for_object(target: &ResourceRef, object: &Value, cx: &App) -> Vec<PickerRow> {
+    if target.gvr.group == route::GROUP && target.gvr.resource == route::RESOURCE {
+        let route = Route::parse(object);
+        let weights = route::weights(&route);
+        let host = format!(
+            "{}{}",
+            route.display_host().unwrap_or_else(|| "*".into()),
+            route.path.as_deref().unwrap_or_default()
+        );
+        // Backends whose Service or port can't be found have nothing to open.
+        return route
+            .backends
+            .iter()
+            .zip(weights)
+            .filter(|(backend, _)| backend.is_service())
+            .filter_map(|(backend, (_, percent))| {
+                let service_ref = backend_service_ref(target, &backend.name);
+                let service = cached_object(&service_ref, cx);
+                let request = route_request(&route, &service_ref, service.as_deref()).ok()?;
+                let share = percent.map(|p| format!(" · {p}%")).unwrap_or_default();
+                Some(PickerRow {
+                    label: request.target.to_string(),
+                    detail: format!("route {} · {host}{share}", route.name),
+                    web: true,
+                    request,
+                })
+            })
+            .collect();
+    }
     match target.gvr.resource.as_str() {
         "services" | "pods" => {
             let Some(kind) = TargetKind::from_resource(&target.gvr.resource) else {
@@ -100,7 +132,7 @@ pub fn open_rows(title: String, rows: Vec<PickerRow>, window: &mut Window, cx: &
 }
 
 /// `> Web View: Open…`: the web ports of the Services in the active namespace (all namespaces
-/// when none is chosen).
+/// when none is chosen), and the backends of its Routes on clusters that serve them.
 pub fn open_namespace_picker(window: &mut Window, cx: &mut App) {
     let context = ActiveContext::global(cx).clone();
     let Some(cluster) = context.cluster else {
@@ -117,16 +149,33 @@ pub fn open_namespace_picker(window: &mut Window, cx: &mut App) {
         StoreKey::new(
             cluster.id.clone(),
             Gvr::new("", "v1", "services"),
-            namespace,
+            namespace.clone(),
         ),
     );
-    let view = cx.new(|cx| {
-        cx.observe(store.entity(), |this: &mut Picker, _, cx| {
-            this.refresh(cx);
-            cx.notify();
+    // OpenShift: the backends of the namespace's Routes too.
+    let routes = ConnectionManager::try_global(cx)
+        .and_then(|m| m.read(cx).discovery(&cluster.id))
+        .and_then(|d| {
+            kubyl_explorer::catalog::find(&d, route::GROUP, route::RESOURCE).map(|r| r.gvr.clone())
         })
-        .detach();
-        Picker::new(title.into(), Source::Services(store), window, cx)
+        .map(|gvr| ResourceStores::acquire(cx, StoreKey::new(cluster.id.clone(), gvr, namespace)));
+    let view = cx.new(|cx| {
+        for store in std::iter::once(&store).chain(&routes) {
+            cx.observe(store.entity(), |this: &mut Picker, _, cx| {
+                this.refresh(cx);
+                cx.notify();
+            })
+            .detach();
+        }
+        Picker::new(
+            title.into(),
+            Source::Services {
+                services: store,
+                routes,
+            },
+            window,
+            cx,
+        )
     });
     show(view, window, cx);
 }
@@ -150,7 +199,11 @@ fn show(view: Entity<Picker>, window: &mut Window, cx: &mut App) {
 
 enum Source {
     Rows(Vec<PickerRow>),
-    Services(StoreHandle),
+    /// The web ports of a namespace's Services, and its Routes' backends where Routes exist.
+    Services {
+        services: StoreHandle,
+        routes: Option<StoreHandle>,
+    },
 }
 
 struct Picker {
@@ -199,42 +252,64 @@ impl Picker {
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
-        self.rows = match &self.source {
-            Source::Rows(rows) => rows.clone(),
-            Source::Services(store) => {
-                let store = store.read(cx);
-                let mut rows: Vec<PickerRow> = Vec::new();
-                for service in store.objects().values() {
-                    let (Some(name), Some(namespace)) = (
-                        service.pointer("/metadata/name").and_then(Value::as_str),
-                        service
-                            .pointer("/metadata/namespace")
-                            .and_then(Value::as_str),
-                    ) else {
-                        continue;
-                    };
-                    let target = ResourceRef::object(
-                        store.key().cluster.clone(),
-                        Gvr::new("", "v1", "services"),
-                        Some(namespace.to_string()),
-                        name.to_string(),
-                    );
-                    rows.extend(
-                        rows_for_object(&target, service, cx)
-                            .into_iter()
-                            .filter(|r| r.web)
-                            .map(|mut r| {
+        self.rows =
+            match &self.source {
+                Source::Rows(rows) => rows.clone(),
+                Source::Services { services, routes } => {
+                    let store = services.read(cx);
+                    let mut rows: Vec<PickerRow> = Vec::new();
+                    for service in store.objects().values() {
+                        let (Some(name), Some(namespace)) = (
+                            service.pointer("/metadata/name").and_then(Value::as_str),
+                            service
+                                .pointer("/metadata/namespace")
+                                .and_then(Value::as_str),
+                        ) else {
+                            continue;
+                        };
+                        let target = ResourceRef::object(
+                            store.key().cluster.clone(),
+                            Gvr::new("", "v1", "services"),
+                            Some(namespace.to_string()),
+                            name.to_string(),
+                        );
+                        rows.extend(
+                            rows_for_object(&target, service, cx)
+                                .into_iter()
+                                .filter(|r| r.web)
+                                .map(|mut r| {
+                                    if store.key().namespace.is_none() {
+                                        r.detail = format!("{namespace} · {}", r.detail);
+                                    }
+                                    r
+                                }),
+                        );
+                    }
+                    for route in routes.iter().flat_map(|r| r.read(cx).objects().values()) {
+                        let Some(namespace) =
+                            route.pointer("/metadata/namespace").and_then(Value::as_str)
+                        else {
+                            continue;
+                        };
+                        let target = ResourceRef::object(
+                            store.key().cluster.clone(),
+                            Gvr::new(route::GROUP, "v1", route::RESOURCE),
+                            Some(namespace.to_string()),
+                            route::Route::parse(route).name,
+                        );
+                        rows.extend(rows_for_object(&target, route, cx).into_iter().map(
+                            |mut r| {
                                 if store.key().namespace.is_none() {
                                     r.detail = format!("{namespace} · {}", r.detail);
                                 }
                                 r
-                            }),
-                    );
+                            },
+                        ));
+                    }
+                    rows.sort_by(|a, b| a.label.cmp(&b.label).then(a.detail.cmp(&b.detail)));
+                    rows
                 }
-                rows.sort_by(|a, b| a.label.cmp(&b.label));
-                rows
-            }
-        };
+            };
         self.apply_filter(cx);
     }
 
@@ -294,7 +369,7 @@ impl Render for Picker {
         }
         let colors = cx.colors().clone();
         let loading = match &self.source {
-            Source::Services(store) => !store.read(cx).status().is_ready(),
+            Source::Services { services, .. } => !services.read(cx).status().is_ready(),
             Source::Rows(_) => false,
         };
         let empty = if loading {

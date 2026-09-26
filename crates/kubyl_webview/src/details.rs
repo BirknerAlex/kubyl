@@ -1,7 +1,8 @@
-//! The "Web views" sections of Service, Pod and Ingress details (board 10's dock): a button
-//! per port (`Web view`, `Open · 2 tabs`, `Open as web view…` for ports that don't look like
-//! HTTP), the running temporary forward, the session's storage, and other web UIs in the
-//! namespace.
+//! The "Web views" sections of Service, Pod, Ingress and Route details (board 10's dock): a
+//! button per port (`Web view`, `Open · 2 tabs`, `Open as web view…` for ports that don't look
+//! like HTTP), the running temporary forward, the session's storage, and other web UIs in the
+//! namespace. Ingresses and Routes get one row per backend Service; Routes also link their
+//! external URL.
 
 use gpui::{
     AnyView, App, AppContext as _, Context, FontWeight, IntoElement, Render, SharedString, Window,
@@ -10,6 +11,7 @@ use gpui::{
 use kubyl_core::{DetailsSection, Gvr, ResourceRef};
 use kubyl_kube::ConnectionManager;
 use kubyl_portforward::manager::human_bytes;
+use kubyl_resources::route::{self, Route};
 use kubyl_resources::store::{ResourceStores, StoreHandle, StoreKey, object_key};
 use kubyl_ui::{ActiveColors, Button, Colors, Icon, IconName, fonts, h_flex, u, v_flex};
 use serde_json::Value;
@@ -20,7 +22,7 @@ use crate::target::{
     IngressBackend, TargetKind, WebPort, WebTarget, ingress_backends, ports_of, preset_for,
     preset_names,
 };
-use crate::{OpenWebView, backend_port};
+use crate::{OpenWebView, backend_port, backend_service_ref, open_in, route_request};
 
 /// Registered with `ChromeRegistry::add_details_section`.
 pub struct WebViewDetails;
@@ -39,6 +41,7 @@ impl DetailsSection for WebViewDetails {
             ("Service", "") => Mode::Object(TargetKind::Service),
             ("Pod", "") => Mode::Object(TargetKind::Pod),
             ("Ingress", "networking.k8s.io") => Mode::Ingress,
+            (route::KIND, route::GROUP) => Mode::Route,
             _ => return None,
         };
         target.namespace.as_ref()?;
@@ -51,6 +54,7 @@ impl DetailsSection for WebViewDetails {
 enum Mode {
     Object(TargetKind),
     Ingress,
+    Route,
 }
 
 struct WebSection {
@@ -185,7 +189,21 @@ fn port_button(
         // Another tab of an open port keeps its scheme; only a first open asks.
         ask: !port.web && tabs == 0,
     };
-    let label = match (port.web, tabs) {
+    open_button(id, port.web, tabs, colors, move |window, cx| {
+        window.dispatch_action(Box::new(action.clone()), cx)
+    })
+}
+
+/// A port button's look (`Web view`, `Open · N tabs`, `Open as web view…` when not `web`),
+/// running `on_click`.
+fn open_button(
+    id: SharedString,
+    web: bool,
+    tabs: usize,
+    colors: &Colors,
+    on_click: impl Fn(&mut Window, &mut App) + 'static,
+) -> gpui::AnyElement {
+    let label = match (web, tabs) {
         (_, 1) => "Open · 1 tab".to_string(),
         (_, n) if n > 1 => format!("Open · {n} tabs"),
         (false, _) => "Open as web view…".to_string(),
@@ -208,7 +226,7 @@ fn port_button(
         .map(|this| {
             if tabs > 0 {
                 this.border_color(accent).text_color(accent)
-            } else if port.web {
+            } else if web {
                 this.border_color(colors.border)
                     .bg(colors.button_background)
                     .text_color(colors.text)
@@ -217,7 +235,7 @@ fn port_button(
                     .text_color(colors.text_muted)
             }
         })
-        .when(port.web || tabs > 0, |this| {
+        .when(web || tabs > 0, |this| {
             this.child(Icon::new(IconName::Globe).size(12.0).color(if tabs > 0 {
                 accent
             } else {
@@ -225,7 +243,7 @@ fn port_button(
             }))
         })
         .child(label)
-        .on_click(move |_, window, cx| window.dispatch_action(Box::new(action.clone()), cx))
+        .on_click(move |_, window, cx| on_click(window, cx))
         .into_any_element()
 }
 
@@ -643,6 +661,132 @@ impl WebSection {
     }
 }
 
+impl WebSection {
+    /// One row per backend Service (`host/path → svc:port`, opened through a temporary forward
+    /// at the port the Route's target port resolves to, the Route's path as the start page),
+    /// then the Route's external URL.
+    fn render_route(&self, object: &Value, cx: &mut Context<Self>) -> gpui::Div {
+        let colors = cx.colors().clone();
+        let route = Route::parse(object);
+        let host = format!(
+            "{}{}",
+            route.display_host().unwrap_or_else(|| "*".into()),
+            route.path.as_deref().unwrap_or_default()
+        );
+        let weights = route::weights(&route);
+        let mut section = section("Web views", &colors);
+        let services: Vec<_> = route
+            .backends
+            .iter()
+            .zip(weights)
+            .filter(|(backend, _)| backend.is_service())
+            .collect();
+        if services.is_empty() {
+            section = section.child(
+                div()
+                    .text_size(u(12.0))
+                    .text_color(colors.text_dim)
+                    .child("No Service backends."),
+            );
+        }
+        for (index, (backend, (_, percent))) in services.into_iter().enumerate() {
+            let service_ref = backend_service_ref(&self.target, &backend.name);
+            let service = self.service(&backend.name, cx);
+            let share = percent.map(|p| format!(" · {p}%")).unwrap_or_default();
+            let (label, detail, button) =
+                match route_request(&route, &service_ref, service.as_ref()) {
+                    Ok(request) => {
+                        let tabs = WebForwards::try_global(cx)
+                            .map(|f| f.read(cx).tab_count(&request.target))
+                            .unwrap_or_default();
+                        let label = format!("{host} → {}:{}", backend.name, request.target.port);
+                        let detail = format!(
+                            "backend Service{share} · {}",
+                            request.detected.as_str().to_uppercase()
+                        );
+                        let button = open_button(
+                            format!("web-route-{index}").into(),
+                            true,
+                            tabs,
+                            &colors,
+                            move |window, cx| open_in(request.clone(), window, cx),
+                        );
+                        (label, detail, button)
+                    }
+                    Err(err) => (
+                        format!("{host} → {}", backend.name),
+                        format!("backend Service{share}"),
+                        div()
+                            .text_size(u(11.5))
+                            .text_color(colors.yellow)
+                            .child(err)
+                            .into_any_element(),
+                    ),
+                };
+            section = section.child(port_row(label, detail, button, &colors));
+        }
+        section = section.child(
+            div()
+                .text_size(u(11.5))
+                .text_color(colors.text_muted)
+                .child(
+                    "Opens the backend Service through a temporary forward, even when the \
+                     Route host isn't reachable from here.",
+                ),
+        );
+        // The external URL, in the system browser.
+        let (label, button) = match route::url(&route) {
+            Some(url) => {
+                let open = url.clone();
+                (
+                    url,
+                    div()
+                        .id("web-route-browser")
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap(u(5.0))
+                        .h(u(24.0))
+                        .px(u(8.0))
+                        .rounded(u(5.0))
+                        .border_1()
+                        .border_color(colors.border)
+                        .bg(colors.button_background)
+                        .text_size(u(12.0))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(colors.hover))
+                        .child(
+                            Icon::new(IconName::ExternalLink)
+                                .size(12.0)
+                                .color(colors.text_dim),
+                        )
+                        .child("Open in browser")
+                        .on_click(move |_, _, cx| cx.open_url(&open))
+                        .into_any_element(),
+                )
+            }
+            None => (
+                host.clone(),
+                div()
+                    .text_size(u(11.5))
+                    .text_color(colors.text_dim)
+                    .child(if route.is_wildcard() {
+                        "No browser link for wildcard hosts"
+                    } else {
+                        "No host yet"
+                    })
+                    .into_any_element(),
+            ),
+        };
+        section.child(port_row(
+            label,
+            "the Route's external URL".into(),
+            button,
+            &colors,
+        ))
+    }
+}
+
 /// Switches the private session of every port of an object (open tabs reload into it).
 fn set_private(
     target: &ResourceRef,
@@ -680,6 +824,7 @@ impl Render for WebSection {
         match self.mode {
             Mode::Object(kind) => self.render_object(kind, &object, cx).into_any_element(),
             Mode::Ingress => self.render_ingress(&object, cx).into_any_element(),
+            Mode::Route => self.render_route(&object, cx).into_any_element(),
         }
     }
 }

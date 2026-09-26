@@ -1,9 +1,9 @@
 //! Service web views (board 10): an embedded browser over temporary port-forwards.
 //!
-//! Every HTTP(S) port of a Service or Pod (and every Ingress backend) gets a "Web view" button
-//! (details, the Services table, `w` in lists, `> Web View: Open…`). It starts a hidden
-//! loopback forward ([`forward`]) and opens the page in a tab ([`view`]); closing the last tab
-//! stops the forward.
+//! Every HTTP(S) port of a Service or Pod (and every Ingress and OpenShift Route backend) gets
+//! a "Web view" button (details, the Services table, `w` in lists, `> Web View: Open…`). It
+//! starts a hidden loopback forward ([`forward`]) and opens the page in a tab ([`view`]);
+//! closing the last tab stops the forward.
 //!
 //! - [`native`]: the platform web view (WKWebView, WebView2, WebKitGTK through `wry`).
 //! - [`host`]: keeps native views in step with GPUI's frames (placement, hiding).
@@ -32,10 +32,11 @@ use gpui::{
 use kubyl_core::actions::{ActivateDockPanel, OpenView};
 use kubyl_core::{
     ActionRegistry, ActionSpec, CellButton, CellValue, ChromeRegistry, ColumnDef, ColumnProvider,
-    ColumnWidth, Notification, NotificationCenter, ResourceColumns, ResourceRef, StatusBarItem,
-    StatusBarPosition, ViewKind, ViewRegistry, ViewRequest,
+    ColumnWidth, Gvr, Notification, NotificationCenter, ResourceColumns, ResourceRef,
+    StatusBarItem, StatusBarPosition, ViewKind, ViewRegistry, ViewRequest,
 };
 use kubyl_resources::ResourceSelection;
+use kubyl_resources::route::{self, Route};
 use kubyl_resources::store::{ResourceStores, StoreKey, object_key};
 use kubyl_ui::{ActiveColors, Icon, IconName, h_flex, u};
 use serde::Deserialize;
@@ -57,10 +58,10 @@ pub const VIEW_KIND: &str = "web_view";
 actions!(
     webview,
     [
-        /// Opens a web view for the selected Service, Pod or Ingress (a port picker when it
-        /// has several web ports).
+        /// Opens a web view for the selected Service, Pod, Ingress or Route (a port picker
+        /// when it has several web ports).
         OpenSelected,
-        /// Picks a web port of the Services in the active namespace.
+        /// Picks a web port of the Services (and Route backends) in the active namespace.
         OpenPicker,
         ReloadPage,
         OpenInBrowser,
@@ -132,6 +133,7 @@ pub fn init(cx: &mut App) {
     let applies = |target: &ResourceRef, _: &kubyl_core::ClusterCaps| {
         (target.gvr.group.is_empty() && matches!(target.gvr.resource.as_str(), "services" | "pods"))
             || (target.gvr.resource == "ingresses" && target.gvr.group == "networking.k8s.io")
+            || (target.gvr.resource == route::RESOURCE && target.gvr.group == route::GROUP)
     };
     // Web views are a read path: allowed on read-only clusters too (the toolbar says so).
     ActionRegistry::register(
@@ -357,7 +359,46 @@ fn open_selected(window: &mut Window, cx: &mut App) {
         NotificationCenter::push(cx, Notification::info("The object isn't loaded yet."));
         return;
     };
-    let rows = picker::rows_for_object(&target, &object, cx);
+    // A Route's ports come from its backend Services: load them first when no view has.
+    if target.gvr.group == route::GROUP && target.gvr.resource == route::RESOURCE {
+        let missing = Route::parse(&object).services().any(|backend| {
+            cached_object(&backend_service_ref(&target, &backend.name), cx).is_none()
+        });
+        if missing {
+            let services = ResourceStores::acquire(
+                cx,
+                StoreKey::new(
+                    target.cluster.clone(),
+                    Gvr::new("", "v1", "services"),
+                    target.namespace.clone(),
+                ),
+            );
+            cx.spawn(async move |cx| {
+                for _ in 0..100 {
+                    if cx.update(|cx| services.read(cx).status().is_settled()) {
+                        break;
+                    }
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(50))
+                        .await;
+                }
+                cx.update(|cx| {
+                    with_window(cx, move |window, cx| {
+                        open_rows_of(&target, &object, window, cx);
+                        drop(services);
+                    })
+                });
+            })
+            .detach();
+            return;
+        }
+    }
+    open_rows_of(&target, &object, window, cx);
+}
+
+/// Opens the only web port of `object`, else a picker of its ports.
+fn open_rows_of(target: &ResourceRef, object: &Value, window: &mut Window, cx: &mut App) {
+    let rows = picker::rows_for_object(target, object, cx);
     let web: Vec<_> = rows.iter().filter(|r| r.web).collect();
     match web.as_slice() {
         [only] => open_in(only.request.clone(), window, cx),
@@ -404,6 +445,43 @@ pub(crate) fn web_ports(kind: TargetKind, object: &Value) -> Vec<WebPort> {
 /// Ingress backends (for the picker and details).
 pub(crate) fn backends(object: &Value) -> Vec<target::IngressBackend> {
     ingress_backends(object)
+}
+
+/// The Service `name` next to a Route or Ingress.
+pub(crate) fn backend_service_ref(target: &ResourceRef, name: &str) -> ResourceRef {
+    ResourceRef::object(
+        target.cluster.clone(),
+        Gvr::new("", "v1", "services"),
+        target.namespace.clone(),
+        name.to_string(),
+    )
+}
+
+/// A web view of a Route backend: the Service port the Route's target port resolves to (like
+/// OpenShift's router), the Route's path as the start page, and HTTPS when the router talks
+/// TLS to the backend (passthrough, reencrypt).
+pub(crate) fn route_request(
+    route: &Route,
+    service_ref: &ResourceRef,
+    service: Option<&Value>,
+) -> Result<OpenRequest, String> {
+    let service = service.ok_or_else(|| {
+        format!(
+            "Service {} not found in {}",
+            service_ref.name.as_deref().unwrap_or_default(),
+            service_ref.namespace.as_deref().unwrap_or_default()
+        )
+    })?;
+    let matched = route::resolve_target_port(route.target_port.as_ref(), service)?;
+    let mut request = request_for(service_ref, matched.port, Some(service))
+        .ok_or_else(|| "web views open for ports of Services and Pods".to_string())?;
+    if let Some(path) = route.path.as_deref().filter(|p| *p != "/") {
+        request.path = Some(path.to_string());
+    }
+    if route.tls.as_ref().is_some_and(route::Tls::backend_tls) {
+        request.detected = Scheme::Https;
+    }
+    Ok(request)
 }
 
 /// The "Web" column of the Services table: one button per HTTP port.
@@ -502,5 +580,57 @@ impl Render for WebStatus {
                 .priority(usize::MAX),
             )
             .child(div())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use kubyl_core::ClusterId;
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn route_backends_open_at_the_resolved_service_port() {
+        let route_ref = ResourceRef::object(
+            ClusterId::new("c"),
+            Gvr::new(route::GROUP, "v1", route::RESOURCE),
+            Some("shop".into()),
+            "shop".into(),
+        );
+        let service_ref = backend_service_ref(&route_ref, "shop-web");
+        assert_eq!(service_ref.gvr.resource, "services");
+        let service = json!({"metadata": {"name": "shop-web", "namespace": "shop"},
+            "spec": {"ports": [{"name": "metrics", "port": 9100},
+                               {"name": "web", "port": 80, "targetPort": 8080}]}});
+        let route = |tls: &str, path: &str| {
+            Route::parse(
+                &json!({"spec": {"host": "shop.apps.example.com", "path": path,
+                "to": {"name": "shop-web"}, "port": {"targetPort": "web"},
+                "tls": {"termination": tls}}}),
+            )
+        };
+        let request =
+            route_request(&route("edge", "/store"), &service_ref, Some(&service)).unwrap();
+        assert_eq!(request.target.to_string(), "svc/shop-web:80");
+        assert_eq!(request.path.as_deref(), Some("/store"));
+        assert_eq!(
+            request.detected,
+            Scheme::Http,
+            "edge: the backend speaks HTTP"
+        );
+        let request =
+            route_request(&route("reencrypt", "/"), &service_ref, Some(&service)).unwrap();
+        assert_eq!(request.path, None);
+        assert_eq!(request.detected, Scheme::Https);
+        assert_eq!(
+            route_request(&route("edge", "/"), &service_ref, None).unwrap_err(),
+            "Service shop-web not found in shop"
+        );
+        let other = json!({"metadata": {"name": "shop-web"}, "spec": {"ports": [{"port": 80}]}});
+        assert_eq!(
+            route_request(&route("edge", "/"), &service_ref, Some(&other)).unwrap_err(),
+            "port web not found on Service shop-web"
+        );
     }
 }
