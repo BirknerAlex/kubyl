@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, StatefulSet};
 use k8s_openapi::api::core::v1::{Pod, Service};
+use k8s_openapi::api::discovery::v1::EndpointSlice;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector;
 use kube::Api;
 use kube::api::{DynamicObject, ListParams};
@@ -567,6 +568,7 @@ pub fn backend_port(
     name: &str,
     object: &Value,
     service: &Value,
+    endpoints: &[(String, u16)],
 ) -> Result<(u16, String), String> {
     let service_name = service
         .pointer("/metadata/name")
@@ -574,7 +576,8 @@ pub fn backend_port(
         .unwrap_or_default();
     if resource == route::RESOURCE {
         let parsed = route::Route::parse(object);
-        let matched = route::resolve_target_port(parsed.target_port.as_ref(), service)?;
+        let matched =
+            route::resolve_target_port_with(parsed.target_port.as_ref(), service, endpoints)?;
         let mut note = match &parsed.target_port {
             Some(target) => format!(
                 "Route {name} → Service {service_name} · target port {target} is Service port {}.",
@@ -674,12 +677,25 @@ pub async fn backend_forward(
         .map_err(|err| lookup_error(err, resource, name, namespace))?;
     let object = serde_json::to_value(&object).map_err(|e| e.to_string())?;
     let service_name = backend_service(resource, name, &object)?;
-    let service = Api::<Service>::namespaced(client, namespace)
+    let service = Api::<Service>::namespaced(client.clone(), namespace)
         .get(&service_name)
         .await
         .map_err(|err| lookup_error(err, "services", &service_name, namespace))?;
     let service_json = serde_json::to_value(&service).map_err(|e| e.to_string())?;
-    let (port, note) = backend_port(resource, name, &object, &service_json)?;
+    // A numeric Route target port may name the pods' port behind a named Service target port:
+    // the endpoints say which (none when they can't be read; the Service alone decides then).
+    let slices = Api::<EndpointSlice>::namespaced(client, namespace)
+        .list(&ListParams::default().labels(&format!("kubernetes.io/service-name={service_name}")))
+        .await
+        .map(|list| {
+            list.items
+                .iter()
+                .filter_map(|s| serde_json::to_value(s).ok())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let endpoints = route::endpoint_ports(&slices, &service_name);
+    let (port, note) = backend_port(resource, name, &object, &service_json, &endpoints)?;
     Ok(BackendForward {
         service: service_name,
         port,
@@ -745,7 +761,7 @@ mod tests {
             backend_service("routes", "shop", &route).unwrap(),
             "shop-web"
         );
-        let (port, note) = backend_port("routes", "shop", &route, &service).unwrap();
+        let (port, note) = backend_port("routes", "shop", &route, &service, &[]).unwrap();
         assert_eq!(port, 80);
         assert_eq!(
             note,
@@ -756,15 +772,33 @@ mod tests {
         let numeric = serde_json::json!({"spec": {"to": {"name": "shop-web"},
             "port": {"targetPort": 8080}}});
         assert_eq!(
-            backend_port("routes", "n", &numeric, &service).unwrap().0,
+            backend_port("routes", "n", &numeric, &service, &[])
+                .unwrap()
+                .0,
             80
         );
         let all = serde_json::json!({"spec": {"to": {"name": "shop-web"}}});
-        assert_eq!(backend_port("routes", "a", &all, &service).unwrap().0, 9090);
+        assert_eq!(
+            backend_port("routes", "a", &all, &service, &[]).unwrap().0,
+            9090
+        );
+        // A numeric target port behind a named Service targetPort: through the endpoints.
+        let named = serde_json::json!({"metadata": {"name": "shop-tls"}, "spec": {"ports": [
+            {"name": "https", "port": 443, "targetPort": "https"}]}});
+        let secure = serde_json::json!({"spec": {"to": {"name": "shop-tls"},
+            "port": {"targetPort": 8443}, "tls": {"termination": "reencrypt"}}});
+        let endpoints = [("https".to_string(), 8443)];
+        assert_eq!(
+            backend_port("routes", "s", &secure, &named, &endpoints)
+                .unwrap()
+                .0,
+            443
+        );
+        assert!(backend_port("routes", "s", &secure, &named, &[]).is_err());
         let missing = serde_json::json!({"spec": {"to": {"name": "shop-web"},
             "port": {"targetPort": "https"}}});
         assert_eq!(
-            backend_port("routes", "m", &missing, &service).unwrap_err(),
+            backend_port("routes", "m", &missing, &service, &[]).unwrap_err(),
             "port https not found on Service shop-web"
         );
         assert_eq!(
@@ -788,13 +822,15 @@ mod tests {
             ingress(serde_json::json!({"service": {"name": "web", "port": {"name": "admin"}}}));
         assert_eq!(backend_service("ingresses", "i", &named).unwrap(), "web");
         assert_eq!(
-            backend_port("ingresses", "i", &named, &service).unwrap().0,
+            backend_port("ingresses", "i", &named, &service, &[])
+                .unwrap()
+                .0,
             9000
         );
         let numbered =
             ingress(serde_json::json!({"service": {"name": "web", "port": {"number": 80}}}));
         assert_eq!(
-            backend_port("ingresses", "i", &numbered, &service)
+            backend_port("ingresses", "i", &numbered, &service, &[])
                 .unwrap()
                 .0,
             80
@@ -802,7 +838,7 @@ mod tests {
         let missing =
             ingress(serde_json::json!({"service": {"name": "web", "port": {"number": 8080}}}));
         assert_eq!(
-            backend_port("ingresses", "i", &missing, &service).unwrap_err(),
+            backend_port("ingresses", "i", &missing, &service, &[]).unwrap_err(),
             "port 8080 not found on Service web"
         );
         let default = serde_json::json!({"spec": {"defaultBackend":
