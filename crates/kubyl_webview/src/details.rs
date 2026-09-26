@@ -64,6 +64,8 @@ struct WebSection {
     objects: StoreHandle,
     /// The namespace's Services: other web UIs, and Ingress backends' named ports.
     services: Option<StoreHandle>,
+    /// A Route's: the namespace's EndpointSlices (numeric target ports resolve through them).
+    endpoint_slices: Option<StoreHandle>,
 }
 
 impl WebSection {
@@ -93,6 +95,11 @@ impl WebSection {
                 Some(handle)
             }
         };
+        let endpoint_slices = (mode == Mode::Route).then(|| {
+            let handle = ResourceStores::acquire(cx, crate::endpoint_slices_key(&target));
+            cx.observe(handle.entity(), |_, _, cx| cx.notify()).detach();
+            handle
+        });
         if let Some(forwards) = WebForwards::try_global(cx) {
             cx.observe(&forwards, |_, _, cx| cx.notify()).detach();
         }
@@ -101,6 +108,7 @@ impl WebSection {
             mode,
             objects,
             services,
+            endpoint_slices,
         }
     }
 
@@ -692,9 +700,19 @@ impl WebSection {
         for (index, (backend, (_, percent))) in services.into_iter().enumerate() {
             let service_ref = backend_service_ref(&self.target, &backend.name);
             let service = self.service(&backend.name, cx);
+            let endpoints = self
+                .endpoint_slices
+                .as_ref()
+                .map(|s| {
+                    route::endpoint_ports(
+                        s.read(cx).objects().values().map(|o| &**o),
+                        &backend.name,
+                    )
+                })
+                .unwrap_or_default();
             let share = percent.map(|p| format!(" · {p}%")).unwrap_or_default();
             let (label, detail, button) =
-                match route_request(&route, &service_ref, service.as_ref()) {
+                match route_request(&route, &service_ref, service.as_ref(), &endpoints) {
                     Ok(request) => {
                         let tabs = WebForwards::try_global(cx)
                             .map(|f| f.read(cx).tab_count(&request.target))

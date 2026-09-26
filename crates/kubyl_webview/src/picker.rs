@@ -19,7 +19,8 @@ use serde_json::Value;
 use crate::target::{Scheme, TargetKind, ports_of};
 use crate::view::OpenRequest;
 use crate::{
-    backend_port, backend_service_ref, backends, cached_object, open_in, request_for, route_request,
+    backend_port, backend_service_ref, backends, cached_endpoint_ports, cached_object, open_in,
+    request_for, route_request,
 };
 
 actions!(webview_picker, [SelectNext, SelectPrevious]);
@@ -66,7 +67,9 @@ pub fn rows_for_object(target: &ResourceRef, object: &Value, cx: &App) -> Vec<Pi
             .filter_map(|(backend, (_, percent))| {
                 let service_ref = backend_service_ref(target, &backend.name);
                 let service = cached_object(&service_ref, cx);
-                let request = route_request(&route, &service_ref, service.as_deref()).ok()?;
+                let endpoints = cached_endpoint_ports(&service_ref, cx);
+                let request =
+                    route_request(&route, &service_ref, service.as_deref(), &endpoints).ok()?;
                 let share = percent.map(|p| format!(" · {p}%")).unwrap_or_default();
                 Some(PickerRow {
                     label: request.target.to_string(),

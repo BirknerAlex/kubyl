@@ -359,23 +359,31 @@ fn open_selected(window: &mut Window, cx: &mut App) {
         NotificationCenter::push(cx, Notification::info("The object isn't loaded yet."));
         return;
     };
-    // A Route's ports come from its backend Services: load them first when no view has.
+    // A Route's ports come from its backend Services (and their endpoints): load them first
+    // when no view has.
     if target.gvr.group == route::GROUP && target.gvr.resource == route::RESOURCE {
-        let missing = Route::parse(&object).services().any(|backend| {
-            cached_object(&backend_service_ref(&target, &backend.name), cx).is_none()
-        });
+        let missing = ResourceStores::peek(cx, &endpoint_slices_key(&target)).is_none()
+            || Route::parse(&object).services().any(|backend| {
+                cached_object(&backend_service_ref(&target, &backend.name), cx).is_none()
+            });
         if missing {
-            let services = ResourceStores::acquire(
-                cx,
+            let stores = [
                 StoreKey::new(
                     target.cluster.clone(),
                     Gvr::new("", "v1", "services"),
                     target.namespace.clone(),
                 ),
-            );
+                endpoint_slices_key(&target),
+            ]
+            .map(|key| ResourceStores::acquire(cx, key));
             cx.spawn(async move |cx| {
                 for _ in 0..100 {
-                    if cx.update(|cx| services.read(cx).status().is_settled()) {
+                    let settled = cx.update(|cx| {
+                        stores
+                            .iter()
+                            .all(|store| store.read(cx).status().is_settled())
+                    });
+                    if settled {
                         break;
                     }
                     cx.background_executor()
@@ -385,7 +393,7 @@ fn open_selected(window: &mut Window, cx: &mut App) {
                 cx.update(|cx| {
                     with_window(cx, move |window, cx| {
                         open_rows_of(&target, &object, window, cx);
-                        drop(services);
+                        drop(stores);
                     })
                 });
             })
@@ -457,13 +465,37 @@ pub(crate) fn backend_service_ref(target: &ResourceRef, name: &str) -> ResourceR
     )
 }
 
+/// The namespace's EndpointSlices (numeric Route target ports resolve through them).
+pub(crate) fn endpoint_slices_key(target: &ResourceRef) -> StoreKey {
+    StoreKey::new(
+        target.cluster.clone(),
+        Gvr::new("discovery.k8s.io", "v1", "endpointslices"),
+        target.namespace.clone(),
+    )
+}
+
+/// What the endpoints of `service_ref` serve, from the namespace's EndpointSlices if a view
+/// watches them.
+pub(crate) fn cached_endpoint_ports(service_ref: &ResourceRef, cx: &App) -> Vec<(String, u16)> {
+    let Some(store) = ResourceStores::peek(cx, &endpoint_slices_key(service_ref)) else {
+        return Vec::new();
+    };
+    let store = store.read(cx);
+    route::endpoint_ports(
+        store.objects().values().map(|o| &**o),
+        service_ref.name.as_deref().unwrap_or_default(),
+    )
+}
+
 /// A web view of a Route backend: the Service port the Route's target port resolves to (like
-/// OpenShift's router), the Route's path as the start page, and HTTPS when the router talks
-/// TLS to the backend (passthrough, reencrypt).
+/// OpenShift's router, with the backend's `endpoints` for numeric target ports), the Route's
+/// path as the start page, and HTTPS when the router talks TLS to the backend (passthrough,
+/// reencrypt).
 pub(crate) fn route_request(
     route: &Route,
     service_ref: &ResourceRef,
     service: Option<&Value>,
+    endpoints: &[(String, u16)],
 ) -> Result<OpenRequest, String> {
     let service = service.ok_or_else(|| {
         format!(
@@ -472,7 +504,7 @@ pub(crate) fn route_request(
             service_ref.namespace.as_deref().unwrap_or_default()
         )
     })?;
-    let matched = route::resolve_target_port(route.target_port.as_ref(), service)?;
+    let matched = route::resolve_target_port_with(route.target_port.as_ref(), service, endpoints)?;
     let mut request = request_for(service_ref, matched.port, Some(service))
         .ok_or_else(|| "web views open for ports of Services and Pods".to_string())?;
     if let Some(path) = route.path.as_deref().filter(|p| *p != "/") {
@@ -611,7 +643,7 @@ mod tests {
             )
         };
         let request =
-            route_request(&route("edge", "/store"), &service_ref, Some(&service)).unwrap();
+            route_request(&route("edge", "/store"), &service_ref, Some(&service), &[]).unwrap();
         assert_eq!(request.target.to_string(), "svc/shop-web:80");
         assert_eq!(request.path.as_deref(), Some("/store"));
         assert_eq!(
@@ -620,16 +652,29 @@ mod tests {
             "edge: the backend speaks HTTP"
         );
         let request =
-            route_request(&route("reencrypt", "/"), &service_ref, Some(&service)).unwrap();
+            route_request(&route("reencrypt", "/"), &service_ref, Some(&service), &[]).unwrap();
         assert_eq!(request.path, None);
         assert_eq!(request.detected, Scheme::Https);
         assert_eq!(
-            route_request(&route("edge", "/"), &service_ref, None).unwrap_err(),
+            route_request(&route("edge", "/"), &service_ref, None, &[]).unwrap_err(),
             "Service shop-web not found in shop"
+        );
+        // A numeric target port behind a named Service targetPort, through the endpoints.
+        let named = json!({"metadata": {"name": "shop-web"},
+            "spec": {"ports": [{"name": "http", "port": 80, "targetPort": "http"}]}});
+        let numeric = Route::parse(&json!({"spec": {"to": {"name": "shop-web"},
+            "port": {"targetPort": 8080}}}));
+        let endpoints = [("http".to_string(), 8080)];
+        assert_eq!(
+            route_request(&numeric, &service_ref, Some(&named), &endpoints)
+                .unwrap()
+                .target
+                .port,
+            80
         );
         let other = json!({"metadata": {"name": "shop-web"}, "spec": {"ports": [{"port": 80}]}});
         assert_eq!(
-            route_request(&route("edge", "/"), &service_ref, Some(&other)).unwrap_err(),
+            route_request(&route("edge", "/"), &service_ref, Some(&other), &[]).unwrap_err(),
             "port web not found on Service shop-web"
         );
     }
