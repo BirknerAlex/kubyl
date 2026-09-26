@@ -124,6 +124,9 @@ struct ClusterOlm {
     stores: Stores,
     v0: bool,
     v1: bool,
+    /// Whether discovery was known when the watches started: until then the (empty) snapshot
+    /// is loading, not a cluster without operators.
+    discovered: bool,
     lease: Rc<()>,
     wanted_until: Instant,
     /// The snapshot and the store generations it was built from.
@@ -229,8 +232,10 @@ impl Olm {
             ConnectionEvent::DiscoveryChanged(id) => {
                 // OLM may have been installed or removed: rebuild the watches.
                 if let Some(state) = self.clusters.get(id) {
-                    let (v0, v1) = served(id, cx);
-                    if (v0, v1) != (state.v0, state.v1) {
+                    let served = served(id, cx);
+                    if served.is_some() != state.discovered
+                        || served.unwrap_or_default() != (state.v0, state.v1)
+                    {
                         let lease = state.lease.clone();
                         self.clusters.remove(id);
                         self.ensure(id, Some(lease), cx);
@@ -284,7 +289,8 @@ impl Olm {
             state.wanted_until = Instant::now() + KEEP;
             return;
         }
-        let (v0, v1) = served(cluster, cx);
+        let served = served(cluster, cx);
+        let (v0, v1) = served.unwrap_or_default();
         let key = |gvr: kubyl_core::Gvr| StoreKey::new(cluster.clone(), gvr, None);
         let mut acquire = |key: StoreKey, on: bool| on.then(|| ResourceStores::acquire(cx, key));
         let stores = Stores {
@@ -308,6 +314,7 @@ impl Olm {
                 stores,
                 v0,
                 v1,
+                discovered: served.is_some(),
                 lease: lease.unwrap_or_default(),
                 wanted_until: Instant::now() + KEEP,
                 snapshot: RefCell::new(None),
@@ -408,6 +415,7 @@ impl Olm {
                 stores,
                 v0: true,
                 v1: false,
+                discovered: true,
                 lease: Rc::new(()),
                 wanted_until: Instant::now() + KEEP,
                 snapshot: RefCell::new(None),
@@ -630,18 +638,18 @@ fn status_code(status: &StoreStatus) -> u64 {
     }
 }
 
-/// Whether the cluster serves OLM v0 and v1.
-fn served(cluster: &ClusterId, cx: &App) -> (bool, bool) {
+/// Whether the cluster serves OLM v0 and v1; `None` while discovery hasn't run.
+fn served(cluster: &ClusterId, cx: &App) -> Option<(bool, bool)> {
     ConnectionManager::try_global(cx)
         .and_then(|m| m.read(cx).discovery(cluster))
         .map(|d| (d.has_group(model::GROUP), d.has_group(v1::GROUP)))
-        .unwrap_or((false, false))
 }
 
 fn build(state: &ClusterOlm, cx: &App) -> Snapshot {
     let mut snapshot = Snapshot {
         v0: state.v0,
         v1: state.v1,
+        loading: !state.discovered,
         ..Default::default()
     };
     let mut check = |handle: &StoreHandle, what: &str| {

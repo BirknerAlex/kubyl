@@ -101,3 +101,28 @@ pub fn installed(cluster: &ClusterId, cx: &mut App) -> Installed {
             .collect(),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::TestAppContext;
+
+    /// Before discovery the cluster's operators are loading, not an empty list: phase 13 must
+    /// not read "no operators" while discovery runs.
+    #[gpui::test]
+    fn unknown_discovery_is_loading_not_empty(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let cluster = ClusterId::new("c");
+        cx.update(|cx| {
+            kubyl_core::init(cx);
+            kubyl_settings::init_with_dir(cx, dir.path());
+            kubyl_resources::init(cx);
+            Olm::install(false, cx);
+            assert!(matches!(installed(&cluster, cx), Installed::Loading));
+            let olm = Olm::global(cx).unwrap();
+            let olm = olm.read(cx);
+            assert!(olm.snapshot(&cluster, cx).unwrap().loading);
+            assert_eq!(olm.availability(&cluster, cx), Availability::Loading);
+        });
+    }
+}

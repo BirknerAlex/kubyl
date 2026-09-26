@@ -5,7 +5,7 @@
 //! The decoded release lives only in this tab; revealing values is per tab and never
 //! remembered; copying them is an explicit action.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -160,6 +160,19 @@ struct Loaded {
     objects: Vec<ManifestObject>,
 }
 
+/// How many revisions History loads summaries for (Helm keeps ten by default).
+const HISTORY_LIMIT: usize = 20;
+
+/// The newest revisions (up to [`HISTORY_LIMIT`]) whose summaries aren't loaded or loading.
+fn history_wanted(revisions: &[Revision], requested: &HashSet<String>) -> Vec<String> {
+    revisions
+        .iter()
+        .take(HISTORY_LIMIT)
+        .filter(|r| !requested.contains(&r.object))
+        .map(|r| r.object.clone())
+        .collect()
+}
+
 enum State {
     /// The cluster isn't connected yet (a restored tab): loads once it is.
     Waiting,
@@ -180,8 +193,10 @@ pub struct ReleaseView {
     all_values: bool,
     reveal: bool,
     state: State,
-    history: Option<HashMap<String, Result<Summary, String>>>,
-    _history_task: Option<Task<()>>,
+    /// History's summaries by storage object, and the objects loaded or loading.
+    history: HashMap<String, Result<Summary, String>>,
+    history_requested: HashSet<String>,
+    history_tasks: Vec<Task<()>>,
     focus: FocusHandle,
     scroll: UniformListScrollHandle,
     _lease: Option<HelmLease>,
@@ -235,8 +250,9 @@ impl ReleaseView {
             all_values: false,
             reveal: false,
             state: State::Waiting,
-            history: None,
-            _history_task: None,
+            history: HashMap::new(),
+            history_requested: HashSet::new(),
+            history_tasks: Vec::new(),
             focus: cx.focus_handle(),
             scroll: UniformListScrollHandle::new(),
             _lease: lease,
@@ -422,8 +438,11 @@ impl ReleaseView {
         );
     }
 
+    /// Loads the summaries of revisions History shows and hasn't loaded yet (revisions arrive
+    /// with the Helm watch, and new ones with upgrades).
     fn load_history(&mut self, cx: &mut Context<Self>) {
-        if self.history.is_some() {
+        let objects = history_wanted(&self.revisions(cx), &self.history_requested);
+        if objects.is_empty() {
             return;
         }
         let Some(client) =
@@ -431,21 +450,16 @@ impl ReleaseView {
         else {
             return;
         };
-        let objects: Vec<String> = self
-            .revisions(cx)
-            .into_iter()
-            .take(20)
-            .map(|r| r.object)
-            .collect();
+        self.history_requested.extend(objects.iter().cloned());
         let work = spawn_kube(
             cx,
             service::load_summaries(client, self.driver, self.namespace.clone(), objects),
         );
-        self.history = Some(HashMap::new());
-        self._history_task = Some(cx.spawn(async move |this, cx| {
+        self.history_tasks.retain(|task| !task.is_ready());
+        self.history_tasks.push(cx.spawn(async move |this, cx| {
             let results = work.await;
             this.update(cx, |this, cx| {
-                this.history = Some(results.into_iter().collect());
+                this.history.extend(results);
                 cx.notify();
             })
             .ok();
@@ -527,14 +541,14 @@ impl ReleaseView {
 
     fn render_history(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let colors = cx.colors().clone();
+        self.load_history(cx);
         let revisions = self.revisions(cx);
-        let history = self.history.clone().unwrap_or_default();
         let current = self.object.clone();
         let rows: Vec<AnyElement> = revisions
             .into_iter()
             .enumerate()
             .map(|(i, revision)| {
-                let summary = history.get(&revision.object);
+                let summary = self.history.get(&revision.object);
                 let (chart, app, description) = match summary {
                     Some(Ok(s)) => (
                         s.chart_label(),
@@ -542,7 +556,11 @@ impl ReleaseView {
                         s.description.clone().unwrap_or_default(),
                     ),
                     Some(Err(err)) => (String::new(), String::new(), err.clone()),
-                    None => ("…".into(), String::new(), String::new()),
+                    // Loading, or older than the revisions History loads.
+                    None if self.history_requested.contains(&revision.object) => {
+                        ("…".into(), String::new(), String::new())
+                    }
+                    None => Default::default(),
                 };
                 let object = revision.object.clone();
                 widgets::row(
@@ -1058,5 +1076,45 @@ impl Render for ReleaseView {
             .children(manifest_bar)
             .child(div().flex_1().min_h_0().child(body))
             .child(kubyl_ui::KeyHints::new(hints))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn revisions(newest: u32, count: u32) -> Vec<Revision> {
+        (0..count)
+            .map(|i| {
+                let revision = newest - i;
+                Revision {
+                    revision,
+                    status: "superseded".into(),
+                    modified: None,
+                    object: format!("sh.helm.release.v1.web.v{revision}"),
+                }
+            })
+            .collect()
+    }
+
+    /// History asks again when revisions arrive late or an upgrade adds one, never twice for
+    /// the same revision, and only for the newest ones.
+    #[test]
+    fn history_loads_revisions_as_they_arrive() {
+        let mut requested = HashSet::new();
+        // A restored tab before the watch filled in: nothing to ask for, nothing cached.
+        assert!(history_wanted(&[], &requested).is_empty());
+        let wanted = history_wanted(&revisions(3, 3), &requested);
+        assert_eq!(wanted.len(), 3);
+        requested.extend(wanted);
+        assert!(history_wanted(&revisions(3, 3), &requested).is_empty());
+        // `helm upgrade`: only the new revision.
+        assert_eq!(
+            history_wanted(&revisions(4, 4), &requested),
+            ["sh.helm.release.v1.web.v4"]
+        );
+        let many = history_wanted(&revisions(30, 30), &HashSet::new());
+        assert_eq!(many.len(), HISTORY_LIMIT);
+        assert_eq!(many[0], "sh.helm.release.v1.web.v30");
     }
 }
