@@ -85,7 +85,7 @@ impl ConnectError {
 }
 
 /// `error: source: source…`, deduplicated.
-pub(crate) fn error_chain(err: &(dyn std::error::Error + 'static)) -> String {
+pub fn error_chain(err: &(dyn std::error::Error + 'static)) -> String {
     let mut message = err.to_string();
     let mut source = err.source();
     while let Some(err) = source {
@@ -272,7 +272,7 @@ fn strip_managed_auth(auth: &mut AuthInfo) {
 }
 
 /// `HTTPS_PROXY`/`HTTP_PROXY` unless the host matches `NO_PROXY`.
-fn env_proxy(cluster_url: &Uri) -> Option<Uri> {
+pub fn env_proxy(cluster_url: &Uri) -> Option<Uri> {
     let var = |names: &[&str]| {
         names
             .iter()
@@ -331,7 +331,8 @@ fn no_proxy_matches(no_proxy: &str, host: &str) -> bool {
         })
 }
 
-fn redact_userinfo(url: &str) -> String {
+/// A proxy URL without its credentials (`http://***@proxy:3128`).
+pub fn redact_userinfo(url: &str) -> String {
     match url.split_once("://") {
         Some((scheme, rest)) => match rest.split_once('@') {
             Some((_, host)) => format!("{scheme}://***@{host}"),

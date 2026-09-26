@@ -11,6 +11,7 @@ use gpui::{
 use gpui_component::WindowExt as _;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::switch::Switch;
+use kubyl_core::actions::{EditKubeconfig, NewKubeconfig};
 use kubyl_core::{ClusterId, Notification, NotificationCenter, TabView, ViewRequest};
 use kubyl_ui::{
     ActiveColors, Button, Colors, Icon, IconButton, IconName, StatusDot, fonts, h_flex, u, v_flex,
@@ -221,6 +222,14 @@ impl ClustersView {
                             .child("Kubeconfig sources"),
                     )
                     .child(
+                        Button::new("new-kubeconfig")
+                            .ghost()
+                            .label("New…")
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(Box::new(NewKubeconfig), cx)
+                            }),
+                    )
+                    .child(
                         Button::new("add-source")
                             .icon(IconName::Plus)
                             .label("Add")
@@ -278,9 +287,10 @@ impl ClustersView {
                     .line_height(u(17.0))
                     .text_color(colors.text_dim)
                     .child(
-                        "Files are never modified: removing a source only stops loading it. \
-                         Pasted kubeconfigs are Kubyl's own copies. Contexts from every source \
-                         are merged; name collisions get the file name as suffix.",
+                        "Only the kubeconfig editor writes files: Kubyl's own freely, others \
+                         after you turn on editing for them. Removing a source only stops \
+                         loading it. Contexts from every source are merged; name collisions get \
+                         the file name as suffix.",
                     ),
             )
     }
@@ -741,6 +751,23 @@ fn render_connection(
                     .label("Sign in…")
                     .on_click(move |_, window, cx| open_sign_in(id_sign_in.clone(), window, cx)),
             )
+        })
+        .child({
+            let path = info.file.clone();
+            let context = info.context.clone();
+            Button::new("edit-context")
+                .ghost()
+                .icon(IconName::SlidersVertical)
+                .label("Edit context…")
+                .on_click(move |_, window, cx| {
+                    window.dispatch_action(
+                        Box::new(EditKubeconfig {
+                            path: path.clone(),
+                            context: Some(context.clone()),
+                        }),
+                        cx,
+                    )
+                })
         });
 
     card(&colors)
@@ -874,6 +901,8 @@ struct SourceRow {
     source: PathBuf,
     /// Set for pasted kubeconfigs, which share the pasted folder as their source.
     file: Option<PathBuf>,
+    /// The one file the row stands for (opened by the kubeconfig editor's "Edit…").
+    edit: Option<PathBuf>,
     action: RowAction,
 }
 
@@ -906,6 +935,7 @@ fn source_rows(sources: &[Source]) -> Vec<SourceRow> {
                     oidc: file.oidc,
                     source: spec.path.clone(),
                     file: Some(file.path.clone()),
+                    edit: Some(file.path.clone()),
                     action: RowAction::DeletePasted(file.path.clone()),
                 });
             }
@@ -929,6 +959,10 @@ fn source_rows(sources: &[Source]) -> Vec<SourceRow> {
             oidc: source.has_oidc(),
             source: spec.path.clone(),
             file: None,
+            edit: match (spec.is_dir, spec.files.as_slice()) {
+                (false, [only]) => Some(only.clone()),
+                _ => None,
+            },
             action: match spec.kind {
                 SourceKind::Default => RowAction::StopDefault,
                 SourceKind::Env => RowAction::StopEnv,
@@ -1027,6 +1061,27 @@ fn source_row(
                     .child(Icon::new(IconName::Key).size(13.0).color(colors.yellow)),
             )
         })
+        .children(row.edit.clone().map(|path| {
+            div()
+                .id(("source-edit-tip", ix))
+                .tooltip(|window, cx| {
+                    gpui_component::tooltip::Tooltip::new("Edit this kubeconfig").build(window, cx)
+                })
+                .child(
+                    IconButton::new(("source-edit", ix), IconName::SlidersVertical)
+                        .icon_size(12.0)
+                        .on_click(move |_, window, cx| {
+                            cx.stop_propagation();
+                            window.dispatch_action(
+                                Box::new(EditKubeconfig {
+                                    path: path.clone(),
+                                    context: None,
+                                }),
+                                cx,
+                            );
+                        }),
+                )
+        }))
         .child(
             div()
                 .id(("source-action-tip", ix))

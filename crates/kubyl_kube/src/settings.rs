@@ -1,6 +1,6 @@
 //! The `"kubernetes"` section of settings.json: kubeconfig sources and per-context overrides.
 //!
-//! Overrides live here and never in the kubeconfig files, which Kubyl doesn't modify.
+//! Overrides live here and never in the kubeconfig files.
 
 use std::collections::BTreeMap;
 
