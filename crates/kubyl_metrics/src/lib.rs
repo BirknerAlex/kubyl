@@ -9,6 +9,8 @@
 //!   OpenShift thanos-querier, VictoriaMetrics…) and probes them through the API server's
 //!   service proxy.
 //! - [`prometheus`]: the HTTP API client (service proxy or an external URL).
+//! - [`transport`]: HTTP to services (service proxy, direct with a bearer token, external URLs
+//!   with a header and mTLS), shared with the alerts crate.
 //! - [`openshift`]: monitoring behind an auth proxy (OpenShift): its Route, called with the
 //!   user's token or a short-lived service-account token.
 //! - [`queries`]: the versioned PromQL library, recording-rule aware, overridable in settings.
@@ -28,6 +30,7 @@ pub mod queries;
 pub mod service;
 pub mod settings;
 mod status;
+pub mod transport;
 
 use gpui::{App, Window, actions};
 use kubyl_core::{

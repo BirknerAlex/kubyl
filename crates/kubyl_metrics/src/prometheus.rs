@@ -1,20 +1,22 @@
-//! A small Prometheus HTTP API client (`/api/v1/query`, `/api/v1/query_range`).
+//! A small Prometheus HTTP API client (`/api/v1/query`, `/api/v1/query_range`, and any other
+//! `/api/v1/…` read through [`PromClient::api`]).
 //!
 //! In-cluster Prometheus is reached through the API server's service proxy
 //! (`/api/v1/namespaces/{ns}/services/{scheme}:{svc}:{port}/proxy/…`) with the cluster's own
 //! kube client, so it works wherever the cluster works (VPNs, bastions, exec/OIDC auth) and
 //! needs only `get services/proxy`. An external URL uses a separate client with an optional
-//! Authorization header from the OS keychain.
+//! Authorization header from the OS keychain. The HTTP part is [`crate::transport`].
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::time::Duration;
 
-use http::header::{AUTHORIZATION, HeaderValue};
-use secrecy::{ExposeSecret as _, SecretString};
+use secrecy::SecretString;
 use serde_json::Value;
 
 use crate::openshift::Bearer;
+use crate::transport::{ExternalTls, Transport, proxy_base, query_error};
+pub use crate::transport::{PromError, credentials_allowed, short};
 
 /// Where a Prometheus-compatible API lives.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -76,62 +78,9 @@ impl Target {
                 port,
                 scheme,
                 path,
-            } => {
-                let scheme = if scheme == "https" { "https:" } else { "" };
-                format!(
-                    "/api/v1/namespaces/{namespace}/services/{scheme}{service}:{port}/proxy{}",
-                    normalize_prefix(path)
-                )
-            }
+            } => proxy_base(namespace, service, port, scheme, path),
             // The client's base URL carries the host and any prefix.
             Target::Url { .. } | Target::Route { .. } => String::new(),
-        }
-    }
-}
-
-fn normalize_prefix(path: &str) -> String {
-    let trimmed = path.trim().trim_end_matches('/');
-    if trimmed.is_empty() {
-        String::new()
-    } else if trimmed.starts_with('/') {
-        trimmed.to_string()
-    } else {
-        format!("/{trimmed}")
-    }
-}
-
-/// What went wrong talking to Prometheus.
-#[derive(Clone, Debug, PartialEq)]
-pub enum PromError {
-    /// HTTP status from the proxy or Prometheus (404 no such service, 503 no endpoints, 403…).
-    Http(u16, String),
-    /// Prometheus answered `status: error` (bad query, timeout, too many samples).
-    Query(String),
-    /// Not a Prometheus API response.
-    Invalid(String),
-    Timeout,
-    Transport(String),
-}
-
-impl PromError {
-    /// The target itself is unusable (as opposed to one bad query).
-    pub fn is_target_error(&self) -> bool {
-        !matches!(self, PromError::Query(_))
-    }
-}
-
-impl fmt::Display for PromError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            PromError::Http(403, _) => write!(f, "forbidden (needs get services/proxy)"),
-            PromError::Http(404, _) => write!(f, "not found"),
-            PromError::Http(503, _) => write!(f, "no ready endpoints (503)"),
-            PromError::Http(code, message) if message.is_empty() => write!(f, "HTTP {code}"),
-            PromError::Http(code, message) => write!(f, "HTTP {code}: {message}"),
-            PromError::Query(message) => write!(f, "query failed: {message}"),
-            PromError::Invalid(message) => write!(f, "not a Prometheus API: {message}"),
-            PromError::Timeout => write!(f, "timed out"),
-            PromError::Transport(message) => write!(f, "{message}"),
         }
     }
 }
@@ -162,11 +111,8 @@ impl RangeSeries {
 /// A client for one target.
 #[derive(Clone)]
 pub struct PromClient {
-    client: kube::Client,
-    base: String,
+    transport: Transport,
     target: Target,
-    /// Sent as `Authorization: Bearer …` on every request (direct calls only).
-    bearer: Option<Bearer>,
 }
 
 impl fmt::Debug for PromClient {
@@ -177,38 +123,18 @@ impl fmt::Debug for PromClient {
     }
 }
 
-const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Credentials only go over HTTPS, or plain HTTP to this machine (`kubectl port-forward`).
-fn credentials_allowed(uri: &http::Uri) -> Result<(), PromError> {
-    let loopback = match uri
-        .host()
-        .map(|h| h.trim_start_matches('[').trim_end_matches(']'))
-    {
-        Some("localhost") => true,
-        Some(host) => host
-            .parse::<std::net::IpAddr>()
-            .is_ok_and(|ip| ip.is_loopback()),
-        None => false,
-    };
-    if uri.scheme_str() == Some("https") || loopback {
-        Ok(())
-    } else {
-        Err(PromError::Transport(format!(
-            "not sending credentials to {uri} over plain HTTP; use an https:// URL"
-        )))
-    }
-}
-
 impl PromClient {
     /// Uses the cluster's client (service proxy) for [`Target::Service`].
     pub fn new(cluster: kube::Client, target: Target) -> Self {
         Self {
-            client: cluster,
-            base: target.base_path(),
+            transport: Transport::with_base(cluster, target.base_path()),
             target,
-            bearer: None,
         }
+    }
+
+    /// A client over an existing transport (e.g. [`crate::openshift::through_route`]'s).
+    pub fn from_transport(transport: Transport, target: Target) -> Self {
+        Self { transport, target }
     }
 
     /// A direct HTTPS client for `url` that authenticates with `bearer` on every request.
@@ -220,23 +146,9 @@ impl PromClient {
         roots: Option<Vec<Vec<u8>>>,
         bearer: Bearer,
     ) -> Result<Self, PromError> {
-        let uri: http::Uri = url
-            .trim()
-            .trim_end_matches('/')
-            .parse()
-            .map_err(|e| PromError::Transport(format!("invalid URL: {e}")))?;
-        credentials_allowed(&uri)?;
-        let mut config = kube::Config::new(uri);
-        config.root_cert = roots;
-        config.connect_timeout = Some(Duration::from_secs(10));
-        config.read_timeout = Some(QUERY_TIMEOUT);
-        let client = kube::Client::try_from(config)
-            .map_err(|e| PromError::Transport(format!("client: {e}")))?;
         Ok(Self {
-            client,
-            base: String::new(),
+            transport: Transport::direct(url, roots, None, bearer)?,
             target,
-            bearer: Some(bearer),
         })
     }
 
@@ -247,36 +159,22 @@ impl PromClient {
         insecure: bool,
         authorization: Option<&SecretString>,
     ) -> Result<Self, PromError> {
-        let uri: http::Uri = url
-            .trim()
-            .trim_end_matches('/')
-            .parse()
-            .map_err(|e| PromError::Transport(format!("invalid URL: {e}")))?;
-        if authorization.is_some() {
-            credentials_allowed(&uri)?;
-        }
-        let mut config = kube::Config::new(uri);
-        config.accept_invalid_certs = insecure;
-        config.connect_timeout = Some(Duration::from_secs(10));
-        config.read_timeout = Some(QUERY_TIMEOUT);
-        if let Some(value) = authorization {
-            let mut header = HeaderValue::from_str(value.expose_secret().trim())
-                .map_err(|_| PromError::Transport("invalid Authorization header".into()))?;
-            header.set_sensitive(true);
-            config.headers.push((AUTHORIZATION, header));
-        }
-        let client = kube::Client::try_from(config)
-            .map_err(|e| PromError::Transport(format!("client: {e}")))?;
-        let target = Target::Url {
-            url: url.to_string(),
+        let tls = ExternalTls {
             insecure,
+            ..Default::default()
         };
         Ok(Self {
-            client,
-            base: String::new(),
-            target,
-            bearer: None,
+            transport: Transport::external(url, authorization, &tls)?,
+            target: Target::Url {
+                url: url.to_string(),
+                insecure,
+            },
         })
+    }
+
+    /// The transport, to reach other APIs of the same server.
+    pub fn transport(&self) -> &Transport {
+        &self.transport
     }
 
     pub fn target(&self) -> &Target {
@@ -328,62 +226,14 @@ impl PromClient {
         }
     }
 
+    /// Any read of the Prometheus HTTP API (`/api/v1/alerts`, `/api/v1/rules`…), as JSON.
+    pub async fn api(&self, path: &str, params: &[(&str, String)]) -> Result<Value, PromError> {
+        self.get(path, params).await
+    }
+
     async fn get(&self, path: &str, params: &[(&str, String)]) -> Result<Value, PromError> {
-        let query = url::form_urlencoded::Serializer::new(String::new())
-            .extend_pairs(params.iter().map(|(k, v)| (*k, v.as_str())))
-            .finish();
-        let uri = if query.is_empty() {
-            format!("{}{path}", self.base)
-        } else {
-            format!("{}{path}?{query}", self.base)
-        };
-        let mut request = http::Request::get(uri)
-            .header(http::header::ACCEPT, "application/json")
-            .body(Vec::new())
-            .map_err(|e| PromError::Transport(e.to_string()))?;
-        if let Some(bearer) = &self.bearer {
-            let token = bearer.get().await.map_err(PromError::Transport)?;
-            let mut value = HeaderValue::from_str(&format!("Bearer {}", token.expose_secret()))
-                .map_err(|_| PromError::Transport("invalid token".into()))?;
-            value.set_sensitive(true);
-            request.headers_mut().insert(AUTHORIZATION, value);
-        }
-        let text =
-            match tokio::time::timeout(QUERY_TIMEOUT, self.client.request_text(request)).await {
-                Err(_) => return Err(PromError::Timeout),
-                Ok(Ok(text)) => text,
-                Ok(Err(kube::Error::Api(status))) => {
-                    // Prometheus reports bad queries as 400/422 with its own JSON body.
-                    if let Ok(body) = serde_json::from_str::<Value>(&status.message)
-                        && body.get("status").and_then(Value::as_str) == Some("error")
-                    {
-                        return Err(query_error(&body));
-                    }
-                    return Err(PromError::Http(status.code, short(&status.message)));
-                }
-                Ok(Err(err)) => return Err(PromError::Transport(short(&err.to_string()))),
-            };
-        serde_json::from_str(&text).map_err(|_| PromError::Invalid(short(&text)))
+        self.transport.get(path, params).await
     }
-}
-
-/// The first line of a message, cut to a readable length (proxy errors can be HTML pages).
-fn short(message: &str) -> String {
-    let line = message.lines().next().unwrap_or_default().trim();
-    if line.chars().count() > 160 {
-        format!("{}…", line.chars().take(160).collect::<String>())
-    } else {
-        line.to_string()
-    }
-}
-
-fn query_error(body: &Value) -> PromError {
-    PromError::Query(
-        body.get("error")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown error")
-            .to_string(),
-    )
 }
 
 fn data(body: &Value, expected: &str) -> Result<Vec<Value>, PromError> {

@@ -527,6 +527,20 @@ impl MetricsService {
             .or_else(|| state.nodes_fetch.error.clone())
     }
 
+    /// The Prometheus client phase 07 found for the cluster (service proxy, URL or Route, with
+    /// the same auth), for other APIs of the same server (`/api/v1/alerts`, `/api/v1/rules`).
+    /// Asking keeps detection going; `None` while there's none (yet).
+    pub fn prometheus(&self, cluster: &ClusterId) -> Option<PromClient> {
+        self.demand
+            .borrow_mut()
+            .source
+            .insert(cluster.clone(), Instant::now());
+        let state = self.clusters.get(cluster)?;
+        matches!(state.source, Source::Prometheus { .. })
+            .then(|| state.prom.clone())
+            .flatten()
+    }
+
     /// Whether the cluster's Prometheus has series named `metric` (node-exporter, PSI…).
     pub fn has_metric(&self, cluster: &ClusterId, metric: &str) -> bool {
         self.clusters
@@ -1275,9 +1289,36 @@ async fn find_prometheus(
             if !trusted {
                 return Err(err.to_string());
             }
-            openshift::through_route(client, &target, user, service_account)
-                .await
-                .map_err(|route| format!("{err} through the API server ({route})"))
+            let Target::Service {
+                namespace,
+                service,
+                path,
+                ..
+            } = &target
+            else {
+                return Err(err.to_string());
+            };
+            openshift::through_route(
+                client,
+                namespace,
+                service,
+                path,
+                user,
+                service_account,
+                "/api/v1/query?query=vector%281%29",
+            )
+            .await
+            .map(|routed| {
+                PromClient::from_transport(
+                    routed.transport,
+                    Target::Route {
+                        namespace: namespace.clone(),
+                        service: service.clone(),
+                        url: routed.url,
+                    },
+                )
+            })
+            .map_err(|route| format!("{err} through the API server ({route})"))
         }
     };
     if let Some(url) = &override_.url {
