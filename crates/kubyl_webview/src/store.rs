@@ -80,7 +80,8 @@ impl PortKey {
         let manager = ConnectionManager::try_global(cx)?;
         let context = manager.read(cx).context(&target.cluster)?;
         Some(Self {
-            context: context.context.clone(),
+            // A group's own key (its context names change with `oc project`).
+            context: context.stable_key(),
             server: context.server.clone(),
             namespace: target.namespace.clone(),
             kind: target.kind,
