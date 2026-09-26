@@ -455,13 +455,25 @@ pub fn endpoint_ports<'a>(
 
 /// [`resolve_target_port`] the way the router sees it, with the Service's [`endpoint_ports`]:
 /// a numeric target port also matches a Service port whose `targetPort` names a container
-/// port, when the endpoints serve that name on that number (`targetPort: http` → 8080).
+/// port, when the endpoints serve that name on that number (`targetPort: http` → 8080), and
+/// a named Service target port reports the number the endpoints serve it on.
 pub fn resolve_target_port_with(
     target: Option<&TargetPort>,
     service: &Value,
     endpoints: &[(String, u16)],
 ) -> Result<ServicePortMatch, String> {
     let err = match resolve_target_port(target, service) {
+        // A named Service target port: say which number the pods serve it on.
+        Ok(matched) if matched.target.parse::<u16>().is_err() => {
+            let served = endpoints
+                .iter()
+                .find(|(name, _)| Some(name) == matched.name.as_ref())
+                .map(|(_, port)| port.to_string());
+            return Ok(ServicePortMatch {
+                target: served.unwrap_or(matched.target.clone()),
+                ..matched
+            });
+        }
         Ok(matched) => return Ok(matched),
         Err(err) => err,
     };
@@ -745,6 +757,17 @@ mod tests {
             resolve_target_port_with(Some(&TargetPort::Number(9443)), &svc, &endpoints)
                 .unwrap_err(),
             "target port 9443 not found on Service shop-tls"
+        );
+        // A named target port shows the number the pods serve it on.
+        let named =
+            resolve_target_port_with(Some(&TargetPort::Name("https".into())), &svc, &endpoints)
+                .unwrap();
+        assert_eq!(named.label(), "443/TCP → 8443");
+        assert_eq!(
+            resolve_target_port(Some(&TargetPort::Name("https".into())), &svc)
+                .unwrap()
+                .label(),
+            "443/TCP → https"
         );
         // Core Endpoints work too.
         let legacy = [json!({"metadata": {"name": "shop-tls"},
