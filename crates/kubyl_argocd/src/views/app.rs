@@ -2032,7 +2032,7 @@ impl AppView {
                     }))
             }));
         let (item, diff) = &diffs[selected];
-        let secret = crate::diff::is_secret(item);
+        let masked = crate::diff::masked_note(item);
         let toolbar = h_flex()
             .flex_none()
             .h(u(34.0))
@@ -2054,7 +2054,7 @@ impl AppView {
                     .text_size(u(11.5))
                     .child(format!("{} {}/{}", item.kind, item.namespace, item.name)),
             )
-            .when(secret, |this| this.child(Chip::new("values masked")))
+            .when_some(masked, |this, note| this.child(Chip::new(note)))
             .child(div().flex_1())
             .child(
                 IconButton::new("argo-diff-sbs", IconName::Columns)

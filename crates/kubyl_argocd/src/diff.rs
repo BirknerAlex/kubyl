@@ -1,6 +1,7 @@
 //! Desired vs live per resource (API mode): both sides rendered the way the YAML editor
 //! renders objects (keys sorted, `managedFields`, `status` and server-set metadata dropped,
-//! Secret values masked on both sides), then diffed with phase 04's line diff.
+//! Secret values and OpenShift Routes' inline TLS keys masked on both sides), then diffed with
+//! phase 04's line diff.
 
 use kubyl_yaml::diff::{self, LineDiff};
 use kubyl_yaml::render::{self, RenderOptions};
@@ -45,6 +46,20 @@ pub fn resource_diff(item: &ResourceDiff) -> LineDiff {
 /// Whether the item is a core Secret (its values are masked on both sides).
 pub fn is_secret(item: &ResourceDiff) -> bool {
     item.group.is_empty() && item.kind == "Secret"
+}
+
+/// What the diff masks, for a note next to it: `values masked` (Secrets), `TLS key masked`
+/// (Routes with an inline key on either side).
+pub fn masked_note(item: &ResourceDiff) -> Option<&'static str> {
+    if is_secret(item) {
+        return Some("values masked");
+    }
+    let route_key = kubyl_resources::route::is_route(&item.group, &item.kind)
+        && [item.live(), item.desired()]
+            .iter()
+            .flatten()
+            .any(kubyl_resources::route::has_inline_key);
+    route_key.then_some("TLS key masked")
 }
 
 #[cfg(test)]
@@ -116,5 +131,38 @@ mod tests {
                 assert!(!line.text.contains("hunter2") && !line.text.contains("secret"));
             }
         }
+    }
+
+    #[test]
+    fn route_keys_stay_masked() {
+        let route = |key: &str, host: &str| {
+            json!({"apiVersion": "route.openshift.io/v1", "kind": "Route",
+            "metadata": {"name": "shop", "annotations": {"kubectl.kubernetes.io/last-applied-configuration": key}},
+            "spec": {"host": host, "to": {"kind": "Service", "name": "shop"},
+                     "tls": {"termination": "reencrypt", "key": key}}})
+        };
+        let item = ResourceDiff {
+            group: "route.openshift.io".into(),
+            kind: "Route".into(),
+            normalized_live_state: route("OLD-PRIVATE-KEY", "a.example.com").to_string(),
+            predicted_live_state: route("NEW-PRIVATE-KEY", "b.example.com").to_string(),
+            ..Default::default()
+        };
+        let diff = resource_diff(&item);
+        assert_eq!(diff.summary, ["~ spec.host"]);
+        for hunk in &diff.hunks {
+            for line in &hunk.lines {
+                assert!(!line.text.contains("PRIVATE-KEY"), "{}", line.text);
+            }
+        }
+        assert_eq!(masked_note(&item), Some("TLS key masked"));
+        assert_eq!(
+            masked_note(&ResourceDiff {
+                kind: "Secret".into(),
+                ..Default::default()
+            }),
+            Some("values masked")
+        );
+        assert_eq!(masked_note(&ResourceDiff::default()), None);
     }
 }
