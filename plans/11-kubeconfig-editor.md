@@ -113,7 +113,7 @@ order", "Kubeconfig credentials", "Exec-plugin consent and CA trust").
 
 **Files** (`files`). Saves write a temp file in the same folder, fsync, rename (symlinks are
 followed to the target), and refuse when the file's SHA-256 changed since it was loaded
-(`SaveError::Changed`). Backups: `<config dir>/kubeconfig-backups/<stem>-<path hash
+(`SaveError::Changed`; checked before the backup and again right before the rename). Backups: `<config dir>/kubeconfig-backups/<stem>-<path hash
 8>-<YYYYMMDD-HHMMSS>[-n].yaml`, 0600, the last N per file. New files and files with inline
 credentials are 0600, others keep their mode. The editor checks the file's hash every 2 s
 (also for files that aren't sources): unchanged edits reload silently; with unsaved edits a
@@ -131,7 +131,8 @@ basic auth marked deprecated, other providers kept; context: cluster/user picker
 with the list from the last test, current context, Kubyl overrides from settings.json), the
 context's problems (its cluster's and user's too) and last test, and a YAML tab (phase 04's
 editor with the kubeconfig OpenAPI schema from `schema`, hover, completion of names; secrets
-shown as `••••••••` until revealed and restored when parsing). The toolbar counts changed
+shown as `••••••••` until revealed and restored when parsing; renaming a user or moving a
+hidden value needs the secrets revealed, so a mask is never saved as a credential). The toolbar counts changed
 lines. Opens from the Clusters tab (source row edit button, "Edit context…" in the connection
 card, "New…"), the Explorer "+" menu and the palette ("Kubeconfig: New…", "Edit Current
 Context", "Test Current Context", "New from Service Account…", "Import from Cloud CLI…").
