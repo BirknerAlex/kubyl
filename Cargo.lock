@@ -4897,8 +4897,33 @@ dependencies = [
 name = "kubyl_alerts"
 version = "0.2.0"
 dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "futures",
+ "gpui-component",
  "gpui-pre",
+ "http",
+ "jiff",
+ "kube",
  "kubyl_core",
+ "kubyl_explorer",
+ "kubyl_kube",
+ "kubyl_metrics",
+ "kubyl_portforward",
+ "kubyl_resources",
+ "kubyl_settings",
+ "kubyl_ui",
+ "kubyl_webview",
+ "open",
+ "regex",
+ "schemars 1.2.2",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]
