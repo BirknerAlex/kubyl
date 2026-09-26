@@ -91,7 +91,16 @@ cargo run -p kubyl
   ComponentStatus and Endpoints on kind.
 - Live tests against those clusters are ignored by default: see the header of
   `crates/kubyl_kube/tests/live.rs` (and of `crates/kubyl_metrics/tests/live.rs`,
-  `crates/kubyl_alerts/tests/live.rs`, `crates/kubyl_operators/tests/live.rs`).
+  `crates/kubyl_alerts/tests/live.rs`, `crates/kubyl_operators/tests/live.rs`,
+  `crates/kubyl_updates/tests/live.rs` for the update providers and pre-flight checks on the
+  `updates-dev.sh` clusters, and `crates/kubyl_portforward/tests/live.rs` for Route backends,
+  `KUBYL_TEST_ROUTE_NAMESPACE`).
+- Cloud update providers (`--features updates-eks,updates-gke,updates-aks`) are tested with
+  recorded responses (`crates/kubyl_updates/tests/fixtures/`). For screenshots without an
+  account, `KUBYL_UPDATES_{EKS,GKE,AKS}_ENDPOINT=http://127.0.0.1:<port>` points a provider at a
+  local server that serves those fixtures, `updates.clusters.<cluster>.provider` in settings
+  picks the provider for a kind cluster, and a fake `aws` must come first in the login shell's
+  `PATH` (Kubyl runs CLIs with it; point `SHELL` at a wrapper script).
 - Web views: `script/webview-dev.sh` (after `prometheus-dev.sh`) adds Grafana, an Ingress, a
   self-signed HTTPS service and a non-HTTP-looking port. Real web views are tested by
   `KUBYL_TEST_WEBVIEW=1 cargo test -p kubyl_webview --test live_webview` (needs a display; on
