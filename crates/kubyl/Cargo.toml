@@ -21,6 +21,10 @@ workspace = true
 # action=<name>, keys=<keystrokes>, wait=<ms>) changes the
 # layout first.
 screenshot = ["gpui/test-support", "gpui_platform/test-support"]
+# Cloud update providers (phase 13), off by default.
+updates-eks = ["kubyl_updates/updates-eks"]
+updates-gke = ["kubyl_updates/updates-gke"]
+updates-aks = ["kubyl_updates/updates-aks"]
 
 [[bin]]
 name = "kubyl"
