@@ -391,6 +391,7 @@ pub async fn uninstall(
                 }
             }
             let start = std::time::Instant::now();
+            let mut announced = false;
             loop {
                 let left = instance_count(&client, &spec.crds).await?;
                 if left == 0 {
@@ -402,7 +403,10 @@ pub async fn uninstall(
                         INSTANCE_WAIT.as_secs()
                     ));
                 }
-                progress(format!("Waiting for {left} instances to go…"));
+                if !announced {
+                    progress(format!("Waiting for {left} instances to go (finalizers)…"));
+                    announced = true;
+                }
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
         }
