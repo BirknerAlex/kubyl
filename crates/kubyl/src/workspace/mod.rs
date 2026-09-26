@@ -133,6 +133,12 @@ impl Workspace {
         let subscriptions = vec![
             cx.observe_global_in::<NotificationCenter>(window, Self::show_new_notifications),
             cx.observe_global::<ActiveContext>(|_, cx| cx.notify()),
+            // Tabs follow when their cluster's id changes (grouped contexts).
+            cx.observe_global_in::<kubyl_core::ClusterIds>(window, |this, window, cx| {
+                for pane in this.center.panes() {
+                    pane.update(cx, |pane, cx| pane.refresh_clusters(window, cx));
+                }
+            }),
             cx.observe_window_bounds(window, |this, window, cx| this.save_layout(window, cx)),
             cx.observe_window_appearance(window, |_, _, cx| kubyl_ui::apply_theme(cx)),
         ];
@@ -680,6 +686,168 @@ mod tests {
                 assert_eq!(titles[0].as_ref(), "Welcome");
             })
             .unwrap();
+    }
+
+    /// Tabs whose cluster id changed (a context got grouped) are rebuilt with the new id and
+    /// saved with it.
+    #[gpui::test]
+    fn tabs_follow_cluster_ids(cx: &mut TestAppContext) {
+        use kubyl_core::{ClusterId, ClusterIds, Gvr, ResourceRef, ViewKind};
+        let _dir = init(cx);
+        let old = ClusterId::new("shop/c/u@/k");
+        let tab = ViewRequest::for_resource(
+            ViewKind::Custom("not-registered".into()),
+            ResourceRef::list(old.clone(), Gvr::new("", "v1", "pods"), None),
+        );
+        let layout = WorkspaceLayout {
+            center: PaneLayout::Pane {
+                tabs: vec![tab],
+                active: 0,
+            },
+            ..Default::default()
+        };
+        let window = open(cx, layout);
+        let cluster_of = |cx: &mut TestAppContext| {
+            window
+                .update(cx, |workspace, _, cx| {
+                    let pane = workspace.active_pane.read(cx);
+                    pane.items()[0]
+                        .view_request(cx)
+                        .and_then(|r| r.target)
+                        .map(|t| t.cluster)
+                })
+                .unwrap()
+        };
+        assert_eq!(cluster_of(cx), Some(old.clone()));
+        cx.update(|cx| {
+            ClusterIds::install(cx, |id, _| {
+                if id.as_str() == "shop/c/u@/k" {
+                    ClusterId::new("group:c,u@/k/")
+                } else {
+                    id.clone()
+                }
+            });
+            ClusterIds::changed(cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            cluster_of(cx).map(|c| c.to_string()).as_deref(),
+            Some("group:c,u@/k/")
+        );
+        window
+            .update(cx, |workspace, _, cx| {
+                let PaneLayout::Pane { tabs, .. } = workspace.center.layout(cx) else {
+                    panic!("one pane");
+                };
+                assert_eq!(
+                    tabs[0].target.as_ref().unwrap().cluster.as_str(),
+                    "group:c,u@/k/"
+                );
+            })
+            .unwrap();
+    }
+
+    /// A tab with unsaved changes (for `tabs_with_unsaved_changes_keep_their_view`).
+    struct DirtyTab {
+        request: ViewRequest,
+        focus: gpui::FocusHandle,
+    }
+
+    impl gpui::Render for DirtyTab {
+        fn render(
+            &mut self,
+            _: &mut gpui::Window,
+            _: &mut Context<Self>,
+        ) -> impl gpui::IntoElement {
+            gpui::div()
+        }
+    }
+
+    impl gpui::Focusable for DirtyTab {
+        fn focus_handle(&self, _: &App) -> gpui::FocusHandle {
+            self.focus.clone()
+        }
+    }
+
+    impl kubyl_core::TabView for DirtyTab {
+        fn tab_title(&self, _: &App) -> gpui::SharedString {
+            "dirty".into()
+        }
+
+        fn is_dirty(&self, _: &App) -> bool {
+            true
+        }
+
+        fn view_request(&self, _: &App) -> Option<ViewRequest> {
+            Some(self.request.clone())
+        }
+    }
+
+    #[gpui::test]
+    fn tabs_with_unsaved_changes_keep_their_view(cx: &mut TestAppContext) {
+        use kubyl_core::{ClusterId, ClusterIds, Gvr, ResourceRef, ViewKind, ViewRegistry};
+        let _dir = init(cx);
+        cx.update(|cx| {
+            ViewRegistry::register(cx, ViewKind::Custom("dirty".into()), |request, _, cx| {
+                let request = request.clone();
+                Some(Box::new(cx.new(|cx| DirtyTab {
+                    request,
+                    focus: cx.focus_handle(),
+                })))
+            });
+        });
+        let old = ClusterId::new("shop/c/u@/k");
+        let tab = |kind: &str| {
+            ViewRequest::for_resource(
+                ViewKind::Custom(kind.into()),
+                ResourceRef::list(old.clone(), Gvr::new("", "v1", "pods"), None),
+            )
+        };
+        let layout = WorkspaceLayout {
+            center: PaneLayout::Pane {
+                tabs: vec![tab("dirty"), tab("not-registered")],
+                active: 0,
+            },
+            ..Default::default()
+        };
+        let window = open(cx, layout);
+        let items = |cx: &mut TestAppContext| {
+            window
+                .update(cx, |workspace, _, cx| {
+                    workspace
+                        .active_pane
+                        .read(cx)
+                        .items()
+                        .iter()
+                        .map(|i| {
+                            (
+                                i.entity_id(),
+                                i.view_request(cx).unwrap().target.unwrap().cluster,
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap()
+        };
+        let before = items(cx);
+        cx.update(|cx| {
+            ClusterIds::install(cx, |id, _| {
+                if id.as_str() == "shop/c/u@/k" {
+                    ClusterId::new("group:c,u@/k/")
+                } else {
+                    id.clone()
+                }
+            });
+            ClusterIds::changed(cx);
+        });
+        cx.run_until_parked();
+        let after = items(cx);
+        assert_eq!(
+            after[0], before[0],
+            "the dirty tab keeps its view and edits"
+        );
+        assert_ne!(after[1].0, before[1].0, "a clean tab is rebuilt");
+        assert_eq!(after[1].1.as_str(), "group:c,u@/k/");
     }
 
     #[gpui::test]

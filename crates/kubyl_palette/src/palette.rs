@@ -23,8 +23,8 @@ use kubyl_ui::{ActiveColors, Icon, IconName, Kbd, fonts, h_flex, u, v_flex};
 
 use crate::command::{Mode, Scope};
 use crate::items::{
-    self, ActionEntry, ContextEntry, FavoriteEntry, Item, KindEntry, ObjectEntry, Options,
-    ResolvedRef, Snapshot, Target, Trailing,
+    self, ActionEntry, ContextEntry, ContextStatus, FavoriteEntry, Item, KindEntry, ObjectEntry,
+    Options, ResolvedRef, Snapshot, Target, Trailing,
 };
 use crate::matcher::byte_ranges;
 use crate::recent::Recent;
@@ -201,8 +201,16 @@ impl CommandPalette {
     }
 
     fn snapshot(&self, cx: &App) -> Snapshot {
+        let mut recent = Recent::load(cx);
+        // Recent contexts saved before they were grouped count for their group.
+        for key in recent.keys.iter_mut() {
+            if let Some(id) = key.strip_prefix("ctx:") {
+                let current = kubyl_core::ClusterIds::resolve(cx, &ClusterId::new(id));
+                *key = format!("ctx:{current}");
+            }
+        }
         let mut snapshot = Snapshot {
-            recent: Recent::load(cx),
+            recent,
             list: self.origin.list_label(),
             objects: self.objects.clone().unwrap_or_default(),
             actions: self.actions(cx),
@@ -227,7 +235,16 @@ impl CommandPalette {
                     state: state.label(),
                     color: manager.color(&c.id, cx),
                     connected: state.is_connected(),
+                    connecting: state == kubyl_kube::ConnectionState::Connecting,
                     production: manager.caps(&c.id).production,
+                    members: if c.is_group() {
+                        c.members
+                            .iter()
+                            .map(|m| (m.context.clone(), m.namespace.clone()))
+                            .collect()
+                    } else {
+                        Vec::new()
+                    },
                 }
             })
             .collect();
@@ -497,6 +514,19 @@ fn run(target: Target, split: bool, window: &mut Window, cx: &mut App) {
             if let Some(manager) = ConnectionManager::try_global(cx) {
                 manager.update(cx, |m, cx| m.activate(&id, cx));
             }
+        }
+        Target::ContextIn { cluster, namespace } => {
+            if let Some(manager) = ConnectionManager::try_global(cx) {
+                manager.update(cx, |m, cx| m.activate(&cluster, cx));
+            }
+            let active = ActiveContext::global(cx).clone();
+            ActiveContext::set(
+                cx,
+                ActiveContext {
+                    namespace: namespace.map(SharedString::from),
+                    ..active
+                },
+            );
         }
         Target::Namespace(namespace) => {
             let active = ActiveContext::global(cx).clone();
@@ -961,6 +991,29 @@ impl CommandPalette {
                     .child(aliases)
             }))
             .children(trailing)
+            .when(
+                matches!(item.target, Target::Context(_) | Target::ContextIn { .. }),
+                |this| {
+                    let dot = match item.status {
+                        Some(ContextStatus::Connected) => {
+                            Some(kubyl_ui::StatusDot::new(colors.green).into_any_element())
+                        }
+                        Some(ContextStatus::Connecting) => Some(
+                            kubyl_ui::StatusDot::new(colors.text_dim)
+                                .pulsing(("palette-connecting", ix))
+                                .into_any_element(),
+                        ),
+                        None => None,
+                    };
+                    this.child(
+                        h_flex()
+                            .flex_none()
+                            .w(u(12.0))
+                            .justify_center()
+                            .children(dot),
+                    )
+                },
+            )
     }
 
     fn render_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -972,7 +1025,9 @@ impl CommandPalette {
                 .when(!label.is_empty(), |this| this.child(label))
         };
         let (open, split) = match self.items.get(self.selected).map(|i| &i.target) {
-            Some(Target::Context(_) | Target::Namespace(_)) => ("switch", false),
+            Some(Target::Context(_) | Target::ContextIn { .. } | Target::Namespace(_)) => {
+                ("switch", false)
+            }
             Some(Target::Action(_)) => ("run", false),
             Some(Target::Filter(_)) => ("filter", false),
             Some(Target::Mode(_)) => ("list", false),

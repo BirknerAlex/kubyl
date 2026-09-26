@@ -5,8 +5,10 @@
 //! center and shows new entries as toasts, so crates never deal with window or overlay plumbing.
 
 use std::collections::VecDeque;
+use std::fmt;
+use std::sync::Arc;
 
-use gpui::{App, Global, SharedString};
+use gpui::{App, Global, SharedString, Window};
 
 /// Severity of a notification. Drives the toast's icon and color.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,6 +25,32 @@ pub struct Notification {
     pub level: NotificationLevel,
     pub title: Option<SharedString>,
     pub message: SharedString,
+    /// A button on the toast ("Undo", "Show"). A toast with an action stays until closed.
+    pub action: Option<NotificationAction>,
+}
+
+/// What a toast's button runs (in the window showing the toast).
+pub type ActionFn = Arc<dyn Fn(&mut Window, &mut App)>;
+
+/// A toast's button: its label and what it runs.
+#[derive(Clone)]
+pub struct NotificationAction {
+    pub label: SharedString,
+    pub run: ActionFn,
+}
+
+impl fmt::Debug for NotificationAction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NotificationAction")
+            .field("label", &self.label)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for NotificationAction {
+    fn eq(&self, other: &Self) -> bool {
+        self.label == other.label && Arc::ptr_eq(&self.run, &other.run)
+    }
 }
 
 impl Notification {
@@ -31,6 +59,7 @@ impl Notification {
             level,
             title: None,
             message: message.into(),
+            action: None,
         }
     }
 
@@ -52,6 +81,19 @@ impl Notification {
 
     pub fn title(mut self, title: impl Into<SharedString>) -> Self {
         self.title = Some(title.into());
+        self
+    }
+
+    /// Adds a button to the toast.
+    pub fn action(
+        mut self,
+        label: impl Into<SharedString>,
+        run: impl Fn(&mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.action = Some(NotificationAction {
+            label: label.into(),
+            run: Arc::new(run),
+        });
         self
     }
 }

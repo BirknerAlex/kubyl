@@ -17,7 +17,8 @@ use secrecy::SecretString;
 use serde_json::Value;
 use tokio::sync::Mutex;
 
-use crate::prometheus::{PromClient, PromError, Target};
+use crate::prometheus::PromError;
+use crate::transport::Transport;
 
 /// OpenShift's monitoring stack. Only cluster admins can create `openshift-*` namespaces, so its
 /// Routes may receive the user's token without being named in settings.
@@ -208,24 +209,30 @@ pub fn pem_certificates(pem: &str) -> Vec<Vec<u8>> {
     out
 }
 
-/// Reaches `target` through its Route with a bearer token, after the service proxy was refused
-/// (401/403). Tries the user's token first, then a service account's; TLS against the OS trust
-/// store, then the cluster's ingress CA.
+/// A Service reached through its admitted Route.
+#[derive(Clone, Debug)]
+pub struct Routed {
+    pub transport: Transport,
+    /// `https://<admitted host><path prefix>`.
+    pub url: String,
+}
+
+/// Reaches `namespace/service` through its Route with a bearer token, after the service proxy
+/// was refused (401/403): the user's token first, then a service account's. TLS against the OS
+/// trust store, then the cluster's ingress CA. `probe` is a path that must answer (e.g.
+/// `/api/v1/query?query=vector%281%29`, `/api/v2/status`).
+///
+/// Callers decide whether the Service may receive a token at all (see the token rule in
+/// phase 07 and 14: only `openshift-*` monitoring namespaces or Services named in settings).
 pub async fn through_route(
     client: &kube::Client,
-    target: &Target,
+    namespace: &str,
+    service: &str,
+    path: &str,
     user: Option<BearerToken>,
     service_account: Option<(String, String)>,
-) -> Result<PromClient, String> {
-    let Target::Service {
-        namespace,
-        service,
-        path,
-        ..
-    } = target
-    else {
-        return Err("not a Service".into());
-    };
+    probe: &str,
+) -> Result<Routed, String> {
     let Some(url) = route_url(client, namespace, service).await else {
         return Err(format!(
             "the API server strips credentials on proxied requests and {namespace}/{service} has no Route to call directly"
@@ -249,18 +256,23 @@ pub async fn through_route(
     if bearers.is_empty() {
         return Err("no token to call its Route with".into());
     }
-    let label = Target::Route {
-        namespace: namespace.clone(),
-        service: service.clone(),
-        url: url.clone(),
+    let answers = |transport: &Transport| {
+        let transport = transport.clone();
+        let probe = probe.to_string();
+        async move {
+            match tokio::time::timeout(PROBE_TIMEOUT, transport.get_text(&probe, &[])).await {
+                Ok(result) => result.map(|_| ()),
+                Err(_) => Err(PromError::Timeout),
+            }
+        }
     };
     let mut ingress: Option<Option<Vec<Vec<u8>>>> = None;
     let mut errors = Vec::new();
     for bearer in bearers {
         // OS trust first (public or locally trusted certificates), then the published ingress CA.
-        let mut attempt = PromClient::direct(&url, label.clone(), None, bearer.clone());
+        let mut attempt = Transport::direct(&url, None, None, bearer.clone());
         let mut result = match &attempt {
-            Ok(prom) => prom.probe(PROBE_TIMEOUT).await,
+            Ok(transport) => answers(transport).await,
             Err(err) => Err(err.clone()),
         };
         if matches!(result, Err(PromError::Transport(_))) {
@@ -268,17 +280,17 @@ pub async fn through_route(
                 ingress = Some(ingress_ca(client).await);
             }
             if let Some(Some(ca)) = &ingress {
-                attempt = PromClient::direct(&url, label.clone(), Some(ca.clone()), bearer.clone());
+                attempt = Transport::direct(&url, Some(ca.clone()), None, bearer.clone());
                 result = match &attempt {
-                    Ok(prom) => prom.probe(PROBE_TIMEOUT).await,
+                    Ok(transport) => answers(transport).await,
                     Err(err) => Err(err.clone()),
                 };
             }
         }
         match (attempt, result) {
-            (Ok(prom), Ok(())) => {
-                tracing::info!(route = %url, with = %bearer.describe(), "Prometheus through its Route");
-                return Ok(prom);
+            (Ok(transport), Ok(())) => {
+                tracing::info!(route = %url, with = %bearer.describe(), "{namespace}/{service} through its Route");
+                return Ok(Routed { transport, url });
             }
             (_, Err(err)) => errors.push(format!("with {}: {err}", bearer.describe())),
             (Err(err), _) => errors.push(format!("with {}: {err}", bearer.describe())),

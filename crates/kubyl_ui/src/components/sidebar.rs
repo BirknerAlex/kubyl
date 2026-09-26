@@ -1,5 +1,5 @@
 use gpui::{
-    AnyElement, App, ClickEvent, ElementId, FontWeight, Hsla, IntoElement, RenderOnce,
+    AnyElement, AnyView, App, ClickEvent, ElementId, FontWeight, Hsla, IntoElement, RenderOnce,
     SharedString, Window, div, prelude::*,
 };
 use gpui_component::h_flex;
@@ -8,6 +8,7 @@ use smallvec::SmallVec;
 use crate::{ActiveColors, Icon, IconName, fonts, sizes, u};
 
 type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
+type TooltipBuilder = Box<dyn Fn(&mut Window, &mut App) -> AnyView>;
 
 /// A panel title row (`.phead`): `Explorer` with icon buttons on the right.
 #[derive(IntoElement)]
@@ -71,6 +72,7 @@ pub struct SectionHeader {
     id: ElementId,
     title: SharedString,
     count: Option<SharedString>,
+    end: SmallVec<[AnyElement; 1]>,
     collapsed: bool,
     on_toggle: Option<ClickHandler>,
 }
@@ -81,6 +83,7 @@ impl SectionHeader {
             id: id.into(),
             title: title.into(),
             count: None,
+            end: SmallVec::new(),
             collapsed: false,
             on_toggle: None,
         }
@@ -88,6 +91,13 @@ impl SectionHeader {
 
     pub fn count(mut self, count: impl Into<SharedString>) -> Self {
         self.count = Some(count.into());
+        self
+    }
+
+    /// Adds an element before the count (a toggle). It should stop click propagation so it
+    /// doesn't collapse the section.
+    pub fn end_child(mut self, child: impl IntoElement) -> Self {
+        self.end.push(child.into_any_element());
         self
     }
 
@@ -122,6 +132,7 @@ impl RenderOnce for SectionHeader {
             .cursor_pointer()
             .child(Icon::new(chevron).size(11.0).color(colors.text_dim))
             .child(div().flex_1().child(self.title.to_uppercase()))
+            .children(self.end)
             .when_some(self.count, |this, count| {
                 this.child(
                     div()
@@ -149,6 +160,7 @@ pub struct TreeRow {
     root: bool,
     muted_label: bool,
     on_click: Option<ClickHandler>,
+    tooltip: Option<TooltipBuilder>,
 }
 
 impl TreeRow {
@@ -166,6 +178,7 @@ impl TreeRow {
             root: false,
             muted_label: false,
             on_click: None,
+            tooltip: None,
         }
     }
 
@@ -222,6 +235,12 @@ impl TreeRow {
 
     pub fn on_click(mut self, f: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Self {
         self.on_click = Some(Box::new(f));
+        self
+    }
+
+    /// Shown while the pointer rests on the row.
+    pub fn tooltip(mut self, f: impl Fn(&mut Window, &mut App) -> AnyView + 'static) -> Self {
+        self.tooltip = Some(Box::new(f));
         self
     }
 }
@@ -290,5 +309,6 @@ impl RenderOnce for TreeRow {
                 )
             })
             .when_some(self.on_click, |this, f| this.on_click(f))
+            .when_some(self.tooltip, |this, f| this.tooltip(f))
     }
 }

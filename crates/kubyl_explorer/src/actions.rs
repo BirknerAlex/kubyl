@@ -893,7 +893,11 @@ pub fn add_favorite(cluster: &ClusterId, namespace: &str, cx: &mut App) {
     };
     let name = manager.read(cx).display_name(cluster);
     let favorite = Favorite::new(&context, namespace);
-    let added = Favorites::global(cx).update(cx, |f, cx| f.add(favorite, cx));
+    let exists = Favorites::global(cx)
+        .read(cx)
+        .namespace_position(&context.id, namespace, cx)
+        .is_some();
+    let added = !exists && Favorites::global(cx).update(cx, |f, cx| f.add(favorite, cx));
     let message = if added {
         format!("Added {namespace} · {name} to favorites")
     } else {

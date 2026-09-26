@@ -41,6 +41,7 @@ fn main() {
             kubyl_webview::init(cx);
             kubyl_argocd::init(cx);
             kubyl_kubeconfig::init(cx);
+            kubyl_alerts::init(cx);
 
             kubyl_settings::Settings::write_schema(cx);
             app::open_window(cx);

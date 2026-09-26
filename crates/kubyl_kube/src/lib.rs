@@ -52,6 +52,7 @@ pub mod auth;
 pub mod client;
 pub mod cluster_info;
 pub mod discovery;
+pub mod groups;
 pub mod kubeconfig;
 pub mod manager;
 pub mod openapi;

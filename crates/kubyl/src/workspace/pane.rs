@@ -6,7 +6,7 @@ use gpui::{
     App, Context, EntityId, EventEmitter, FocusHandle, Focusable, IntoElement, Render,
     SharedString, Subscription, Window, actions, div, prelude::*,
 };
-use kubyl_core::{TabHandle, ViewKind, ViewRequest};
+use kubyl_core::{ClusterIds, TabHandle, ViewKind, ViewRequest};
 use kubyl_ui::{ActiveColors, IconButton, IconName, Tab, TabBar, u, v_flex};
 
 use super::layout::{PaneLayout, SplitAxis};
@@ -244,10 +244,57 @@ impl Pane {
                 if index == self.active {
                     active = tabs.len();
                 }
-                tabs.push(request);
+                // Saved with current cluster ids (see `ClusterIds`).
+                tabs.push(ClusterIds::normalize(cx, &request));
             }
         }
         PaneLayout::Pane { tabs, active }
+    }
+
+    /// Rebuilds tabs whose cluster id resolves to another one now (contexts were grouped, an
+    /// entry was re-keyed), in place.
+    pub fn refresh_clusters(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let had_focus = self.focus.contains_focused(window, cx);
+        let mut changed = false;
+        for index in 0..self.items.len() {
+            // Unsaved edits stay: the manager still resolves the old id, and the saved layout
+            // uses the current one.
+            if self.items[index].is_dirty(cx) {
+                continue;
+            }
+            let Some(request) = self.items[index].view_request(cx) else {
+                continue;
+            };
+            let current = ClusterIds::normalize(cx, &request);
+            if current == request {
+                continue;
+            }
+            let item = super::build_view(&current, window, cx);
+            let this = cx.entity().downgrade();
+            let subscription = item.observe(
+                cx,
+                Box::new(move |cx| {
+                    this.update(cx, |_, cx| cx.notify()).ok();
+                }),
+            );
+            let old = std::mem::replace(&mut self.items[index], item);
+            self.item_subscriptions.remove(&old.entity_id());
+            self.item_subscriptions
+                .insert(self.items[index].entity_id(), subscription);
+            changed = true;
+        }
+        if !changed {
+            return;
+        }
+        for request in &mut self.history {
+            *request = ClusterIds::normalize(cx, request);
+        }
+        if had_focus {
+            let focus = self.active_focus_handle(cx);
+            focus.focus(window, cx);
+        }
+        cx.emit(PaneEvent::Changed);
+        cx.notify();
     }
 
     /// Closes the tabs whose views asked for it.

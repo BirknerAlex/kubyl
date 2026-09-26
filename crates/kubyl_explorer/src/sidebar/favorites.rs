@@ -202,27 +202,39 @@ impl Render for FavoritesSection {
         }
         for (index, favorite) in items.iter().enumerate() {
             let cluster = favorites::cluster_of(favorite, cx);
-            let (cluster_name, color) = match (&cluster, &manager) {
+            let (cluster_name, color, state) = match (&cluster, &manager) {
                 (Some(id), Some(m)) => (
                     m.read(cx).display_name(id).to_string(),
                     m.read(cx).color(id, cx),
+                    m.read(cx).state(id),
                 ),
-                _ => (favorite.context.clone(), colors.text_faint),
+                _ => (
+                    favorite.context.clone(),
+                    colors.text_faint,
+                    kubyl_kube::ConnectionState::Disconnected,
+                ),
             };
+            // Faint while the cluster isn't connected; the tooltip says why.
+            let connected = state.is_connected();
             let selected = cluster.is_some()
                 && active.cluster.as_ref().map(|c| &c.id) == cluster.as_ref()
                 && active.namespace.as_deref() == Some(favorite.namespace.as_str());
             let missing = cluster.is_none();
             let label: SharedString = favorite.label().to_string().into();
             let tooltip: SharedString = format!(
-                "{} · {}{}",
+                "{} · {}{}\n{}",
                 favorite.context,
                 favorite.file.display(),
                 favorite
                     .selector
                     .as_ref()
                     .map(|s| format!(" · {s}"))
-                    .unwrap_or_default()
+                    .unwrap_or_default(),
+                if missing {
+                    "The context isn't in any loaded kubeconfig.".to_string()
+                } else {
+                    super::clusters::state_line(&state)
+                }
             )
             .into();
             let hover = colors.hover;
@@ -273,7 +285,7 @@ impl Render for FavoritesSection {
                         .child(
                             div()
                                 .flex_none()
-                                .text_color(if missing {
+                                .text_color(if missing || !connected {
                                     colors.text_dim
                                 } else {
                                     colors.text
@@ -293,7 +305,11 @@ impl Render for FavoritesSection {
                         .child(
                             div()
                                 .truncate()
-                                .text_color(colors.text_dim)
+                                .text_color(if connected {
+                                    colors.text_dim
+                                } else {
+                                    colors.text_faint
+                                })
                                 .child(format!("· {cluster_name}")),
                         )
                         .when(missing, |this| {
@@ -305,15 +321,10 @@ impl Render for FavoritesSection {
                             )
                         }),
                 )
-                .child(
-                    div()
-                        .id(("favorite-source", index))
-                        .flex()
-                        .child(StatusDot::new(color))
-                        .tooltip(move |window, cx| {
-                            gpui_component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx)
-                        }),
-                )
+                .child(StatusDot::new(color))
+                .tooltip(move |window, cx| {
+                    gpui_component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx)
+                })
                 .on_click(move |_, window, cx| open_favorite(&open, window, cx))
                 .on_drag(drag, |drag, _, _, cx| {
                     cx.new(|_| DragPreview {

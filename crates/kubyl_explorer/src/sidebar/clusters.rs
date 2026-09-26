@@ -18,10 +18,13 @@ use kubyl_kube::access::AccessQuery;
 use kubyl_kube::{ConnectionEvent, ConnectionManager, ConnectionState};
 use kubyl_resources::{ResourceStores, StoreHandle, StoreKey};
 use kubyl_settings::{Settings, State};
-use kubyl_ui::{ActiveColors, Icon, IconName, ProdBadge, SectionHeader, TreeRow, fonts, u, v_flex};
+use kubyl_ui::{
+    ActiveColors, Colors, Icon, IconName, ProdBadge, SectionHeader, StatusDot, TreeRow, fonts,
+    h_flex, u, v_flex,
+};
 
-use crate::catalog::{self, CUSTOM, TreeKind, ViewEntry};
-use crate::settings::{ExplorerSettings, TreeState};
+use crate::catalog::{self, CUSTOM, RowBadge, TreeKind, ViewEntry, ViewRow};
+use crate::settings::{ClusterOrder, ExplorerSettings, TreeState};
 
 actions!(
     explorer_tree,
@@ -84,6 +87,11 @@ enum Item {
         entry: ViewEntry,
         depth: usize,
     },
+    /// A row another crate added (`catalog::register_view_row`).
+    Row {
+        cluster: ClusterId,
+        row: ViewRow,
+    },
 }
 
 impl Item {
@@ -98,6 +106,7 @@ impl Item {
                 None => format!("kind|{cluster}|{}", kind.gvr),
             },
             Item::View { cluster, entry, .. } => format!("view|{cluster}|{}", entry.id),
+            Item::Row { cluster, row } => format!("row|{cluster}|{}", row.id),
         }
     }
 
@@ -107,7 +116,8 @@ impl Item {
             Item::Status { cluster, .. }
             | Item::Group { cluster, .. }
             | Item::Kind { cluster, .. }
-            | Item::View { cluster, .. } => cluster,
+            | Item::View { cluster, .. }
+            | Item::Row { cluster, .. } => cluster,
         }
     }
 }
@@ -124,6 +134,8 @@ pub struct ClustersSection {
     filter: Option<Entity<InputState>>,
     counts: HashMap<StoreKey, StoreHandle>,
     rbac_requested: HashSet<(ClusterId, AccessQuery)>,
+    /// Expanded roots already connected at startup (a later manual disconnect sticks).
+    started: HashSet<ClusterId>,
     focus: FocusHandle,
     _count_observers: Vec<Subscription>,
     _subscriptions: Vec<Subscription>,
@@ -142,10 +154,19 @@ impl ClustersSection {
                 this.schedule_count_sync(cx);
                 cx.notify();
             }),
+            // Rows and root markers other crates add.
+            cx.observe_global::<catalog::ViewRows>(|_, cx| cx.notify()),
         ];
         if let Some(manager) = ConnectionManager::try_global(cx) {
             subscriptions.push(
                 cx.subscribe(&manager, |this, _, event: &ConnectionEvent, cx| {
+                    if matches!(
+                        event,
+                        ConnectionEvent::ContextsChanged | ConnectionEvent::Rekeyed { .. }
+                    ) {
+                        this.migrate_ids(cx);
+                        this.connect_expanded(cx);
+                    }
                     if matches!(
                         event,
                         ConnectionEvent::DiscoveryChanged(_)
@@ -160,20 +181,6 @@ impl ClustersSection {
             );
         }
         let state = State::get::<TreeState>(cx);
-        // Expanded roots connect on start.
-        if let Some(manager) = ConnectionManager::try_global(cx) {
-            let ids: Vec<ClusterId> = manager
-                .read(cx)
-                .contexts()
-                .filter(|c| state.roots.contains(c.id.as_str()))
-                .map(|c| c.id.clone())
-                .collect();
-            manager.update(cx, |m, cx| {
-                for id in &ids {
-                    m.ensure_connected(id, cx);
-                }
-            });
-        }
         let handle = window.window_handle();
         let weak = cx.weak_entity();
         cx.default_global::<Sections>().0.push((handle, weak));
@@ -183,12 +190,67 @@ impl ClustersSection {
             filter: None,
             counts: HashMap::new(),
             rbac_requested: HashSet::new(),
+            started: HashSet::new(),
             focus: cx.focus_handle(),
             _count_observers: Vec::new(),
             _subscriptions: subscriptions,
         };
+        // Expanded roots connect on start (now, or once the kubeconfigs are loaded).
+        this.migrate_ids(cx);
+        this.connect_expanded(cx);
         this.schedule_count_sync(cx);
         this
+    }
+
+    /// Keeps expanded roots and groups under the current cluster ids (contexts were grouped,
+    /// an entry was re-keyed).
+    fn migrate_ids(&mut self, cx: &mut Context<Self>) {
+        let Some(manager) = ConnectionManager::try_global(cx) else {
+            return;
+        };
+        let manager = manager.read(cx);
+        if manager.is_loading() {
+            return;
+        }
+        let resolve = |id: &str| manager.resolve(&ClusterId::new(id)).to_string();
+        let roots: std::collections::BTreeSet<String> =
+            self.state.roots.iter().map(|r| resolve(r)).collect();
+        let groups: std::collections::BTreeSet<String> = self
+            .state
+            .groups
+            .iter()
+            .map(|key| match key.rsplit_once('|') {
+                Some((cluster, group)) => format!("{}|{group}", resolve(cluster)),
+                None => key.clone(),
+            })
+            .collect();
+        if roots != self.state.roots || groups != self.state.groups {
+            self.state.roots = roots;
+            self.state.groups = groups;
+            self.save(cx);
+        }
+    }
+
+    /// Connects expanded roots that weren't connected yet this session.
+    fn connect_expanded(&mut self, cx: &mut Context<Self>) {
+        let Some(manager) = ConnectionManager::try_global(cx) else {
+            return;
+        };
+        let ids: Vec<ClusterId> = manager
+            .read(cx)
+            .contexts()
+            .filter(|c| self.state.roots.contains(c.id.as_str()) && !self.started.contains(&c.id))
+            .map(|c| c.id.clone())
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        self.started.extend(ids.iter().cloned());
+        manager.update(cx, |m, cx| {
+            for id in &ids {
+                m.ensure_connected(id, cx);
+            }
+        });
     }
 
     fn save(&self, cx: &mut App) {
@@ -256,7 +318,10 @@ impl ClustersSection {
         };
         let settings = Settings::get::<ExplorerSettings>(cx).clone();
         let query = self.filter_query(cx);
-        let contexts: Vec<ClusterId> = manager.read(cx).contexts().map(|c| c.id.clone()).collect();
+        let contexts = Self::roots(&settings, self.state.connected_only, cx);
+        let view_rows = catalog::view_rows(cx);
+        let row_order: Vec<(&'static str, &'static str)> =
+            view_rows.iter().map(|r| (r.id, r.after)).collect();
         let mut items = Vec::new();
         for cluster in contexts {
             items.push(Item::Root(cluster.clone()));
@@ -305,8 +370,21 @@ impl ClustersSection {
                     .as_ref()
                     .is_none_or(|q| label.to_lowercase().contains(q))
             };
-            for group_id in catalog::ordered_groups(&settings.group_order, &settings.hidden_groups)
-            {
+            for group_id in catalog::ordered_groups_with(
+                &settings.group_order,
+                &settings.hidden_groups,
+                &row_order,
+            ) {
+                if let Some(row) = view_rows.iter().find(|r| r.id == group_id) {
+                    let visible = row.visible.as_ref().is_none_or(|v| v(&cluster, cx));
+                    if visible && matches(row.label) {
+                        items.push(Item::Row {
+                            cluster: cluster.clone(),
+                            row: row.clone(),
+                        });
+                    }
+                    continue;
+                }
                 if group_id == CUSTOM {
                     let groups = catalog::custom_groups(&discovery);
                     let mut children = Vec::new();
@@ -438,6 +516,29 @@ impl ClustersSection {
             }
         }
         items
+    }
+
+    /// The cluster roots in the configured order; with "connected only", the connected and
+    /// connecting ones plus the active cluster.
+    fn roots(settings: &ExplorerSettings, connected_only: bool, cx: &App) -> Vec<ClusterId> {
+        let Some(manager) = ConnectionManager::try_global(cx) else {
+            return Vec::new();
+        };
+        let manager = manager.read(cx);
+        let roots = manager
+            .contexts()
+            .map(|c| {
+                let state = manager.state(&c.id);
+                let live = state.is_connected() || state == ConnectionState::Connecting;
+                (c.id.clone(), manager.display_name(&c.id).to_string(), live)
+            })
+            .collect();
+        order_roots(
+            roots,
+            settings.cluster_order,
+            connected_only,
+            manager.active(),
+        )
     }
 
     fn schedule_count_sync(&mut self, cx: &mut Context<Self>) {
@@ -581,6 +682,16 @@ impl ClustersSection {
                     cx,
                 );
             }
+            Item::Row { cluster, row } => {
+                Self::activate_cluster(cluster, cx);
+                window.dispatch_action(
+                    Box::new(OpenView(ViewRequest::for_resource(
+                        row.kind.clone(),
+                        ResourceRef::list(cluster.clone(), Gvr::new("", "", ""), None),
+                    ))),
+                    cx,
+                );
+            }
             Item::View { cluster, entry, .. } => {
                 Self::activate_cluster(cluster, cx);
                 // The cluster's Overview is cluster-wide; a namespace makes it the namespace
@@ -694,40 +805,37 @@ impl ClustersSection {
                     .root(true)
                     .expanded(Some(self.is_expanded_root(cluster)))
                     .icon(IconName::ShipWheel)
-                    .icon_color(if matches!(state, ConnectionState::Unreachable { .. }) {
-                        colors.text_faint
-                    } else {
-                        color
-                    })
+                    .icon_color(color)
                     .selected(selected);
                 if production {
                     row = row.end_child(ProdBadge);
                 }
-                row = match &state {
-                    ConnectionState::AuthRequired { .. } => {
-                        row.end_child(Icon::new(IconName::Key).size(12.0).color(colors.yellow))
-                    }
-                    ConnectionState::Unreachable { .. } => row.end_child(
+                for (ix, marker) in catalog::root_markers(cluster, cx).into_iter().enumerate() {
+                    let tooltip = marker.tooltip.clone();
+                    row = row.end_child(
                         div()
-                            .text_size(u(11.0))
-                            .text_color(colors.red)
-                            .child("offline"),
-                    ),
-                    ConnectionState::Forbidden(_) => row.end_child(
-                        div()
-                            .text_size(u(11.0))
-                            .text_color(colors.red)
-                            .child("forbidden"),
-                    ),
-                    ConnectionState::Connecting => row.end_child(
-                        div()
-                            .text_size(u(11.0))
-                            .text_color(colors.text_dim)
-                            .child("…"),
-                    ),
-                    _ => row,
-                };
-                row
+                            .id(SharedString::from(format!("marker-{cluster}-{ix}")))
+                            .flex()
+                            .child(
+                                Icon::new(marker.icon)
+                                    .size(12.0)
+                                    .color(kubyl_ui::tone_color(marker.tone, &colors)),
+                            )
+                            .tooltip(move |window, cx| {
+                                gpui_component::tooltip::Tooltip::new(tooltip.clone())
+                                    .build(window, cx)
+                            }),
+                    );
+                }
+                let tip = cluster.clone();
+                row.end_child(status_slot(cluster, &state, &colors))
+                    .tooltip(move |window, cx| {
+                        let tip = tip.clone();
+                        gpui_component::tooltip::Tooltip::element(move |_, cx| {
+                            cluster_tooltip(&tip, cx)
+                        })
+                        .build(window, cx)
+                    })
             }
             Item::Status { text, sign_in, .. } => TreeRow::new(id, text.clone())
                 .depth(1)
@@ -785,6 +893,28 @@ impl ClustersSection {
                 .depth(*depth)
                 .icon(entry.icon)
                 .selected(selected),
+            Item::Row { cluster, row } => {
+                let tree_row = TreeRow::new(id, row.label)
+                    .depth(1)
+                    .icon(row.icon)
+                    .selected(selected);
+                match row.badge.as_ref().and_then(|badge| badge(cluster, cx)) {
+                    Some(RowBadge::Count { text, tone }) => tree_row.end_child(
+                        div()
+                            .px(u(5.0))
+                            .rounded(u(8.0))
+                            .bg(kubyl_ui::tone_color(tone, &colors))
+                            .text_size(u(10.5))
+                            .font_family(fonts::MONO)
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(colors.on_accent)
+                            .child(text),
+                    ),
+                    Some(RowBadge::Check) => tree_row
+                        .end_child(Icon::new(IconName::Check).size(12.0).color(colors.green)),
+                    None => tree_row,
+                }
+            }
         };
         let item_for_click = item.clone();
         let root_menu = match item {
@@ -802,6 +932,18 @@ impl ClustersSection {
                 .context_menu(move |menu, _, cx| {
                     let connected = ConnectionManager::try_global(cx)
                         .is_some_and(|m| m.read(cx).state(&cluster).is_connected());
+                    // A group can show its contexts separately; a context of such a group can
+                    // go back to one entry.
+                    // "Show as One Cluster" only while grouping is on (with it off, the click
+                    // would have no effect).
+                    let grouping_on =
+                        kubyl_settings::Settings::get::<kubyl_kube::settings::KubeSettings>(cx)
+                            .group_contexts;
+                    let grouping = ConnectionManager::try_global(cx).and_then(|m| {
+                        let entry = m.read(cx).context(&cluster)?;
+                        let group = entry.group.clone()?;
+                        (entry.is_group() || grouping_on).then_some((group, entry.is_group()))
+                    });
                     let switch = cluster.clone();
                     let toggle = cluster.clone();
                     let favorite = cluster.clone();
@@ -842,6 +984,19 @@ impl ClustersSection {
                             crate::actions::add_favorite(&favorite, &namespace, cx);
                         }),
                     )
+                    .when_some(grouping, |menu, (group, grouped)| {
+                        menu.item(
+                            gpui_component::menu::PopupMenuItem::new(if grouped {
+                                "Show Contexts Separately"
+                            } else {
+                                "Show as One Cluster"
+                            })
+                            .on_click(move |_, _, cx| {
+                                ConnectionManager::global(cx)
+                                    .update(cx, |m, cx| m.set_group_separate(&group, grouped, cx));
+                            }),
+                        )
+                    })
                     .separator()
                     .menu(
                         "Clusters & Kubeconfigs…",
@@ -852,6 +1007,213 @@ impl ClustersSection {
             None => row.into_any_element(),
         }
     }
+}
+
+impl ClustersSection {
+    /// `● 4 of 9` in the section header: shows only connected clusters while on.
+    fn connected_toggle(&self, colors: &Colors, cx: &mut Context<Self>) -> impl IntoElement {
+        let (connected, total) = ConnectionManager::try_global(cx)
+            .map(|m| {
+                let m = m.read(cx);
+                let total = m.contexts().count();
+                let connected = m
+                    .contexts()
+                    .filter(|c| m.state(&c.id).is_connected())
+                    .count();
+                (connected, total)
+            })
+            .unwrap_or_default();
+        let on = self.state.connected_only;
+        let hover = colors.hover;
+        h_flex()
+            .id("connected-only")
+            .gap(u(4.0))
+            .px(u(4.0))
+            .rounded(u(3.0))
+            .font_weight(gpui::FontWeight::NORMAL)
+            .text_color(if on { colors.accent } else { colors.text_faint })
+            .when(on, |this| this.bg(colors.selection))
+            .hover(move |s| s.bg(hover))
+            .child(StatusDot::new(colors.green))
+            .child(format!("{connected} of {total}"))
+            .tooltip(move |window, cx| {
+                gpui_component::tooltip::Tooltip::new(if on {
+                    "Showing connected clusters only · click to show all"
+                } else {
+                    "Show connected clusters only"
+                })
+                .build(window, cx)
+            })
+            .on_click(cx.listener(|this, _, _, cx| {
+                cx.stop_propagation();
+                this.state.connected_only = !this.state.connected_only;
+                this.save(cx);
+                this.schedule_count_sync(cx);
+                cx.notify();
+            }))
+    }
+}
+
+/// Sorts cluster roots `(id, display name, connected or connecting)` and, with `connected_only`,
+/// keeps the live ones and the active cluster.
+fn order_roots(
+    mut roots: Vec<(ClusterId, String, bool)>,
+    order: ClusterOrder,
+    connected_only: bool,
+    active: Option<&ClusterId>,
+) -> Vec<ClusterId> {
+    roots.retain(|(id, _, live)| !connected_only || *live || Some(id) == active);
+    let key = |name: &str| name.to_lowercase();
+    match order {
+        ClusterOrder::Name => roots.sort_by_key(|a| key(&a.1)),
+        ClusterOrder::ConnectedFirst => {
+            roots.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| key(&a.1).cmp(&key(&b.1))))
+        }
+    }
+    roots.into_iter().map(|(id, _, _)| id).collect()
+}
+
+/// The connection state at the right end of a cluster row: a green dot when connected, a
+/// pulsing dim dot while connecting, the yellow key when a sign-in is needed, a red dot when
+/// unreachable or forbidden, nothing when not connected. The error is in the tooltip.
+pub(crate) fn status_slot(
+    cluster: &ClusterId,
+    state: &ConnectionState,
+    colors: &Colors,
+) -> impl IntoElement {
+    let inner = match state {
+        ConnectionState::Connected { .. } => Some(StatusDot::new(colors.green).into_any_element()),
+        ConnectionState::Connecting => Some(
+            StatusDot::new(colors.text_dim)
+                .pulsing(SharedString::from(format!("connecting-{cluster}")))
+                .into_any_element(),
+        ),
+        ConnectionState::AuthRequired { .. } => Some(
+            Icon::new(IconName::Key)
+                .size(12.0)
+                .color(colors.yellow)
+                .into_any_element(),
+        ),
+        ConnectionState::Unreachable { .. } | ConnectionState::Forbidden(_) => {
+            Some(StatusDot::new(colors.red).into_any_element())
+        }
+        ConnectionState::Disconnected => None,
+    };
+    h_flex()
+        .flex_none()
+        .w(u(12.0))
+        .justify_center()
+        .children(inner)
+}
+
+/// One line about a cluster's connection, for tooltips: `Connected · 38 ms · v1.33.1`, the
+/// error with the next retry, `Sign-in required`…
+pub(crate) fn state_line(state: &ConnectionState) -> String {
+    match state {
+        ConnectionState::Connected { latency, version } => {
+            format!("Connected · {} ms · {version}", latency.as_millis().max(1))
+        }
+        ConnectionState::Connecting => "Connecting…".into(),
+        ConnectionState::Disconnected => "Not connected · expand to connect".into(),
+        ConnectionState::AuthRequired { sign_in: true, .. } => {
+            "Sign-in required · click the status row to sign in".into()
+        }
+        ConnectionState::AuthRequired { message, .. } => {
+            format!("Authentication failed: {message}")
+        }
+        ConnectionState::Unreachable { message, retry_in } => match retry_in {
+            Some(delay) => format!(
+                "Unreachable: {message} · retrying within {}s",
+                delay.as_secs().max(1)
+            ),
+            None => format!("Unreachable: {message}"),
+        },
+        ConnectionState::Forbidden(message) => format!("Forbidden: {message}"),
+    }
+}
+
+/// The tooltip of a cluster row: its name, the connection state and where it comes from.
+fn cluster_tooltip(cluster: &ClusterId, cx: &App) -> gpui::AnyElement {
+    let colors = cx.colors().clone();
+    let Some(manager) = ConnectionManager::try_global(cx) else {
+        return div().into_any_element();
+    };
+    let manager = manager.read(cx);
+    let state = manager.state(cluster);
+    let dot = match &state {
+        ConnectionState::Connected { .. } => Some(colors.green),
+        ConnectionState::Connecting | ConnectionState::Disconnected => Some(colors.text_faint),
+        ConnectionState::AuthRequired { .. } => Some(colors.yellow),
+        _ => Some(colors.red),
+    };
+    let info = manager.context(cluster);
+    let source = info
+        .map(|c| kubyl_kube::settings::display_path(&c.file))
+        .unwrap_or_default();
+    let mono = |text: String, color| {
+        div()
+            .font_family(fonts::MONO)
+            .text_size(u(11.0))
+            .text_color(color)
+            .child(text)
+    };
+    let mut tip = v_flex()
+        .py(u(4.0))
+        .gap(u(3.0))
+        .max_w(u(460.0))
+        .text_size(u(12.0))
+        .child(
+            div()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .child(manager.display_name(cluster)),
+        )
+        .child(
+            h_flex()
+                .gap(u(6.0))
+                .text_color(colors.text_muted)
+                .children(dot.map(StatusDot::new))
+                .child(div().min_w_0().child(state_line(&state))),
+        );
+    let Some(info) = info.filter(|i| i.is_group()) else {
+        return tip.child(mono(source, colors.text_dim)).into_any_element();
+    };
+    // A group: who it signs in as, and the contexts it stands for.
+    tip = tip
+        .child(div().text_color(colors.text_dim).child(format!(
+            "User {} on {}",
+            info.user.clone().unwrap_or_default(),
+            info.server.clone().unwrap_or_default()
+        )))
+        .child(div().pt(u(3.0)).text_color(colors.text_dim).child(format!(
+            "{} contexts in {source}, shown as one cluster:",
+            info.members.len()
+        )));
+    const SHOWN: usize = 6;
+    for member in info.members.iter().take(SHOWN) {
+        tip = tip.child(
+            h_flex()
+                .gap(u(10.0))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(mono(member.context.clone(), colors.text_muted)),
+                )
+                .child(mono(
+                    member.namespace.clone().unwrap_or_else(|| "default".into()),
+                    colors.text_dim,
+                )),
+        );
+    }
+    if info.members.len() > SHOWN {
+        tip = tip.child(
+            div()
+                .text_color(colors.text_dim)
+                .child(format!("and {} more", info.members.len() - SHOWN)),
+        );
+    }
+    tip.into_any_element()
 }
 
 impl Focusable for ClustersSection {
@@ -906,6 +1268,7 @@ impl Render for ClustersSection {
             .child(
                 SectionHeader::new("clusters", "Clusters")
                     .collapsed(collapsed)
+                    .end_child(self.connected_toggle(&colors, cx))
                     .on_toggle(cx.listener(|this, _, _, cx| {
                         if !this.state.collapsed_sections.remove("clusters") {
                             this.state.collapsed_sections.insert("clusters".into());
@@ -945,8 +1308,86 @@ impl Render for ClustersSection {
                         .text_size(u(12.0))
                         .text_color(colors.text_dim)
                         .font_family(fonts::UI)
-                        .child("No kubeconfig contexts. Add one with + above."),
+                        .child(if self.state.connected_only {
+                            "No connected clusters. Turn off \"connected only\" in the header."
+                        } else {
+                            "No kubeconfig contexts. Add one with + above."
+                        }),
                 )
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    fn roots() -> Vec<(ClusterId, String, bool)> {
+        vec![
+            (ClusterId::new("s"), "staging".into(), false),
+            (ClusterId::new("k"), "Kind-dev".into(), true),
+            (ClusterId::new("p"), "prod".into(), true),
+            (ClusterId::new("a"), "aks-lab".into(), false),
+        ]
+    }
+
+    fn names(ids: Vec<ClusterId>) -> Vec<String> {
+        ids.into_iter().map(|id| id.to_string()).collect()
+    }
+
+    #[test]
+    fn roots_sort_by_name_or_connected_first() {
+        assert_eq!(
+            names(order_roots(roots(), ClusterOrder::Name, false, None)),
+            ["a", "k", "p", "s"]
+        );
+        assert_eq!(
+            names(order_roots(
+                roots(),
+                ClusterOrder::ConnectedFirst,
+                false,
+                None
+            )),
+            ["k", "p", "a", "s"]
+        );
+    }
+
+    #[test]
+    fn connected_only_keeps_the_active_cluster() {
+        let active = ClusterId::new("s");
+        assert_eq!(
+            names(order_roots(
+                roots(),
+                ClusterOrder::Name,
+                true,
+                Some(&active)
+            )),
+            ["k", "p", "s"]
+        );
+        assert_eq!(
+            names(order_roots(roots(), ClusterOrder::Name, true, None)),
+            ["k", "p"]
+        );
+    }
+
+    #[test]
+    fn state_lines_explain_the_dot() {
+        let connected = ConnectionState::Connected {
+            latency: Duration::from_millis(38),
+            version: "v1.33.1".into(),
+        };
+        assert_eq!(state_line(&connected), "Connected · 38 ms · v1.33.1");
+        let unreachable = ConnectionState::Unreachable {
+            message: "connection refused".into(),
+            retry_in: Some(Duration::from_secs(20)),
+        };
+        assert_eq!(
+            state_line(&unreachable),
+            "Unreachable: connection refused · retrying within 20s"
+        );
+        assert!(state_line(&ConnectionState::Forbidden("no".into())).starts_with("Forbidden"));
+        assert!(state_line(&ConnectionState::Disconnected).starts_with("Not connected"));
     }
 }

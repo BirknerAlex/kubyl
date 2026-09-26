@@ -25,7 +25,8 @@ use kubyl_charts::{
 };
 use kubyl_core::actions::{OpenSettings, OpenView};
 use kubyl_core::{
-    ActiveContext, ClusterId, Gvr, ResourceRef, TabView, Tone, ViewKind, ViewRequest,
+    ActiveContext, ChromeRegistry, ClusterId, Gvr, ResourceRef, TabView, Tone, ViewKind,
+    ViewRequest,
 };
 use kubyl_kube::ConnectionManager;
 use kubyl_kube::cluster_info::Distribution;
@@ -277,6 +278,9 @@ pub struct OverviewView {
     selected_node: Option<String>,
     focus: FocusHandle,
     _ticker: Task<()>,
+    /// Sections other crates add below the KPI tiles (`ChromeRegistry::add_overview_section`),
+    /// built per scope.
+    sections: Vec<gpui::AnyView>,
     /// Observers of the scope's stores and feed, replaced when the scope changes.
     _scope: Vec<Subscription>,
     _subscriptions: Vec<Subscription>,
@@ -334,6 +338,7 @@ impl OverviewView {
             feed: None,
             charts: Vec::new(),
             selected_node: None,
+            sections: Vec::new(),
             focus: cx.focus_handle(),
             _ticker: ticker,
             _scope: Vec::new(),
@@ -347,6 +352,11 @@ impl OverviewView {
     fn set_namespace(&mut self, namespace: Option<String>, cx: &mut Context<Self>) {
         self.namespace = namespace.clone();
         self._scope.clear();
+        let builders: Vec<_> = ChromeRegistry::global(cx).overview_sections().to_vec();
+        self.sections = builders
+            .iter()
+            .filter_map(|section| section.build(&self.cluster, namespace.as_deref(), cx))
+            .collect();
         let cluster = self.cluster.clone();
         let key = |resource: &str, group: &str, ns: Option<String>| {
             StoreKey::new(cluster.clone(), Gvr::new(group, "v1", resource), ns)
@@ -1654,6 +1664,7 @@ impl Render for OverviewView {
             .gap(u(14.0))
             .child(self.header(&source, cx))
             .child(self.kpis(&totals, usage, &source, cx))
+            .children(self.sections.iter().cloned())
             .child(self.charts(&source, cx))
             .map(|this| match self.namespace {
                 None => this.child(self.nodes_card(&pods, cx)),

@@ -186,6 +186,8 @@ mod tests {
             tls_server_name: None,
             ca: CaSource::System,
             error: None,
+            members: Vec::new(),
+            group: None,
         }
     }
 

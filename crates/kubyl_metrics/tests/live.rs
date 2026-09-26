@@ -263,9 +263,16 @@ async fn service_account_tokens_and_missing_routes() {
         route_url(&client, "monitoring", "kube-prometheus-stack-prometheus").await,
         None
     );
-    let target = Target::service("monitoring", "kube-prometheus-stack-prometheus", "9090");
-    let err = through_route(&client, &target, None, None)
-        .await
-        .unwrap_err();
+    let err = through_route(
+        &client,
+        "monitoring",
+        "kube-prometheus-stack-prometheus",
+        "",
+        None,
+        None,
+        "/api/v1/query?query=vector%281%29",
+    )
+    .await
+    .unwrap_err();
     assert!(err.contains("has no Route"), "{err}");
 }

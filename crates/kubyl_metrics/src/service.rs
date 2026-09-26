@@ -527,6 +527,20 @@ impl MetricsService {
             .or_else(|| state.nodes_fetch.error.clone())
     }
 
+    /// The Prometheus client phase 07 found for the cluster (service proxy, URL or Route, with
+    /// the same auth), for other APIs of the same server (`/api/v1/alerts`, `/api/v1/rules`).
+    /// Asking keeps detection going; `None` while there's none (yet).
+    pub fn prometheus(&self, cluster: &ClusterId) -> Option<PromClient> {
+        self.demand
+            .borrow_mut()
+            .source
+            .insert(cluster.clone(), Instant::now());
+        let state = self.clusters.get(cluster)?;
+        matches!(state.source, Source::Prometheus { .. })
+            .then(|| state.prom.clone())
+            .flatten()
+    }
+
     /// Whether the cluster's Prometheus has series named `metric` (node-exporter, PSI…).
     pub fn has_metric(&self, cluster: &ClusterId, metric: &str) -> bool {
         self.clusters
@@ -632,20 +646,17 @@ impl MetricsService {
             return;
         };
         let manager = ConnectionManager::global(cx);
-        let (context, metrics_server, user_token) = {
+        let (keys, metrics_server, user_token) = {
             let manager = manager.read(cx);
             (
-                manager
-                    .context(cluster)
-                    .map(|c| c.context.clone())
-                    .unwrap_or_default(),
+                manager.settings_keys(cluster),
                 manager.caps(cluster).metrics_server,
                 manager.bearer_token(cluster),
             )
         };
         let settings = self.settings.clone();
         let override_ = settings
-            .prometheus_for(cluster.as_str(), &context)
+            .prometheus_for_keys(&keys)
             .cloned()
             .unwrap_or_default();
         let generation = state.generation;
@@ -656,10 +667,15 @@ impl MetricsService {
             state.source.clone()
         };
         state.detected_at = Some(Instant::now());
-        let auth_key = auth_key(cluster);
+        // The header saved for the entry, else for one of its contexts (before grouping).
+        let auth_keys: Vec<String> = keys
+            .iter()
+            .filter(|k| k.contains('@'))
+            .map(|k| auth_key(&ClusterId::new(k.as_str())))
+            .collect();
         let task = spawn_kube(cx, async move {
             let auth = Credentials {
-                keychain_key: auth_key,
+                keychain_keys: auth_keys,
                 user_token,
             };
             detect(client, settings, override_, auth, metrics_server).await
@@ -1201,8 +1217,8 @@ enum Detected {
 
 /// What detection may authenticate with. Never logged.
 struct Credentials {
-    /// Keychain entry of the Authorization header for an external URL.
-    keychain_key: String,
+    /// Keychain entries of the Authorization header for an external URL, first found wins.
+    keychain_keys: Vec<String>,
     /// The user's own bearer token, for Services behind an auth proxy (OpenShift).
     user_token: Option<kubyl_kube::auth::BearerToken>,
 }
@@ -1273,18 +1289,48 @@ async fn find_prometheus(
             if !trusted {
                 return Err(err.to_string());
             }
-            openshift::through_route(client, &target, user, service_account)
-                .await
-                .map_err(|route| format!("{err} through the API server ({route})"))
+            let Target::Service {
+                namespace,
+                service,
+                path,
+                ..
+            } = &target
+            else {
+                return Err(err.to_string());
+            };
+            openshift::through_route(
+                client,
+                namespace,
+                service,
+                path,
+                user,
+                service_account,
+                "/api/v1/query?query=vector%281%29",
+            )
+            .await
+            .map(|routed| {
+                PromClient::from_transport(
+                    routed.transport,
+                    Target::Route {
+                        namespace: namespace.clone(),
+                        service: service.clone(),
+                        url: routed.url,
+                    },
+                )
+            })
+            .map_err(|route| format!("{err} through the API server ({route})"))
         }
     };
     if let Some(url) = &override_.url {
-        let auth_key = auth.keychain_key.clone();
-        let header = tokio::task::spawn_blocking(move || kubyl_kube::auth::store::get(&auth_key))
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .flatten();
+        let auth_keys = auth.keychain_keys.clone();
+        let header = tokio::task::spawn_blocking(move || {
+            auth_keys
+                .iter()
+                .find_map(|key| kubyl_kube::auth::store::get(key).ok().flatten())
+        })
+        .await
+        .ok()
+        .flatten();
         let prom = PromClient::external(url, override_.insecure_skip_tls_verify, header.as_ref())
             .map_err(|e| format!("Prometheus at {url}: {e}"))?;
         return match prom.probe(Duration::from_secs(8)).await {

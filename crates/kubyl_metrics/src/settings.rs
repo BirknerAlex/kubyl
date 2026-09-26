@@ -105,6 +105,13 @@ impl MetricsSettings {
             .get(cluster_id)
             .or_else(|| self.prometheus.get(context))
     }
+
+    /// The override for a cluster entry by the first of its keys that has one
+    /// (`ConnectionManager::settings_keys`: the entry's id, its members' ids, their context
+    /// names), so overrides set for a context keep working once it's grouped.
+    pub fn prometheus_for_keys(&self, keys: &[String]) -> Option<&PrometheusOverride> {
+        keys.iter().find_map(|key| self.prometheus.get(key))
+    }
 }
 
 #[cfg(test)]
@@ -127,6 +134,14 @@ mod tests {
                 .is_some()
         );
         assert!(settings.prometheus_for("other@/tmp/k", "other").is_none());
+        // A group finds what was set for one of its contexts.
+        let keys = [
+            "group:c,u@/tmp/k/".to_string(),
+            "shop/c/u@/tmp/k".to_string(),
+            "kind-dev".to_string(),
+        ];
+        assert!(settings.prometheus_for_keys(&keys).is_some());
+        assert!(settings.prometheus_for_keys(&keys[..2]).is_none());
         let json = serde_json::to_value(&settings).unwrap();
         assert_eq!(json["source"], "auto");
         assert_eq!(

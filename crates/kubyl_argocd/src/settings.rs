@@ -56,13 +56,28 @@ pub struct ContextKey {
 }
 
 impl ContextKey {
+    /// The key of a cluster entry: its context name, or a group's own key (see
+    /// `ContextInfo::stable_key`). An install confirmed with one of a group's contexts (before
+    /// they were grouped) keeps its key, so its trust and its token stay.
     pub fn of(cluster: &ClusterId, cx: &App) -> Option<Self> {
         let manager = ConnectionManager::try_global(cx)?;
         let info = manager.read(cx).context(cluster)?.clone();
-        Some(Self {
-            context: info.context,
-            server: info.server,
-        })
+        let key = Self {
+            context: info.stable_key(),
+            server: info.server.clone(),
+        };
+        if info.is_group() {
+            let trusted = State::get::<ArgoState>(cx).trusted;
+            if !trusted.iter().any(|t| t.context == key)
+                && let Some(member) = trusted.iter().find(|t| {
+                    t.context.server == info.server
+                        && info.member_names().any(|name| name == t.context.context)
+                })
+            {
+                return Some(member.context.clone());
+            }
+        }
+        Some(key)
     }
 }
 

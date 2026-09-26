@@ -104,13 +104,25 @@ pub enum CaSource {
     Inline,
 }
 
-/// A context from one of the kubeconfig files, with what the UI needs to show it.
+/// One kubeconfig context an entry stands for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Member {
+    /// The context's own id (`<context>@<file>`).
+    pub id: ClusterId,
+    pub context: String,
+    pub namespace: Option<String>,
+}
+
+/// A context from one of the kubeconfig files, with what the UI needs to show it. Also a
+/// cluster entry of the sidebar: a context, or a group of contexts that differ only in their
+/// namespace (see [`crate::groups`]).
 ///
 /// Contains no credentials: tokens and keys stay in the parsed [`Kubeconfig`].
 #[derive(Clone, Debug)]
 pub struct ContextInfo {
     pub id: ClusterId,
     /// Unique name across all sources: the context name, plus `@<file-stem>` on a collision.
+    /// For entries: the label (`ocp.eu1.example.com · jane`, see [`crate::groups::label`]).
     pub name: String,
     /// The context name inside its kubeconfig.
     pub context: String,
@@ -131,12 +143,43 @@ pub struct ContextInfo {
     pub ca: CaSource,
     /// The context references a missing cluster or user.
     pub error: Option<String>,
+    /// The contexts this entry stands for: itself, or every member of a group (the file's
+    /// current context first, then by name). A group connects with its first member by name
+    /// (`context`).
+    pub members: Vec<Member>,
+    /// The group of a context with siblings: the entry's own id for a group, the group's id for
+    /// a context shown separately.
+    pub group: Option<ClusterId>,
 }
 
 impl ContextInfo {
     /// `<context>@<file>`: stable as long as the file and context name don't change.
     pub fn make_id(context: &str, file: &Path) -> ClusterId {
         ClusterId::new(format!("{context}@{}", file.display()))
+    }
+
+    /// A group of contexts that differ only in their namespace.
+    pub fn is_group(&self) -> bool {
+        self.members.len() > 1
+    }
+
+    /// The context names of the members.
+    pub fn member_names(&self) -> impl Iterator<Item = &str> {
+        self.members.iter().map(|m| m.context.as_str())
+    }
+
+    /// A name to key things by across restarts (with the server URL): the context name, or for
+    /// a group `<cluster entry>/<user entry>`, which `oc project` doesn't change.
+    pub fn stable_key(&self) -> String {
+        if self.is_group() {
+            format!(
+                "{}/{}",
+                self.cluster,
+                self.user.as_deref().unwrap_or_default()
+            )
+        } else {
+            self.context.clone()
+        }
     }
 }
 
@@ -431,8 +474,15 @@ fn build_info(
         },
         None => CaSource::System,
     };
+    let id = ContextInfo::make_id(context_name, file);
     ContextInfo {
-        id: ContextInfo::make_id(context_name, file),
+        members: vec![Member {
+            id: id.clone(),
+            context: context_name.to_string(),
+            namespace: context.namespace.clone(),
+        }],
+        group: None,
+        id,
         name,
         context: context_name.to_string(),
         file: file.to_path_buf(),

@@ -94,6 +94,27 @@ impl ApplyHistory {
             .unwrap_or_default()
     }
 
+    /// The entries of several keys (an entry id and the ids its contexts had before they were
+    /// grouped), newest first, each apply once.
+    pub fn entries_of(cx: &App, keys: &[String]) -> Vec<HistoryEntry> {
+        let history = State::get::<Self>(cx);
+        history.combined(keys)
+    }
+
+    fn combined(&self, keys: &[String]) -> Vec<HistoryEntry> {
+        let mut entries: Vec<HistoryEntry> = keys
+            .iter()
+            .filter_map(|key| self.objects.iter().find(|o| &o.key == key))
+            .flat_map(|o| o.entries.iter().cloned())
+            .collect();
+        // RFC 3339 in UTC sorts as text; newest first.
+        entries.sort_by(|a, b| b.applied_at.cmp(&a.applied_at));
+        let mut seen = std::collections::HashSet::new();
+        entries.retain(|e| seen.insert((e.applied_at.clone(), e.yaml.clone())));
+        entries.truncate(HISTORY_VERSIONS);
+        entries
+    }
+
     /// Records an apply. `kind` guards against ever storing Secret data.
     pub fn record(cx: &mut App, key: String, kind: &str, yaml: String) {
         if kind == "Secret" || yaml.len() > HISTORY_MAX_BYTES {
@@ -128,6 +149,51 @@ impl ApplyHistory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn histories_of_an_entry_and_its_former_contexts_combine() {
+        let entry = |at: &str, yaml: &str| HistoryEntry {
+            applied_at: at.into(),
+            yaml: yaml.into(),
+        };
+        let history = ApplyHistory {
+            objects: vec![
+                ObjectHistory {
+                    key: "group:c,u@/k/|/configmaps|ns|x".into(),
+                    entries: vec![entry("2026-09-26T12:00:00Z", "v3")],
+                },
+                ObjectHistory {
+                    key: "a/c/u@/k|/configmaps|ns|x".into(),
+                    entries: vec![
+                        entry("2026-09-25T12:00:00Z", "v2"),
+                        entry("2026-09-24T12:00:00Z", "v1"),
+                    ],
+                },
+                ObjectHistory {
+                    key: "b/c/u@/k|/configmaps|ns|x".into(),
+                    entries: vec![
+                        entry("2026-09-25T12:00:00Z", "v2"),
+                        entry("2026-09-23T12:00:00Z", "v0"),
+                    ],
+                },
+            ],
+        };
+        let keys = [
+            "group:c,u@/k/|/configmaps|ns|x".to_string(),
+            "a/c/u@/k|/configmaps|ns|x".to_string(),
+            "b/c/u@/k|/configmaps|ns|x".to_string(),
+        ];
+        let yamls: Vec<String> = history
+            .combined(&keys)
+            .into_iter()
+            .map(|e| e.yaml)
+            .collect();
+        assert_eq!(
+            yamls,
+            ["v3", "v2", "v1", "v0"],
+            "all of them, the duplicate once"
+        );
+    }
 
     #[test]
     fn history_keeps_the_newest_versions() {
