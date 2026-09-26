@@ -2,6 +2,92 @@
 
 All notable changes to Kubyl are documented here.
 
+## [0.2.2] - 2026-09-26
+
+### Cargo.lock
+
+- Kubyl_alerts at the workspace version 0.2.1 (after merging main) ([467ee10](https://github.com/BirknerAlex/kubyl/commit/467ee106a77afd617d1c86d02f2288da2d5c9907))
+
+### Design
+
+- Boards 16 · alerts and 17 · cluster status, grouped contexts, ConfigMap data; status dots on every sidebar ([bbba219](https://github.com/BirknerAlex/kubyl/commit/bbba219847cf338b3070f292a2a7b9f535257dc1))
+
+### Kubyl
+
+- Tabs follow their cluster when its id changes (grouped contexts) and are saved with current ids ([37543f0](https://github.com/BirknerAlex/kubyl/commit/37543f0555c6bdf2a33ba3beb3a8cdbe157b0bd2))
+- Tabs with unsaved changes aren't rebuilt when cluster ids change (review) ([b97bee3](https://github.com/BirknerAlex/kubyl/commit/b97bee3c4f5989a77019224bef2341cdd00994c6))
+
+### Kubyl_alerts
+
+- Stub crate for alerts (phase 14) ([5decb38](https://github.com/BirknerAlex/kubyl/commit/5decb3822c8b15c6e7f87b48fa2a38dadc7eaa5a))
+- Settings, model and parsers, matchers, merge, discovery and the Alertmanager client (phase 14) ([012b8d8](https://github.com/BirknerAlex/kubyl/commit/012b8d84b1317f1ea40541532a3aa3ce2ca299fb))
+- The alerts service, the Alerts view (alerts, silences, rules), the silence editor and the chrome; alertmanager-dev.sh and live tests (phase 14) ([5622f62](https://github.com/BirknerAlex/kubyl/commit/5622f629024bc5a07a8639bea269d249f4234e76))
+- Readable values, source column, collapsible rule groups; tests for transitions, notifications, optimistic writes, 5,000 alerts and Debug output (phase 14) ([3b636a5](https://github.com/BirknerAlex/kubyl/commit/3b636a551fa6ac4c7dd21099a237cd362fef1205))
+- List silenced and inhibited alerts after the active ones, marked as firing with a bell-off or eye-off icon (phase 14) ([c661964](https://github.com/BirknerAlex/kubyl/commit/c661964edb02fbea7118b74b18789197f4798536))
+- Silence dialog and filters at the UI text size, the preview visible, wrapped PROD warning; overview card aligned with the tiles (phase 14) ([62a9b44](https://github.com/BirknerAlex/kubyl/commit/62a9b44181c8bd8da1bdbb1d6df92dd8fd01d156))
+- Keychain headers keyed by the API URL (with path, without trailing slash); no overflow in durations; service updates don't keep hidden tabs at the fast pace (review) ([4bf427e](https://github.com/BirknerAlex/kubyl/commit/4bf427e6b5cbf21868316eac028b814fca338823))
+
+### Kubyl_argocd
+
+- Confirmed installs keep their key when contexts are grouped (phase 15 follow-up) ([dee001c](https://github.com/BirknerAlex/kubyl/commit/dee001cea1b40fe1d7855f297de2f90be8b954c5))
+
+### Kubyl_core
+
+- ClusterIds resolves out-of-date cluster ids; ViewRegistry::build uses current ids (phase 15) ([569a5bc](https://github.com/BirknerAlex/kubyl/commit/569a5bcdc097d5a5b797b5e64ab1bd47cc3b8137))
+
+### Kubyl_explorer
+
+- Connection status slot and tooltip on cluster rows, faint favorites while disconnected, cluster order and "connected only"; expanded roots connect once kubeconfigs are loaded ([51599d7](https://github.com/BirknerAlex/kubyl/commit/51599d71537e0f27ae57eed0fb4dd9d93ca5207f))
+- ConfigMap data in the details (blocks per key, formats, YAML highlighting, binaryData, key filter, copy all), "Used by" for ConfigMaps and Secrets, multi-line revealed Secret values ([3474e1b](https://github.com/BirknerAlex/kubyl/commit/3474e1b90256319ce40b39aa5af959db47ad2c41))
+- Grouped clusters in the sidebar (member tooltip, show separately), favorites and the namespace picker resolve to entries ([eb0bcef](https://github.com/BirknerAlex/kubyl/commit/eb0bcefc197e8d465cd24d8229efd513dc59cda7))
+- Rows other crates add under each cluster (register_view_row, with a badge, following group_order and hidden_groups) and markers on cluster root rows (phase 14) ([aede899](https://github.com/BirknerAlex/kubyl/commit/aede899bc0196ad31742a905f37ece422ac391eb))
+- Keep the watched ConfigMap/Secret object on repeated selections, escape backticks in .env exports, no "Show as One Cluster" while grouping is off (review) ([e0ac831](https://github.com/BirknerAlex/kubyl/commit/e0ac83184568aae30d73363aeca9b7f7ece549c6))
+
+### Kubyl_kube
+
+- One entry per cluster and user (context grouping), resolve and settings_keys, re-keying without reconnecting ([790d091](https://github.com/BirknerAlex/kubyl/commit/790d091b1247ef9bd0c38ecffc84b8ede9efb8e4))
+- The grouping test doesn't assume '/' as path separator (Windows CI) (phase 15) ([33ea948](https://github.com/BirknerAlex/kubyl/commit/33ea948ffbbbde0dd3880e62839d1a10a8dd4212))
+- Contexts of a group shown separately keep the group's Production and Read-only flags; turning one off keeps it for the siblings (review) ([5dc04f5](https://github.com/BirknerAlex/kubyl/commit/5dc04f5fb330194b2e9d3908973c53d62a148784))
+
+### Kubyl_metrics
+
+- Metrics.prometheus and the keychain header through settings_keys (phase 15 follow-up) ([631dbb9](https://github.com/BirknerAlex/kubyl/commit/631dbb9ee3e4dbcaa0ca3bfcfa88ef8b9d69a633))
+- The transport becomes a public module (service proxy, direct with bearer, roots and TLS server name, external URL with header and mTLS, get/post/delete); through_route takes the probe path; PromClient::api and MetricsService::prometheus (phase 14) ([884b718](https://github.com/BirknerAlex/kubyl/commit/884b718a8ef064fc87eb54aef95fb83fbc6aa493))
+
+### Kubyl_palette
+
+- @ contexts show the connection state like the sidebar (phase 15) ([03c9acf](https://github.com/BirknerAlex/kubyl/commit/03c9acfa4c2362a169dad1912d9ac63d83b75460))
+- @ finds a group by its contexts' names and opens it in that namespace ([055f2be](https://github.com/BirknerAlex/kubyl/commit/055f2bea3ed790fb3d980d0fbedcfdf6e1e6a25f))
+
+### Kubyl_portforward
+
+- Saved forwards start on their grouped cluster (phase 15 follow-up) ([fa15398](https://github.com/BirknerAlex/kubyl/commit/fa153985c9780d64b7e186e54f51a9e267663a4c))
+
+### Kubyl_ui
+
+- Pulsing status dots, tooltips on tree rows, an end slot in section headers (phase 15) ([d124ca8](https://github.com/BirknerAlex/kubyl/commit/d124ca841c5a7898385bc395b1be110c0fb04274))
+- Siren, bell-off and list-checks icons (phase 14) ([2e9a075](https://github.com/BirknerAlex/kubyl/commit/2e9a0758d5afe0b4c5b7ed7801c99fe119f56332))
+- Rustfmt the toast action button (phase 14) ([110de50](https://github.com/BirknerAlex/kubyl/commit/110de501667e102c04c65d8ce4967ad2c2ab1506))
+
+### Kubyl_webview
+
+- Web view stores of a group keep their key through oc project (phase 15 follow-up) ([55e6864](https://github.com/BirknerAlex/kubyl/commit/55e68645955e9a9f64bb135e579e6c13c636c44c))
+
+### Kubyl_yaml
+
+- Apply history recorded before contexts were grouped still shows (phase 15 follow-up) ([2081bed](https://github.com/BirknerAlex/kubyl/commit/2081beda48523505056959cbbd55515bf5a85a91))
+- Apply history combines the entry's and its former contexts' histories (review) ([98c13c6](https://github.com/BirknerAlex/kubyl/commit/98c13c64c2c41a9a2c84093fd3c46ae3075b237f))
+
+### Plans
+
+- Decisions of phases 14 and 15 (context grouping, alerts, Alertmanager credentials) ([1ad5371](https://github.com/BirknerAlex/kubyl/commit/1ad53712f308ea36e9996e9522543f511cfc38f6))
+- Phase 15 parts 1-3 done (handoff so far) ([703c132](https://github.com/BirknerAlex/kubyl/commit/703c1329b6537727bb6f7ad096eab10179291774))
+
+### Script
+
+- Oc-contexts-dev.sh writes oc-style contexts for the kind cluster to a scratch kubeconfig ([c52d9a5](https://github.com/BirknerAlex/kubyl/commit/c52d9a557e2f808a08343cebae3a2f692a661e98))
+- Oc-contexts-dev.sh refuses to overwrite its source kubeconfig or write into ~/.kube, also for files that don't exist yet (review) ([935c9e5](https://github.com/BirknerAlex/kubyl/commit/935c9e5a185798155bbd3f4db884befa2394c98e))
+
 ## [0.2.1] - 2026-09-26
 
 ### AGENTS.md

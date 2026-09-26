@@ -4850,7 +4850,7 @@ dependencies = [
 
 [[package]]
 name = "kubyl"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "dirs 7.0.0",
@@ -4895,7 +4895,7 @@ dependencies = [
 
 [[package]]
 name = "kubyl_alerts"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -4929,7 +4929,7 @@ dependencies = [
 
 [[package]]
 name = "kubyl_argocd"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -4967,7 +4967,7 @@ dependencies = [
 
 [[package]]
 name = "kubyl_charts"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "gpui-pre",
  "jiff",
@@ -4977,7 +4977,7 @@ dependencies = [
 
 [[package]]
 name = "kubyl_core"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "futures",
@@ -4993,7 +4993,7 @@ dependencies = [
 
 [[package]]
 name = "kubyl_explorer"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -5017,7 +5017,7 @@ dependencies = [
 
 [[package]]
 name = "kubyl_files"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "dirs 7.0.0",
@@ -5046,7 +5046,7 @@ dependencies = [
 
 [[package]]
 name = "kubyl_keymap"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "gpui-pre",
  "kubyl_core",
@@ -5060,7 +5060,7 @@ dependencies = [
 
 [[package]]
 name = "kubyl_kube"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -5096,7 +5096,7 @@ dependencies = [
 
 [[package]]
 name = "kubyl_kubeconfig"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -5136,7 +5136,7 @@ dependencies = [
 
 [[package]]
 name = "kubyl_logs"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "dirs 7.0.0",
@@ -5163,7 +5163,7 @@ dependencies = [
 
 [[package]]
 name = "kubyl_metrics"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "base64 0.22.1",
  "futures",
@@ -5191,7 +5191,7 @@ dependencies = [
 
 [[package]]
 name = "kubyl_operators"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "gpui-pre",
  "kubyl_core",
@@ -5199,7 +5199,7 @@ dependencies = [
 
 [[package]]
 name = "kubyl_overview"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "futures",
  "gpui-component",
@@ -5224,7 +5224,7 @@ dependencies = [
 
 [[package]]
 name = "kubyl_palette"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "gpui-component",
  "gpui-pre",
@@ -5244,7 +5244,7 @@ dependencies = [
 
 [[package]]
 name = "kubyl_portforward"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "futures",
@@ -5268,7 +5268,7 @@ dependencies = [
 
 [[package]]
 name = "kubyl_resources"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "futures",
@@ -5289,7 +5289,7 @@ dependencies = [
 
 [[package]]
 name = "kubyl_settings"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "dirs 7.0.0",
@@ -5306,7 +5306,7 @@ dependencies = [
 
 [[package]]
 name = "kubyl_terminal"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -5332,7 +5332,7 @@ dependencies = [
 
 [[package]]
 name = "kubyl_ui"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "gpui-component",
@@ -5350,7 +5350,7 @@ dependencies = [
 
 [[package]]
 name = "kubyl_updates"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "gpui-pre",
  "kubyl_core",
@@ -5358,7 +5358,7 @@ dependencies = [
 
 [[package]]
 name = "kubyl_webview"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -5401,7 +5401,7 @@ dependencies = [
 
 [[package]]
 name = "kubyl_yaml"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
