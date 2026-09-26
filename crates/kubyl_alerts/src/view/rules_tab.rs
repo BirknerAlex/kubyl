@@ -370,10 +370,11 @@ impl AlertsView {
                     })
                     .child(Icon::new(IconName::Funnel).size(12.0))
                     .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(Input::new(&self.rules_filter).appearance(false)),
+                        div().flex_1().min_w_0().child(
+                            Input::new(&self.rules_filter)
+                                .appearance(false)
+                                .text_size(u(12.0)),
+                        ),
                     ),
             );
         let rows = self.rule_rows(cx);
@@ -438,7 +439,7 @@ impl AlertsView {
                         failing,
                     } => {
                         let object = self.rule_objects.find(&cluster, &name, "", cx);
-                        let mut meta = format!("{count} rules");
+                        let mut meta = format!("{count} rule{}", if count == 1 { "" } else { "s" });
                         if firing > 0 {
                             meta.push_str(&format!(" · {firing} firing"));
                         }

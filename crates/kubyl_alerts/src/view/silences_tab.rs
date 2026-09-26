@@ -203,10 +203,11 @@ impl AlertsView {
                     .text_size(u(12.0))
                     .child(Icon::new(IconName::Funnel).size(12.0))
                     .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(Input::new(&self.silence_filter).appearance(false)),
+                        div().flex_1().min_w_0().child(
+                            Input::new(&self.silence_filter)
+                                .appearance(false)
+                                .text_size(u(12.0)),
+                        ),
                     ),
             )
             .child(div().flex_1())

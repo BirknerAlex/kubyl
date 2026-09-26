@@ -647,8 +647,7 @@ impl SilenceDialog {
             TextareaState::new(window, cx)
                 .placeholder("Why? A ticket or incident helps whoever gets paged next.")
         });
-        let custom =
-            cx.new(|cx| InputState::new(window, cx).placeholder("3h30m or 2026-09-27 18:00"));
+        let custom = cx.new(|cx| InputState::new(window, cx).placeholder("3h30m, or an end time"));
         let typed =
             cx.new(|cx| InputState::new(window, cx).placeholder(cluster_name(&cluster, cx)));
         let mut subscriptions =
@@ -1090,7 +1089,11 @@ impl SilenceDialog {
                 colors.border
             })
             .text_size(u(12.0))
-            .child(Input::new(&self.custom).appearance(false));
+            .child(
+                Input::new(&self.custom)
+                    .appearance(false)
+                    .text_size(u(12.5)),
+            );
         let end_text = ends
             .map(|t| format!("starts now · ends {}", widgets::local_and_utc(t)))
             .unwrap_or_else(|| "enter a duration (3h30m) or an end (2026-09-27 18:00)".into());
@@ -1148,10 +1151,10 @@ impl SilenceDialog {
             .child(
                 v_flex()
                     .id("silence-editor-body")
-                    .max_h(u(560.0))
+                    .max_h(u(660.0))
                     .overflow_y_scroll()
                     .p(u(16.0))
-                    .gap(u(10.0))
+                    .gap(u(8.0))
                     .text_size(u(12.5))
                     .children(intro)
                     .children(fixed_rows)
@@ -1202,13 +1205,18 @@ impl SilenceDialog {
                     )
                     .child(
                         div()
-                            .h(u(64.0))
+                            .h(u(56.0))
                             .p(u(6.0))
                             .rounded(u(5.0))
                             .bg(colors.input_background)
                             .border_1()
                             .border_color(colors.accent)
-                            .child(Textarea::new(&self.comment).appearance(false).h_full()),
+                            .child(
+                                Textarea::new(&self.comment)
+                                    .appearance(false)
+                                    .text_size(u(12.5))
+                                    .h_full(),
+                            ),
                     )
                     .child(
                         h_flex()
@@ -1229,9 +1237,11 @@ impl SilenceDialog {
                                     .border_1()
                                     .border_color(colors.border)
                                     .child(
-                                        div()
-                                            .flex_1()
-                                            .child(Input::new(&self.created_by).appearance(false)),
+                                        div().flex_1().child(
+                                            Input::new(&self.created_by)
+                                                .appearance(false)
+                                                .text_size(u(12.5)),
+                                        ),
                                     )
                                     .child(
                                         div()
@@ -1322,7 +1332,7 @@ impl SilenceDialog {
                     div()
                         .flex_1()
                         .min_w_0()
-                        .child(Input::new(input).appearance(false)),
+                        .child(Input::new(input).appearance(false).text_size(u(12.5))),
                 )
                 .children(picker)
         };
@@ -1412,8 +1422,9 @@ impl SilenceDialog {
         let mut parts: Vec<AnyElement> = vec![
             div()
                 .child(format!(
-                    "Matches {count} alert{} now",
-                    if count == 1 { "" } else { "s" }
+                    "Matches {count} alert{} now{}",
+                    if count == 1 { "" } else { "s" },
+                    if impact.matched.is_empty() { "" } else { ":" }
                 ))
                 .font_weight(FontWeight::MEDIUM)
                 .into_any_element(),
@@ -1444,7 +1455,6 @@ impl SilenceDialog {
             );
         }
         if !detail.is_empty() {
-            parts.push(div().child(":").into_any_element());
             for (i, d) in detail.into_iter().enumerate() {
                 if i > 0 {
                     parts.push(div().child(",").into_any_element());
@@ -1550,6 +1560,8 @@ impl SilenceDialog {
                 .child(Icon::new(IconName::TriangleAlert).size(14.0).color(colors.red))
                 .child(
                     div()
+                        .flex_1()
+                        .min_w_0()
                         .whitespace_normal()
                         .child(format!(
                             "This silences {} on a production cluster. Nobody is paged for {} until the silence ends or is expired.",
@@ -1607,7 +1619,7 @@ impl SilenceDialog {
                         .border_1()
                         .border_color(colors.accent)
                         .font_family(fonts::MONO)
-                        .child(Input::new(&self.typed).appearance(false)),
+                        .child(Input::new(&self.typed).appearance(false).text_size(u(12.5))),
                 )
         });
         let ready = self.ready(cx);

@@ -354,10 +354,11 @@ impl AlertsView {
             .text_size(u(11.5))
             .child(Icon::new(IconName::Funnel).size(12.0))
             .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .child(Input::new(&self.filter_input).appearance(false)),
+                div().flex_1().min_w_0().child(
+                    Input::new(&self.filter_input)
+                        .appearance(false)
+                        .text_size(u(11.5)),
+                ),
             )
             .when_some(error, |this, error| {
                 let error: SharedString = error.into();

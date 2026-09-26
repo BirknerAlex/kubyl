@@ -510,8 +510,6 @@ impl Render for AlertsCard {
             .filter(|h| *h != Heartbeat::Unknown)
             .map(|h| crate::view::heartbeat(&h, now, &colors, true));
         v_flex()
-            .mx(u(16.0))
-            .mb(u(12.0))
             .p(u(14.0))
             .gap(u(10.0))
             .rounded(u(8.0))
