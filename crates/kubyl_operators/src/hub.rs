@@ -824,7 +824,7 @@ impl OperatorHubView {
         let description = if package.description.is_empty() {
             package.summary.clone()
         } else {
-            package.description.clone()
+            hub::plain_text(&package.description)
         };
         let long = description.len() > 700;
         let shown_description = if long && !self.description_open {
@@ -1058,10 +1058,15 @@ impl Render for OperatorHubView {
                 self.details_open = true;
             }
         }
-        if self.selected.is_none()
-            && let Some(first) = self.shown.first()
+        // The selection follows the filter: the first match when it's filtered out.
+        if packages.is_some()
+            && self
+                .selected
+                .as_ref()
+                .is_none_or(|k| !self.shown.iter().any(|p| &p.key() == k))
         {
-            self.selected = Some(first.key());
+            self.selected = self.shown.first().map(|p| p.key());
+            self.description_open = false;
         }
         let catalogs = packages
             .as_ref()

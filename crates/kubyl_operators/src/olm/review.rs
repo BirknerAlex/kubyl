@@ -605,6 +605,12 @@ pub async fn review(
             )),
         }
     }
+    // What changes first (the plan's order within each group).
+    out.crds.sort_by_key(|c| match c.status {
+        CrdStatus::New | CrdStatus::Changed => 0,
+        CrdStatus::Unknown => 1,
+        CrdStatus::Unchanged => 2,
+    });
     if let Some(new) = &new_csv {
         out.version = new.version.clone();
         out.rbac = rbac_changes(installed.as_ref(), new);

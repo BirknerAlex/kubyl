@@ -7,7 +7,7 @@
 //! values and manifest are loaded by its tab ([`load`]) and live there.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -127,7 +127,10 @@ struct ClusterHelm {
     /// Summaries by storage object and its resourceVersion.
     summaries: HashMap<ObjectId, (String, SummaryState)>,
     queue: VecDeque<(ObjectId, String)>,
-    in_flight: HashMap<ObjectId, Task<()>>,
+    /// Objects being fetched, and the fetches (finished ones are pruned, never dropped from
+    /// inside: a task must not drop itself).
+    in_flight: HashSet<ObjectId>,
+    tasks: Vec<Task<()>>,
     snapshot: RefCell<Option<(u64, Arc<Snapshot>)>>,
     revision: u64,
     _observers: Vec<gpui::Subscription>,
@@ -302,7 +305,8 @@ impl Helm {
                 config_maps,
                 summaries: HashMap::new(),
                 queue: VecDeque::new(),
-                in_flight: HashMap::new(),
+                in_flight: HashSet::new(),
+                tasks: Vec::new(),
                 snapshot: RefCell::new(None),
                 revision: 0,
                 _observers: observers,
@@ -372,7 +376,7 @@ impl Helm {
         }
         // Forget summaries of objects that are gone; queue new or changed ones.
         state.summaries.retain(|id, _| wanted.contains_key(id));
-        state.in_flight.retain(|id, _| wanted.contains_key(id));
+        state.in_flight.retain(|id| wanted.contains_key(id));
         state.queue.retain(|(id, _)| wanted.contains_key(id));
         for (id, resource_version) in wanted {
             let current = state.summaries.get(&id).map(|(rv, _)| rv);
@@ -404,6 +408,7 @@ impl Helm {
         let Some(state) = self.clusters.get_mut(cluster) else {
             return;
         };
+        state.tasks.retain(|task| !task.is_ready());
         while state.in_flight.len() < PARALLEL {
             let Some((id, resource_version)) = state.queue.pop_front() else {
                 break;
@@ -432,7 +437,8 @@ impl Helm {
                 })
                 .ok();
             });
-            state.in_flight.insert(id, task);
+            state.in_flight.insert(id);
+            state.tasks.push(task);
         }
     }
 

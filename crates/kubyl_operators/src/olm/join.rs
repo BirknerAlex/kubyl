@@ -266,9 +266,6 @@ fn status_of(
             .find(|n| Some(n.as_str()) != sub.installed_csv.as_deref())
             .and_then(|n| p.version_of(n).or_else(|| Some(n.clone())))
     });
-    if let Some(failure) = sub.failure() {
-        return (OperatorStatus::Failed, Some(failure), target);
-    }
     if let Some(plan) = plan.filter(|p| p.failed()) {
         return (
             OperatorStatus::Failed,
@@ -293,22 +290,40 @@ fn status_of(
             None => (OperatorStatus::ApprovalRequired, detail, target),
         };
     }
+    // A running upgrade: OLM reports `ResolutionFailed` for a moment while the old CSV is being
+    // replaced, so the subscription's conditions only count once nothing is in flight.
+    let in_flight = plan.is_some_and(|p| matches!(p.phase.as_str(), "Installing" | "Planning"))
+        || csv.is_some_and(|c| !c.succeeded() && !c.failed());
     match csv {
         Some(csv) => {
             let (status, detail) = csv_status(csv);
-            // An approved plan still running counts as installing.
-            if status == OperatorStatus::Succeeded && plan.is_some_and(|p| p.phase == "Installing")
-            {
-                return (OperatorStatus::Installing, None, target);
+            if in_flight {
+                return (OperatorStatus::Installing, detail, target);
             }
-            (status, detail, target)
+            // The operator runs; its subscription can't resolve (the package left the catalog…).
+            match sub.failure() {
+                Some(failure) => (
+                    status,
+                    Some(format!("The subscription can't resolve: {failure}")),
+                    target,
+                ),
+                None => (status, detail, target),
+            }
+        }
+        None if !in_flight && sub.failure().is_some() => {
+            (OperatorStatus::Failed, sub.failure(), target)
         }
         None if plan.is_some() || sub.current_csv.is_some() => (
             OperatorStatus::Installing,
             sub.current_csv.as_ref().map(|c| format!("Installing {c}.")),
             target,
         ),
-        None => (OperatorStatus::Unknown, None, target),
+        // A new Subscription OLM hasn't resolved yet.
+        None => (
+            OperatorStatus::Installing,
+            Some("OLM is resolving the subscription.".into()),
+            target,
+        ),
     }
 }
 
@@ -436,6 +451,44 @@ mod tests {
                 failing: 1
             }
         );
+    }
+
+    /// OLM says `ResolutionFailed` for a moment while a CSV replaces another: that's an
+    /// upgrade in progress. It's a failure only when no operator runs.
+    #[test]
+    fn resolution_failures_count_only_without_a_running_operator() {
+        let failing = |name: &str, installed: Option<&str>| {
+            Arc::new(
+                Subscription::parse(&json!({
+                    "metadata": {"name": name, "namespace": "ops"},
+                    "spec": {"name": name},
+                    "status": {"installedCSV": installed, "conditions": [
+                        {"type": "ResolutionFailed", "status": "True", "message": "constraints not satisfiable"}]}
+                }))
+                .unwrap(),
+            )
+        };
+        let subs = [
+            failing("upgrading", Some("upgrading.v2.0.0")),
+            failing("running", Some("running.v1.0.0")),
+            failing("missing", None),
+        ];
+        let csvs = [
+            csv("upgrading.v2.0.0", "Installing"),
+            csv("running.v1.0.0", "Succeeded"),
+        ];
+        let rows = join(&subs, &csvs, &[]);
+        let row = |name: &str| rows.iter().find(|r| r.package() == Some(name)).unwrap();
+        assert_eq!(row("upgrading").status, OperatorStatus::Installing);
+        assert_eq!(row("running").status, OperatorStatus::Succeeded);
+        assert!(
+            row("running")
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("can't resolve")
+        );
+        assert_eq!(row("missing").status, OperatorStatus::Failed);
     }
 
     #[test]

@@ -443,6 +443,8 @@ pub struct Csv {
     /// A copy OLM made (`olm.copiedFrom`).
     pub copied: bool,
     pub deleting: bool,
+    /// The author marked it deprecated (`[DEPRECATED]` in the display name).
+    pub deprecated: bool,
     pub created: Option<Timestamp>,
 }
 
@@ -459,9 +461,15 @@ impl Csv {
         };
         let spec = object.get("spec").cloned().unwrap_or(Value::Null);
         let install = spec.pointer("/install/spec");
+        let display_name = string_at(&spec, "/displayName").unwrap_or_else(|| name.clone());
+        let deprecated = display_name.starts_with("[DEPRECATED]");
         Some(Self {
             namespace: string_at(object, "/metadata/namespace").unwrap_or_default(),
-            display_name: string_at(&spec, "/displayName").unwrap_or_else(|| name.clone()),
+            display_name: display_name
+                .trim_start_matches("[DEPRECATED]")
+                .trim()
+                .to_string(),
+            deprecated,
             name,
             version: string_at(&spec, "/version"),
             provider: string_at(&spec, "/provider/name"),

@@ -289,8 +289,14 @@ pub fn open_install(cluster: ClusterId, package: Arc<Package>, window: &mut Wind
     if !guard(&cluster, cx) {
         return;
     }
+    let prod = production(&cluster, cx);
     let view = cx.new(|cx| InstallDialog::new(cluster, package, window, cx));
-    let focus = view.read(cx).focus.clone();
+    // Production clusters ask for their name: start there.
+    let focus = if prod {
+        view.read(cx).typed.read(cx).focus_handle(cx)
+    } else {
+        view.read(cx).focus.clone()
+    };
     open(view, 600.0, Some(focus), window, cx);
 }
 
@@ -843,8 +849,13 @@ impl Render for InstallDialog {
 
 /// Opens the review of a pending install plan (CRD diffs, RBAC, compatibility) with Approve.
 pub fn open_review(cluster: ClusterId, plan: Arc<InstallPlan>, window: &mut Window, cx: &mut App) {
+    let asks = production(&cluster, cx) && !read_only(&cluster, cx) && plan.needs_approval();
     let view = cx.new(|cx| ReviewDialog::new(cluster, plan, window, cx));
-    let focus = view.read(cx).focus.clone();
+    let focus = if asks {
+        view.read(cx).typed.read(cx).focus_handle(cx)
+    } else {
+        view.read(cx).focus.clone()
+    };
     open(view, 1040.0, Some(focus), window, cx);
 }
 
@@ -1147,7 +1158,7 @@ impl Render for ReviewDialog {
                             .px(u(4.0))
                             .text_size(u(11.0))
                             .text_color(colors.text_dim)
-                            .child("From the bundle OLM unpacked, compared with the live CRDs."),
+                            .child("The spec of each live CRD against the bundle OLM unpacked for the plan."),
                     );
                 let diff: AnyElement = match review.crds.get(selected) {
                     None => widgets::empty("The plan changes no CRDs.", &colors),
@@ -1182,13 +1193,15 @@ impl Render for ReviewDialog {
                             .border_b_1()
                             .border_color(colors.border_variant)
                             .text_size(u(12.0))
-                            .child(div().font_family(fonts::MONO).child(diff_title))
+                            .overflow_hidden()
                             .child(
                                 div()
-                                    .text_color(colors.text_dim)
-                                    .child("· spec, live → bundle"),
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .font_family(fonts::MONO)
+                                    .child(diff_title),
                             )
-                            .child(div().flex_1())
                             .child(widgets::toggle_chip(
                                 "review-unified",
                                 "unified",
@@ -1449,8 +1462,13 @@ pub fn open_uninstall(cluster: ClusterId, operator: Operator, window: &mut Windo
     if !guard(&cluster, cx) {
         return;
     }
+    let prod = production(&cluster, cx);
     let view = cx.new(|cx| UninstallDialog::new(cluster, operator, window, cx));
-    let focus = view.read(cx).focus.clone();
+    let focus = if prod {
+        view.read(cx).typed.read(cx).focus_handle(cx)
+    } else {
+        view.read(cx).focus.clone()
+    };
     open(view, 560.0, Some(focus), window, cx);
 }
 

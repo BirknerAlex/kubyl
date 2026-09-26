@@ -461,6 +461,73 @@ impl Filters {
     }
 }
 
+/// A package description (Markdown) as plain text: no heading, emphasis or code markers,
+/// links as their text, images and HTML tags dropped, at most one blank line in a row.
+pub fn plain_text(markdown: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    for line in markdown.lines() {
+        let trimmed = line.trim();
+        let mut text = trimmed
+            .trim_start_matches('#')
+            .trim_start_matches('>')
+            .trim();
+        let bullet = text.starts_with("* ") || text.starts_with("- ");
+        if bullet {
+            text = &text[2..];
+        }
+        let mut plain = String::with_capacity(text.len());
+        let chars: Vec<char> = text.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+            // `![alt](url)` goes, `[text](url)` keeps its text.
+            if (c == '!' && chars.get(i + 1) == Some(&'[')) || c == '[' {
+                let image = c == '!';
+                let start = if image { i + 2 } else { i + 1 };
+                if let Some(close) = chars[start..].iter().position(|&c| c == ']')
+                    && chars.get(start + close + 1) == Some(&'(')
+                    && let Some(end) = chars[start + close + 2..].iter().position(|&c| c == ')')
+                {
+                    if !image {
+                        plain.extend(&chars[start..start + close]);
+                    }
+                    i = start + close + 2 + end + 1;
+                    continue;
+                }
+            }
+            if c == '<'
+                && let Some(end) = chars[i..].iter().position(|&c| c == '>')
+                && chars
+                    .get(i + 1)
+                    .is_some_and(|n| n.is_ascii_alphabetic() || *n == '/')
+            {
+                i += end + 1;
+                continue;
+            }
+            if matches!(c, '*' | '`') || (c == '_' && chars.get(i + 1) == Some(&'_')) {
+                i += if c == '_' { 2 } else { 1 };
+                continue;
+            }
+            plain.push(c);
+            i += 1;
+        }
+        let plain = plain.trim().to_string();
+        if plain.is_empty() {
+            if out.last().is_some_and(|l| !l.is_empty()) {
+                out.push(String::new());
+            }
+        } else if bullet {
+            out.push(format!("• {plain}"));
+        } else {
+            out.push(plain);
+        }
+    }
+    while out.last().is_some_and(String::is_empty) {
+        out.pop();
+    }
+    out.join("\n")
+}
+
 /// Categories with their package counts (most first), for the filter column.
 pub fn categories(packages: &[Arc<Package>]) -> Vec<(String, usize)> {
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
@@ -543,6 +610,16 @@ mod tests {
         assert_eq!(cm.links.len(), 1, "only http(s) links");
         assert_eq!(cm.examples().len(), 1);
         assert_eq!(cm.initials(), "CM");
+    }
+
+    #[test]
+    fn descriptions_become_plain_text() {
+        let markdown = "## Features\n\n* **Fast** backups to `S3`\n- See [the docs](https://example.com/docs) ![logo](https://example.com/l.png)\n\n\n\n<br/>Plain __text__ <b>here</b>\n";
+        assert_eq!(
+            plain_text(markdown),
+            "Features\n\n• Fast backups to S3\n• See the docs\n\nPlain text here"
+        );
+        assert_eq!(plain_text("a < b and c > d"), "a < b and c > d");
     }
 
     #[test]

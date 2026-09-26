@@ -425,6 +425,8 @@ impl Olm {
             return Icon::None;
         };
         self.icons.insert(key.clone(), Icon::Loading);
+        // Finished fetches (a task never drops itself: that would cancel it).
+        self.icon_tasks.retain(|_, task| !task.is_ready());
         let fetch = spawn_kube(
             cx,
             hub::fetch_icon(client, package.namespace.clone(), package.name.clone()),
@@ -442,7 +444,6 @@ impl Olm {
                         None => Icon::None,
                     };
                     this.icons.insert(key.clone(), icon);
-                    this.icon_tasks.remove(&key);
                     cx.notify();
                 })
                 .ok();
@@ -510,9 +511,9 @@ impl Olm {
         let task = cx.spawn(async move |this, cx| {
             let result = work.await;
             this.update(cx, |this, cx| {
+                // The task stays in the entry (a task must not drop itself).
                 if let Some(entry) = this.reviews.get_mut(&task_key) {
                     entry.state = ReviewState::Ready(Arc::new(result));
-                    entry._task = None;
                 }
                 cx.notify();
             })

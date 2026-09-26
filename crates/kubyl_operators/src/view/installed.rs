@@ -377,6 +377,18 @@ impl OperatorsView {
                 });
             sections.push(status.into_any_element());
         }
+        if op.csv.as_ref().is_some_and(|c| c.deprecated) {
+            sections.push(
+                widgets::plain_section(&colors)
+                    .child(widgets::note(
+                        IconName::TriangleAlert,
+                        colors.yellow,
+                        "Its author marked this version deprecated: look for a newer channel or a replacement.",
+                        &colors,
+                    ))
+                    .into_any_element(),
+            );
+        }
         if let Some(plan) = op.plan.clone() {
             sections.push(self.render_upgrade_card(&op, plan, read_only, cx));
         }
@@ -832,9 +844,15 @@ impl OperatorsView {
                     .gap(u(6.0))
                     .font_family(fonts::MONO)
                     .text_size(u(12.0))
-                    .child(from)
-                    .child(div().text_color(colors.text_dim).child("→"))
-                    .child(div().text_color(colors.green).child(to))
+                    .map(|this| {
+                        if waiting {
+                            this.child(from)
+                                .child(div().text_color(colors.text_dim).child("→"))
+                                .child(div().text_color(colors.green).child(to))
+                        } else {
+                            this.child(plan.csv_names.join(", "))
+                        }
+                    })
                     .child(
                         div()
                             .text_color(colors.text_dim)
