@@ -1,6 +1,8 @@
-//! OLM operators, OperatorHub and Helm releases.
-//!
-//! Stub created in phase 00. Implemented in `plans/12-operators-olm.md`.
+//! OLM operators, OperatorHub and Helm releases (phase 12, board 7).
+
+pub mod errors;
+pub mod helm;
+pub mod olm;
 
 use gpui::App;
 
