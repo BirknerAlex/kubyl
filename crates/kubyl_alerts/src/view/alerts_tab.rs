@@ -129,8 +129,7 @@ impl AlertsView {
             .map(|entry| self.render_details(entry, window, cx));
         v_flex()
             .size_full()
-            .child(summary)
-            .child(filters)
+            .when(!all_clear, |this| this.child(summary).child(filters))
             .child(
                 self.focus_area()
                     .items_start()
@@ -202,19 +201,44 @@ impl AlertsView {
             parts.push(sep());
             parts.push(bold(format!("{} pending", counts.pending), colors.yellow));
         }
-        for (count, label) in [
-            (counts.silenced, "silenced"),
-            (counts.inhibited, "inhibited"),
-        ] {
-            if count > 0 {
-                parts.push(sep());
-                parts.push(
-                    div()
-                        .text_color(colors.text_muted)
-                        .child(format!("{count} {label}"))
-                        .into_any_element(),
-                );
-            }
+        let mut quiet = Vec::new();
+        if counts.silenced > 0 {
+            quiet.push(format!("{} silenced", counts.silenced));
+        }
+        if counts.inhibited > 0 {
+            quiet.push(format!("{} inhibited", counts.inhibited));
+        }
+        if !quiet.is_empty() {
+            // Listed after the active alerts; clicking hides or shows them.
+            let shown = self.filters.show_suppressed;
+            let tooltip: SharedString = if shown {
+                "Firing, but nobody is notified. Click to hide them.".into()
+            } else {
+                "Hidden. Click to list them after the active alerts.".into()
+            };
+            parts.push(sep());
+            parts.push(
+                h_flex()
+                    .id("summary-suppressed")
+                    .gap(u(4.0))
+                    .cursor_pointer()
+                    .text_color(colors.text_muted)
+                    .hover(|s| s.text_color(colors.text))
+                    .child(Icon::new(IconName::BellOff).size(12.0))
+                    .child(quiet.join(" · "))
+                    .when(!shown, |this| {
+                        this.child(div().text_color(colors.text_dim).child("(hidden)"))
+                    })
+                    .tooltip(move |window, cx| {
+                        gpui_component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx)
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.filters.show_suppressed = !this.filters.show_suppressed;
+                        this.save_options(cx);
+                        this.rebuild(cx);
+                    }))
+                    .into_any_element(),
+            );
         }
         let now = Timestamp::now();
         let mut right: Vec<AnyElement> = Vec::new();
@@ -721,6 +745,7 @@ impl AlertsView {
                         let is_selected = selected == Some(index);
                         widgets::row(("alert-row", index), is_selected, ROW_HEIGHT, &colors)
                             .when(resolved, |this| this.opacity(0.65))
+                            .when(alert.state.suppressed(), |this| this.opacity(0.8))
                             .children(columns.iter().map(|def| {
                                 widgets::column_cell(def).child(self.cell(
                                     &alert,
@@ -748,6 +773,76 @@ impl AlertsView {
             .collect()
     }
 
+    /// "Silenced by alice@example.com: “…” · ends in 2h 51m", or who inhibits it.
+    fn suppressed_by(
+        &self,
+        alert: &Alert,
+        cluster: &ClusterId,
+        now: Timestamp,
+        cx: &App,
+    ) -> Option<SharedString> {
+        match alert.state {
+            AlertState::Silenced => {
+                let silences = self
+                    .state(cluster, cx)
+                    .map(|s| s.silences.clone())
+                    .unwrap_or_default();
+                let lines: Vec<String> = alert
+                    .silenced_by
+                    .iter()
+                    .map(|id| match silences.iter().find(|s| &s.id == id) {
+                        Some(silence) => {
+                            let ends = silence
+                                .ends_at
+                                .map(|t| {
+                                    format!(
+                                        " · ends in {} ({})",
+                                        widgets::short_duration(t.duration_since(now).as_secs()),
+                                        widgets::local_and_utc(t)
+                                    )
+                                })
+                                .unwrap_or_default();
+                            format!(
+                                "Silenced by {}: “{}”{ends}",
+                                silence.created_by, silence.comment
+                            )
+                        }
+                        None => format!(
+                            "Silenced by silence {}",
+                            id.chars().take(8).collect::<String>()
+                        ),
+                    })
+                    .collect();
+                Some(if lines.is_empty() {
+                    "Firing, but silenced: nobody is notified.".into()
+                } else {
+                    format!("Firing, but nobody is notified.\n{}", lines.join("\n")).into()
+                })
+            }
+            AlertState::Inhibited => {
+                let by: Vec<String> = alert
+                    .inhibited_by
+                    .iter()
+                    .map(|fp| {
+                        self.alerts
+                            .iter()
+                            .find(|a| &a.fingerprint == fp)
+                            .map(|a| a.name.clone())
+                            .unwrap_or_else(|| fp.clone())
+                    })
+                    .collect();
+                Some(
+                    format!(
+                        "Firing, but inhibited by {}: nobody is notified.",
+                        by.join(", ")
+                    )
+                    .into(),
+                )
+            }
+            _ => None,
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn cell(
         &self,
@@ -773,7 +868,19 @@ impl AlertsView {
                 .text_size(u(12.0))
                 .child(alert.name.clone())
                 .into_any_element(),
-            "state" => widgets::state_label(alert.state, colors),
+            "state" => {
+                let label = widgets::state_label(alert.state, false, colors);
+                match self.suppressed_by(alert, cluster, now, cx) {
+                    Some(tooltip) => div()
+                        .id(SharedString::from(format!("state-{}", alert.fingerprint)))
+                        .child(label)
+                        .tooltip(move |window, cx| {
+                            gpui_component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx)
+                        })
+                        .into_any_element(),
+                    None => label,
+                }
+            }
             "since" => {
                 let (text, at) = if alert.state == AlertState::Resolved {
                     (widgets::ago(alert.ends_at, now), alert.ends_at)

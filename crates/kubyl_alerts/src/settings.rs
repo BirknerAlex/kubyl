@@ -279,11 +279,11 @@ impl GroupBy {
 }
 
 /// The Alerts view's options (state.json `alerts`). Never alert data.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AlertsState {
     pub group_by: GroupBy,
-    /// Silenced and inhibited alerts are listed too.
+    /// Silenced and inhibited alerts are listed (after the active ones), marked (default).
     pub show_suppressed: bool,
     /// Severity chips turned on (`critical`…); empty = all.
     pub severities: Vec<String>,
@@ -293,6 +293,19 @@ pub struct AlertsState {
     pub active_namespace_only: bool,
     /// Rules tab: only firing, pending or failing rules.
     pub rules_problems_only: bool,
+}
+
+impl Default for AlertsState {
+    fn default() -> Self {
+        Self {
+            group_by: GroupBy::default(),
+            show_suppressed: true,
+            severities: Vec::new(),
+            states: Vec::new(),
+            active_namespace_only: false,
+            rules_problems_only: false,
+        }
+    }
 }
 
 impl StateSection for AlertsState {

@@ -327,7 +327,7 @@ impl AlertsView {
                     .gap(u(10.0))
                     .text_size(u(12.0))
                     .child(widgets::severity_pill(&alert.severity, &colors))
-                    .child(widgets::state_label(alert.state, &colors))
+                    .child(widgets::state_label(alert.state, true, &colors))
                     .when_some(fired, |this, fired| {
                         this.child(div().text_color(colors.text_dim).child(fired))
                     }),
@@ -412,6 +412,7 @@ impl AlertsView {
         times.push((
             "Source",
             div()
+                .truncate()
                 .text_color(colors.text_muted)
                 .child(alert.source.clone())
                 .into_any_element(),

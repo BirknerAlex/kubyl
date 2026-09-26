@@ -163,7 +163,7 @@ In this order. Every candidate is probed with `GET <prefix>/api/v2/status`.
 - [x] Header: cluster, PROD badge, source chips (`Alertmanager monitoring/alertmanager-operated · v0.28 · 2/2 peers`, `Rules: Prometheus`) and "Open Alertmanager UI" (a phase 08 web view on the Service; for URL and Route sources the URL opens in the browser instead)
 - [x] Summary line: `3 critical · 7 warning · 2 info firing · 4 pending · 5 silenced`, the heartbeat state, and rule health (`2 rules fail to evaluate`)
 - [x] All clear: "No alerts firing", heartbeat OK with its time, the number of rules, the time of the last check. Every other state explains itself and never shows an empty list without a reason: not connected, loading, no Alertmanager found (what was tried, the best candidate's error, "Set Alertmanager…" and the settings key), sign-in needed, 403 with the missing role, stale data (time of the last success)
-- [x] Filters: a text and matcher input (`alertname=~"Kube.*", namespace="payments"`, same parser as silences), severity chips with counts, state chips (Firing, Pending, Silenced, Inhibited), namespace scope (all namespaces, or the active one; alerts without a namespace go under "Cluster"), receiver. Silenced and inhibited alerts are hidden by default behind a "5 silenced" row
+- [x] Filters: a text and matcher input (`alertname=~"Kube.*", namespace="payments"`, same parser as silences), severity chips with counts, state chips (Firing, Pending, Silenced, Inhibited), namespace scope (all namespaces, or the active one; alerts without a namespace go under "Cluster"), receiver. Silenced and inhibited alerts are listed after the active ones, marked `● firing` with a bell-off (silenced) or eye-off (inhibited) icon and the silence on hover (changed on request: they were hidden behind a "5 silenced" row); the silenced count in the summary line hides or shows them
 - [x] Group by alert name (default), namespace, severity, receiver, target, or not at all. Collapsible group rows: `KubePodCrashLooping ×4 · critical · oldest 2h 14m`
 - [x] Columns: severity pill, alert, state, since (relative and live; local time and UTC on hover), summary (`summary`, else `message`, else `description`), target (a link), namespace, receivers, and the remaining labels as muted chips. Sorted by severity, then age
 - [x] Keys, registered in the `ActionRegistry` and shown in the key-hint bar: `enter` details, `s` silence, `a` acknowledge, `o` go to the target, `l` logs of the target pod, `r` runbook, `y` copy the labels as matchers, `/` filter
@@ -314,7 +314,9 @@ list-checks icons, then the `kubyl_alerts` stub and the crate:
   URLs), summary line with heartbeat and rule health, filters (matchers or text, severity and
   state chips with counts, namespace incl. "Cluster" and "the active namespace", receiver),
   grouping (name, namespace, severity, receiver, target, none; info groups start collapsed),
-  suppressed alerts behind "5 silenced · Show", resolved ones below, the all-clear and every
+  silenced and inhibited alerts listed after the active ones and marked (`● firing` plus a
+  bell-off or eye-off icon, the silence's comment, author and end on hover; the summary's
+  "3 silenced" hides them), resolved ones below, the all-clear and every
   empty state (not connected, loading, off, no Alertmanager with what was tried and a settings
   snippet, sign in again / failures). The details pane: times (local and UTC), summary and
   description (plain text, folded), target checked against the live object ("not found"),
@@ -357,10 +359,8 @@ badge, root siren, status bar, header chips, details (target Running, rule, runb
 Rules and Silences tabs.
 
 **Deferred / notes.**
-- OpenShift acceptance (platform alerts through `alertmanager-main`'s Route with an `oc login`
-  token and with a client-certificate kubeconfig, rules from thanos-querier, a 403 for silences
-  without `monitoring-alertmanager-edit`, user workload through the forward): the user tests it
-  on their cluster. The forward path itself is covered by the kube-rbac-proxy fixture.
+- OpenShift: the user confirmed it works on their test cluster (2026-09-26). The forward path
+  is also covered on kind by the kube-rbac-proxy fixture.
 - No default service account for user workload monitoring (as the plan says: only once one is
   verified on a real cluster); name one in `alerts.clusters.<cluster>.alertmanagers`.
 - Optional explorer badge on favorite namespace rows: not done.

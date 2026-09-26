@@ -24,7 +24,8 @@ pub fn state_color(state: AlertState, colors: &Colors) -> Hsla {
         AlertState::Firing | AlertState::Unprocessed => colors.red,
         AlertState::Pending => colors.yellow,
         AlertState::Resolved => colors.green,
-        AlertState::Silenced | AlertState::Inhibited => colors.text_dim,
+        // Still firing, but nobody is notified: a quieter red.
+        AlertState::Silenced | AlertState::Inhibited => colors.red.opacity(0.6),
     }
 }
 
@@ -39,8 +40,9 @@ pub fn severity_pill(severity: &Severity, colors: &Colors) -> AnyElement {
         .into_any_element()
 }
 
-/// `● firing`, `○ pending`, `silenced`.
-pub fn state_label(state: AlertState, colors: &Colors) -> AnyElement {
+/// `● firing`, `○ pending`, `● resolved`. Silenced and inhibited alerts still fire: `● firing`
+/// with a bell-off (silenced) or eye-off (inhibited) icon, and the word too when `long`.
+pub fn state_label(state: AlertState, long: bool, colors: &Colors) -> AnyElement {
     let color = state_color(state, colors);
     let dot = match state {
         AlertState::Pending => div()
@@ -50,17 +52,31 @@ pub fn state_label(state: AlertState, colors: &Colors) -> AnyElement {
             .border_1()
             .border_color(color)
             .into_any_element(),
-        AlertState::Silenced => Icon::new(IconName::BellOff)
-            .size(11.0)
-            .color(color)
-            .into_any_element(),
         _ => StatusDot::new(color).into_any_element(),
+    };
+    let suppressed = match state {
+        AlertState::Silenced => Some((IconName::BellOff, "silenced")),
+        AlertState::Inhibited => Some((IconName::EyeOff, "inhibited")),
+        _ => None,
     };
     h_flex()
         .gap(u(6.0))
         .text_color(color)
         .child(dot)
-        .child(state.label())
+        .child(if suppressed.is_some() {
+            "firing"
+        } else {
+            state.label()
+        })
+        .when_some(suppressed, |this, (icon, label)| {
+            this.child(
+                h_flex()
+                    .gap(u(4.0))
+                    .text_color(colors.text_dim)
+                    .child(Icon::new(icon).size(12.0).color(colors.text_dim))
+                    .when(long, |this| this.child(label)),
+            )
+        })
         .into_any_element()
 }
 

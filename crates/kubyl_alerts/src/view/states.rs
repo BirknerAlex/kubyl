@@ -234,9 +234,12 @@ pub fn render(
                         )
                         .child(
                             v_flex()
+                                .flex_1()
+                                .min_w_0()
                                 .child(div().text_size(u(12.5)).child(attempt.found_by.to_string()))
                                 .child(
                                     div()
+                                        .whitespace_normal()
                                         .font_family(fonts::MONO)
                                         .text_size(u(11.5))
                                         .text_color(colors.text_dim)

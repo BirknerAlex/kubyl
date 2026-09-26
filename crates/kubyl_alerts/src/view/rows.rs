@@ -341,9 +341,11 @@ pub fn build(
     toggled: &HashSet<String>,
     resolved_open: bool,
 ) -> Vec<Row> {
-    let shown: Vec<usize> = (0..alerts.len())
+    // Silenced and inhibited alerts follow the active ones (each part keeps its order).
+    let (active, suppressed): (Vec<usize>, Vec<usize>) = (0..alerts.len())
         .filter(|&i| filters.matches(&alerts[i]))
-        .collect();
+        .partition(|&i| !alerts[i].state.suppressed());
+    let shown: Vec<usize> = active.into_iter().chain(suppressed).collect();
     let mut rows = Vec::with_capacity(shown.len() + 8);
     match by {
         GroupBy::None => rows.extend(shown.iter().map(|&index| Row::Alert {
@@ -609,6 +611,44 @@ mod tests {
             false,
         );
         assert!(rows.iter().any(|r| matches!(r, Row::Group { collapsed: false, label, .. } if label == "CPUThrottlingHigh")));
+    }
+
+    #[test]
+    fn silenced_alerts_are_listed_after_the_active_ones() {
+        let alerts = sample();
+        let filters = Filters {
+            show_suppressed: true,
+            ..Default::default()
+        };
+        let rows = build(
+            &alerts,
+            &[],
+            &filters,
+            GroupBy::None,
+            &HashSet::new(),
+            false,
+        );
+        let states: Vec<AlertState> = rows
+            .iter()
+            .filter_map(|r| alert_of(r, &alerts, &[]).map(|a| a.state))
+            .collect();
+        assert_eq!(states.len(), 8);
+        let first_suppressed = states.iter().position(|s| s.suppressed()).unwrap();
+        assert!(states[first_suppressed..].iter().all(|s| s.suppressed()));
+        assert!(!rows.iter().any(|r| matches!(r, Row::Suppressed { .. })));
+        // Grouped: the silenced KubeJobFailed pair comes last.
+        let rows = build(
+            &alerts,
+            &[],
+            &filters,
+            GroupBy::Name,
+            &HashSet::new(),
+            false,
+        );
+        assert!(matches!(rows.last(), Some(Row::Alert { .. })));
+        assert!(
+            matches!(&rows[rows.len() - 3], Row::Group { label, .. } if label == "KubeJobFailed")
+        );
     }
 
     #[test]

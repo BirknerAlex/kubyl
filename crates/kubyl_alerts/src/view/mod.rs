@@ -967,7 +967,13 @@ impl Render for AlertsView {
             Tab::Rules => self.render_rules_tab(window, cx),
         };
         let hints = {
-            let mut hints = self.hints(context, cx);
+            // A state instead of a list: no list keys.
+            let blocked = self.blocking_state(cx).is_some();
+            let mut hints = if blocked {
+                Vec::new()
+            } else {
+                self.hints(context, cx)
+            };
             hints.push(("/".into(), "Filter".into()));
             hints
         };
