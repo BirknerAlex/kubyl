@@ -22,7 +22,9 @@ pub mod types;
 pub use cluster_ids::ClusterIds;
 pub use context::{ActiveContext, ClusterBadge};
 pub use error::{Error, Result};
-pub use notify::{Notification, NotificationCenter, NotificationLevel, NotifyResultExt};
+pub use notify::{
+    Notification, NotificationAction, NotificationCenter, NotificationLevel, NotifyResultExt,
+};
 pub use registry::{
     ActionRegistry, ActionSpec, Align, CellAction, CellButton, CellValue, ChromeRegistry,
     ColumnDef, ColumnProvider, ColumnWidth, DetailsSection, DockPanel, DockPosition, EditNotice,

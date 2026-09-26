@@ -1,5 +1,6 @@
 use gpui::{App, Window};
 use gpui_component::WindowExt as _;
+use gpui_component::button::Button;
 use gpui_component::notification::{Notification as Toast, NotificationType};
 use kubyl_core::{Notification, NotificationLevel};
 
@@ -18,6 +19,20 @@ pub fn show_notification(notification: &Notification, window: &mut Window, cx: &
         .with_type(kind);
     if let Some(title) = &notification.title {
         toast = toast.title(title.clone());
+    }
+    if let Some(action) = notification.action.clone() {
+        toast = toast.action(move |_, _, cx| {
+            let toast = cx.entity().downgrade();
+            let run = action.run.clone();
+            Button::new("toast-action")
+                .label(action.label.clone())
+                .on_click(move |_, window, cx| {
+                    run(window, cx);
+                    toast
+                        .update(cx, |toast, cx| toast.dismiss(window, cx))
+                        .ok();
+                })
+        });
     }
     window.push_notification(toast, cx);
 }
