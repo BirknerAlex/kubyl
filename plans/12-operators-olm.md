@@ -119,10 +119,11 @@ view-only service account sees the 403 message instead of an empty list.
 `phase-12-helm-forbidden.png`, `phase-12-olm-not-installed.png`.
 
 **Deferred / notes.**
-- OpenShift: the read-only check on the user's OpenShift test cluster didn't happen (its token
-  had expired). To do after `oc login`: Installed Operators with copied CSVs hidden,
-  OperatorHub with the Red Hat catalogs, `openshift-operators` as the global group,
-  `olm.maxOpenShiftVersion` notes.
+- OpenShift: the user confirmed on 2026-09-26 that the operator views look good on their
+  OpenShift test cluster. A read-only check there found 4 CatalogSources in
+  `openshift-marketplace` with 629 packages in OperatorHub, `openshift-operators/global-operators`
+  as the global OperatorGroup, no copied CSVs in the lists (`!olm.copiedFrom`), OLM v1 served
+  (Extensions sub-tab) and 104 Helm release Secrets.
 - OLM v1: lists and YAML templates only; a full UI (install from the catalog, upgrade review,
   uninstall) is a follow-up.
 - Helm stays read-only (rollback, upgrade, uninstall are "Copy helm command"); the SQL driver
