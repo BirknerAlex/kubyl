@@ -84,3 +84,9 @@ cargo run -p kubyl
   the dialog instead of clicking its buttons.
 - Dev builds on macOS trigger keychain prompts; use `KUBYL_CREDENTIAL_STORE=file` (plain text,
   dev only) or `memory`.
+- GPUI tests of views that close a gpui-component dialog (`window.close_dialog`) need
+  `gpui_component::Root` as the window's first view: build yours inside
+  `add_window_view(|window, cx| Root::new(view, window, cx))`.
+- `window.on_next_frame` doesn't fire while macOS doesn't drive frames (hidden or occluded
+  window, screenshot runs). An input only scrolls to its cursor once it was laid out: retry on
+  a short timer until `InputState::line_height()` is `Some`.

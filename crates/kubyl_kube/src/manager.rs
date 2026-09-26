@@ -568,6 +568,25 @@ impl ConnectionManager {
         });
     }
 
+    /// Moves a context's overrides to a new id (the kubeconfig editor renamed the context or
+    /// moved it to another file). Existing overrides of `to` are replaced.
+    pub fn move_context_settings(
+        &mut self,
+        from: &ClusterId,
+        to: &ClusterId,
+        cx: &mut Context<Self>,
+    ) {
+        let (from, to) = (from.to_string(), to.to_string());
+        if from == to {
+            return;
+        }
+        Settings::update::<KubeSettings>(cx, move |settings| {
+            if let Some(entry) = settings.contexts.remove(&from) {
+                settings.contexts.insert(to, entry);
+            }
+        });
+    }
+
     // ----- File watching -----
 
     fn start_file_events(&mut self, cx: &mut Context<Self>) {

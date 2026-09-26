@@ -21,6 +21,7 @@ kubyl_explorer = { path = "crates/kubyl_explorer" }
 kubyl_files = { path = "crates/kubyl_files" }
 kubyl_keymap = { path = "crates/kubyl_keymap" }
 kubyl_kube = { path = "crates/kubyl_kube" }
+kubyl_kubeconfig = { path = "crates/kubyl_kubeconfig" }
 kubyl_logs = { path = "crates/kubyl_logs" }
 kubyl_metrics = { path = "crates/kubyl_metrics" }
 kubyl_operators = { path = "crates/kubyl_operators" }
@@ -56,6 +57,10 @@ openidconnect = { version = "4.0.1", default-features = false, features = ["reqw
 secrecy = "0.10.3"
 # The OS trust store for HTTP clients outside kube (OpenShift's OAuth server).
 rustls-native-certs = "0.8.4"
+# TLS checks of the kubeconfig editor (the versions and features kube already uses).
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-pki-types = "1.15.1"
+tokio-rustls = { version = "0.26.5", default-features = false, features = ["ring", "tls12", "logging"] }
 
 # Assets
 gpui-kit-assets = "=0.6.6"

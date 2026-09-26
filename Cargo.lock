@@ -4866,6 +4866,7 @@ dependencies = [
  "kubyl_files",
  "kubyl_keymap",
  "kubyl_kube",
+ "kubyl_kubeconfig",
  "kubyl_logs",
  "kubyl_metrics",
  "kubyl_operators",
@@ -5056,6 +5057,46 @@ dependencies = [
  "tower",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "kubyl_kubeconfig"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "dirs 7.0.0",
+ "futures",
+ "gpui-component",
+ "gpui-pre",
+ "http",
+ "jiff",
+ "k8s-openapi",
+ "kube",
+ "kubyl_core",
+ "kubyl_explorer",
+ "kubyl_kube",
+ "kubyl_settings",
+ "kubyl_ui",
+ "kubyl_yaml",
+ "lsp-types",
+ "open",
+ "parking_lot",
+ "rustls",
+ "rustls-native-certs",
+ "rustls-pki-types",
+ "schemars 1.2.2",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "similar",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "url",
+ "x509-cert",
 ]
 
 [[package]]

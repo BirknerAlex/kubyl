@@ -37,9 +37,11 @@ Each phase file is written so one Claude Code session can own it from start to f
 | 08 | [Service web views over temporary port-forwards](08-service-webview.md) | 02, 05 | `kubyl_webview` (new) | 10 · Web view |
 | 09 | [Packaging, release, auto-update, hardening](09-packaging-release.md) | 00 (CI), then all | `script/`, `.github/`, `crates/kubyl` bundling | none |
 | 10 | [Argo CD: applications, sync, history, rollback](10-argocd.md) | 02, 04, 05 (08 optional) | `kubyl_argocd` (new) | 12–15 · Argo CD |
-| 11 | [Kubeconfig editor: clusters, credentials, contexts, connection test](11-kubeconfig-editor.md) | 01, 04 | `kubyl_kubeconfig` (new) | none yet (board 11) |
+| 11 | [Kubeconfig editor: clusters, credentials, contexts, connection test](11-kubeconfig-editor.md) | 01, 04 | `kubyl_kubeconfig` (new) | 11 · Kubeconfig editor |
 | 12 | [Operators (OLM) and Helm releases](12-operators-olm.md) | 02, 04 | `kubyl_operators` | 7 · Operators |
 | 13 | [Cluster updates](13-cluster-updates.md) | 02, 07, 12 | `kubyl_updates` | 8 · Updates |
+| 14 | [Alerts: Alertmanager, silences, alerting rules](14-alerts.md) | 02, 05, 07 (08 optional) | `kubyl_alerts` (new) | 16 · Alerts (not drawn yet) |
+| 15 | [Polish: connection dots, one entry per cluster and user, ConfigMap data](15-sidebar-details-polish.md) | 01, 02, 03 (part 3 after 11) | none (small commits in `kubyl_explorer`, `kubyl_kube`, `kubyl_palette`) | 17 · Cluster status and ConfigMap data (not drawn yet) |
 
 ```
 00 ─▶ 01 ─▶ 02 ─┬─▶ 03
@@ -49,11 +51,13 @@ Each phase file is written so one Claude Code session can own it from start to f
                 └────────────┴─▶ 12 (needs 04 for install YAML/diff)
 05 ─▶ 08 (web views)        02 + 04 + 05 ─▶ 10 (Argo CD; uses 08 for "Open Argo CD UI" if present)
 01 + 04 ─▶ 11 (kubeconfig editor)
+02 + 05 + 07 ─▶ 14 (alerts; uses 08 for the Alertmanager/Prometheus UIs if present)
+01 + 02 + 03 ─▶ 15 (polish; context grouping after 11)
 09: CI part runs from 00 onward; packaging and release after the feature phases
 ```
 
-After phase 02, phases 03, 04, 05 and 07 can run in parallel sessions. Phase 08 can start once 05 is done, phase 10 once 04 and 05 are done, and phase 11 once 04 is done.
-Phases 08, 10 and 11 add crates that phase 00 didn't stub (`kubyl_webview`, `kubyl_argocd`, `kubyl_kubeconfig`): their first commit adds the stub crate (workspace member plus the `init` line in `crates/kubyl/src/main.rs`) in a tiny PR that lands on `main` before the feature work, so parallel sessions don't conflict (phase 10 skipped it on request: its crate landed with the feature PR).
+After phase 02, phases 03, 04, 05 and 07 can run in parallel sessions. Phase 08 can start once 05 is done, phase 10 once 04 and 05 are done, phase 11 once 04 is done, and phase 14 once 07 is done.
+Phases 08, 10, 11 and 14 add crates that phase 00 didn't stub (`kubyl_webview`, `kubyl_argocd`, `kubyl_kubeconfig`, `kubyl_alerts`): their first commit adds the stub crate (workspace member plus the `init` line in `crates/kubyl/src/main.rs`) in a tiny PR that lands on `main` before the feature work, so parallel sessions don't conflict (phases 10 and 11 skipped it on request: their crates landed with the feature PR).
 Phase 00 must leave stub crates and registration traits so that parallel phases never edit
 the same files. See "Extension points" below.
 
@@ -87,6 +91,7 @@ crates/
   kubyl_webview/            # embedded web views over temporary port-forwards (phase 08)
   kubyl_argocd/             # Argo CD applications, sync, history, rollback (phase 10)
   kubyl_kubeconfig/         # kubeconfig editor, connection test, creation wizard (phase 11)
+  kubyl_alerts/             # Alertmanager alerts, silences, alerting rules (phase 14)
 assets/                     # logo, icons, fonts, keymaps, themes
 design/mockups/             # mockup generator (HTML design canvas)
 plans/                      # these plans
@@ -118,6 +123,10 @@ plans/                      # these plans
 | Web views | `wry` 0.57 (MIT/Apache-2.0), decided per platform in phase 08: **macOS** WKWebView as an NSView child of GPUI's view; **Windows** WebView2 as an HWND child; **Linux X11** WebKitGTK as an X11 child window; **Linux Wayland** a GTK window of its own that the tab drives (Wayland can't embed another client's surface); the **system browser** (`webview.open_in = "browser"`, or when a view can't be created) with a session tab that keeps the forward | `kubyl_webview::host` places native views where their tab paints them and hides them when the tab isn't painted or GPUI draws over them (dialogs, palette, toasts, the tab's menu). Views are created from a GPUI task outside `App` updates (WebView2 pumps Win32 messages while creating). Kubyl's shortcuts reach GPUI while the page has focus (macOS: GPUI's `performKeyEquivalent:`; Windows: WebView2 `AcceleratorKeyPressed`; Linux: GTK `key-press-event`). One data store per (cluster, namespace, service): WKWebsiteDataStore identifier (macOS 14+, private stores before), a WebView2 profile, a WebKitGTK context. Self-signed HTTPS is accepted per (cluster, service, port) by certificate fingerprint through each engine's trust hook. Forwards stay TCP (no Host rewriting). Nothing is initialized until the first web view; the WebKit/WebKitGTK libraries are linked (Linux packages depend on WebKitGTK 4.1 and GTK 3). |
 | Argo CD access | Two modes (decided in phase 10). **Kubernetes mode** (default): reads the Argo CD CRDs through `ResourceStores` and acts by patching the `Application` (`operation` like `argocd app sync`, refresh annotation, `spec.syncPolicy`, finalizers for cascading delete) under the user's kube RBAC. **API mode** (after signing in): `argocd-server`'s REST API for diffs, the full resource tree and actions under Argo CD's RBAC | Same `operation` format in v3.4 and v3.5 (the two tested minors). Per-resource health is computed from live objects in Kubernetes mode (Argo CD 3.x doesn't store it). `kubyl_argocd::run::run` picks the mode per action. |
 | Argo CD server trust | Kubyl never signs in to an argocd-server it found by itself: the user confirms the install (cluster, namespace, Service, URL shown) when signing in, and `state.json` keeps that per context with the **Service UID**; a re-created Service asks again. Kube credentials never reach Argo CD | Through the API server's service proxy the Argo CD token travels as the `argocd.token` cookie (the proxy strips `Authorization`, verified); otherwise over a temporary loopback forward (`ForwardSpec::ephemeral`) with a bearer header. Sign-in: SSO in the system browser like `argocd login --sso` (Dex, or a `cliClientID`; PKCE, redirect `http://localhost:8085/auth/callback`, refresh token renews it), username/password, or a pasted token. Tokens only in the keychain. Detection reads ConfigMaps, Services and workloads, never Secrets. Argo CD's web UI in a web view gets the session as its `argocd.token` cookie (session only, HttpOnly, only that Service): the one exception to "no credentials in web content". |
+| Kubeconfig writes | Kubyl writes kubeconfigs only from the kubeconfig editor (`kubyl_kubeconfig`, decided in phase 11; this replaces "Kubyl never modifies kubeconfig files"). **Kubyl-owned** files (`<config dir>/kubeconfigs/`: pasted or created in Kubyl) are edited freely. **Other files** (`~/.kube/config`, `$KUBECONFIG`, user-added) stay read-only until the user turns on editing for that file ("Edit this file", kept in settings.json `kubeconfig_editor.editable_files`; `kubeconfig_editor.allow_external_edits: false` removes the option). The alternative is "Save as a Kubyl copy": the copy replaces the original as a source, the original is untouched | Every save shows a diff preview, keeps a timestamped backup (`<config dir>/kubeconfig-backups/`, mode 0600, the last `kubeconfig_editor.backups_kept` per file, default 10), writes atomically (temp file in the same folder, fsync, rename; symlinks are followed) and refuses to overwrite a file whose SHA-256 changed since it was loaded (checked before the backup and again right before the rename). New files and files with inline credentials are 0600, others keep their mode. Phase 01 still deletes only pasted files. |
+| Kubeconfig comments and key order | Kept (decided in phase 11). The editor never re-serializes a file it can edit in place: `kubyl_kubeconfig::yaml` compares the loaded document with the edited model on `kubyl_yaml::parse` spans and writes minimal text edits (scalars replaced in place with their quote style and trailing comment, keys and list items removed or appended at the right indent, flow collections rewritten in flow style). The result is parsed again and must equal the edited model; otherwise the file is rendered from scratch and the save preview lists every comment that would be lost | Spike (2026-09-26): `yamlpatch` 1.30.1 (MIT) dropped the other keys of a flow mapping when replacing one value, wrote `'yes'` unquoted (a boolean for kubectl's YAML 1.1 parser) and removed a trailing comment with the last list item; `yaml-edit` 0.3.2 (Apache-2.0) mis-indented appended nested entries. Both pass `cargo deny`, neither was solid enough for `~/.kube/config`. Scalars are quoted whenever YAML 1.1 (`sigs.k8s.io/yaml`, which kubectl uses) could read them as anything but a string. |
+| Kubeconfig credentials | Inline in the file, as kubectl expects (decided in phase 11); a file with inline credentials is written 0600. Keeping a secret in the OS keychain behind a `kubyl credential <id>` exec plugin is a follow-up | Secrets (tokens, client keys, passwords, OIDC client secrets and refresh tokens) are masked in the form and the YAML tab until revealed; copying one is an explicit action with a toast; they never reach logs, settings.json or state.json. Exports with credentials warn first and are written 0600. |
+| Exec-plugin consent and CA trust (kubeconfig editor) | An exec plugin from an import, a paste or unsaved edits runs only after the user saw its command, args, env, API version and interactive mode and agreed (decided in phase 11). `interactiveMode` isn't consent. Consent covers that exact config for the session (a hash in memory); "Test all contexts" asks once for every plugin that needs it. Plugins in saved, loaded kubeconfigs behave as in phase 01. Pasting a kubeconfig (phase 01's dialog) lists its exec plugins and adds the file only after "I checked these commands and trust them" | Fetching a CA is trust on first use: a TLS handshake that sends nothing, plus an anonymous read of `kube-public/cluster-info` (kubeadm clusters publish their CA there); a candidate must verify the server's certificate. The UI shows subject, validity and the SHA-256 fingerprint and needs an explicit confirmation. No credentials go to a server before its certificate verifies against a trusted CA; a TLS failure never falls back to insecure mode (`insecure-skip-tls-verify` only when the user sets it, with a red warning). |
 | File watching | `notify` | Kubeconfig hot reload. |
 | Settings | JSON (`serde_json`) in `dirs::config_dir()/kubyl/` (override with `$KUBYL_CONFIG_DIR`) | `settings.json` (user, hot-reloaded, with a generated `settings.schema.json`), `state.json` (UI state, favorites, tabs). Typed sections: `kubyl_settings::{SettingsSection, StateSection}`. |
 | UI units | Sizes use `kubyl_ui::u(px)` (rems); the window's rem size follows `ui_font_size` | Zoom (⌘+/⌘-) scales the whole UI. Colors come from `cx.colors()`. |
@@ -135,8 +144,9 @@ Phase 00 creates these traits/registries in `kubyl_core` / `kubyl_ui`. Feature c
 into them from their own `init(cx)` function, and `crates/kubyl/src/main.rs` calls each `init` in
 one list. That list is the only shared line, and it is append-only.
 
-- `ViewRegistry`: open a tab/pane for a `ViewRequest { kind: ViewKind, target: Option<ResourceRef> }`
-  (Table, Details, Yaml, Logs, Terminal, Files, Overview, Operators, Updates, Settings…). Views
+- `ViewRegistry`: open a tab/pane for a `ViewRequest { kind: ViewKind, target: Option<ResourceRef>,
+  path: Option<PathBuf> }` (Table, Details, Yaml, Logs, Terminal, Files, Overview, Operators,
+  Updates, Settings…; `ViewRequest::for_path` for views of a file, since phase 11). Views
   implement `TabView`; dispatch `kubyl_core::actions::OpenView(request)` to open one. Kinds without
   a factory show a placeholder tab.
 - `ActionRegistry`: named actions with keybindings, availability predicate
@@ -231,6 +241,13 @@ one list. That list is the only shared line, and it is append-only.
 - Argo CD (phase 10): `ClusterCaps::argocd` (`applications`, `application_sets`, `projects`,
   `any()`) says which Argo CD CRDs a cluster serves; `kubyl_argocd::dock::managed_by(object)`
   tells which Application tracks an object.
+- Kubeconfig editor (phase 11): dispatch `kubyl_core::actions::EditKubeconfig { path, context }`
+  to open a kubeconfig in the editor tab (and select a context), `NewKubeconfig` for the
+  wizard. Without the UI: `kubyl_kubeconfig::conntest::run` (the step-by-step connection
+  test), `tls::{check, fetch_ca}` (handshake and trust-on-first-use CA fetch), `certs` (PEM and
+  X.509 details), `files::save` (atomic, backup, hash check), `yaml::write` (comment-preserving
+  writes). `kubyl_kube::kubeconfig::context_info` builds a `ContextInfo` from any in-memory
+  kubeconfig; `ConnectionManager::move_context_settings` moves a context's overrides.
 
 ### UX principles (from the mockups)
 

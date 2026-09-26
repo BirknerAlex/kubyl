@@ -9,23 +9,41 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::{Gvr, ResourceRef, ViewKind};
 
-/// What to open: a view kind, optionally for a resource. Persisted to restore tabs.
+/// What to open: a view kind, optionally for a resource or a local file. Persisted to restore
+/// tabs.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ViewRequest {
     pub kind: ViewKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<ResourceRef>,
+    /// A local file the view shows (the kubeconfig editor, phase 11).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<std::path::PathBuf>,
 }
 
 impl ViewRequest {
     pub fn new(kind: ViewKind) -> Self {
-        Self { kind, target: None }
+        Self {
+            kind,
+            target: None,
+            path: None,
+        }
     }
 
     pub fn for_resource(kind: ViewKind, target: ResourceRef) -> Self {
         Self {
             kind,
             target: Some(target),
+            path: None,
+        }
+    }
+
+    /// A view of a local file.
+    pub fn for_path(kind: ViewKind, path: impl Into<std::path::PathBuf>) -> Self {
+        Self {
+            kind,
+            target: None,
+            path: Some(path.into()),
         }
     }
 }

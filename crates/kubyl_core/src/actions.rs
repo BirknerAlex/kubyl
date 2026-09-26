@@ -26,8 +26,18 @@ actions!(
         OpenSettings,
         /// Shows the filter of the sidebar (the Explorer header's search button, phase 02).
         FilterSidebar,
+        /// Opens the "New kubeconfig" wizard (phase 11).
+        NewKubeconfig,
     ]
 );
+
+/// Opens a kubeconfig in the kubeconfig editor (phase 11), optionally with a context selected.
+#[derive(Clone, PartialEq, Debug, Deserialize, Action)]
+#[action(namespace = kubyl, no_json)]
+pub struct EditKubeconfig {
+    pub path: std::path::PathBuf,
+    pub context: Option<String>,
+}
 
 /// Opens a tab for `request` in the active pane of the focused window.
 #[derive(Clone, PartialEq, Debug, Deserialize, Action)]
