@@ -36,7 +36,26 @@ if [[ "${1:-}" == "--delete" ]]; then
   exit 0
 fi
 
-[[ "$OUT" -ef "$HOME/.kube/config" ]] && die "refusing to write ~/.kube/config"
+# A path whose file may not exist yet: its folder's real path, then the name.
+resolve() {
+  local dir
+  dir="$(dirname "$1")"
+  if [[ -d "$dir" ]]; then
+    printf '%s/%s\n' "$(cd "$dir" && pwd -P)" "$(basename "$1")"
+  else
+    printf '%s\n' "$1"
+  fi
+}
+OUT_REAL="$(resolve "$OUT")"
+KUBE_DIR="$(resolve "$HOME/.kube/config")"
+KUBE_DIR="${KUBE_DIR%/config}"
+# Checked before anything changes, also for files that don't exist yet.
+if [[ "$OUT" -ef "$SOURCE" || "$OUT_REAL" == "$(resolve "$SOURCE")" ]]; then
+  die "refusing to overwrite the source kubeconfig $SOURCE"
+fi
+if [[ "$OUT" -ef "$HOME/.kube/config" || "$OUT_REAL" == "$KUBE_DIR"/* ]]; then
+  die "refusing to write into ~/.kube"
+fi
 k get --raw /version >/dev/null 2>&1 || die "context $CONTEXT isn't reachable (run script/dev-cluster.sh first)"
 
 cfg() { kubectl config --kubeconfig "$OUT" "$@" >/dev/null; }
