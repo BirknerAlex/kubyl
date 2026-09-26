@@ -48,11 +48,21 @@ const DESCRIBE_UPDATES: usize = 30;
 /// Support ending sooner than this is a warning.
 const SUPPORT_WARNING_DAYS: i64 = 90;
 
-/// The EKS provider of a cluster.
+/// The EKS provider of a cluster. Reads [`cloud::EKS_ENDPOINT`] once.
 pub fn provider(ctx: CloudContext) -> Arc<dyn UpdateProvider> {
-    Arc::new(Eks {
-        inner: Arc::new(Inner::new(ctx, None, None, None)),
-    })
+    Arc::new(build(ctx, cloud::env_lookup, None))
+}
+
+/// The provider with the environment read by `lookup` and, in tests, preset credentials.
+fn build(
+    ctx: CloudContext,
+    lookup: impl Fn(&str) -> Option<String>,
+    preset: Option<AwsCredentials>,
+) -> Eks {
+    let base = cloud::endpoint_override(cloud::EKS_ENDPOINT, lookup);
+    Eks {
+        inner: Arc::new(Inner::new(ctx, None, base, preset)),
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1111,8 +1121,9 @@ struct Eks {
 struct Inner {
     ctx: CloudContext,
     http: Result<Http, ProviderError>,
-    /// The API endpoint (tests point it at a local server).
-    base: Option<Url>,
+    /// The API endpoint when overridden ([`cloud::EKS_ENDPOINT`], tests), or why the override
+    /// is invalid.
+    base: Result<Option<Url>, ProviderError>,
     target: Mutex<Option<EksTarget>>,
     credentials: Cache<AwsCredentials>,
     /// Credentials given up front (tests).
@@ -1141,7 +1152,7 @@ impl Inner {
     fn new(
         ctx: CloudContext,
         target: Option<EksTarget>,
-        base: Option<Url>,
+        base: Result<Option<Url>, ProviderError>,
         preset: Option<AwsCredentials>,
     ) -> Self {
         Self {
@@ -1176,14 +1187,15 @@ impl Inner {
 
     async fn api(&self) -> Result<(EksTarget, Api), ProviderError> {
         let target = self.target().await?;
+        let base = match &self.base {
+            Ok(Some(base)) => base.clone(),
+            Ok(None) => Url::parse(&target.endpoint())
+                .map_err(|err| ProviderError::Other(format!("Invalid EKS endpoint: {err}")))?,
+            Err(err) => return Err(err.clone()),
+        };
         let credentials = match &self.preset {
             Some(preset) => preset.clone(),
             None => self.credentials.get(|| credentials::fetch(&target)).await?,
-        };
-        let base = match &self.base {
-            Some(base) => base.clone(),
-            None => Url::parse(&target.endpoint())
-                .map_err(|err| ProviderError::Other(format!("Invalid EKS endpoint: {err}")))?,
         };
         let api = Api {
             http: self.http.clone()?,

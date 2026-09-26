@@ -628,30 +628,109 @@ fn plans_writes() {
     );
 }
 
-fn test_provider(base: Url) -> Eks {
-    let ctx = CloudContext {
+fn context(kubeconfig: PathBuf) -> CloudContext {
+    CloudContext {
         display_name: "prod".into(),
-        kubeconfig: PathBuf::from("/nonexistent/kubeconfig"),
-        context: "prod".into(),
+        kubeconfig,
+        context: "arn:aws:eks:eu-west-1:111122223333:cluster/prod-eu-west-1".into(),
         user: None,
         cluster_entry: "arn:aws:eks:eu-west-1:111122223333:cluster/prod-eu-west-1".into(),
         server: "https://ABCDEF0123456789.gr7.eu-west-1.eks.amazonaws.com".into(),
         settings: ClusterUpdateSettings::default(),
-    };
-    let credentials = AwsCredentials {
+    }
+}
+
+fn fake_credentials() -> AwsCredentials {
+    AwsCredentials {
         access_key_id: SecretString::from("ASIAEXAMPLEKEYID"),
         secret_access_key: SecretString::from("wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY"),
         session_token: Some(SecretString::from("FwoGZXIvYXdzEXAMPLETOKEN")),
         expiration: None,
-    };
+    }
+}
+
+fn test_provider(base: Url) -> Eks {
     Eks {
         inner: Arc::new(Inner::new(
-            ctx,
+            context(PathBuf::from("/nonexistent/kubeconfig")),
             Some(eks_target()),
-            Some(base),
-            Some(credentials),
+            Ok(Some(base)),
+            Some(fake_credentials()),
         )),
     }
+}
+
+/// `aws eks update-kubeconfig --name prod-eu-west-1 --region eu-west-1 --profile prod`.
+const KUBECONFIG: &str = r#"apiVersion: v1
+kind: Config
+clusters:
+- name: arn:aws:eks:eu-west-1:111122223333:cluster/prod-eu-west-1
+  cluster:
+    server: https://ABCDEF0123456789.gr7.eu-west-1.eks.amazonaws.com
+    certificate-authority-data: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCkVYQU1QTEUKLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo=
+contexts:
+- name: arn:aws:eks:eu-west-1:111122223333:cluster/prod-eu-west-1
+  context:
+    cluster: arn:aws:eks:eu-west-1:111122223333:cluster/prod-eu-west-1
+    user: arn:aws:eks:eu-west-1:111122223333:cluster/prod-eu-west-1
+current-context: arn:aws:eks:eu-west-1:111122223333:cluster/prod-eu-west-1
+users:
+- name: arn:aws:eks:eu-west-1:111122223333:cluster/prod-eu-west-1
+  user:
+    exec:
+      apiVersion: client.authentication.k8s.io/v1beta1
+      command: aws
+      args: [--region, eu-west-1, eks, get-token, --cluster-name, prod-eu-west-1, --output, json]
+      env:
+      - name: AWS_PROFILE
+        value: prod
+"#;
+
+/// The whole path through `KUBYL_UPDATES_EKS_ENDPOINT`: the kubeconfig file's exec plugin
+/// names the cluster, region and profile; requests go to a server on 127.0.0.1 serving the
+/// recorded responses. Only the credentials are preset (the CLI isn't run).
+#[tokio::test]
+async fn reads_and_plans_through_the_endpoint_override() {
+    let (base, seen) = mock::serve(routes()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let kubeconfig = dir.path().join("config");
+    std::fs::write(&kubeconfig, KUBECONFIG).unwrap();
+    let endpoint = base.as_str().trim_end_matches('/').to_string();
+    let provider = build(
+        context(kubeconfig.clone()),
+        |var| (var == cloud::EKS_ENDPOINT).then(|| endpoint.clone()),
+        Some(fake_credentials()),
+    );
+
+    let status = provider.read().await.unwrap();
+    assert_eq!(
+        status.provider,
+        "Amazon EKS (AWS API · profile prod · eu-west-1)"
+    );
+    assert_eq!(status.current.version, "1.30");
+    assert_eq!(status.suggested().unwrap().version, "1.31");
+    assert_eq!(status.pools.len(), 3);
+    let plan = provider
+        .plan(&status, &Scope::ControlPlane, "1.31", "prod")
+        .unwrap();
+    assert_eq!(plan.request["path"], "/clusters/prod-eu-west-1/updates");
+    assert!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .all(|s| s.header("host") == Some(base.authority()))
+    );
+
+    // Plain http elsewhere than loopback is refused before anything runs.
+    let refused = build(
+        context(kubeconfig),
+        |_| Some("http://eks.example.com".into()),
+        Some(fake_credentials()),
+    );
+    assert!(matches!(
+        refused.read().await,
+        Err(ProviderError::Other(m)) if m.starts_with("KUBYL_UPDATES_EKS_ENDPOINT is invalid")
+    ));
 }
 
 fn routes() -> Vec<mock::Route> {

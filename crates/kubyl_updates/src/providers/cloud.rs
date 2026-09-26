@@ -6,6 +6,19 @@
 //! Windows. Their stdout holds credentials and never goes into errors or logs; stderr does (it
 //! says why a login expired). HTTP goes through the `reqwest` that `openidconnect` brings
 //! (rustls). Only a request's method and path are logged, at debug level. Nothing here retries.
+//!
+//! # Endpoint overrides
+//!
+//! For screenshots and mock servers, environment variables replace a cloud API's base URL.
+//! They're read once, when a provider is built:
+//!
+//! - `KUBYL_UPDATES_EKS_ENDPOINT` replaces `https://eks.<region>.amazonaws.com`
+//! - `KUBYL_UPDATES_GKE_ENDPOINT` replaces `https://container.googleapis.com`
+//! - `KUBYL_UPDATES_AKS_ENDPOINT` replaces `https://management.azure.com`
+//!
+//! The URL must be `https`, or `http` on a loopback host (`127.0.0.1`, `localhost`, `::1`), e.g.
+//! `http://127.0.0.1:18081`. An invalid value fails every read with a message naming the
+//! variable. Credentials still come from the CLIs (and are sent to the override).
 
 use std::ffi::OsString;
 use std::fmt;
@@ -449,6 +462,61 @@ impl fmt::Debug for BearerToken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("BearerToken([REDACTED])")
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Endpoint overrides
+
+/// Replaces `https://eks.<region>.amazonaws.com`.
+pub const EKS_ENDPOINT: &str = "KUBYL_UPDATES_EKS_ENDPOINT";
+/// Replaces `https://container.googleapis.com`.
+pub const GKE_ENDPOINT: &str = "KUBYL_UPDATES_GKE_ENDPOINT";
+/// Replaces `https://management.azure.com`.
+pub const AKS_ENDPOINT: &str = "KUBYL_UPDATES_AKS_ENDPOINT";
+
+/// Reads a variable of the process environment.
+pub fn env_lookup(var: &str) -> Option<String> {
+    std::env::var(var).ok()
+}
+
+/// The base URL an override variable sets (`None`: unset). `lookup` reads the environment
+/// (tests pass their own).
+pub fn endpoint_override(
+    var: &str,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Result<Option<Url>, ProviderError> {
+    let Some(value) = lookup(var).filter(|v| !v.trim().is_empty()) else {
+        return Ok(None);
+    };
+    let url = check_endpoint(value.trim())
+        .map_err(|err| ProviderError::Other(format!("{var} is invalid: {err}")))?;
+    tracing::info!("{var}: the cloud API is {url}");
+    Ok(Some(url))
+}
+
+/// An override URL: `https`, or `http` on a loopback host only; no query or fragment.
+pub fn check_endpoint(text: &str) -> Result<Url, String> {
+    let url = Url::parse(text).map_err(|err| format!("{text} isn't a URL ({err})"))?;
+    let loopback = match url.host() {
+        Some(url::Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => return Err(format!("{text} has no host")),
+    };
+    match url.scheme() {
+        "https" => {}
+        "http" if loopback => {}
+        "http" => {
+            return Err(format!(
+                "{text} must use https (http only for 127.0.0.1, localhost or ::1)"
+            ));
+        }
+        other => return Err(format!("{text}: {other} isn't http or https")),
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err(format!("{text} must not have a query or fragment"));
+    }
+    Ok(url)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1031,6 +1099,47 @@ users:
         assert_eq!(
             server_host("https://ABC.gr7.eu-west-1.eks.amazonaws.com:443").as_deref(),
             Some("abc.gr7.eu-west-1.eks.amazonaws.com")
+        );
+    }
+
+    #[test]
+    fn endpoint_overrides() {
+        for ok in [
+            "http://127.0.0.1:18081",
+            "http://localhost:8080/eks",
+            "http://[::1]:9000",
+            "https://eks.example.com",
+        ] {
+            assert!(check_endpoint(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "http://example.com",
+            "http://10.0.0.1:8080",
+            "ftp://127.0.0.1",
+            "https://example.com/?x=1",
+            "not a url",
+        ] {
+            assert!(check_endpoint(bad).is_err(), "{bad}");
+        }
+        let lookup = |value: &'static str| move |_: &str| Some(value.to_string());
+        assert_eq!(
+            endpoint_override(EKS_ENDPOINT, lookup("http://127.0.0.1:18081"))
+                .unwrap()
+                .unwrap()
+                .as_str(),
+            "http://127.0.0.1:18081/"
+        );
+        assert_eq!(endpoint_override(GKE_ENDPOINT, |_| None).unwrap(), None);
+        assert_eq!(endpoint_override(GKE_ENDPOINT, lookup(" ")).unwrap(), None);
+        assert!(matches!(
+            endpoint_override(AKS_ENDPOINT, lookup("http://management.example.com")),
+            Err(ProviderError::Other(m)) if m.starts_with("KUBYL_UPDATES_AKS_ENDPOINT is invalid")
+        ));
+        // A base with a path keeps it.
+        let base = check_endpoint("http://127.0.0.1:18081/mock/").unwrap();
+        assert_eq!(
+            url(&base, "/clusters/prod", &[]).unwrap().as_str(),
+            "http://127.0.0.1:18081/mock/clusters/prod"
         );
     }
 
