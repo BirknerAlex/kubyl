@@ -14,9 +14,9 @@ workspace = true
 
 [features]
 # Cloud providers (decided in phase 13): off by default to keep the binary small.
-updates-eks = ["dep:hmac"]
-updates-gke = []
-updates-aks = []
+updates-eks = ["dep:hmac", "dep:secrecy"]
+updates-gke = ["dep:secrecy"]
+updates-aks = ["dep:secrecy"]
 
 [dependencies]
 futures.workspace = true
@@ -48,6 +48,7 @@ url.workspace = true
 
 # Cloud providers.
 hmac = { workspace = true, optional = true }
+secrecy = { workspace = true, optional = true }
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
