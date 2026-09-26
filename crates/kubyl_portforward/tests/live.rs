@@ -257,7 +257,11 @@ async fn routes_and_ingresses_forward_their_backend_service() {
         let api: Api<DynamicObject> =
             Api::namespaced_with(client.clone(), &namespace, &api_resource);
         let objects = api.list(&ListParams::default()).await.expect("list");
-        assert!(!objects.items.is_empty(), "no {resource} in {namespace}");
+        // Ingresses are optional (real namespaces often have Routes only).
+        assert!(
+            !objects.items.is_empty() || *kind != "Route",
+            "no {resource} in {namespace}"
+        );
         for object in objects.items {
             let name = object.metadata.name.clone().unwrap_or_default();
             let json = serde_json::to_value(&object).unwrap();
