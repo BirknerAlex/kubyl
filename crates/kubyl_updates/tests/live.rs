@@ -227,8 +227,19 @@ async fn openshift_read_only() {
     let Some(client) = client("KUBYL_TEST_OPENSHIFT_KUBECONFIG", &context).await else {
         return;
     };
-    let provider = kubyl_updates::openshift::OpenShift::new(client);
+    let provider = kubyl_updates::openshift::OpenShift::new(client.clone());
     let status = provider.read().await.unwrap();
+    // Pre-flight only reads (lists and gets); Helm releases aren't decoded here.
+    if let Some(target) = status.suggested().map(|t| t.version.clone()) {
+        let mut checks = preflight::run(
+            inputs(client, ProviderKind::OpenShift, &target, HelmInput::Releases(Vec::new())).await,
+        )
+        .await;
+        checks.extend(provider.preflight_extras(&status, &target).await);
+        for check in &checks {
+            println!("{:?} {}: {}", check.status, check.title, check.summary);
+        }
+    }
     println!("Cluster version is {}", status.current.version);
     println!("Channel: {}", status.current.channel.clone().unwrap_or_default());
     for target in &status.targets {
