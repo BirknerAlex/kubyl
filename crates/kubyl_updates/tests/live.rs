@@ -294,6 +294,62 @@ async fn k3s_plans_and_progress() {
     assert!(status.writes.pools);
 }
 
+/// Updates the throwaway k3d cluster to the recommended version through its Plans and follows
+/// it until every node runs it. Changes the cluster: set `KUBYL_TEST_K3S_UPDATE=1`.
+#[tokio::test]
+#[ignore]
+async fn k3s_update_is_tracked() {
+    if std::env::var("KUBYL_TEST_K3S_UPDATE").is_err() {
+        return;
+    }
+    let Some(client) = client("KUBYL_TEST_K3S_KUBECONFIG", "k3d-kubyl-k3s").await else {
+        return;
+    };
+    let provider = kubyl_updates::suc::Suc::new(client.clone(), ProviderKind::K3s);
+    let status = provider.read().await.unwrap();
+    let target = status
+        .suggested()
+        .expect("a newer k3s version")
+        .version
+        .clone();
+    let plan = provider
+        .plan(&status, &Scope::AllPools, &target, "k3s-edge")
+        .unwrap();
+    println!("{}: {:?}", plan.title, plan.changes);
+    provider.start(&plan).await.unwrap();
+    let deadline = Instant::now() + Duration::from_secs(900);
+    let mut seen_progress = false;
+    loop {
+        // The API server restarts while its node updates: retry reads.
+        match provider.read().await {
+            Ok(status) => {
+                println!(
+                    "{} · {:?} · {:?}",
+                    status.current.version,
+                    status.progress.as_ref().map(|p| &p.message),
+                    status
+                        .pools
+                        .iter()
+                        .map(|p| (&p.name, p.updated, p.nodes, &p.draining))
+                        .collect::<Vec<_>>()
+                );
+                seen_progress |= status.progress.is_some();
+                let done = status
+                    .pools
+                    .iter()
+                    .all(|p| p.updated == p.nodes && p.version.as_deref() == Some(&target));
+                if done && status.current.version == target {
+                    break;
+                }
+            }
+            Err(err) => println!("read failed (restarting?): {err}"),
+        }
+        assert!(Instant::now() < deadline, "the update didn't finish");
+        tokio::time::sleep(Duration::from_secs(10)).await;
+    }
+    println!("updated to {target} (progress seen: {seen_progress})");
+}
+
 #[tokio::test]
 #[ignore]
 async fn openshift_read_only() {
