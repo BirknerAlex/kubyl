@@ -151,7 +151,7 @@ Route template, and the key masked in the YAML editor and its diffs, Copy YAML, 
 manifests and Argo CD diffs.
 
 **Verified.**
-- Tests: `kubyl_updates` 30 unit/GPUI tests without features, 91 with all (SigV4 vectors,
+- Tests: `kubyl_updates` 28 unit/GPUI tests without features, 91 with all (the workspace: 653 passed) (SigV4 vectors,
   parsers and planners for every provider on recorded responses, mock-server runs of read, plan
   and start); the Routes work added unit tests in each crate and a GPUI test for the masked key.
   fmt, clippy (`-D warnings`, also `--all-features`), `cargo test --workspace` and `cargo deny
