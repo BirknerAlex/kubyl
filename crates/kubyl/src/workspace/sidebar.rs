@@ -6,7 +6,7 @@ use gpui::{
 use gpui_component::button::{Button as MenuButton, ButtonVariants as _};
 use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 use kubyl_core::ChromeRegistry;
-use kubyl_core::actions::{AddKubeconfig, FilterSidebar};
+use kubyl_core::actions::{AddKubeconfig, FilterSidebar, NewKubeconfig};
 use kubyl_kube::ui::{OpenClusters, PasteKubeconfig};
 use kubyl_ui::{ActiveColors, Icon, IconButton, IconName, PanelHeader, v_flex};
 
@@ -60,7 +60,12 @@ impl Render for Sidebar {
                             .compact()
                             .child(Icon::new(IconName::Plus).size(14.0))
                             .dropdown_menu(|menu, _, _| {
-                                menu.item(
+                                menu.item(PopupMenuItem::new("New kubeconfig…").on_click(
+                                    |_, window, cx| {
+                                        window.dispatch_action(Box::new(NewKubeconfig), cx)
+                                    },
+                                ))
+                                .item(
                                     PopupMenuItem::new("Add kubeconfig file or folder…").on_click(
                                         |_, window, cx| {
                                             window.dispatch_action(Box::new(AddKubeconfig), cx)
