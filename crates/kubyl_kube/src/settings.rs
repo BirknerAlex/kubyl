@@ -21,10 +21,17 @@ pub struct KubeSettings {
     /// Extra kubeconfig files or folders (every file in a folder is loaded). `~` is expanded.
     /// Only the kubeconfig editor writes them, after the user turns on editing for a file.
     pub kubeconfigs: Vec<String>,
-    /// Per-context overrides, keyed by the cluster id (`<context>@<kubeconfig path>`).
+    /// Per-context overrides, keyed by the cluster id (`<context>@<kubeconfig path>`, or a
+    /// group's `group:<cluster>,<user>@<kubeconfig path>/`). A group also reads its members'.
     pub contexts: BTreeMap<String, ContextSettings>,
     /// Seconds between health pings of connected clusters.
     pub health_check_interval: u64,
+    /// Show contexts of one kubeconfig file that differ only in their namespace (`oc project`)
+    /// as one cluster.
+    pub group_contexts: bool,
+    /// Groups shown as separate contexts anyway (group ids, "Show Contexts Separately").
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub separate_groups: Vec<String>,
 }
 
 impl Default for KubeSettings {
@@ -35,6 +42,8 @@ impl Default for KubeSettings {
             kubeconfigs: Vec::new(),
             contexts: BTreeMap::new(),
             health_check_interval: 30,
+            group_contexts: true,
+            separate_groups: Vec::new(),
         }
     }
 }
@@ -46,6 +55,39 @@ impl SettingsSection for KubeSettings {
 impl KubeSettings {
     pub fn context(&self, id: &str) -> ContextSettings {
         self.contexts.get(id).cloned().unwrap_or_default()
+    }
+
+    /// The settings of an entry stored under `keys` (the entry's id first, then its members'):
+    /// production and read-only if any sets them, hidden only if the entry or every member is,
+    /// color, display name and default namespace from the first that sets them, the union of
+    /// the namespaces.
+    pub fn merged(&self, keys: &[&str]) -> ContextSettings {
+        let found: Vec<&ContextSettings> =
+            keys.iter().filter_map(|k| self.contexts.get(*k)).collect();
+        let mut merged = ContextSettings {
+            display_name: found.iter().find_map(|s| s.display_name.clone()),
+            color: found.iter().find_map(|s| s.color),
+            default_namespace: found.iter().find_map(|s| s.default_namespace.clone()),
+            production: found.iter().any(|s| s.production),
+            read_only: found.iter().any(|s| s.read_only),
+            hidden: false,
+            namespaces: Vec::new(),
+        };
+        let own = keys.first().and_then(|k| self.contexts.get(*k));
+        let members = &keys[keys.len().min(1)..];
+        merged.hidden = own.is_some_and(|s| s.hidden)
+            || (!members.is_empty()
+                && members
+                    .iter()
+                    .all(|k| self.contexts.get(*k).is_some_and(|s| s.hidden)));
+        for settings in found {
+            for ns in &settings.namespaces {
+                if !merged.namespaces.contains(ns) {
+                    merged.namespaces.push(ns.clone());
+                }
+            }
+        }
+        merged
     }
 }
 
@@ -189,6 +231,37 @@ mod tests {
             serde_json::to_value(&settings).unwrap(),
             serde_json::json!({ "production": true })
         );
+    }
+
+    #[test]
+    fn groups_merge_their_members_settings() {
+        let mut settings = KubeSettings::default();
+        let set = |s: &mut KubeSettings, key: &str, f: &dyn Fn(&mut ContextSettings)| {
+            f(s.contexts.entry(key.into()).or_default());
+        };
+        set(&mut settings, "a", &|s| {
+            s.production = true;
+            s.namespaces = vec!["x".into()];
+        });
+        set(&mut settings, "b", &|s| {
+            s.color = Some(ColorTag::Green);
+            s.hidden = true;
+            s.namespaces = vec!["y".into(), "x".into()];
+        });
+        set(&mut settings, "group", &|s| {
+            s.display_name = Some("Shop".into())
+        });
+        let merged = settings.merged(&["group", "a", "b"]);
+        assert!(merged.production, "one member's PROD marks the group");
+        assert!(!merged.hidden, "hidden only when every member is");
+        assert_eq!(merged.color, Some(ColorTag::Green));
+        assert_eq!(merged.display_name.as_deref(), Some("Shop"));
+        assert_eq!(merged.namespaces, ["x", "y"]);
+        set(&mut settings, "a", &|s| s.hidden = true);
+        assert!(settings.merged(&["group", "a", "b"]).hidden);
+        // A context without siblings reads only its own entry.
+        assert!(!settings.merged(&["b"]).production);
+        assert!(settings.merged(&["b"]).hidden);
     }
 
     #[test]

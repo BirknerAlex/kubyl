@@ -26,6 +26,7 @@ use crate::auth::CredentialSource;
 use crate::client::{self, BuiltClient, ConnectError, Probe};
 use crate::cluster_info::{self, ClusterInfo};
 use crate::discovery::{self, Discovery};
+use crate::groups::{self, GroupOptions};
 use crate::kubeconfig::{self, ContextInfo, Loaded, Source, SourceSpec};
 use crate::openapi;
 use crate::settings::{ContextSettings, KubeSettings, context_color, display_path};
@@ -120,6 +121,9 @@ pub struct Namespaces {
     /// `true`: from a live watch. `false`: listing is forbidden (or pending) and the names come
     /// from the kubeconfig and the user's `namespaces` setting.
     pub listed: bool,
+    /// The namespaces of the entry's kubeconfig contexts (a group has one per member), offered
+    /// in the namespace picker as "from kubeconfig".
+    pub kubeconfig: Vec<String>,
 }
 
 /// Everything known about one connected (or connecting) cluster.
@@ -196,6 +200,12 @@ pub enum ConnectionEvent {
     ActiveChanged(Option<ClusterId>),
     /// The user asked for this cluster and it needs an OIDC sign-in; the UI opens the modal.
     SignInRequested(ClusterId),
+    /// An entry's id changed (a context got its first sibling, or lost its last one): its
+    /// connection moved to `to` without reconnecting. Things keyed by `from` should follow.
+    Rekeyed {
+        from: ClusterId,
+        to: ClusterId,
+    },
 }
 
 /// What Kubyl remembers in state.json. Never credentials.
@@ -203,6 +213,10 @@ pub enum ConnectionEvent {
 #[serde(default)]
 struct KubeState {
     active: Option<ClusterId>,
+    /// The namespace last used in each group (where a group starts after a restart when the
+    /// file's current context isn't one of its members).
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    namespaces: std::collections::BTreeMap<String, String>,
 }
 
 impl StateSection for KubeState {
@@ -216,6 +230,13 @@ impl StateSection for KubeState {
 pub struct ConnectionManager {
     pasted_dir: PathBuf,
     loaded: Loaded,
+    /// The sidebar entries: groups of contexts and single contexts (see [`crate::groups`]).
+    entries: Vec<ContextInfo>,
+    /// Entry index by entry id, and by member context id.
+    entry_index: HashMap<ClusterId, usize>,
+    member_index: HashMap<ClusterId, usize>,
+    /// Ids of entries that were re-keyed this session, to their current id.
+    aliases: HashMap<ClusterId, ClusterId>,
     /// Hash of each context's kubeconfig entries, to reconnect when they change.
     fingerprints: HashMap<ClusterId, u64>,
     clusters: HashMap<ClusterId, Cluster>,
@@ -255,6 +276,12 @@ impl ConnectionManager {
     pub(crate) fn install(pasted_dir: PathBuf, watch_files: bool, cx: &mut App) -> Entity<Self> {
         let manager = cx.new(|cx| Self::new(pasted_dir, watch_files, cx));
         cx.set_global(GlobalManager(manager.clone()));
+        let weak = manager.downgrade();
+        kubyl_core::ClusterIds::install(cx, move |id, cx| {
+            weak.upgrade()
+                .map(|m| m.read(cx).resolve(id))
+                .unwrap_or_else(|| id.clone())
+        });
         manager
     }
 
@@ -263,9 +290,14 @@ impl ConnectionManager {
         let subscription = Settings::observe::<KubeSettings>(cx, move |_, cx| {
             weak.update(cx, |this, cx| this.settings_changed(cx)).ok();
         });
+        let namespaces = cx.observe_global::<ActiveContext>(|this, cx| this.remember_namespace(cx));
         let mut this = Self {
             pasted_dir,
             loaded: Loaded::default(),
+            entries: Vec::new(),
+            entry_index: HashMap::new(),
+            member_index: HashMap::new(),
+            aliases: HashMap::new(),
             fingerprints: HashMap::new(),
             clusters: HashMap::new(),
             active: None,
@@ -278,7 +310,7 @@ impl ConnectionManager {
             settings: Settings::get::<KubeSettings>(cx).clone(),
             interactive: HashSet::new(),
             _tasks: Vec::new(),
-            _subscriptions: vec![subscription],
+            _subscriptions: vec![subscription, namespaces],
         };
         if watch_files {
             this.start_file_events(cx);
@@ -294,29 +326,88 @@ impl ConnectionManager {
         &self.loaded.sources
     }
 
-    /// Every context, including hidden ones.
+    /// Every context of every kubeconfig, including hidden ones and members of groups.
     pub fn all_contexts(&self) -> &[ContextInfo] {
         &self.loaded.contexts
     }
 
-    /// Contexts the user didn't hide.
-    pub fn contexts(&self) -> impl Iterator<Item = &ContextInfo> {
-        self.loaded
-            .contexts
-            .iter()
-            .filter(|c| !self.settings.context(c.id.as_str()).hidden)
+    /// Every cluster entry (groups and single contexts), including hidden ones.
+    pub fn entries(&self) -> &[ContextInfo] {
+        &self.entries
     }
 
+    /// The cluster entries the user didn't hide: one per cluster and user (a group of contexts
+    /// that differ only in their namespace), or one per context with grouping off.
+    pub fn contexts(&self) -> impl Iterator<Item = &ContextInfo> {
+        self.entries
+            .iter()
+            .filter(|c| !self.context_settings(&c.id).hidden)
+    }
+
+    /// The entry of `id` (an entry id, a member's context id or an older id of the entry).
     pub fn context(&self, id: &ClusterId) -> Option<&ContextInfo> {
+        let ix = self
+            .entry_index
+            .get(id)
+            .or_else(|| self.entry_index.get(&self.resolve(id)))?;
+        self.entries.get(*ix)
+    }
+
+    /// One context of a kubeconfig by its own id (`<context>@<file>`), group member or not.
+    pub fn member(&self, id: &ClusterId) -> Option<&ContextInfo> {
         self.loaded.contexts.iter().find(|c| &c.id == id)
     }
 
-    /// The user's overrides for a context.
-    pub fn context_settings(&self, id: &ClusterId) -> ContextSettings {
-        self.settings.context(id.as_str())
+    /// The current id of the entry `id` belongs to: `id` itself for an entry, the group of a
+    /// member context, the new id of a re-keyed entry, or for a group id that isn't one anymore
+    /// (grouping turned off, siblings removed) the context that took its place. Everything that
+    /// reads persisted cluster ids goes through this.
+    pub fn resolve(&self, id: &ClusterId) -> ClusterId {
+        resolve_in(
+            id,
+            &self.entries,
+            &self.entry_index,
+            &self.member_index,
+            &self.aliases,
+            &self.loaded,
+        )
     }
 
-    /// Display name: the override, or the merged context name.
+    /// Keys that per-cluster settings of other crates may use for this entry: its id, its
+    /// members' ids and its members' context names (`metrics.prometheus`, `alerts.clusters`).
+    pub fn settings_keys(&self, id: &ClusterId) -> Vec<String> {
+        let Some(entry) = self.context(id) else {
+            return vec![id.to_string()];
+        };
+        let mut keys = vec![entry.id.to_string()];
+        for member in &entry.members {
+            keys.push(member.id.to_string());
+        }
+        for member in &entry.members {
+            keys.push(member.context.clone());
+        }
+        keys.dedup();
+        let mut seen = HashSet::new();
+        keys.retain(|k| seen.insert(k.clone()));
+        keys
+    }
+
+    /// The user's overrides for an entry: its own, merged with its members' (see
+    /// [`KubeSettings::merged`]).
+    pub fn context_settings(&self, id: &ClusterId) -> ContextSettings {
+        match self.context(id) {
+            Some(entry) => {
+                let mut keys = vec![entry.id.as_str()];
+                if entry.is_group() {
+                    keys.extend(entry.members.iter().map(|m| m.id.as_str()));
+                }
+                self.settings.merged(&keys)
+            }
+            None => self.settings.context(id.as_str()),
+        }
+    }
+
+    /// Display name: the override, or the entry's label.
     pub fn display_name(&self, id: &ClusterId) -> SharedString {
         self.context_settings(id)
             .display_name
@@ -326,7 +417,8 @@ impl ConnectionManager {
     }
 
     pub fn color(&self, id: &ClusterId, cx: &App) -> Hsla {
-        context_color(id.as_str(), &self.context_settings(id), cx)
+        let id = self.resolve(id);
+        context_color(id.as_str(), &self.context_settings(&id), cx)
     }
 
     /// True until the first load finished.
@@ -369,38 +461,122 @@ impl ConnectionManager {
             contexts = loaded.contexts.len(),
             "kubeconfigs loaded"
         );
-        let fingerprints: HashMap<ClusterId, u64> = loaded
-            .contexts
-            .iter()
-            .map(|c| (c.id.clone(), fingerprint(c, loaded.configs.get(&c.file))))
-            .collect();
-        let ids: HashSet<&ClusterId> = fingerprints.keys().collect();
+        self.loaded = loaded;
+        self.apply_entries(cx);
+        if self.watch_files {
+            self.update_watcher(specs);
+        }
+        if !self.restored {
+            self.restored = true;
+            if let Some(id) = State::get::<KubeState>(cx).active {
+                let id = self.resolve(&id);
+                if self.context(&id).is_some() {
+                    self.activate(&id, cx);
+                }
+            }
+        }
+        self.sync_active(cx);
+        cx.emit(ConnectionEvent::ContextsChanged);
+        cx.notify();
+    }
 
-        // Drop connections of removed contexts; reconnect changed ones.
-        let removed: Vec<ClusterId> = self
+    /// Rebuilds the entries from the loaded contexts and the grouping settings. Connections of
+    /// entries whose id changed (a context got its first sibling, or lost its last one) move to
+    /// the new id without reconnecting; removed ones are dropped; changed ones reconnect. A new
+    /// namespace or current context changes nothing about a connection.
+    fn apply_entries(&mut self, cx: &mut Context<Self>) {
+        let options = GroupOptions {
+            enabled: self.settings.group_contexts,
+            separate: self.settings.separate_groups.clone(),
+        };
+        let entries = groups::entries(&self.loaded.contexts, &self.loaded.configs, &options);
+        let (entry_index, member_index) = index(&entries);
+        let fingerprints: HashMap<ClusterId, u64> = entries
+            .iter()
+            .map(|e| {
+                (
+                    e.id.clone(),
+                    fingerprint(e, self.loaded.configs.get(&e.file)),
+                )
+            })
+            .collect();
+
+        let gone: Vec<ClusterId> = self
             .clusters
             .keys()
-            .filter(|id| !ids.contains(id))
+            .filter(|id| !entry_index.contains_key(*id))
             .cloned()
             .collect();
-        for id in removed {
-            self.clusters.remove(&id);
-            cx.emit(ConnectionEvent::StateChanged(id));
+        let mut rekeyed = Vec::new();
+        let mut removed = Vec::new();
+        for old in gone {
+            let to = resolve_in(
+                &old,
+                &entries,
+                &entry_index,
+                &member_index,
+                &self.aliases,
+                &self.loaded,
+            );
+            let same_connection = entry_index.contains_key(&to)
+                && !self.clusters.contains_key(&to)
+                && self.fingerprints.contains_key(&old)
+                && self.fingerprints.get(&old) == fingerprints.get(&to);
+            match self.clusters.remove(&old) {
+                Some(cluster) if same_connection => {
+                    self.clusters.insert(to.clone(), cluster);
+                    rekeyed.push((old, to));
+                }
+                _ => removed.push(old),
+            }
         }
         let changed: Vec<ClusterId> = self
             .clusters
             .iter()
             .filter(|(id, cluster)| {
                 cluster.state != ConnectionState::Disconnected
+                    && !rekeyed.iter().any(|(_, to)| to == *id)
                     && self.fingerprints.get(*id) != fingerprints.get(*id)
             })
             .map(|(id, _)| id.clone())
             .collect();
-        self.loaded = loaded;
+        self.entries = entries;
+        self.entry_index = entry_index;
+        self.member_index = member_index;
         self.fingerprints = fingerprints;
+
+        for (from, to) in &rekeyed {
+            tracing::info!(%from, %to, "cluster entry re-keyed; the connection stays");
+            for target in self.aliases.values_mut() {
+                if target == from {
+                    *target = to.clone();
+                }
+            }
+            self.aliases.insert(from.clone(), to.clone());
+            if self.interactive.remove(from) {
+                self.interactive.insert(to.clone());
+            }
+            if self.active.as_ref() == Some(from) {
+                self.active = Some(to.clone());
+                State::update::<KubeState>(cx, |state| state.active = Some(to.clone()));
+            }
+            cx.emit(ConnectionEvent::Rekeyed {
+                from: from.clone(),
+                to: to.clone(),
+            });
+            cx.emit(ConnectionEvent::StateChanged(to.clone()));
+        }
+        for id in removed {
+            cx.emit(ConnectionEvent::StateChanged(id));
+        }
         for id in changed {
             tracing::info!(context = %id, "kubeconfig changed; reconnecting");
             self.connect(&id, cx);
+        }
+        // Members and their namespaces may have changed.
+        let ids: Vec<ClusterId> = self.clusters.keys().cloned().collect();
+        for id in ids {
+            self.refresh_fallback_namespaces(&id, cx);
         }
         if self
             .active
@@ -411,20 +587,32 @@ impl ConnectionManager {
             ActiveContext::set(cx, ActiveContext::default());
             cx.emit(ConnectionEvent::ActiveChanged(None));
         }
-        if self.watch_files {
-            self.update_watcher(specs);
-        }
-        if !self.restored {
-            self.restored = true;
-            if let Some(id) = State::get::<KubeState>(cx).active
-                && self.context(&id).is_some()
-            {
-                self.activate(&id, cx);
+        // Tabs with ids that resolve differently now are rebuilt by the workspace.
+        kubyl_core::ClusterIds::changed(cx);
+    }
+
+    /// The namespaces of an entry whose listing is forbidden, after its settings or members
+    /// changed.
+    fn refresh_fallback_namespaces(&mut self, id: &ClusterId, cx: &mut Context<Self>) {
+        let settings = self.context_settings(id);
+        let info = self.context(id).cloned();
+        let key = self.key(id);
+        let Some(cluster) = self.clusters.get_mut(&key) else {
+            return;
+        };
+        let kubeconfig = kubeconfig_namespaces(info.as_ref());
+        if cluster.namespaces.listed {
+            if cluster.namespaces.kubeconfig != kubeconfig {
+                cluster.namespaces.kubeconfig = kubeconfig;
+                cx.emit(ConnectionEvent::NamespacesChanged(id.clone()));
             }
+            return;
         }
-        self.sync_active(cx);
-        cx.emit(ConnectionEvent::ContextsChanged);
-        cx.notify();
+        let namespaces = fallback_namespaces(info.as_ref(), &settings, cluster.default_namespace());
+        if cluster.namespaces != namespaces {
+            cluster.namespaces = namespaces;
+            cx.emit(ConnectionEvent::NamespacesChanged(id.clone()));
+        }
     }
 
     fn settings_changed(&mut self, cx: &mut Context<Self>) {
@@ -436,21 +624,16 @@ impl ConnectionManager {
         {
             self.reload(cx);
         }
-        if old.contexts != new.contexts {
+        let regroup =
+            old.group_contexts != new.group_contexts || old.separate_groups != new.separate_groups;
+        if regroup {
+            self.apply_entries(cx);
+        }
+        if old.contexts != new.contexts || regroup {
             let ids: Vec<ClusterId> = self.clusters.keys().cloned().collect();
             for id in ids {
                 self.refresh_caps(&id);
-                let settings = self.context_settings(&id);
-                if let Some(cluster) = self.clusters.get_mut(&id)
-                    && !cluster.namespaces.listed
-                {
-                    cluster.namespaces = fallback_namespaces(
-                        self.loaded.contexts.iter().find(|c| c.id == id),
-                        &settings,
-                        cluster.default_namespace(),
-                    );
-                    cx.emit(ConnectionEvent::NamespacesChanged(id.clone()));
-                }
+                self.refresh_fallback_namespaces(&id, cx);
             }
             self.sync_active(cx);
             cx.emit(ConnectionEvent::ContextsChanged);
@@ -551,19 +734,71 @@ impl ConnectionManager {
         })
     }
 
-    /// Changes a context's overrides in settings.json.
+    /// Changes an entry's overrides in settings.json. A group's are written under the group
+    /// id, starting from the merged settings; a safety flag turned off on a group is cleared on
+    /// its members too (otherwise any member would keep it on).
     pub fn update_context_settings(
         &mut self,
         id: &ClusterId,
         cx: &mut Context<Self>,
         f: impl FnOnce(&mut ContextSettings),
     ) {
-        let key = id.to_string();
+        let entry = self.context(id).cloned();
+        let (key, members, mut settings) = match &entry {
+            Some(entry) if entry.is_group() => (
+                entry.id.to_string(),
+                entry.members.iter().map(|m| m.id.to_string()).collect(),
+                self.context_settings(&entry.id),
+            ),
+            Some(entry) => (
+                entry.id.to_string(),
+                Vec::new(),
+                self.settings.context(entry.id.as_str()),
+            ),
+            None => (
+                id.to_string(),
+                Vec::new(),
+                self.settings.context(id.as_str()),
+            ),
+        };
+        f(&mut settings);
+        Settings::update::<KubeSettings>(cx, move |stored| {
+            for member in &members {
+                let Some(member_settings) = stored.contexts.get_mut(member) else {
+                    continue;
+                };
+                member_settings.production &= settings.production;
+                member_settings.read_only &= settings.read_only;
+                member_settings.hidden &= settings.hidden;
+                if *member_settings == ContextSettings::default() {
+                    stored.contexts.remove(member);
+                }
+            }
+            if settings == ContextSettings::default() {
+                stored.contexts.remove(&key);
+            } else {
+                stored.contexts.insert(key, settings);
+            }
+        });
+    }
+
+    /// Turns grouping of contexts on or off (settings.json `kubernetes.group_contexts`).
+    pub fn set_group_contexts(&mut self, group: bool, cx: &mut Context<Self>) {
+        Settings::update::<KubeSettings>(cx, |settings| settings.group_contexts = group);
+    }
+
+    /// Shows a group's contexts as separate entries, or (`separate: false`) as one again.
+    pub fn set_group_separate(
+        &mut self,
+        group: &ClusterId,
+        separate: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let group = group.to_string();
         Settings::update::<KubeSettings>(cx, move |settings| {
-            let entry = settings.contexts.entry(key.clone()).or_default();
-            f(entry);
-            if *entry == ContextSettings::default() {
-                settings.contexts.remove(&key);
+            settings.separate_groups.retain(|g| g != &group);
+            if separate {
+                settings.separate_groups.push(group);
             }
         });
     }
@@ -611,14 +846,25 @@ impl ConnectionManager {
         use notify::Watcher as _;
         let mut dirs: Vec<PathBuf> = Vec::new();
         let mut relevant: HashSet<PathBuf> = HashSet::new();
+        // Events carry canonical paths (on macOS `/tmp/x` is reported as `/private/tmp/x`).
+        let mut relevant_path = |path: &Path| {
+            relevant.insert(path.to_path_buf());
+            if let Ok(canonical) = std::fs::canonicalize(path) {
+                relevant.insert(canonical);
+            } else if let (Some(parent), Some(name)) = (path.parent(), path.file_name())
+                && let Ok(parent) = std::fs::canonicalize(parent)
+            {
+                relevant.insert(parent.join(name));
+            }
+        };
         for spec in specs {
             if spec.is_dir {
                 std::fs::create_dir_all(&spec.path).ok();
-                relevant.insert(spec.path.clone());
+                relevant_path(&spec.path);
                 dirs.push(spec.path.clone());
             } else {
                 for file in &spec.files {
-                    relevant.insert(file.clone());
+                    relevant_path(file);
                     if let Some(parent) = file.parent() {
                         dirs.push(parent.to_path_buf());
                     }
@@ -662,13 +908,23 @@ impl ConnectionManager {
 
     // ----- Connections -----
 
+    /// The key of `id`'s connection: `id` itself, or the entry it resolves to (a member, or an
+    /// id from before a re-key: tasks keep the id they were started with).
+    fn key(&self, id: &ClusterId) -> ClusterId {
+        if self.clusters.contains_key(id) {
+            id.clone()
+        } else {
+            self.resolve(id)
+        }
+    }
+
     pub fn cluster(&self, id: &ClusterId) -> Option<&Cluster> {
-        self.clusters.get(id)
+        self.clusters.get(&self.key(id))
     }
 
     pub fn state(&self, id: &ClusterId) -> ConnectionState {
         self.clusters
-            .get(id)
+            .get(&self.key(id))
             .map(|c| c.state.clone())
             .unwrap_or(ConnectionState::Disconnected)
     }
@@ -676,25 +932,25 @@ impl ConnectionManager {
     /// The kube client of a connected cluster.
     pub fn client(&self, id: &ClusterId) -> Option<kube::Client> {
         self.clusters
-            .get(id)
+            .get(&self.key(id))
             .filter(|c| c.state.is_connected())
             .and_then(Cluster::client)
     }
 
     pub fn discovery(&self, id: &ClusterId) -> Option<Arc<Discovery>> {
-        self.clusters.get(id)?.discovery.clone()
+        self.clusters.get(&self.key(id))?.discovery.clone()
     }
 
     pub fn namespaces(&self, id: &ClusterId) -> Namespaces {
         self.clusters
-            .get(id)
+            .get(&self.key(id))
             .map(|c| c.namespaces.clone())
             .unwrap_or_default()
     }
 
     /// Capabilities, including the user's production and read-only flags.
     pub fn caps(&self, id: &ClusterId) -> ClusterCaps {
-        match self.clusters.get(id) {
+        match self.clusters.get(&self.key(id)) {
             Some(cluster) => cluster.caps.clone(),
             None => cluster_info::caps(None, None, &self.context_settings(id)),
         }
@@ -715,6 +971,7 @@ impl ConnectionManager {
     /// Connects unless already connected or connecting. Use when a cluster root is expanded or
     /// a favorite is opened.
     pub fn ensure_connected(&mut self, id: &ClusterId, cx: &mut Context<Self>) {
+        let id = &self.resolve(id);
         match self.state(id) {
             ConnectionState::Disconnected
             | ConnectionState::Unreachable { .. }
@@ -727,6 +984,7 @@ impl ConnectionManager {
     /// (Re)connects: builds a client, checks it, then starts discovery, watches and the health
     /// ping.
     pub fn connect(&mut self, id: &ClusterId, cx: &mut Context<Self>) {
+        let id = &self.resolve(id);
         let Some(info) = self.context(id).cloned() else {
             return;
         };
@@ -813,7 +1071,8 @@ impl ConnectionManager {
 
     /// Disconnects and forgets the client (watches stop).
     pub fn disconnect(&mut self, id: &ClusterId, cx: &mut Context<Self>) {
-        if let Some(cluster) = self.clusters.get_mut(id) {
+        let id = &self.key(id);
+        if let Some(cluster) = self.clusters.get_mut(&self.key(id)) {
             cluster.generation += 1;
             *cluster = Cluster {
                 generation: cluster.generation,
@@ -840,13 +1099,14 @@ impl ConnectionManager {
         >,
         cx: &mut Context<Self>,
     ) {
+        let id = &self.key(id);
         let Some(info) = self.context(id).cloned() else {
             return;
         };
         let settings = self.context_settings(id);
         let Some(cluster) = self
             .clusters
-            .get_mut(id)
+            .get_mut(&self.key(id))
             .filter(|c| c.generation == generation)
         else {
             return;
@@ -871,7 +1131,7 @@ impl ConnectionManager {
             "connected"
         );
         self.interactive.remove(id);
-        let Some(cluster) = self.clusters.get_mut(id) else {
+        let Some(cluster) = self.clusters.get_mut(&self.key(id)) else {
             return;
         };
         cluster.failures = 0;
@@ -899,11 +1159,12 @@ impl ConnectionManager {
     }
 
     fn fail(&mut self, id: &ClusterId, generation: u64, err: ConnectError, cx: &mut Context<Self>) {
+        let id = &self.key(id);
         let sign_in = self.context(id).is_some_and(|c| c.auth.supports_sign_in());
         let name = self.display_name(id);
         let Some(cluster) = self
             .clusters
-            .get_mut(id)
+            .get_mut(&self.key(id))
             .filter(|c| c.generation == generation)
         else {
             return;
@@ -935,7 +1196,7 @@ impl ConnectionManager {
         if matches!(err, ConnectError::SignInRequired) && self.interactive.remove(id) {
             cx.emit(ConnectionEvent::SignInRequested(id.clone()));
         }
-        let Some(cluster) = self.clusters.get_mut(id) else {
+        let Some(cluster) = self.clusters.get_mut(&self.key(id)) else {
             return;
         };
         // Only the first failure is worth a toast; the retries show in the UI.
@@ -966,7 +1227,7 @@ impl ConnectionManager {
             cluster.tasks.push(cx.spawn(async move |this, cx| {
                 cx.background_executor().timer(delay).await;
                 this.update(cx, |this, cx| {
-                    let current = this.clusters.get(&id).map(|c| c.generation);
+                    let current = this.clusters.get(&this.key(&id)).map(|c| c.generation);
                     if current == Some(generation) {
                         // Replaces (and so cancels) this task; nothing runs after it.
                         this.connect(&id, cx);
@@ -991,7 +1252,7 @@ impl ConnectionManager {
                 let Ok(Some((client, rebuild_at))) = this.read_with(cx, |this, _| {
                     let cluster = this
                         .clusters
-                        .get(&id)
+                        .get(&this.key(&id))
                         .filter(|c| c.generation == generation)?;
                     let built = cluster.client.as_ref()?;
                     Some((built.client.clone(), built.rebuild_at))
@@ -1017,7 +1278,9 @@ impl ConnectionManager {
                     interval
                 } else {
                     let failures = this
-                        .read_with(cx, |this, _| this.clusters.get(&id).map(|c| c.failures))
+                        .read_with(cx, |this, _| {
+                            this.clusters.get(&this.key(&id)).map(|c| c.failures)
+                        })
                         .ok()
                         .flatten()
                         .unwrap_or(1);
@@ -1032,7 +1295,7 @@ impl ConnectionManager {
     fn push_task(&mut self, id: &ClusterId, generation: u64, task: Task<()>) {
         if let Some(cluster) = self
             .clusters
-            .get_mut(id)
+            .get_mut(&self.key(id))
             .filter(|c| c.generation == generation)
         {
             cluster.tasks.push(task);
@@ -1047,9 +1310,10 @@ impl ConnectionManager {
         ping: Result<Duration, ConnectError>,
         cx: &mut Context<Self>,
     ) -> bool {
+        let id = &self.key(id);
         let Some(cluster) = self
             .clusters
-            .get_mut(id)
+            .get_mut(&self.key(id))
             .filter(|c| c.generation == generation)
         else {
             return false;
@@ -1082,7 +1346,7 @@ impl ConnectionManager {
             Err(err) => {
                 let sign_in = self.context(id).is_some_and(|c| c.auth.supports_sign_in());
                 let name = self.display_name(id);
-                let cluster = self.clusters.get_mut(id).expect("checked above");
+                let cluster = self.clusters.get_mut(&self.key(id)).expect("checked above");
                 cluster.failures += 1;
                 let first = cluster.failures == 1;
                 cluster.state = match &err {
@@ -1162,9 +1426,10 @@ impl ConnectionManager {
                 let rediscover = !first;
                 first = false;
                 let alive = this.update(cx, |this, cx| {
+                    let id_crd = this.key(&id_crd);
                     let Some(cluster) = this
                         .clusters
-                        .get_mut(&id_crd)
+                        .get_mut(&this.key(&id_crd))
                         .filter(|c| c.generation == generation)
                     else {
                         return false;
@@ -1199,11 +1464,12 @@ impl ConnectionManager {
         update: NamespaceUpdate,
         cx: &mut Context<Self>,
     ) {
+        let id = &self.key(id);
         let settings = self.context_settings(id);
         let info = self.context(id).cloned();
         let Some(cluster) = self
             .clusters
-            .get_mut(id)
+            .get_mut(&self.key(id))
             .filter(|c| c.generation == generation)
         else {
             return;
@@ -1212,6 +1478,7 @@ impl ConnectionManager {
             NamespaceUpdate::Names(names) => Namespaces {
                 names,
                 listed: true,
+                kubeconfig: kubeconfig_namespaces(info.as_ref()),
             },
             NamespaceUpdate::Forbidden => {
                 tracing::info!(context = %id, "listing namespaces is forbidden; using fallbacks");
@@ -1231,9 +1498,10 @@ impl ConnectionManager {
         client: kube::Client,
         cx: &mut Context<Self>,
     ) {
+        let id = &self.key(id);
         let Some(cluster) = self
             .clusters
-            .get_mut(id)
+            .get_mut(&self.key(id))
             .filter(|c| c.generation == generation)
         else {
             return;
@@ -1258,7 +1526,7 @@ impl ConnectionManager {
             this.update(cx, |this, cx| {
                 if this
                     .clusters
-                    .get(&task_id)
+                    .get(&this.key(&task_id))
                     .is_some_and(|c| c.generation == generation)
                 {
                     tracing::debug!(context = %task_id, unserved, "CRDs not served yet; re-running discovery");
@@ -1284,11 +1552,12 @@ impl ConnectionManager {
             let id = task_id;
             let result = discover.await;
             this.update(cx, |this, cx| {
+                let id = this.key(&id);
                 let settings = this.context_settings(&id);
                 let info = this.context(&id).cloned();
                 let Some(cluster) = this
                     .clusters
-                    .get_mut(&id)
+                    .get_mut(&this.key(&id))
                     .filter(|c| c.generation == generation)
                 else {
                     return;
@@ -1325,8 +1594,9 @@ impl ConnectionManager {
     }
 
     fn refresh_caps(&mut self, id: &ClusterId) {
+        let id = &self.key(id);
         let settings = self.context_settings(id);
-        if let Some(cluster) = self.clusters.get_mut(id) {
+        if let Some(cluster) = self.clusters.get_mut(&self.key(id)) {
             cluster.caps = cluster_info::caps(
                 cluster.discovery.as_deref(),
                 cluster.info.as_ref(),
@@ -1351,7 +1621,7 @@ impl ConnectionManager {
         let Some(client) = self.client(id) else {
             return Task::ready(None);
         };
-        let generation = self.clusters.get(id).map(|c| c.generation);
+        let generation = self.clusters.get(&self.key(id)).map(|c| c.generation);
         let check = spawn_kube(cx, access::check(client, query.clone()));
         let id = id.clone();
         cx.spawn(async move |this, cx| {
@@ -1362,7 +1632,7 @@ impl ConnectionManager {
             this.update(cx, |this, _| {
                 if let Some(cluster) = this
                     .clusters
-                    .get_mut(&id)
+                    .get_mut(&this.key(&id))
                     .filter(|c| Some(c.generation) == generation)
                 {
                     cluster.access.insert(query, allowed);
@@ -1375,7 +1645,7 @@ impl ConnectionManager {
 
     /// A cached answer, without a request.
     pub fn cached_can_i(&self, id: &ClusterId, query: &AccessQuery) -> Option<bool> {
-        self.clusters.get(id)?.access.get(query)
+        self.clusters.get(&self.key(id))?.access.get(query)
     }
 
     /// The OpenAPI v3 spec of a group-version (`OpenApiIndex::key(group, version)`), from the
@@ -1404,7 +1674,14 @@ impl ConnectionManager {
 
     /// The credentials Kubyl manages for a context (exec, OIDC, OpenShift), for the sign-in modal.
     pub fn credentials(&self, id: &ClusterId) -> Option<CredentialSource> {
-        if let Some(source) = self.clusters.get(id)?.client.as_ref()?.credentials.clone() {
+        if let Some(source) = self
+            .clusters
+            .get(&self.key(id))?
+            .client
+            .as_ref()?
+            .credentials
+            .clone()
+        {
             return Some(source);
         }
         None
@@ -1415,7 +1692,7 @@ impl ConnectionManager {
     /// authenticate the user themselves; never log or store it.
     pub fn bearer_token(&self, id: &ClusterId) -> Option<crate::auth::BearerToken> {
         self.clusters
-            .get(id)
+            .get(&self.key(id))
             .filter(|c| c.state.is_connected())?
             .client
             .as_ref()?
@@ -1452,18 +1729,14 @@ impl ConnectionManager {
 
     /// Makes `id` the active cluster (title bar, status bar) and connects it.
     pub fn activate(&mut self, id: &ClusterId, cx: &mut Context<Self>) {
+        let id = &self.resolve(id);
         if self.context(id).is_none() {
             return;
         }
         let changed = self.active.as_ref() != Some(id);
         self.active = Some(id.clone());
-        State::set(
-            cx,
-            &KubeState {
-                active: Some(id.clone()),
-            },
-        );
-        let namespace = self.initial_namespace(id);
+        State::update::<KubeState>(cx, |state| state.active = Some(id.clone()));
+        let namespace = self.initial_namespace(id, cx);
         let badge = self.badge(id, cx);
         ActiveContext::set(
             cx,
@@ -1484,17 +1757,71 @@ impl ConnectionManager {
         cx.notify();
     }
 
-    fn initial_namespace(&self, id: &ClusterId) -> Option<String> {
-        self.context_settings(id)
-            .default_namespace
-            .or_else(|| self.context(id)?.namespace.clone())
+    /// Where an entry starts: its default namespace, else its kubeconfig namespace. A group
+    /// starts in the file's current context's namespace when that context is a member (after
+    /// `oc project foo` Kubyl opens `foo` next time), else in the last namespace used in Kubyl,
+    /// else in its first member's.
+    fn initial_namespace(&self, id: &ClusterId, cx: &App) -> Option<String> {
+        if let Some(namespace) = self.context_settings(id).default_namespace {
+            return Some(namespace);
+        }
+        let entry = self.context(id)?;
+        if !entry.is_group() {
+            return entry.namespace.clone();
+        }
+        let current = self
+            .loaded
+            .configs
+            .get(&entry.file)
+            .and_then(|c| c.current_context.as_deref());
+        if let Some(member) = entry
+            .members
+            .iter()
+            .find(|m| Some(m.context.as_str()) == current)
+        {
+            return member.namespace.clone();
+        }
+        if let Some(namespace) = State::get::<KubeState>(cx)
+            .namespaces
+            .get(entry.id.as_str())
+        {
+            return Some(namespace.clone());
+        }
+        entry
+            .members
+            .iter()
+            .find(|m| m.context == entry.context)
+            .and_then(|m| m.namespace.clone())
+    }
+
+    /// Keeps the last namespace used in each group (state.json).
+    fn remember_namespace(&mut self, cx: &mut Context<Self>) {
+        let active = ActiveContext::global(cx);
+        let (Some(cluster), Some(namespace)) = (&active.cluster, &active.namespace) else {
+            return;
+        };
+        let id = cluster.id.clone();
+        let namespace = namespace.to_string();
+        if !self.context(&id).is_some_and(ContextInfo::is_group) {
+            return;
+        }
+        if State::get::<KubeState>(cx).namespaces.get(id.as_str()) == Some(&namespace) {
+            return;
+        }
+        State::update::<KubeState>(cx, |state| {
+            state.namespaces.insert(id.to_string(), namespace);
+        });
     }
 
     /// How the chrome shows a cluster.
     pub fn badge(&self, id: &ClusterId, cx: &App) -> ClusterBadge {
         let settings = self.context_settings(id);
         let state = self.state(id);
-        let meta = match self.clusters.get(id).and_then(|c| c.info.as_ref()) {
+        let meta = match self
+            .clusters
+            .get(&self.key(id))
+            .and_then(|c| c.info.as_ref())
+        {
             Some(info) if state.is_connected() => Some(info.summary()),
             _ => Some(state.label()),
         };
@@ -1540,18 +1867,35 @@ fn truncate(text: &str, max: usize) -> String {
     }
 }
 
-/// Namespaces when listing isn't possible: the configured default, the kubeconfig namespace,
-/// the client's default and the user's list.
+/// The namespaces of an entry's kubeconfig contexts (every member of a group).
+fn kubeconfig_namespaces(info: Option<&ContextInfo>) -> Vec<String> {
+    let mut names: Vec<String> = info
+        .map(|i| {
+            i.members
+                .iter()
+                .filter_map(|m| m.namespace.clone())
+                .chain(i.namespace.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// Namespaces when listing isn't possible: the configured default, the kubeconfig namespaces
+/// (every member's), the client's default and the user's list.
 fn fallback_namespaces(
     info: Option<&ContextInfo>,
     settings: &ContextSettings,
     client_default: Option<&str>,
 ) -> Namespaces {
+    let kubeconfig = kubeconfig_namespaces(info);
     let mut names: Vec<String> = settings
         .default_namespace
         .iter()
         .cloned()
-        .chain(info.and_then(|i| i.namespace.clone()))
+        .chain(kubeconfig.iter().cloned())
         .chain(client_default.map(String::from))
         .chain(settings.namespaces.iter().cloned())
         .collect();
@@ -1560,20 +1904,97 @@ fn fallback_namespaces(
     Namespaces {
         names,
         listed: false,
+        kubeconfig,
     }
 }
 
-/// Hash of the kubeconfig entries a context uses (context, cluster, user).
+/// Entry index by entry id, and by member context id.
+fn index(entries: &[ContextInfo]) -> (HashMap<ClusterId, usize>, HashMap<ClusterId, usize>) {
+    let mut by_id = HashMap::new();
+    let mut by_member = HashMap::new();
+    for (ix, entry) in entries.iter().enumerate() {
+        by_id.insert(entry.id.clone(), ix);
+        for member in &entry.members {
+            by_member.insert(member.id.clone(), ix);
+        }
+    }
+    (by_id, by_member)
+}
+
+/// See [`ConnectionManager::resolve`].
+fn resolve_in(
+    id: &ClusterId,
+    entries: &[ContextInfo],
+    entry_index: &HashMap<ClusterId, usize>,
+    member_index: &HashMap<ClusterId, usize>,
+    aliases: &HashMap<ClusterId, ClusterId>,
+    loaded: &Loaded,
+) -> ClusterId {
+    let mut id = id.clone();
+    for _ in 0..4 {
+        if entry_index.contains_key(&id) {
+            return id;
+        }
+        if let Some(&ix) = member_index.get(&id) {
+            return entries[ix].id.clone();
+        }
+        match aliases.get(&id) {
+            Some(next) => id = next.clone(),
+            None => break,
+        }
+    }
+    // A group id that isn't an entry anymore: the entry of the contexts that use its cluster
+    // and user entries in its file (the file's current context first, then by name).
+    if let Some((cluster, user, file)) = groups::parse_group_id(id.as_str()) {
+        let current = loaded
+            .configs
+            .get(&file)
+            .and_then(|c| c.current_context.clone());
+        let found = loaded
+            .contexts
+            .iter()
+            .filter(|c| {
+                c.file == file && c.cluster == cluster && c.user.as_deref().unwrap_or("") == user
+            })
+            .min_by_key(|c| (Some(&c.context) != current.as_ref(), c.context.clone()));
+        if let Some(&ix) = found.and_then(|c| member_index.get(&c.id)) {
+            return entries[ix].id.clone();
+        }
+    }
+    id
+}
+
+/// Hash of what a connection is made of: the contents of the entry's cluster and user and
+/// the context's other fields, without names and namespace (a new namespace, current context
+/// or connecting member never reconnects).
 fn fingerprint(info: &ContextInfo, config: Option<&Arc<Kubeconfig>>) -> u64 {
     use std::hash::{Hash as _, Hasher as _};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     if let Some(config) = config {
-        let context = config.contexts.iter().find(|c| c.name == info.context);
-        let cluster = config.clusters.iter().find(|c| c.name == info.cluster);
+        let context = config
+            .contexts
+            .iter()
+            .find(|c| c.name == info.context)
+            .and_then(|c| c.context.as_ref())
+            .and_then(|c| serde_json::to_value(c).ok())
+            .map(|mut value| {
+                if let Some(map) = value.as_object_mut() {
+                    map.remove("namespace");
+                    map.remove("cluster");
+                    map.remove("user");
+                }
+                value
+            });
+        let cluster = config
+            .clusters
+            .iter()
+            .find(|c| c.name == info.cluster)
+            .map(|c| &c.cluster);
         let user = config
             .auth_infos
             .iter()
-            .find(|u| Some(&u.name) == info.user.as_ref());
+            .find(|u| Some(&u.name) == info.user.as_ref())
+            .map(|u| &u.auth_info);
         // Only hashed in memory, never stored or logged.
         serde_json::to_string(&(context, cluster, user))
             .unwrap_or_default()
@@ -1742,6 +2163,240 @@ mod tests {
             .await;
         assert!(refused.is_err());
         assert!(other.exists());
+    }
+
+    /// A kubeconfig with one `oc`-style context (`oc login`), in its own folder.
+    fn oc_setup(
+        cx: &mut TestAppContext,
+        extra: &str,
+    ) -> (
+        tempfile::TempDir,
+        std::path::PathBuf,
+        Entity<ConnectionManager>,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config");
+        std::fs::write(&file, oc_config(&["shop"], "shop")).unwrap();
+        let settings = format!(
+            r#"{{"kubernetes": {{"load_default_kubeconfig": false, "load_kubeconfig_env": false,
+                "kubeconfigs": [{}]{extra}}}}}"#,
+            serde_json::to_string(&file).unwrap()
+        );
+        std::fs::write(dir.path().join("settings.json"), settings).unwrap();
+        let manager = cx.update(|cx| {
+            kubyl_core::init(cx);
+            kubyl_settings::init_with_dir(cx, dir.path());
+            kubyl_ui::init(cx);
+            Settings::register::<KubeSettings>(cx);
+            ConnectionManager::install(dir.path().join("pasted"), false, cx)
+        });
+        cx.run_until_parked();
+        (dir, file, manager)
+    }
+
+    /// `oc login` plus one `oc project` per namespace; `current` is the current context's.
+    fn oc_config(namespaces: &[&str], current: &str) -> String {
+        let cluster = "api-ocp-eu1-example-com:6443";
+        let user = "jane.doe@example.com";
+        let mut yaml = format!(
+            "apiVersion: v1\nkind: Config\ncurrent-context: \"{current}/{cluster}/{user}\"\nclusters:\n- name: \"{cluster}\"\n  cluster: {{server: \"https://api.ocp.eu1.example.com:6443\"}}\nusers:\n- name: \"{user}/{cluster}\"\n  user: {{token: sha256~not-a-real-token}}\ncontexts:\n"
+        );
+        for ns in namespaces {
+            yaml.push_str(&format!(
+                "- name: \"{ns}/{cluster}/{user}\"\n  context: {{cluster: \"{cluster}\", user: \"{user}/{cluster}\", namespace: {ns}}}\n"
+            ));
+        }
+        yaml
+    }
+
+    impl ConnectionManager {
+        /// Pretends `id` is connected (tests never connect).
+        fn fake_connected(&mut self, id: &ClusterId) {
+            self.clusters.insert(
+                id.clone(),
+                Cluster {
+                    state: ConnectionState::Connected {
+                        latency: Duration::from_millis(5),
+                        version: "v1.33.1".into(),
+                    },
+                    generation: 42,
+                    ..Default::default()
+                },
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn a_first_sibling_rekeys_the_connection_without_reconnecting(cx: &mut TestAppContext) {
+        let (_dir, file, manager) = oc_setup(cx, "");
+        let single = manager.read_with(cx, |m, _| {
+            let entries: Vec<_> = m.contexts().collect();
+            assert_eq!(entries.len(), 1);
+            assert!(!entries[0].is_group());
+            // oc-style contexts get the short label even without siblings.
+            assert_eq!(
+                entries[0].name,
+                "ocp.eu1.example.com · jane.doe@example.com"
+            );
+            entries[0].id.clone()
+        });
+        manager.update(cx, |m, cx| {
+            m.fake_connected(&single);
+            m.active = Some(single.clone());
+            m.sync_active(cx);
+        });
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let seen = events.clone();
+        let _subscription = cx.update(|cx| {
+            cx.subscribe(&manager, move |_, event: &ConnectionEvent, _| {
+                seen.borrow_mut().push(event.clone())
+            })
+        });
+
+        // `oc project payments`: a sibling context, and it becomes the current one.
+        std::fs::write(&file, oc_config(&["shop", "payments"], "payments")).unwrap();
+        manager.update(cx, |m, cx| m.reload(cx));
+        cx.run_until_parked();
+        let group = manager.read_with(cx, |m, _| {
+            let entries: Vec<_> = m.contexts().collect();
+            assert_eq!(entries.len(), 1);
+            assert!(entries[0].is_group());
+            let group = entries[0].id.clone();
+            assert!(group.as_str().starts_with(crate::groups::GROUP_PREFIX));
+            // Same connection: not reconnected.
+            let cluster = m.cluster(&group).unwrap();
+            assert_eq!(cluster.generation, 42);
+            assert!(cluster.state.is_connected());
+            // The old id and the member ids lead to the group; the active cluster followed.
+            assert_eq!(m.resolve(&single), group);
+            assert!(m.state(&single).is_connected());
+            assert_eq!(m.active(), Some(&group));
+            group
+        });
+        assert!(events.borrow().contains(&ConnectionEvent::Rekeyed {
+            from: single.clone(),
+            to: group.clone()
+        }));
+        cx.update(|cx| {
+            assert_eq!(
+                ActiveContext::global(cx).cluster.as_ref().unwrap().id,
+                group
+            );
+        });
+
+        // Another `oc project`: nothing changes about the entry or the connection.
+        std::fs::write(&file, oc_config(&["shop", "payments", "ops"], "ops")).unwrap();
+        manager.update(cx, |m, cx| m.reload(cx));
+        cx.run_until_parked();
+        manager.read_with(cx, |m, _| {
+            let entry = m.contexts().next().unwrap();
+            assert_eq!(entry.id, group);
+            assert_eq!(entry.members.len(), 3);
+            assert_eq!(m.cluster(&group).unwrap().generation, 42);
+        });
+
+        // The siblings go away again: back to the single context's id, still connected.
+        std::fs::write(&file, oc_config(&["shop"], "shop")).unwrap();
+        manager.update(cx, |m, cx| m.reload(cx));
+        cx.run_until_parked();
+        manager.read_with(cx, |m, _| {
+            let entry = m.contexts().next().unwrap();
+            assert_eq!(entry.id, single);
+            assert_eq!(m.cluster(&single).unwrap().generation, 42);
+            assert_eq!(m.resolve(&group), single);
+        });
+    }
+
+    #[gpui::test]
+    fn groups_merge_member_settings_and_start_in_the_current_namespace(cx: &mut TestAppContext) {
+        let (_dir, file, manager) = oc_setup(cx, "");
+        std::fs::write(&file, oc_config(&["shop", "payments", "ops"], "payments")).unwrap();
+        manager.update(cx, |m, cx| m.reload(cx));
+        cx.run_until_parked();
+        let (group, shop) = manager.read_with(cx, |m, _| {
+            let entry = m.contexts().next().unwrap();
+            let shop = entry
+                .members
+                .iter()
+                .find(|member| member.context.starts_with("shop/"))
+                .unwrap()
+                .id
+                .clone();
+            (entry.id.clone(), shop)
+        });
+        // PROD and a color on one member (old settings from before grouping).
+        let shop_key = shop.to_string();
+        cx.update(|cx| {
+            Settings::update::<KubeSettings>(cx, move |s| {
+                let entry = s.contexts.entry(shop_key).or_default();
+                entry.production = true;
+                entry.color = Some(crate::settings::ColorTag::Green);
+            })
+        });
+        cx.run_until_parked();
+        manager.read_with(cx, |m, cx| {
+            assert!(m.context_settings(&group).production);
+            assert!(m.caps(&group).production);
+            assert_eq!(
+                m.color(&group, cx),
+                crate::settings::ColorTag::Green.color(kubyl_ui::ActiveColors::colors(cx))
+            );
+            let keys = m.settings_keys(&group);
+            assert_eq!(keys[0], group.to_string());
+            assert!(keys.contains(&shop.to_string()));
+            assert!(keys.iter().any(|k| k.starts_with("shop/api-ocp-eu1")));
+        });
+        // Turning PROD off on the group clears it on the member too.
+        manager.update(cx, |m, cx| {
+            m.update_context_settings(&group, cx, |s| s.production = false)
+        });
+        cx.run_until_parked();
+        manager.read_with(cx, |m, _| {
+            assert!(!m.context_settings(&group).production);
+            assert!(!m.settings.context(shop.as_str()).production);
+            // The color stays (written under the group id).
+            assert!(m.settings.context(group.as_str()).color.is_some());
+        });
+        // The file's current context is a member: the group starts in its namespace.
+        manager.update(cx, |m, cx| m.activate(&group, cx));
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert_eq!(
+                ActiveContext::global(cx).namespace.as_deref(),
+                Some("payments")
+            );
+        });
+        manager.read_with(cx, |m, _| {
+            let namespaces = fallback_namespaces(m.context(&group), &Default::default(), None);
+            assert_eq!(namespaces.kubeconfig, ["ops", "payments", "shop"]);
+        });
+    }
+
+    #[gpui::test]
+    fn grouping_can_be_turned_off(cx: &mut TestAppContext) {
+        let (_dir, file, manager) = oc_setup(cx, r#", "group_contexts": false"#);
+        std::fs::write(&file, oc_config(&["shop", "payments"], "shop")).unwrap();
+        manager.update(cx, |m, cx| m.reload(cx));
+        cx.run_until_parked();
+        let group = manager.read_with(cx, |m, _| {
+            assert_eq!(m.contexts().count(), 2);
+            m.contexts().next().unwrap().group.clone().unwrap()
+        });
+        // A stored group id finds a member while grouping is off (the current context).
+        manager.read_with(cx, |m, _| {
+            let resolved = m.resolve(&group);
+            assert!(resolved.as_str().starts_with("shop/"), "{resolved}");
+        });
+        cx.update(|cx| Settings::update::<KubeSettings>(cx, |s| s.group_contexts = true));
+        cx.run_until_parked();
+        manager.read_with(cx, |m, _| {
+            assert_eq!(m.contexts().count(), 1);
+            assert_eq!(m.contexts().next().unwrap().id, group);
+        });
+        // "Show Contexts Separately" for this group only.
+        manager.update(cx, |m, cx| m.set_group_separate(&group, true, cx));
+        cx.run_until_parked();
+        manager.read_with(cx, |m, _| assert_eq!(m.contexts().count(), 2));
     }
 
     #[test]

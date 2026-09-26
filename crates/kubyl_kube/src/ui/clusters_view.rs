@@ -28,6 +28,8 @@ pub struct ClustersView {
     filter: Entity<InputState>,
     default_namespace: Entity<InputState>,
     selected: Option<ClusterId>,
+    /// Groups whose contexts are listed.
+    expanded: std::collections::HashSet<ClusterId>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -61,6 +63,7 @@ impl ClustersView {
             filter,
             default_namespace,
             selected: manager.read(cx).active().cloned(),
+            expanded: std::collections::HashSet::new(),
             _subscriptions: subscriptions,
         };
         this.ensure_selection(cx);
@@ -79,7 +82,10 @@ impl ClustersView {
             self.selected = manager
                 .active()
                 .cloned()
-                .or_else(|| manager.all_contexts().first().map(|c| c.id.clone()));
+                .or_else(|| manager.entries().first().map(|c| c.id.clone()));
+        } else if let Some(id) = &self.selected {
+            // An entry that was re-keyed (grouped) stays selected.
+            self.selected = Some(manager.resolve(id));
         }
     }
 
@@ -136,7 +142,7 @@ impl ClustersView {
         let rows = source_rows(manager.sources());
         let first_context = |row: &SourceRow| {
             manager
-                .all_contexts()
+                .entries()
                 .iter()
                 .find(|c| row.contains(&c.source_path, &c.file))
                 .map(|c| c.id.clone())
@@ -277,6 +283,16 @@ impl ClustersView {
                         settings.load_kubeconfig_env,
                         |m, on, cx| m.set_load_kubeconfig_env(on, cx),
                         cx,
+                    ))
+                    .child(load_toggle(
+                        "group-contexts",
+                        "One entry per cluster and user",
+                        "Contexts that differ only in their namespace (oc project) share one \
+                         sidebar row"
+                            .into(),
+                        settings.group_contexts,
+                        |m, on, cx| m.set_group_contexts(on, cx),
+                        cx,
                     )),
             )
             .child(div().flex_1().min_h(u(12.0)))
@@ -300,14 +316,16 @@ impl ClustersView {
         let query = self.filter.read(cx).value().to_lowercase();
         let manager_entity = ConnectionManager::global(cx);
         let manager = manager_entity.read(cx);
-        let total = manager.contexts().count();
+        let total = manager.all_contexts().len();
+        let shown = manager.contexts().count();
         let source_count = manager
             .sources()
             .iter()
             .filter(|s| s.context_count() > 0)
             .count();
-        let contexts: Vec<(ContextInfo, ConnectionState, Hsla, SharedString, bool)> = manager
-            .all_contexts()
+        // Every context of the files, as they are: groups list their members below them.
+        let entries: Vec<(ContextInfo, ConnectionState, Hsla, SharedString, bool)> = manager
+            .entries()
             .iter()
             .filter(|c| {
                 query.is_empty()
@@ -318,6 +336,7 @@ impl ClustersView {
                         .to_lowercase()
                         .contains(&query)
                     || manager.display_name(&c.id).to_lowercase().contains(&query)
+                    || c.member_names().any(|m| m.to_lowercase().contains(&query))
             })
             .map(|c| {
                 (
@@ -343,8 +362,13 @@ impl ClustersView {
                     .text_size(u(12.0))
                     .text_color(colors.text_dim)
                     .child(format!(
-                        "{total} from {source_count} source{}",
-                        if source_count == 1 { "" } else { "s" }
+                        "{total} from {source_count} source{}{}",
+                        if source_count == 1 { "" } else { "s" },
+                        if shown != total {
+                            format!(" · {shown} in the sidebar")
+                        } else {
+                            String::new()
+                        }
                     )),
             )
             .child(div().flex_1())
@@ -370,12 +394,15 @@ impl ClustersView {
             .child(col(1.2).child(th("AUTH")))
             .child(div().w(u(150.0)).flex_none().child(th("STATUS")));
 
-        let rows: Vec<AnyElement> = contexts
-            .into_iter()
-            .map(|(info, state, color, name, hidden)| {
-                let selected = self.selected.as_ref() == Some(&info.id);
-                let id = info.id.clone();
-                let state_color = state.color(&colors);
+        let mut rows: Vec<AnyElement> = Vec::new();
+        for (info, state, color, name, hidden) in entries {
+            let selected = self.selected.as_ref() == Some(&info.id);
+            let id = info.id.clone();
+            let state_color = state.color(&colors);
+            let group = info.is_group();
+            let expanded = group && (self.expanded.contains(&info.id) || !query.is_empty());
+            let toggle_id = info.id.clone();
+            rows.push(
                 table_row(&colors)
                     .id(SharedString::from(format!("ctx-{}", info.id)))
                     .h(u(34.0))
@@ -400,9 +427,49 @@ impl ClustersView {
                     }))
                     .child(div().w(u(22.0)).flex_none().child(StatusDot::new(color)))
                     .child(
-                        col(1.1)
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(div().truncate().child(name)),
+                        col(1.1).child(
+                            h_flex()
+                                .gap(u(6.0))
+                                .min_w_0()
+                                .when(group, |this| {
+                                    this.child(
+                                        div()
+                                            .id(SharedString::from(format!("expand-{}", info.id)))
+                                            .flex_none()
+                                            .child(
+                                                Icon::new(if expanded {
+                                                    IconName::ChevronDown
+                                                } else {
+                                                    IconName::ChevronRight
+                                                })
+                                                .size(12.0)
+                                                .color(colors.text_dim),
+                                            )
+                                            .on_click(cx.listener(
+                                                move |this, _: &ClickEvent, _, cx| {
+                                                    cx.stop_propagation();
+                                                    if !this.expanded.remove(&toggle_id) {
+                                                        this.expanded.insert(toggle_id.clone());
+                                                    }
+                                                    cx.notify();
+                                                },
+                                            )),
+                                    )
+                                })
+                                .child(div().truncate().font_weight(FontWeight::MEDIUM).child(name))
+                                .when(group, |this| {
+                                    this.child(
+                                        div()
+                                            .flex_none()
+                                            .px(u(6.0))
+                                            .rounded(u(4.0))
+                                            .bg(colors.chip_background)
+                                            .text_size(u(11.0))
+                                            .text_color(colors.text_muted)
+                                            .child(format!("{} contexts", info.members.len())),
+                                    )
+                                }),
+                        ),
                     )
                     .child(
                         col(1.3)
@@ -429,9 +496,71 @@ impl ClustersView {
                             .child(StatusDot::new(state_color))
                             .child(div().truncate().child(state.label())),
                     )
-                    .into_any_element()
-            })
-            .collect();
+                    .into_any_element(),
+            );
+            if !expanded {
+                continue;
+            }
+            let separate = info.id.clone();
+            rows.push(
+                table_row(&colors)
+                    .min_h(u(26.0))
+                    .py(u(3.0))
+                    .pl(u(56.0))
+                    .gap(u(6.0))
+                    .border_b_1()
+                    .border_color(colors.row_border)
+                    .text_size(u(11.5))
+                    .text_color(colors.text_dim)
+                    .child(Icon::new(IconName::Info).size(12.0))
+                    .child(div().min_w_0().truncate().child(
+                        "Shown as one cluster in the sidebar: same file, cluster and user; only \
+                         the namespace differs.",
+                    ))
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("separate-{}", info.id)))
+                            .flex_none()
+                            .cursor_pointer()
+                            .text_color(colors.accent)
+                            .child("Show contexts separately")
+                            .on_click(move |_, _, cx| {
+                                ConnectionManager::global(cx)
+                                    .update(cx, |m, cx| m.set_group_separate(&separate, true, cx));
+                            }),
+                    )
+                    .into_any_element(),
+            );
+            for member in &info.members {
+                rows.push(
+                    table_row(&colors)
+                        .h(u(28.0))
+                        .border_b_1()
+                        .border_color(colors.row_border)
+                        .child(div().w(u(56.0)).flex_none())
+                        .child(
+                            col(1.1)
+                                .font_family(fonts::MONO)
+                                .text_size(u(11.5))
+                                .text_color(colors.text_muted)
+                                .child(div().truncate().child(member.context.clone())),
+                        )
+                        .child(
+                            col(1.3)
+                                .font_family(fonts::MONO)
+                                .text_size(u(11.5))
+                                .text_color(colors.text_dim)
+                                .child(format!(
+                                    "namespace {}",
+                                    member.namespace.as_deref().unwrap_or("default")
+                                )),
+                        )
+                        .child(col(1.2))
+                        .child(div().w(u(150.0)).flex_none())
+                        .into_any_element(),
+                );
+            }
+        }
 
         let empty = rows.is_empty();
         let table = v_flex()
