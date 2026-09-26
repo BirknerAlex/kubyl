@@ -82,6 +82,7 @@ ICONS = {
  "belloff": '<path d="M10.268 21a2 2 0 0 0 3.464 0"></path><path d="M17 17H4a1 1 0 0 1-.74-1.673C4.59 13.956 6 12.499 6 8a6 6 0 0 1 .258-1.742"></path><path d="m2 2 20 20"></path><path d="M8.668 3.01A6 6 0 0 1 18 8c0 2.687.77 4.653 1.707 6.05"></path>',
  "listchecks": '<path d="M13 5h8"></path><path d="M13 12h8"></path><path d="M13 19h8"></path><path d="m3 17 2 2 4-4"></path><path d="m3 7 2 2 4-4"></path>',
  "anchor": '<path d="M12 22V8"></path><path d="M5 12H2a10 10 0 0 0 20 0h-3"></path><circle cx="12" cy="5" r="3"></circle>',
+ "route": '<circle cx="6" cy="19" r="3"></circle><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"></path><circle cx="18" cy="5" r="3"></circle>',
  "gear": '<circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>',
 }
 
@@ -210,11 +211,11 @@ def titlebar(cluster="prod-eu-west-1", ns="payments", prod=True, meta="EKS · v1
 <button aria-label="Account" style="width:24px;height:24px;border-radius:50%;background:#4a6a8a;color:#e8f0f8;font-size:10.5px;font-weight:600;display:flex;align-items:center;justify-content:center">AB</button>
 </header>'''
 
-def statusbar(left_extra="", right_extra=""):
+def statusbar(left_extra="", right_extra="", cluster="prod-eu-west-1", ns="payments"):
     return f'''<footer class="status">
 <span>{ic("split",13)}</span>
-<span style="color:var(--text)">{dot(C["green"])}prod-eu-west-1</span>
-<span>{ic("folder",12)}payments</span>
+<span style="color:var(--text)">{dot(C["green"])}{cluster}</span>
+<span>{ic("folder",12)}{ns}</span>
 <span>{ic("alert",12,C["yellow"])}<span style="color:var(--yellow)">3</span>{ic("err",12,C["red"])}<span style="color:var(--red)">2</span></span>
 {left_extra}
 <span style="flex:1"></span>
@@ -1268,52 +1269,669 @@ def olm_states_screen():
 </div>'''
     return page("OLM not installed; OLM v1 extensions — Kubyl", inner)
 
-# ---------- 8. Cluster updates ----------
-def updates_screen():
-    # version graph
-    gw, gh = 560, 120
-    nodes = [(40, 60, "1.30.4", "current", C["green"]), (210, 60, "1.31.2", "recommended", C["accent"]), (380, 30, "1.32.0", "blocked", C["red"]), (380, 92, "1.31.3", "rolling out", C["dim"])]
-    edges = [(0, 1), (1, 2), (1, 3)]
-    g = "".join(f'<path d="M{nodes[a][0]+14},{nodes[a][1]} C{(nodes[a][0]+nodes[b][0])/2},{nodes[a][1]} {(nodes[a][0]+nodes[b][0])/2},{nodes[b][1]} {nodes[b][0]-14},{nodes[b][1]}" fill="none" stroke="{"#74ade8" if (a,b)==(0,1) else "#464b57"}" stroke-width="2" {"" if (a,b)==(0,1) else "stroke-dasharray=\"4 4\""}></path>' for a, b in edges)
-    for x, y, v, lab, c in nodes:
-        g += f'<circle cx="{x}" cy="{y}" r="9" fill="{c}" fill-opacity="{1 if lab in ("current","recommended") else 0.35}" stroke="{c}" stroke-width="2"></circle>'
-        g += f'<text x="{x+16}" y="{y-4}" fill="#dce0e5" font-family="IBM Plex Mono" font-size="12.5">{v}</text><text x="{x+16}" y="{y+13}" fill="{c if lab!="rolling out" else "#959aa6"}" font-family="IBM Plex Sans" font-size="11.5">{lab}</text>'
-    graph = f'<svg width="{gw}" height="{gh}" viewBox="0 0 {gw} {gh}" aria-label="Update graph">{g}</svg>'
-    chk = lambda icon, col, t, s, act="": f'<div style="display:flex;gap:10px;padding:10px 0;border-bottom:1px solid var(--bv);align-items:flex-start">{ic(icon,15,col)}<div style="flex:1;min-width:0"><div style="font-size:12.5px">{t}</div><div style="font-size:11.5px;color:var(--dim);line-height:17px">{s}</div></div>{act}</div>'
-    NP = "grid-template-columns: minmax(0,1fr) 90px 90px minmax(0,1.3fr) 110px"
-    pools = [
-      ("Control plane", "managed", "1.30.4", '<span style="color:var(--dim);font-size:12px">updated first · ~12 min</span>', '<button class="btn" style="height:24px">Update</button>'),
-      ("general-m6i", "6 nodes", "1.30.4", '<span style="color:var(--dim);font-size:12px">waits for control plane</span>', '<span style="color:var(--dim);font-size:12px">queued</span>'),
-      ("compute-c7i", "4 nodes", "1.30.4", '<span style="color:var(--dim);font-size:12px">surge 1 · maxUnavailable 0</span>', '<span style="color:var(--dim);font-size:12px">queued</span>'),
-      ("gpu-g5", "2 nodes", "1.29.8", f'<div style="display:flex;align-items:center;gap:8px"><span class="mono" style="font-size:11.5px">1 / 2</span>{bar(50,C["accent"],120)}<span style="font-size:11.5px;color:var(--dim)">draining ip-10-0-31-4</span></div>', f'<span style="color:var(--accent);font-size:12px">catching up</span>'),
+# ---------- 8. Cluster updates (phase 13) ----------
+OCP_PROD = "ocp-prod.example.com"
+OCP_PROD_CTX = f"{OCP_PROD} · kube:admin"
+OCP_DEV = "ocp-dev.example.com"
+OCP_DEV_CTX = f"{OCP_DEV} · jane.doe@example.com"
+INK = "#1b1e24"  # text and icons on accent-filled controls
+M11 = 'class="mono" style="font-size:11px"'
+M115 = 'class="mono" style="font-size:11.5px"'
+
+# Explorer groups for the phase-13 frames (Routes only on clusters that serve route.openshift.io)
+NAV = {
+ "Workloads": [("Pods", "box", "17"), ("Deployments", "layers", "9"), ("StatefulSets", "db", "2"), ("DaemonSets", "server", "0"), ("Jobs &amp; CronJobs", "clock", "6")],
+ "Network": [("Services", "network", "12"), ("Endpoints", "commit", "12"), ("Ingresses", "globe", "3"), ("Routes", "route", "8"), ("IngressClasses", "file", "1"), ("NetworkPolicies", "shield", "4")],
+ "Administration": [("Installed Operators", "blocks", "12"), ("OperatorHub", "store", None), ("Helm Releases", "anchor", None), ("Cluster Updates", "up", None)],
+}
+NAV_GROUPS = ["Workloads", "Network", "Config &amp; Secrets", "Storage", "Access Control", "Cluster", "Administration", "Custom Resources"]
+NAV_CLUSTERS = [(OCP_PROD_CTX, "on", C["red"], True), ("prod-eu-west-1", "on", C["red"], True), (OCP_DEV_CTX, "on", C["accent"], False),
+                ("k3s-edge", "on", C["green"], False), ("platform-onprem", "on", C["purple"], False), ("gke-analytics", "on", C["cyan"], False)]
+
+def nav_sidebar(cluster, color, prod=False, active="", open_=("Administration",), ocp=True, upd_dot="accent"):
+    """A sidebar for any cluster: its root expanded, the given groups open, the other clusters below."""
+    rows = [
+        f'<div class="phead"><span style="flex:1;font-weight:500;color:var(--text)">Explorer</span><button class="ib" aria-label="Filter kinds">{ic("search",13)}</button><button class="ib" aria-label="Add kubeconfig">{ic("plus",14)}</button><button class="ib" aria-label="More">{ic("more",14)}</button></div>',
+        f'<div class="sec">{ic("cr",11)}Favorites<span style="flex:1"></span><span style="font-weight:400;letter-spacing:0;text-transform:none;color:var(--faint)">4</span></div>',
+        f'<div class="sec">{ic("cd",11)}Clusters</div>',
+        root(cluster, "on", True, color, prod=prod),
+        ti("Overview", 1, "gauge"),
+        ti("Events", 1, "bell", "4", color=C["yellow"]),
     ]
-    prows = "".join(f'<div class="tr" style="{NP};height:40px"><span style="font-weight:500">{n}</span><span style="color:var(--muted)">{s}</span><span class="mono">{v}</span>{p}{a}</div>' for n, s, v, p, a in pools)
-    center = f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0;padding:16px 18px;gap:14px;overflow:hidden">
-<div style="display:flex;align-items:center;gap:10px"><h1 style="font-size:18px;font-weight:600">Cluster updates</h1><span style="color:var(--dim);font-size:12px">prod-eu-west-1 · provider Amazon EKS (via AWS API, profile prod)</span></div>
-<div style="display:flex;gap:12px">
-<div class="card" style="width:250px;padding:14px 16px;display:flex;flex-direction:column;gap:10px">
-<div><div style="font-size:12px;color:var(--dim)">Current version</div><div class="mono" style="font-size:24px;font-weight:500">1.30.4</div><div style="font-size:11.5px;color:var(--dim)">platform eks.12 · standard support until 2026-07 <span style="color:var(--yellow)">(extended)</span></div></div>
-<div><div style="font-size:12px;color:var(--dim);margin-bottom:4px">Channel</div><button class="btn" style="width:100%;justify-content:space-between">stable{ic("cd",12)}</button></div>
-<div style="font-size:12px;color:var(--dim)">Last update 1.29.8 → 1.30.4<br>2026-07-14 · took 42 min</div>
-</div>
-<div class="card" style="flex:1;padding:14px 16px;min-width:0">
-<div style="display:flex;align-items:center;margin-bottom:6px"><span style="font-weight:500;flex:1">Update path</span><button class="btn p">{ic("up",13,"#1b1e24")}Update to 1.31.2…</button></div>
-{graph}
-</div></div>
-<div class="card" style="padding:4px 16px 6px">
-<div style="display:flex;align-items:center;padding:10px 0 4px"><span style="font-weight:500;flex:1">Pre-flight checks for 1.31.2</span><span style="font-size:12px;color:var(--dim)">ran 2m ago · <a href="#">re-run</a></span></div>
-{chk("err",C["red"],"PodDisruptionBudget blocks node drain","payments/ledger-writer-pdb allows 0 disruptions (3 replicas, minAvailable 3)",'<button class="btn" style="height:24px">Open PDB</button>')}
-{chk("alert",C["yellow"],"Deprecated APIs still requested","flowcontrol.apiserver.k8s.io/v1beta3 — 2 clients in the last 24h (from audit metrics)",'<button class="btn g" style="height:24px">Details</button>')}
-{chk("alert",C["yellow"],"Add-on needs update: coredns","v1.11.1 installed · v1.11.3 recommended for 1.31",'<button class="btn g" style="height:24px">Update add-on</button>')}
-{chk("ok",C["green"],"Installed operators compatible","7 of 7 operators declare support for 1.31 (OLM maxKubeVersion)")}
-<div style="display:flex;gap:10px;padding:10px 0;align-items:center">{ic("ok",15,C["green"])}<span style="font-size:12.5px">Node capacity for surge upgrades</span><span style="font-size:11.5px;color:var(--dim)">headroom for +1 node per pool</span></div>
-</div>
-<div class="card" style="overflow:hidden"><div style="display:flex;align-items:center;padding:10px 14px"><span style="font-weight:500;flex:1">Control plane &amp; node pools</span><span style="font-size:12px;color:var(--dim)">order: control plane → pools, one at a time</span></div>
-<div class="th" style="{NP}"><span>POOL</span><span>SIZE</span><span>VERSION</span><span>PROGRESS</span><span></span></div>{prows}</div>
+    for g in NAV_GROUPS:
+        is_open = g in open_
+        rows.append(ti(g, 1, open_=is_open))
+        for n, icon, cnt in (NAV[g] if is_open else []):
+            if n == "Routes" and not ocp:
+                continue
+            extra = f'<span style="margin-right:2px">{dot(C[upd_dot])}</span>' if n == "Cluster Updates" and upd_dot else ""
+            rows.append(ti(n, 2, icon, cnt, on=n == active, extra=extra))
+    rows += [root(n, s, color=c, prod=p) for n, s, c, p in NAV_CLUSTERS if n != cluster]
+    return '<aside class="side">' + "\n".join(rows) + '</aside>'
+
+UPD_TABS = [("blocks", "Installed Operators", False), ("up", "Cluster Updates", True), ("gauge", "Overview", False)]
+
+def upd_app(title, content, cluster=OCP_PROD_CTX, color=C["red"], prod=True, meta="OpenShift · v1.30.6", ns="payments",
+            overlay="", sidebar_html=None, tabbar=None, right_extra="", ocp=True, upd_dot="accent"):
+    side = sidebar_html or nav_sidebar(cluster, color, prod, "Cluster Updates", ocp=ocp, upd_dot=upd_dot)
+    inner = f'''<div class="app">
+{titlebar(cluster, ns, prod, meta)}
+<div class="body">{side}<main class="main">{tabbar or tabs(UPD_TABS)}{content}</main></div>
+{statusbar(right_extra=right_extra, cluster=cluster.split(" · ")[0], ns=ns)}
+{overlay}
 </div>'''
-    content = f'<div style="flex:1;display:flex;min-height:0">{center}</div>'
-    tb = tabs([("blocks", "Installed Operators", False), ("up", "Cluster Updates", True), ("gauge", "Overview", False)])
-    return page("Cluster updates — Kubyl", shell("Updates", tb, content))
+    return page(title, inner)
+
+def upd_header(cluster, provider, how, chips="", recheck=True, sticky=False, size=18):
+    """The page header. It stays put while the page scrolls (a shadow once scrolled)."""
+    rc = f'<button class="btn g">{ic("refresh",13)}Re-check</button>' if recheck else ""
+    sh = "border-bottom:1px solid var(--bv);box-shadow:0 6px 10px -8px rgba(0,0,0,.6);position:relative;z-index:2;" if sticky else ""
+    return (f'<div style="display:flex;align-items:center;gap:10px;padding:14px 18px 12px;flex-shrink:0;min-width:0;{sh}">'
+            f'<h1 style="font-size:{size}px;font-weight:600;white-space:nowrap">Cluster updates</h1>{chips}'
+            f'<span style="color:var(--dim);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0"><span style="color:var(--muted)">{cluster}</span> · provider {provider} ({how})</span>'
+            f'<div style="flex:1"></div>{rc}</div>')
+
+def upd_page(header, sections, scroll=0, thumb=(2, 520)):
+    """One scrollable page: `scroll` shifts the content up, the thumb shows where we are."""
+    top, h = thumb
+    return (f'<div style="flex:1;display:flex;flex-direction:column;min-width:0;min-height:0">{header}'
+            f'<div style="flex:1;min-height:0;overflow:hidden;position:relative">'
+            f'<div style="display:flex;flex-direction:column;gap:14px;padding:{0 if scroll else 2}px 18px 18px;margin-top:-{scroll}px">{"".join(sections)}</div>'
+            f'<div aria-hidden="true" style="position:absolute;right:3px;top:{top}px;width:6px;height:{h}px;border-radius:3px;background:#4b5160"></div>'
+            f'</div></div>')
+
+def upd_row(*cards, align="stretch"):
+    return f'<div style="display:flex;gap:14px;align-items:{align}">{"".join(cards)}</div>'
+
+def sbtn(label, icon=None, kind="", h=24):
+    i = ic(icon, 12, INK if kind == "p" else "currentColor") if icon else ""
+    return f'<button class="btn{" " + kind if kind else ""}" style="height:{h}px">{i}{label}</button>'
+
+def dimt(t, size=11.5):
+    return f'<span style="font-size:{size}px;color:var(--dim)">{t}</span>'
+
+TAGC = {"rec": ("#2d3b4d", "#a8cdf3"), "cond": ("#3d3727", C["yellow"]), "block": ("#3e2c2f", C["red"]), "avail": ("#353a45", C["muted"]),
+        "latest": ("#28393d", C["cyan"]), "ro": ("#353a45", C["muted"])}
+GCOL = {"rec": C["accent"], "avail": "#7a808c", "cond": C["yellow"], "block": C["red"], "latest": C["cyan"]}
+
+def tag(kind, text):
+    bg, fg = TAGC[kind]
+    return f'<span class="chip" style="height:18px;background:{bg};color:{fg}">{text}</span>'
+
+def spinner(s=14, col=None):
+    return (f'<svg width="{s}" height="{s}" viewBox="0 0 24 24" aria-hidden="true" style="flex-shrink:0"><circle cx="12" cy="12" r="9" fill="none" stroke="#464b57" stroke-width="3"></circle>'
+            f'<path d="M12 3a9 9 0 0 1 9 9" fill="none" stroke="{col or C["accent"]}" stroke-width="3" stroke-linecap="round"></path></svg>')
+
+# ----- version card -----
+def vcard(blocks, width=260):
+    w = f"width:{width}px;flex-shrink:0;" if width else "flex:1;min-width:0;"
+    return f'<div class="card" style="{w}padding:14px 16px;display:flex;flex-direction:column;gap:12px;box-sizing:border-box">{"".join(blocks)}</div>'
+
+def vc_label(t):
+    return f'<div style="font-size:12px;color:var(--dim);margin-bottom:4px">{t}</div>'
+
+def vc_current(ver, sub, extra="", size=24):
+    return (f'<div><div style="font-size:12px;color:var(--dim)">Current version</div><div class="mono" style="font-size:{size}px;font-weight:500;line-height:1.35">{ver}</div>'
+            f'<div style="font-size:11.5px;color:var(--muted);line-height:17px">{sub}</div>{extra}</div>')
+
+def vc_line(label, body):
+    return f'<div>{vc_label(label)}<div style="font-size:12px;line-height:18px">{body}</div></div>'
+
+def dropdown(value, open_=False, menu="", mono=True):
+    v = f'<span class="mono" style="font-size:12px">{value}</span>' if mono else value
+    border = "border-color:var(--accent);" if open_ else ""
+    return f'<div style="position:relative"><button class="btn" style="width:100%;justify-content:space-between;{border}">{v}{ic("cd",12)}</button>{menu if open_ else ""}</div>'
+
+def ocp_channel_menu():
+    items = [("candidate-4.17", "release candidates", False), ("fast-4.17", "GA, as soon as it's released", False), ("stable-4.17", "GA, after fast-4.17 feedback", True),
+             ("eus-4.18", "extended update support", False), ("stable-4.18", "for the update to 4.18", False)]
+    rows = "".join(f'<div style="display:flex;align-items:center;gap:8px;height:28px;padding:0 8px;border-radius:4px;{"background:var(--sel)" if on else ""}">'
+                   f'<span style="width:12px;display:flex">{ic("check",12,C["accent"],2.5) if on else ""}</span><span class="mono" style="font-size:12px;width:108px">{n}</span>'
+                   f'<span style="font-size:11.5px;color:var(--dim)">{d}</span></div>' for n, d, on in items)
+    return f'''<div role="listbox" aria-label="Channel" style="position:absolute;left:0;top:30px;width:340px;z-index:6;background:#353b45;border:1px solid var(--border);border-radius:7px;box-shadow:0 12px 34px rgba(0,0,0,.5);padding:4px">
+<div style="padding:6px 8px 4px;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--dim)">Channels offered for 4.17.8</div>
+{rows}
+<div style="display:flex;gap:8px;padding:8px 8px 6px;margin-top:4px;border-top:1px solid var(--bv);font-size:11.5px;color:var(--muted);line-height:16px"><span style="display:flex;padding-top:2px">{ic("info",12,C["accent"])}</span><span>Changing the channel patches ClusterVersion <span {M11}>spec.channel</span>; you confirm it first.</span></div>
+</div>'''
+
+def ocp_version_card(menu=False):
+    cid = (f'<div style="display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--dim);margin-top:2px">Cluster ID'
+           f'<span class="mono" style="font-size:11px;color:var(--muted)">3f9c1e2a…7b1d</span>'
+           f'<button class="ib" aria-label="Copy cluster ID" style="width:18px;height:18px">{ic("copy",11)}</button></div>')
+    status = (f'<div style="display:flex;flex-direction:column;gap:3px;font-size:11.5px">'
+              f'<span class="pill" style="color:var(--green)">{ic("ok",12,C["green"])}Available</span>'
+              f'<span class="pill" style="color:var(--yellow)">{ic("alert",12,C["yellow"])}Upgradeable: False · AdminAckRequired</span></div>')
+    return vcard([
+        vc_current("4.17.8", "OpenShift 4.17.8 · Kubernetes v1.30.6", cid),
+        vc_line("Last update", f'<span {M115}>4.17.6 → 4.17.8</span><br><span style="color:var(--dim)">2026-08-30 · took 1 h 12 min</span>'),
+        f'<div>{vc_label("Status")}{status}</div>',
+        f'<div>{vc_label("Channel")}{dropdown("stable-4.17", menu, ocp_channel_menu())}</div>',
+    ])
+
+# ----- update path graph -----
+def graph_legend():
+    def sample(col, dash="", w=1.6, fill="#2f343e"):
+        return (f'<svg width="26" height="10" viewBox="0 0 26 10" aria-hidden="true"><path d="M1 5h15" stroke="{col}" stroke-width="{w}"{dash}></path>'
+                f'<circle cx="20" cy="5" r="3.5" fill="{fill}" stroke="{col}" stroke-width="1.6"></circle></svg>')
+    d = ' stroke-dasharray="3 2"'
+    items = [(sample(C["accent"], "", 2.2, C["accent"]), "recommended"), (sample("#7a808c"), "available"), (sample(C["yellow"], d), "conditional"), (sample(C["red"], d), "blocked")]
+    return '<div style="display:flex;gap:12px;font-size:11.5px;color:var(--dim)">' + "".join(f'<span style="display:flex;align-items:center;gap:5px">{s}{t}</span>' for s, t in items) + '</div>'
+
+def upd_graph(cur, cur_sub, targets, lw=52, span=90, sel=None, pad=4):
+    """The current version on the left; edges fan out to a column of targets, newest first.
+    targets: (version, kind, head_html, row_height, body_html). kind: rec, avail, cond, block, latest."""
+    x0 = lw + 18
+    x1 = x0 + span
+    tops, y = [], pad
+    for t in targets:
+        tops.append(y)
+        y += t[3]
+    H = y + pad
+    ys = [tp + 14 for tp in tops]
+    cy = (ys[0] + ys[-1]) / 2
+    mx = (x0 + x1) / 2
+    edges, nodes = [], []
+    for i in sorted(range(len(targets)), key=lambda i: targets[i][1] == "rec"):  # recommended edge on top
+        kind, ty = targets[i][1], ys[i]
+        col = GCOL[kind]
+        dash = ' stroke-dasharray="5 4"' if kind in ("cond", "block") else ""
+        edges.append(f'<path d="M{x0+9},{cy:.1f} C{mx:.1f},{cy:.1f} {mx:.1f},{ty:.1f} {x1-7},{ty:.1f}" fill="none" stroke="{"#5d636f" if kind == "avail" else col}" stroke-width="{2.4 if kind == "rec" else 1.5}"{dash}></path>')
+        nodes.append(f'<circle cx="{x1}" cy="{ty}" r="6" fill="{col if kind == "rec" else "#2f343e"}" stroke="{col}" stroke-width="2"></circle>')
+    nodes.append(f'<circle cx="{x0}" cy="{cy:.1f}" r="13" fill="none" stroke="{C["green"]}" stroke-opacity=".35" stroke-width="2"></circle><circle cx="{x0}" cy="{cy:.1f}" r="8" fill="{C["green"]}"></circle>')
+    svg = f'<svg width="{x1+8}" height="{H}" viewBox="0 0 {x1+8} {H}" style="position:absolute;left:0;top:0;pointer-events:none" aria-hidden="true">{"".join(edges)}{"".join(nodes)}</svg>'
+    rows = ""
+    for (v, kind, head, h, body), top in zip(targets, tops):
+        if v == sel:
+            bg = "background:var(--sel);outline:1px solid var(--accent);outline-offset:-1px;"
+        elif kind == "rec":
+            bg = "background:rgba(116,173,232,.08);"
+        else:
+            bg = ""
+        vc = C["muted"] if kind in ("avail", "block") else C["text"]
+        rows += (f'<div style="position:absolute;left:{x1-14}px;right:0;top:{top}px;height:{h}px;padding:0 10px 0 28px;box-sizing:border-box;border-radius:6px;overflow:hidden;{bg}">'
+                 f'<div style="display:flex;align-items:center;gap:8px;height:28px;white-space:nowrap"><span class="mono" style="font-size:13px;color:{vc};font-weight:{600 if kind == "rec" else 400}">{v}</span>{head}</div>{body}</div>')
+    cur_label = (f'<div style="position:absolute;left:0;top:{cy-17:.0f}px;width:{lw}px;text-align:right;white-space:nowrap">'
+                 f'<div class="mono" style="font-size:13px;font-weight:600">{cur}</div><div style="font-size:11px;color:var(--green)">{cur_sub}</div></div>')
+    return f'<div style="position:relative;height:{H}px;flex-shrink:0">{rows}{svg}{cur_label}</div>'
+
+def path_card(graph, right="", extra="", legend=True, title="Update path"):
+    return (f'<div class="card" style="flex:1;min-width:0;padding:12px 16px 14px;display:flex;flex-direction:column;gap:10px">'
+            f'<div style="display:flex;align-items:center;gap:14px;min-height:26px"><span style="font-weight:500;white-space:nowrap">{title}</span>{graph_legend() if legend else ""}<div style="flex:1"></div>{right}</div>'
+            f'{graph}{extra}</div>')
+
+def path_note(text):
+    return f'<div style="font-size:11.5px;color:var(--dim);display:flex;gap:6px;align-items:center;margin-top:auto">{ic("info",12)}{text}</div>'
+
+def upd_steps(title, steps):
+    items = "".join(f'<div style="display:flex;gap:8px;align-items:flex-start;font-size:12px;line-height:18px"><span style="width:16px;height:16px;border-radius:50%;background:#353a45;color:var(--muted);font-size:10.5px;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px">{i}</span><span style="color:var(--muted)">{t}</span></div>'
+                    for i, t in enumerate(steps, 1))
+    return (f'<div style="display:flex;flex-direction:column;gap:5px;padding-top:10px;border-top:1px solid var(--bv)">'
+            f'<div style="font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--dim)">{title}</div>{items}</div>')
+
+def gline(icon, col, t):
+    return (f'<div style="display:flex;gap:7px;align-items:flex-start;font-size:12px;line-height:18px;color:var(--muted);white-space:nowrap">'
+            f'<span style="display:flex;padding-top:3px">{ic(icon,12,col)}</span><span>{t}</span></div>')
+
+def ocp_targets(rich=False):
+    d = dimt
+    if not rich:
+        return [
+            ("4.18.2", "block", tag("block", "blocked") + d("AdminAckRequired · cert-utils-operator"), 28, ""),
+            ("4.17.13", "cond", tag("cond", "conditional · 1 risk") + d("ExampleStorageDriverRegression"), 28, ""),
+            ("4.17.12", "rec", tag("rec", "recommended") + d("latest without known risks"), 28, ""),
+            ("4.17.11", "avail", d("available"), 26, ""),
+            ("4.17.10", "avail", d("available"), 26, ""),
+            ("4.17.9", "avail", d("available"), 26, ""),
+        ]
+    sp = '<span style="flex:1"></span>'
+    return [
+        ("4.18.2", "block", tag("block", "blocked") + d("minor update · in stable-4.18 and eus-4.18"), 92,
+         gline("err", C["red"], f'<b style="font-weight:500;color:var(--text)">Upgradeable=False: AdminAckRequired</b> — Kubernetes 1.31 removes APIs still in use;<br>acknowledge in <span {M11}>openshift-config/admin-acks</span>')
+         + gline("err", C["red"], f'<span {M11}>cert-utils-operator</span> declares <span {M11}>olm.maxOpenShiftVersion</span> 4.17')),
+        ("4.17.13", "cond", tag("cond", "conditional · 1 risk") + d("released 2026-09-24") + sp + sbtn("Accept risk…", h=22), 72,
+         gline("alert", C["yellow"], f'<span class="mono" style="font-size:11px;color:var(--yellow)">ExampleStorageDriverRegression</span><span style="color:var(--dim)"> · applies to this cluster</span><br>'
+               'Volumes on the example CSI driver can fail to attach after a node reboot. <a href="#">Learn more</a>')),
+        ("4.17.12", "rec", tag("rec", "recommended") + d("released 2026-09-18"), 50,
+         '<div style="font-size:12px;color:var(--muted);line-height:18px;white-space:nowrap">Latest in stable-4.17 without known risks · 23 bug fixes, 4 security fixes</div>'),
+        ("4.17.11", "avail", d("available · released 2026-09-10"), 28, ""),
+        ("4.17.10", "avail", d("available · released 2026-09-03"), 28, ""),
+        ("4.17.9", "avail", d("available · released 2026-08-27"), 28, ""),
+    ]
+
+def ocp_node_details():
+    kv = (f'<dl class="kv" style="margin:0;grid-template-columns:92px minmax(0,1fr);width:384px;flex-shrink:0">'
+          f'<dt>Version</dt><dd><span {M115}>4.17.13</span> · Kubernetes v1.30.9</dd>'
+          f'<dt>Released</dt><dd>2026-09-24 · 2 days ago</dd>'
+          f'<dt>Release notes</dt><dd><a href="#">errata.example.com/RHBA-2026:4471</a></dd>'
+          f'<dt>Channels</dt><dd class="mono" style="font-size:11.5px">candidate-4.17 · fast-4.17 · stable-4.17</dd>'
+          f'<dt>Image</dt><dd class="mono" style="font-size:11.5px">ocp-release@sha256:9c1e…4f2a</dd></dl>')
+    risk = (f'<div style="flex:1;min-width:0;border:1px solid #6b5a2a;background:#35322a;border-radius:7px;padding:10px 12px;display:flex;flex-direction:column;gap:6px">'
+            f'<div style="display:flex;align-items:center;gap:8px">{ic("alert",14,C["yellow"])}<span class="mono" style="font-size:12px;color:var(--yellow)">ExampleStorageDriverRegression</span><span class="chip" style="height:18px">applies to this cluster</span></div>'
+            f'<div style="font-size:12px;color:var(--muted);line-height:17px">Volumes provisioned by the example CSI driver can fail to attach after a node reboot, until the driver is updated to 2.4.</div>'
+            f'<div style="font-size:11.5px;color:var(--dim);line-height:16px">Matched by PromQL <span {M11}>group(csv_succeeded&#123;name=~"example-csi-driver.*"&#125;)</span> · evaluated 2m ago</div>'
+            f'<div style="display:flex;gap:8px;align-items:center;margin-top:2px"><a href="#" style="font-size:12px;display:flex;gap:4px;align-items:center;white-space:nowrap">Learn more{ic("ext",11)}</a><span style="flex:1"></span>'
+            f'<button class="ib" aria-label="Copy oc adm upgrade command" title="Copy oc adm upgrade --to 4.17.13 --allow-not-recommended">{ic("copy",13)}</button>{sbtn("Accept risk and update…")}</div></div>')
+    return (f'<div style="border-top:1px solid var(--bv);padding-top:12px;display:flex;flex-direction:column;gap:10px">'
+            f'<div style="display:flex;align-items:center;gap:8px"><span class="mono" style="font-size:14px;font-weight:600">4.17.13</span>{tag("cond", "conditional update")}{dimt("selected in the graph · Esc clears")}</div>'
+            f'<div style="display:flex;gap:18px;align-items:flex-start">{kv}{risk}</div></div>')
+
+def ocp_path_card(rich=False):
+    g = upd_graph("4.17.8", "current", ocp_targets(rich), lw=52, span=100 if rich else 90, sel="4.17.13" if rich else None)
+    extra = ocp_node_details() if rich else path_note("From the update service for stable-4.17 · checked 4 min ago · 3 more versions in fast-4.17")
+    return path_card(g, sbtn("Update to 4.17.12…", "up", "p", 26), extra)
+
+# ----- pre-flight checks -----
+PF_ICON = {"fail": ("err", C["red"]), "warn": ("alert", C["yellow"]), "pass": ("ok", C["green"]), "info": ("info", C["dim"]), "deny": ("lock", C["orange"])}
+
+def pf_row(kind, title, expl, action="", detail="", last=False, pad=10, open_=None):
+    icon, col = PF_ICON[kind]
+    chev = f'<span style="display:flex">{ic("cd" if open_ else "cr", 12, C["dim"])}</span>' if open_ is not None else ""
+    return (f'<div style="display:flex;gap:10px;padding:{pad}px 0;{"" if last else "border-bottom:1px solid var(--bv);"}align-items:flex-start">'
+            f'<span style="display:flex;padding-top:1px">{ic(icon,15,col)}</span>'
+            f'<div style="flex:1;min-width:0"><div style="display:flex;align-items:center;gap:6px;font-size:12.5px;color:{"var(--dim)" if kind == "info" else "var(--text)"}">{title}{chev}</div>'
+            f'<div style="font-size:11.5px;color:var(--dim);line-height:17px">{expl}</div>{detail}</div>{action}</div>')
+
+def pf_summary(fail=0, warn=0, ok=0, na=0, other=""):
+    parts = []
+    if fail:
+        parts.append(f'<span style="color:var(--red)">{fail} failed</span>')
+    if warn:
+        parts.append(f'<span style="color:var(--yellow)">{warn} warning{"s" if warn > 1 else ""}</span>')
+    parts.append(f'<span style="color:var(--green)">{ok} passed</span>')
+    if na:
+        parts.append(f'<span style="color:var(--dim)">{na} not applicable</span>')
+    if other:
+        parts.append(other)
+    return '<span style="font-size:12px;white-space:nowrap">' + '<span style="color:var(--faint)"> · </span>'.join(parts) + '</span>'
+
+def pf_card(title, summary, rows, right=None, summary_line=False):
+    if right is None:
+        right = f'<span style="font-size:12px;color:var(--dim)">ran 2m ago</span>{sbtn("Re-run", "refresh", "g")}'
+    head = (f'<div style="display:flex;align-items:center;gap:10px;padding:10px 0 {4 if summary_line else 8}px;{"" if summary_line else "border-bottom:1px solid var(--bv);"}">'
+            f'<span style="font-weight:500;white-space:nowrap">{title}</span>{"" if summary_line else summary}<div style="flex:1"></div>{right}</div>')
+    line = f'<div style="padding:0 0 8px;border-bottom:1px solid var(--bv)">{summary}</div>' if summary_line else ""
+    return f'<div class="card" style="padding:2px 16px">{head}{line}{rows}</div>'
+
+def pf_passed_line(text, last=True):
+    return (f'<div style="display:flex;gap:10px;align-items:center;padding:9px 0;font-size:12px;color:var(--dim);{"" if last else "border-bottom:1px solid var(--bv);"}">{ic("ok",15,C["green"])}'
+            f'<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{text}</span><a href="#" style="margin-left:auto;text-decoration:none;white-space:nowrap">Show all</a></div>')
+
+def pf_requests():
+    RC = "grid-template-columns: minmax(0,.9fr) minmax(0,1.2fr) minmax(0,1.5fr) 110px 76px"
+    reqs = [("v1beta3 flowschemas", "flow-exporter/v0.9.2 (linux/amd64)", "system:serviceaccount:monitoring:flow-exporter", "1,284", "3m ago"),
+            ("v1beta3 flowschemas", "kubectl/v1.27.4 (darwin/arm64)", "jane.doe@example.com", "6", "19h ago")]
+    cell = 'style="font-size:11.5px;padding-right:12px'
+    head = (f'<div class="th" style="{RC};height:26px;padding:0 10px;background:#262a31"><span>RESOURCE</span><span>USER AGENT</span><span>USER</span>'
+            f'<span style="text-align:right;padding-right:18px">REQUESTS · 24 H</span><span>LAST</span></div>')
+    body = "".join(f'<div class="tr" style="{RC};height:28px;padding:0 10px"><span class="mono" {cell}">{r}</span><span class="mono" {cell};color:var(--muted)">{ua}</span>'
+                   f'<span class="mono" {cell};color:var(--muted)">{u}</span><span class="mono" {cell};text-align:right;padding-right:18px">{n}</span><span style="font-size:12px;color:var(--dim)">{t}</span></div>'
+                   for r, ua, u, n, t in reqs)
+    return (f'<div style="margin-top:8px;border:1px solid var(--bv);border-radius:6px;overflow:hidden;background:#2a2e36">{head}{body}'
+            f'<div style="display:flex;align-items:center;gap:6px;padding:5px 10px;font-size:11.5px;color:var(--dim)">From APIRequestCount <span {M11}>flowschemas.v1beta3.flowcontrol.apiserver.k8s.io</span> · removedInRelease 1.32'
+            f'<span style="flex:1"></span><button class="btn g" style="height:22px">{ic("code",12)}APIRequestCount YAML</button></div></div>')
+
+def ocp_pf_rows(expand=False, collapsed=False):
+    issues = [
+        pf_row("fail", "PodDisruptionBudget blocks node drain",
+               f'<span {M11}>payments/ledger-writer-pdb</span> allows 0 disruptions: 3 replicas, minAvailable 3. The machine-config operator can\'t drain the node that runs a ledger-writer pod.', sbtn("Open PDB")),
+        pf_row("warn", "Deprecated APIs still requested",
+               f'<span {M11}>flowcontrol.apiserver.k8s.io/v1beta3</span> flowschemas · 2 clients in the last 24 h, from APIRequestCount; removed in 1.32',
+               sbtn("Show requests"), pf_requests() if expand else "", open_=expand),
+        pf_row("warn", "Helm release uses removed APIs",
+               f'<span {M11}>payments/legacy-app</span> revision 7: <span {M11}>extensions/v1beta1</span> Ingress, removed in 1.22', sbtn("Open release")),
+    ]
+    if collapsed:
+        return "".join(issues) + pf_passed_line("5 passed: installed operators, version skew, surge capacity, cluster operators, machine config pools · 1 not applicable")
+    passed = [
+        pf_row("pass", "Installed operators compatible", f'12 of 12 allow OpenShift 4.17 / Kubernetes 1.30 (<span {M11}>olm.maxOpenShiftVersion</span>, <span {M11}>maxKubeVersion</span>)'),
+        pf_row("pass", "Version skew", "kubelets 1.30.6 on 6 of 6 nodes, within n-3"),
+        pf_row("pass", "Node capacity for surge", "headroom for one node per pool: 38% CPU, 44% memory free"),
+        pf_row("pass", "Cluster operators healthy", "33 of 33 Available, none Degraded"),
+        pf_row("pass", "Machine config pools ready", "master 3 / 3 and worker 3 / 3 updated, none paused or degraded"),
+        pf_row("info", "Add-on compatibility", "provided by the provider: none for OpenShift", last=True),
+    ]
+    return "".join(issues + passed)
+
+def ocp_pf_card(expand=False, collapsed=True):
+    return pf_card("Pre-flight checks for 4.17.12", pf_summary(1, 2, 5, 1), ocp_pf_rows(expand, collapsed), summary_line=not collapsed)
+
+# ----- OpenShift: cluster operators, machine config pools, history -----
+MCP_COLS = "grid-template-columns: 110px minmax(0,1.1fr) 70px 86px minmax(0,1.7fr) 124px"
+MCP_HEAD = f'<div class="th" style="{MCP_COLS}"><span>POOL</span><span>NODES UPDATED</span><span>READY</span><span>DEGRADED</span><span>STATE</span><span>MAX UNAVAILABLE</span></div>'
+
+def mcp_row(pool, upd, pct, ready, degr, state, maxu, col=None):
+    return (f'<div class="tr" style="{MCP_COLS};height:36px"><span style="font-weight:500">{pool}</span>'
+            f'<div style="display:flex;align-items:center;gap:8px;padding-right:16px"><span class="mono" style="width:40px;flex-shrink:0">{upd}</span>{bar(pct, col or C["green"], 120)}</div>'
+            f'<span class="mono">{ready}</span><span class="mono" style="color:var(--dim)">{degr}</span>{state}<span class="mono">{maxu}</span></div>')
+
+def mcp_updated(v="4.17.8"):
+    return f'<span class="pill" style="color:var(--green)">{ic("check",12,C["green"],2.5)}updated · {v}</span>'
+
+def card_head(title, sub="", right=""):
+    s = f'<span style="font-size:12px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0">{sub}</span>' if sub else ""
+    return f'<div style="display:flex;align-items:center;gap:10px;padding:10px 16px;min-height:26px"><span style="font-weight:500;white-space:nowrap">{title}</span>{s}<div style="flex:1"></div>{right}</div>'
+
+def ocp_ops_card():
+    return (f'<div class="card" style="overflow:hidden">'
+            f'{card_head("Cluster operators &amp; machine config pools", "OpenShift", sbtn("Show operators", "list", "g"))}'
+            f'<div style="display:flex;gap:8px;align-items:center;padding:0 16px 10px;font-size:12.5px">{ic("ok",14,C["green"])}<span>33 of 33 cluster operators at 4.17.8</span><span style="color:var(--dim)">· all Available, none Progressing or Degraded</span></div>'
+            f'<div style="display:flex;gap:8px;align-items:center;padding:7px 16px;background:#35322a;border-top:1px solid var(--bv);font-size:12.5px">{ic("alert",14,C["yellow"])}'
+            f'<span>Admin acknowledgement needed before 4.18:</span><span class="mono" style="font-size:11.5px;color:var(--muted)">ack-4.17-kube-1.31-api-removals-in-4.18</span><div style="flex:1"></div>{sbtn("Acknowledge…")}</div>'
+            f'{MCP_HEAD}{mcp_row("master", "3 / 3", 100, "3", "0", mcp_updated(), "1")}{mcp_row("worker", "3 / 3", 100, "3", "0", mcp_updated(), "1")}</div>')
+
+def ocp_history_card():
+    HC8 = "grid-template-columns: 96px 118px 150px 150px 100px 86px minmax(0,1fr)"
+    hist = [("4.17.8", "Completed", "2026-08-30 09:12", "2026-08-30 10:24", "1 h 12 min", True, "4b0e…91ac"),
+            ("4.17.6", "Completed", "2026-07-19 08:40", "2026-07-19 09:38", "58 min", True, "e27d…0c3f"),
+            ("4.17.3", "Completed", "2026-06-02 07:05", "2026-06-02 09:09", "2 h 4 min", True, "8a41…d2e0"),
+            ("4.16.21", "Partial", "2026-05-10 18:02", "superseded", "—", False, "51c9…7a6b"),
+            ("4.16.19", "Completed", "2026-04-21 08:15", "2026-04-21 09:20", "1 h 5 min", True, "c03a…44f1")]
+    def row(v, s, a, b, took, ver, img):
+        col = C["green"] if s == "Completed" else C["yellow"]
+        vf = f'<span style="color:var(--green)">{ic("check",12,C["green"],2.5)}</span>' if ver else '<span style="color:var(--dim)">no</span>'
+        return (f'<div class="tr" style="{HC8}"><span class="mono">{v}</span><span class="pill" style="color:{col}">{dot(col)}{s}</span>'
+                f'<span class="mono" style="color:var(--muted)">{a}</span><span class="mono" style="color:{"var(--dim)" if b == "superseded" else "var(--muted)"}">{b}</span>'
+                f'<span class="mono">{took}</span>{vf}<span class="mono" style="color:var(--dim);font-size:11.5px">quay.example.com/ocp-release@sha256:{img}</span></div>')
+    return (f'<div class="card" style="overflow:hidden">{card_head("Update history", "from ClusterVersion status.history · 5 of 11", sbtn("Copy as text", "copy", "g"))}'
+            f'<div class="th" style="{HC8}"><span>VERSION</span><span>STATE</span><span>STARTED</span><span>COMPLETED</span><span>TOOK</span><span>VERIFIED</span><span>IMAGE</span></div>'
+            + "".join(row(*h) for h in hist) + '</div>')
+
+def ocp_header(sticky=False, chips=""):
+    return upd_header(OCP_PROD, "OpenShift", "ClusterVersion, read through the Kubernetes API", chips, sticky=sticky)
+
+def ocp_sections(menu=False, rich=False, pf_expand=False, pf_collapsed=True):
+    top = upd_row(ocp_version_card(menu), ocp_path_card(rich), align="flex-start" if rich else "stretch")
+    return [top, ocp_pf_card(pf_expand, pf_collapsed), ocp_ops_card(), ocp_history_card()]
+
+def updates_screen():
+    """Board 8 overview: the OpenShift page scrolled down to the provider card and the update history."""
+    content = upd_page(ocp_header(sticky=True), ocp_sections(), scroll=318, thumb=(226, 520))
+    return upd_app("Cluster updates — Kubyl", content)
+
+def updates_channel_screen():
+    content = upd_page(ocp_header(), ocp_sections(menu=True), thumb=(2, 520))
+    return upd_app("OpenShift version and channel — Kubyl", content)
+
+def updates_graph_screen():
+    content = upd_page(ocp_header(), ocp_sections(rich=True), thumb=(2, 440))
+    return upd_app("Update graph — Kubyl", content)
+
+def updates_preflight_screen():
+    content = upd_page(ocp_header(sticky=True), ocp_sections(pf_expand=True, pf_collapsed=False), scroll=296, thumb=(170, 420))
+    return upd_app("Pre-flight checks — Kubyl", content)
+
+# ----- progress during an update -----
+CO_COLS = "grid-template-columns: minmax(0,.75fr) 158px 84px 100px 84px minmax(0,1.8fr)"
+
+def cond(v, good_col):
+    return f'<span class="mono" style="color:{good_col}">{v}</span>'
+
+def co_row(name, state, avail, prog, degr, msg):
+    if state == "prog":
+        ver = f'<span class="mono"><span style="color:var(--dim)">4.17.8</span> <span style="color:var(--faint)">→</span> <span style="color:var(--accent)">4.17.12</span></span>'
+    elif state == "queued":
+        ver = f'<span class="mono">4.17.8 <span style="color:var(--faint)">→ 4.17.12</span></span>'
+    else:
+        ver = f'<span class="mono"><span style="color:var(--dim)">4.17.8 →</span> 4.17.12</span>'
+    a = cond("True", C["green"]) if avail else cond("False", C["red"])
+    p = f'<span class="pill" style="color:var(--accent)">{spinner(11)}<span class="mono">True</span></span>' if prog else cond("False", C["dim"])
+    dg = cond("True", C["red"]) if degr else cond("False", C["dim"])
+    op = "opacity:.55;" if state == "done" else ""
+    return (f'<div class="tr" style="{CO_COLS};{op}"><span class="mono" style="font-weight:{500 if state == "prog" else 400}">{name}</span>{ver}{a}{p}{dg}'
+            f'<span style="font-size:12px;color:{"var(--muted)" if state == "prog" else "var(--dim)"}">{msg}</span></div>')
+
+def updates_progress_screen():
+    chips = f'<span class="chip" style="background:#2d3b4d;color:#a8cdf3">{spinner(11)}updating</span>'
+    stat = lambda k, v: f'<span style="white-space:nowrap">{k} <b style="font-weight:500;color:var(--text)">{v}</b></span>'
+    banner = f'''<div class="card" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px;border-color:#3f5a78;background:#2c3440">
+<div style="display:flex;align-items:center;gap:10px">{spinner(16)}<span style="font-size:15px;font-weight:600">Updating to 4.17.12</span><span style="font-size:13px;color:var(--muted)">· 61% · started 38 min ago</span><div style="flex:1"></div><span class="mono" style="font-size:12px;color:var(--dim)">4.17.8 → 4.17.12 · stable-4.17</span></div>
+<div class="bar" style="height:6px"><i style="width:61%;background:var(--accent)"></i></div>
+<div style="display:flex;gap:10px;align-items:baseline;font-size:12px"><span style="color:var(--dim);white-space:nowrap">Progressing</span><span class="mono" style="font-size:12px;color:var(--text)">Working towards 4.17.12: 512 of 845 done (61% complete), waiting on machine-config</span></div>
+<div style="display:flex;gap:20px;font-size:12px;color:var(--dim)">{stat("Elapsed", "38 min")}{stat("Estimate", "about 25 min left")}<span>(the last update took 1 h 12 min)</span>{stat("Cluster operators", "28 / 33")}{stat("Nodes", "5 / 6")}<span style="flex:1"></span><span>Closing Kubyl doesn't stop the update.</span></div>
+</div>'''
+    cos = [("machine-config", "prog", True, True, False, "Working towards 4.17.12: pool worker, 2 of 3 nodes updated"),
+           ("network", "prog", True, True, False, "DaemonSet openshift-ovn-kubernetes/ovnkube-node is rolling out: 5 of 6 updated"),
+           ("dns", "prog", True, True, False, "DNS default is updating: 4 of 6 pods at the new version"),
+           ("node-tuning", "queued", True, False, False, "waits for machine-config"),
+           ("storage", "queued", True, False, False, "waits for machine-config"),
+           ("kube-apiserver", "done", True, False, False, "NodeInstallerProgressing: 3 nodes are at revision 14"),
+           ("etcd", "done", True, False, False, "EtcdMembersAvailable: 3 members are available"),
+           ("authentication", "done", True, False, False, "All is well"),
+           ("ingress", "done", True, False, False, "The deployment has Available status condition set to True")]
+    show_all = '<a href="#" style="font-size:12px;text-decoration:none">Show all 33</a>'
+    co = (f'<div class="card" style="overflow:hidden">{card_head("Cluster operators · 28 of 33 updated", "progressing first", show_all)}'
+          f'<div class="th" style="{CO_COLS}"><span>NAME</span><span>VERSION</span><span>AVAILABLE</span><span>PROGRESSING</span><span>DEGRADED</span><span>MESSAGE</span></div>'
+          + "".join(co_row(*c) for c in cos)
+          + f'<div style="height:30px;display:flex;align-items:center;padding:0 12px;font-size:12px;color:var(--dim)">and 24 more at 4.17.12</div></div>')
+    draining = f'<span class="pill" style="color:var(--accent);white-space:nowrap">{spinner(12)}draining <span {M115}>ip-10-0-31-4.example.internal</span></span>'
+    mcp = (f'<div class="card" style="overflow:hidden">{card_head("Machine config pools", "nodes update one at a time per pool (maxUnavailable)", sbtn("Pause worker pool…", "pause", "g"))}'
+           f'{MCP_HEAD}{mcp_row("master", "3 / 3", 100, "3", "0", mcp_updated("4.17.12"), "1")}{mcp_row("worker", "2 / 3", 67, "2", "0", draining, "1", C["accent"])}</div>')
+    content = upd_page(ocp_header(chips=chips), [banner, co, mcp], thumb=(2, 470))
+    return upd_app("Cluster update in progress — Kubyl", content)
+
+# ----- confirmation -----
+def updates_confirm_screen():
+    row = lambda k, v: f'<div style="display:flex;gap:10px;align-items:flex-start;font-size:12.5px;line-height:18px"><span style="color:var(--dim);width:96px;flex-shrink:0">{k}</span><div style="flex:1;min-width:0">{v}</div></div>'
+    chk = lambda icon, col, t, s: (f'<div style="display:flex;gap:7px;align-items:flex-start;font-size:12px;line-height:18px"><span style="display:flex;padding-top:3px">{ic(icon,12,col)}</span>'
+                                   f'<span>{t} <span style="color:var(--dim)">· {s}</span></span></div>')
+    checks = (f'<div style="display:flex;flex-direction:column;gap:2px">{pf_summary(1, 2, 5)}'
+              + chk("err", C["red"], "PodDisruptionBudget blocks node drain", f'<span {M11}>payments/ledger-writer-pdb</span>')
+              + chk("alert", C["yellow"], "Deprecated APIs still requested", "v1beta3 flowschemas, removed in 1.32")
+              + chk("alert", C["yellow"], "Helm release uses removed APIs", f'<span {M11}>payments/legacy-app</span>') + '</div>')
+    modal = f'''<div style="position:absolute;inset:0;background:rgba(15,17,21,.55);display:flex;align-items:flex-start;justify-content:center;padding-top:58px">
+<div role="dialog" aria-label="Update {OCP_PROD} to 4.17.12" style="width:580px;background:#2f343e;border:1px solid var(--border);border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,.5);overflow:hidden">
+<div style="display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--bv)">{ic("up",16,C["accent"])}<b style="font-weight:600;flex:1">Update {OCP_PROD} to 4.17.12?</b><span class="prod" style="font-size:9.5px;padding:0 4px">PROD</span></div>
+<div style="padding:16px;display:flex;flex-direction:column;gap:10px">
+{row("Cluster", f'<span {M115}>{OCP_PROD_CTX}</span>')}
+{row("Provider", "OpenShift (ClusterVersion)")}
+{row("From → To", '<span class="mono" style="font-size:12px">4.17.8 → <span style="color:var(--accent)">4.17.12</span></span> <span style="color:var(--dim)">(z-stream, recommended)</span>')}
+{row("Channel", f'<span {M115}>stable-4.17</span>')}
+{row("What changes", f'<span {M115}>spec.desiredUpdate = 4.17.12</span> <span style="color:var(--dim)">(like <span {M11}>oc adm upgrade --to 4.17.12</span>)</span>')}
+{row("Checks", checks)}
+<div style="display:flex;gap:10px;padding:10px 12px;border-radius:7px;background:#3a2a2d;border:1px solid #6a3a3f">{ic("alert",15,C["red"])}<div style="font-size:12.5px;line-height:18px"><b style="font-weight:600;color:var(--red)">Updates can't be undone.</b> OpenShift doesn't roll back a cluster; a failed update is fixed forward.</div></div>
+{check(False, "I've read the pre-flight results", "Required because a check failed")}
+<div style="display:flex;flex-direction:column;gap:6px"><div style="font-size:12px;color:var(--muted)">Type <span class="mono" style="color:var(--text)">{OCP_PROD}</span> to confirm</div>
+<div class="inp focus" style="height:28px"><span class="mono" style="font-size:12.5px;color:var(--text)">ocp-prod.exa</span><span style="display:inline-block;width:1px;height:15px;background:var(--accent);margin-left:-6px"></span></div></div>
+</div>
+<div style="display:flex;align-items:center;gap:8px;padding:12px 16px;border-top:1px solid var(--bv)"><span style="font-size:11.5px;color:var(--dim)">The cluster runs the update; Kubyl tracks it.</span><span style="flex:1"></span><button class="btn g">Cancel</button><button class="btn" style="background:var(--red);border-color:var(--red);color:{INK};font-weight:600;opacity:.45">{ic("up",12,INK)}Start update</button></div>
+</div></div>'''
+    content = upd_page(ocp_header(), ocp_sections(), thumb=(2, 520))
+    return upd_app("Update confirmation — Kubyl", content, overlay=modal)
+
+# ----- Amazon EKS -----
+def updates_eks_screen():
+    vc = vcard([
+        vc_current("1.30", "Kubernetes v1.30.4 · platform eks.12", f'<div class="pill" style="color:var(--green);font-size:11.5px;margin-top:3px">{ic("ok",12,C["green"])}ACTIVE · no health issues</div>'),
+        vc_line("Standard support", '<span style="color:var(--yellow)">until 2026-07-23 · extended after</span>'),
+        vc_line("Upgrade policy", f'<span {M115}>STANDARD</span><span style="color:var(--dim)"> · EKS has no channels</span>'),
+        vc_line("Last update", f'<span {M115}>1.29 → 1.30</span><br><span style="color:var(--dim)">2026-03-14 · took 38 min</span>'),
+    ])
+    targets = [("1.32", "block", tag("block", "blocked") + dimt("skip-version: EKS updates one minor at a time"), 28, ""),
+               ("1.31", "rec", tag("rec", "recommended") + dimt("platform eks.8 · standard support until 2027-11"), 28, "")]
+    path = path_card(upd_graph("1.30", "current", targets, lw=40, span=90),
+                     sbtn("Update control plane to 1.31…", "up", "p", 26),
+                     upd_steps("What the update to 1.31 does", [
+                         "Control plane 1.30 → 1.31 · about 10 min, the API stays available",
+                         f"Add-ons: <span {M11}>kube-proxy</span> → v1.31.2 and <span {M11}>coredns</span> → v1.11.3, each confirmed",
+                         f"Node groups one at a time: <span {M11}>general-m6i</span>, then <span {M11}>gpu-g5</span> · surge 1, maxUnavailable 0"])
+                     + path_note("1.32 is offered once the cluster runs 1.31."))
+    pf_rows = (pf_row("fail", "PodDisruptionBudget blocks node drain", f'<span {M11}>payments/ledger-writer-pdb</span> allows 0 disruptions', sbtn("Open PDB"), pad=7)
+               + pf_row("warn", "Deprecated APIs still requested", f'<span {M11}>flowcontrol.apiserver.k8s.io/v1beta3</span> · 2 clients in 24 h', sbtn("Show requests"), pad=7)
+               + pf_row("warn", "Add-on not ready for 1.31", f'<span {M11}>kube-proxy</span> v1.30.3 → v1.31.2 after the control plane', sbtn("Show add-on"), pad=7)
+               + pf_passed_line("4 passed: operators, version skew, surge capacity, node groups healthy"))
+    pf = pf_card("Pre-flight checks for 1.31", pf_summary(1, 2, 4), pf_rows)
+    AD = "grid-template-columns: minmax(0,1fr) minmax(0,1.1fr) 128px 116px"
+    ok = f'<span class="pill" style="color:var(--green)">{ic("check",12,C["green"],2.5)}compatible</span>'
+    adds = [("vpc-cni", "v1.18.3-eksbuild.1", ok, ""),
+            ("coredns", '<span style="color:var(--dim)">v1.11.1 →</span> v1.11.3', '<span style="color:var(--accent);font-size:12px">recommended</span>', sbtn("Update add-on…")),
+            ("kube-proxy", '<span style="color:var(--dim)">v1.30.3 →</span> v1.31.2', f'<span class="pill" style="color:var(--yellow)">{ic("alert",12,C["yellow"])}update needed</span>', dimt("after control plane", 11.5)),
+            ("aws-ebs-csi-driver", "v1.34.0-eksbuild.1", ok, "")]
+    addons = (f'<div class="card" style="flex:1;min-width:0;overflow:hidden">{card_head("Add-ons", "4 managed add-ons")}'
+              f'<div class="th" style="{AD}"><span>NAME</span><span>VERSION</span><span>COMPATIBLE WITH 1.31</span><span></span></div>'
+              + "".join(f'<div class="tr" style="{AD};height:34px"><span class="mono">{n}</span><span class="mono">{v}</span>{c}<span style="display:flex;justify-content:flex-end">{a}</span></div>' for n, v, c, a in adds)
+              + '</div>')
+    NG = "grid-template-columns: minmax(0,.8fr) 90px 70px minmax(0,1.1fr) minmax(0,1.5fr) 150px"
+    dimc = lambda t: f'<span style="color:var(--dim);font-size:12px">{t}</span>'
+    groups = [("Control plane", "managed", "1.30", f'<span {M115}>eks.12</span>', dimc("updated first · about 10 min"), sbtn("Update to 1.31…", "up")),
+              ("general-m6i", "6 nodes", "1.30", '<span class="mono" style="font-size:11.5px;color:var(--muted)">AL2023 · 1.30.4-20260812</span>', dimc("waits for the control plane"), dimc("queued")),
+              ("gpu-g5", "2 nodes", "1.29", '<span class="mono" style="font-size:11.5px;color:var(--muted)">AL2023 · 1.29.8-20260702</span>',
+               f'<div style="display:flex;align-items:center;gap:8px;min-width:0"><span class="mono" style="font-size:11.5px">1 / 2</span>{bar(50, C["accent"], 90)}<span style="font-size:11.5px;color:var(--dim);overflow:hidden;text-overflow:ellipsis">draining ip-10-0-31-4</span></div>',
+               f'<span class="pill" style="color:var(--accent)">{spinner(12)}updating to 1.30</span>')]
+    cp = (f'<div class="card" style="overflow:hidden">{card_head("Control plane &amp; node groups", "control plane first, then node groups one at a time · surge 1, maxUnavailable 0")}'
+          f'<div class="th" style="{NG}"><span>POOL</span><span>SIZE</span><span>VERSION</span><span>AMI / RELEASE</span><span>PROGRESS</span><span></span></div>'
+          + "".join(f'<div class="tr" style="{NG};height:36px"><span style="font-weight:500">{n}</span><span style="color:var(--muted)">{s}</span><span class="mono">{v}</span>{ami}{prog}<span style="display:flex;justify-content:flex-end">{a}</span></div>' for n, s, v, ami, prog, a in groups)
+          + '</div>')
+    head = upd_header("prod-eu-west-1", "Amazon EKS", "AWS API · profile prod · eu-west-1")
+    content = upd_page(head, [upd_row(vc, path), upd_row(f'<div style="flex:1;min-width:0">{pf}</div>', addons, align="flex-start"), cp], thumb=(2, 600))
+    return upd_app("Cluster updates on Amazon EKS — Kubyl", content, cluster="prod-eu-west-1", color=C["red"], prod=True, meta="EKS · v1.30.4", ocp=False)
+
+# ----- k3s -----
+def updates_k3s_screen():
+    vc = vcard([
+        vc_current("v1.33.4+k3s1", "Kubernetes v1.33.4 · k3s", size=20),
+        f'<div>{vc_label("Channel")}{dropdown("stable")}<div style="font-size:11.5px;color:var(--dim);margin-top:5px">channel server: <span {M11}>update.k3s.io</span></div></div>',
+        vc_line("Last update", f'<span {M115}>v1.32.7+k3s1 → v1.33.4+k3s1</span><br><span style="color:var(--dim)">2026-08-11 · took 14 min</span>'),
+        f'<div>{vc_label("Status")}<span class="pill" style="color:var(--green);font-size:11.5px">{ic("ok",12,C["green"])}4 of 4 nodes at v1.33.4+k3s1</span></div>',
+    ])
+    targets = [("v1.34.2+k3s1", "latest", tag("latest", "latest") + dimt("latest channel · next minor"), 28, ""),
+               ("v1.33.6+k3s1", "rec", tag("rec", "recommended") + dimt("stable channel"), 28, ""),
+               ("v1.33.5+k3s1", "avail", dimt("available"), 26, "")]
+    path = path_card(upd_graph("v1.33.4+k3s1", "current", targets, lw=96, span=90), sbtn("Release notes", "ext", "g"),
+                     upd_steps("What updating the plans does", [
+                         f"<span {M11}>server-plan</span> → v1.33.6+k3s1 on k3s-server-1: cordon, k3s restarts",
+                         f"<span {M11}>agent-plan</span> → v1.33.6+k3s1 on 3 agents, one at a time: cordon + drain"])
+                     + path_note('From <span class="mono" style="font-size:11px">https://update.k3s.io/v1-release/channels</span> · checked 12 min ago'), legend=False)
+    pf = pf_card("Pre-flight checks for v1.33.6+k3s1", pf_summary(0, 1, 5, 1),
+                 pf_row("warn", "API unavailable while the server restarts", "k3s-server-1 is the only server: the API is down for about a minute while k3s restarts on it", pad=8)
+                 + pf_passed_line("5 passed: PodDisruptionBudgets, version skew, surge capacity, deprecated APIs, Helm releases · 1 not applicable"))
+    PL = "grid-template-columns: 110px minmax(0,1.6fr) 124px 136px minmax(0,1fr) 84px"
+    done = lambda n: f'<div style="display:flex;align-items:center;gap:8px"><span class="mono" style="font-size:11.5px;white-space:nowrap">{n} / {n} nodes</span>{bar(100, C["green"], 60)}<span style="color:var(--green);font-size:12px">complete</span></div>'
+    plans = [("server-plan", "node-role.kubernetes.io/control-plane in (true)", "1", done(1)),
+             ("agent-plan", "node-role.kubernetes.io/control-plane notin (true)", '1 · <span class="chip" style="height:18px">cordon + drain</span>', done(3))]
+    prows = "".join(f'<div class="tr" style="{PL};height:38px"><span class="mono" style="font-weight:500">{n}</span><span class="mono" style="font-size:11.5px;color:var(--muted);padding-right:12px">{sel}</span>'
+                    f'<span class="mono">v1.33.4+k3s1</span><span style="display:flex;align-items:center;gap:6px">{c}</span>{s}<span style="display:flex;justify-content:flex-end"><button class="btn g" style="height:24px">{ic("code",12)}YAML</button></span></div>'
+                    for n, sel, c, s in plans)
+    preview = "".join(diff_line(k, t) for k, t in [("@", " server-plan, agent-plan · spec"), ("-", " version: v1.33.4+k3s1"), ("+", " version: v1.33.6+k3s1")])
+    right = f'{sbtn("New plan…", "plus")}{sbtn("Update plans to v1.33.6+k3s1…", "up", "p", 26)}'
+    plans_card = (f'<div class="card" style="overflow:hidden">{card_head("Upgrade plans", "upgrade.cattle.io/v1 Plan in system-upgrade", right)}'
+                  f'<div class="th" style="{PL}"><span>PLAN</span><span>NODES (SELECTOR)</span><span>VERSION</span><span>CONCURRENCY</span><span>STATUS</span><span></span></div>{prows}'
+                  f'<div style="display:flex;gap:16px;padding:12px 16px;align-items:flex-start">'
+                  f'<div style="flex:1;display:flex;gap:8px;font-size:12px;color:var(--muted);line-height:18px"><span style="display:flex;padding-top:2px">{ic("info",13,C["accent"])}</span>'
+                  f'<span>Plans are created and edited in the YAML editor with a preview: the diff against the live Plans, applied after you confirm. '
+                  f'<span {M11}>agent-plan</span> waits for <span {M11}>server-plan</span> (<span {M11}>spec.prepare</span>).</span></div>'
+                  f'<div style="width:420px;flex-shrink:0;border:1px solid var(--bv);border-radius:6px;overflow:hidden;background:#2a2e36;padding:3px 0">'
+                  f'<div style="font-size:11px;color:var(--dim);padding:2px 10px 4px;text-transform:uppercase;letter-spacing:.06em;font-weight:600">Preview · Update plans</div>{preview}</div></div></div>')
+    head = upd_header("k3s-edge", "k3s", "system-upgrade-controller in system-upgrade")
+    content = upd_page(head, [upd_row(vc, path), pf, plans_card], thumb=(2, 640))
+    return upd_app("Cluster updates on k3s — Kubyl", content, cluster="k3s-edge", color=C["green"], prod=False, meta="k3s · v1.33.4+k3s1", ns="default", ocp=False)
+
+# ----- self-managed and read-only -----
+def col_tabs(label, icon="up"):
+    return tabs([(icon, label, True)], tools=False)
+
+def updates_selfmanaged_screen():
+    nodes = (f'<div style="display:flex;flex-direction:column;gap:4px;font-size:12px">'
+             f'<div style="display:flex;gap:8px;white-space:nowrap"><span class="mono" style="font-size:11.5px;width:56px">v1.37.0</span><span style="color:var(--muted);width:50px">5 nodes</span><span style="color:var(--dim);overflow:hidden;text-overflow:ellipsis">cp-1–3, worker-1–2</span></div>'
+             f'<div style="display:flex;gap:8px;white-space:nowrap"><span class="mono" style="font-size:11.5px;width:56px;color:var(--yellow)">v1.36.4</span><span style="color:var(--muted);width:50px">1 node</span><span style="color:var(--dim)">worker-3</span></div></div>')
+    vc = vcard([vc_current("v1.37.0", "Kubernetes v1.37.0 · kubeadm"),
+                f'<div>{vc_label("Kubelets")}{nodes}</div>',
+                vc_line("Control plane", f'kube-apiserver <span {M115}>v1.37.0</span> on 3 nodes<br><span style="color:var(--dim)">etcd 3.6.4 · CoreDNS 1.12.1</span>')], width=280)
+    info = f'''<div class="card" style="flex:1;min-width:0;padding:14px 16px;display:flex;flex-direction:column;gap:10px">
+<div style="display:flex;gap:10px;align-items:flex-start">{ic("info",18,C["accent"])}<div style="min-width:0"><div style="font-size:14px;font-weight:600">Kubyl can't update this cluster</div>
+<div style="font-size:12.5px;color:var(--muted);line-height:19px;margin-top:4px">It doesn't know how this cluster was installed. Update it with the tool that installed it (<span {M115}>kubeadm upgrade plan</span>, your distribution's docs).</div></div></div>
+<div><div class="mono" style="font-size:11.5px;padding:7px 10px;border-radius:5px;background:#23272e;display:flex;align-items:center;white-space:nowrap">kubeadm upgrade plan<span style="flex:1"></span><button class="ib" aria-label="Copy command" style="width:20px;height:20px">{ic("copy",12)}</button></div>
+<div style="font-size:11.5px;color:var(--dim);margin-top:4px">Run it on a control-plane node.</div></div>
+<div style="display:flex;gap:16px;font-size:12px"><a href="#" style="display:flex;gap:4px;align-items:center">kubeadm upgrade docs{ic("ext",11)}</a><a href="#" style="display:flex;gap:4px;align-items:center">Version skew policy{ic("ext",11)}</a></div>
+<div style="font-size:11.5px;color:var(--dim);margin-top:auto;line-height:17px">Detected from the <span {M11}>kubeadm-config</span> ConfigMap in <span {M11}>kube-system</span>. Version info and pre-flight checks work on every cluster.</div>
+</div>'''
+    target = f'<button class="btn" style="height:24px;padding:0 8px">Check against <span class="mono" style="font-size:12px">v1.38</span>{ic("cd",12)}</button>'
+    rows = (pf_row("warn", "Deprecated APIs still requested", f'<span {M11}>resource.k8s.io/v1beta1</span> resourceclaims · 1 client in the last 24 h, from <span {M11}>apiserver_requested_deprecated_apis</span>', sbtn("Show requests"))
+            + pf_row("pass", "No PodDisruptionBudget blocks a drain", "14 checked, each allows at least 1 disruption")
+            + pf_row("pass", "Version skew", "kubelets v1.37.0 on 5 nodes and v1.36.4 on worker-3: within n-3 of v1.38")
+            + pf_row("pass", "Node capacity for drains", "41% CPU, 52% memory free: one node at a time fits")
+            + pf_row("info", "Installed operators", "OLM isn't installed: nothing to check")
+            + pf_row("info", "Add-on compatibility", "provided by the provider: none for self-managed clusters", last=True))
+    pf = pf_card(f'Pre-flight checks', pf_summary(0, 1, 3, 2), rows,
+                 right=f'{target}<span style="font-size:12px;color:var(--dim)">ran 1m ago</span>{sbtn("Re-run", "refresh", "g")}', summary_line=True)
+    left = f'''<div style="flex:1.5;min-width:0;display:flex;flex-direction:column;border-right:1px solid var(--border)">
+{col_tabs("Cluster Updates · platform-onprem")}
+{upd_page(upd_header("platform-onprem", "self-managed", "kubeadm"), [upd_row(vc, info), pf], thumb=(2, 700))}
+</div>'''
+    ro_chip = f'<span class="chip" style="color:var(--muted)">{ic("lock",11)}read-only</span>'
+    banner = (f'<div style="display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:7px;background:#2c3440;border:1px solid #3f5a78;font-size:12.5px;line-height:18px">'
+              f'<span style="display:flex;padding-top:2px">{ic("lock",14,C["accent"])}</span><div><b style="font-weight:600">This cluster is read-only in Kubyl:</b> updates and channel changes are hidden.'
+              f'<div style="font-size:11.5px;color:var(--dim)">Set in Clusters &amp; kubeconfigs › Safety. Version info and checks still work.</div></div></div>')
+    ro_channel = f'<span {M115}>stable-4.17</span> <span style="color:var(--dim)">{ic("lock",11)} locked</span>'
+    ro_last = f'<span {M115}>4.17.6 → 4.17.8</span><span style="color:var(--dim)"> · 2026-08-30</span>'
+    ro_vc = (f'<div class="card" style="padding:14px 16px;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px 16px">'
+             f'{vc_current("4.17.8", "OpenShift 4.17.8 · Kubernetes v1.30.6")}'
+             f'<div style="display:flex;flex-direction:column;gap:10px">{vc_line("Channel", ro_channel)}{vc_line("Last update", ro_last)}</div></div>')
+    ro_targets = [("4.18.2", "block", tag("block", "blocked"), 26, ""), ("4.17.13", "cond", tag("cond", "conditional"), 26, ""),
+                  ("4.17.12", "rec", tag("rec", "recommended"), 26, ""), ("4.17.11", "avail", dimt("+ 2 more"), 26, "")]
+    ro_path = path_card(upd_graph("4.17.8", "current", ro_targets, lw=52, span=70), dimt("no update button on read-only clusters", 12), legend=False)
+    ro_pf = pf_card("Pre-flight checks for 4.17.12", pf_summary(1, 2, 5),
+                    pf_row("fail", "PodDisruptionBudget blocks node drain", f'<span {M11}>payments/ledger-writer-pdb</span> allows 0 disruptions', pad=8, last=True),
+                    right=sbtn("Re-run", "refresh", "g"), summary_line=True)
+    right = f'''<div style="flex:1;min-width:0;display:flex;flex-direction:column">
+{col_tabs(f"Cluster Updates · {OCP_PROD}")}
+{upd_page(upd_header(OCP_PROD, "OpenShift", "ClusterVersion", ro_chip, recheck=False, size=16), [banner, ro_vc, ro_path, ro_pf], thumb=(2, 690))}
+</div>'''
+    inner = f'''<div class="app">
+{titlebar("platform-onprem", "default", False, "kubeadm · v1.37.0")}
+<div class="body">{nav_sidebar("platform-onprem", C["purple"], False, "Cluster Updates", ocp=False, upd_dot=None)}<main class="main" style="flex-direction:row">{left}{right}</main></div>
+{statusbar(cluster="platform-onprem", ns="default")}
+</div>'''
+    return page("Self-managed and read-only clusters — Kubyl", inner)
+
+# ----- credentials missing, provider not built in -----
+def updates_credentials_screen():
+    creds = f'''<div class="card" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px;border-color:#6b5a2a;background:#33302a">
+<div style="display:flex;gap:10px;align-items:flex-start">{ic("key",18,C["yellow"])}<div style="flex:1;min-width:0">
+<div style="font-size:14px;font-weight:600">AWS credentials aren't available</div>
+<div style="font-size:12.5px;color:var(--muted);line-height:19px;margin-top:3px">The profile <span {M115}>prod</span> has no valid session. Sign in, then retry:</div></div></div>
+<div class="mono" style="font-size:12px;padding:7px 10px;border-radius:5px;background:#23272e;display:flex;align-items:center">aws sso login --profile prod<span style="flex:1"></span><button class="ib" aria-label="Copy command" style="width:20px;height:20px">{ic("copy",12)}</button></div>
+<dl class="kv" style="margin:0;grid-template-columns:96px minmax(0,1fr)"><dt>Detected</dt><dd>Amazon EKS, from the kubeconfig's exec plugin</dd><dt>Exec plugin</dt><dd class="mono" style="font-size:11.5px">aws eks get-token --cluster-name prod-eu-west-1</dd><dt>Cluster</dt><dd>prod-eu-west-1</dd><dt>Region</dt><dd>eu-west-1</dd><dt>Profile</dt><dd>prod</dd></dl>
+<div style="display:flex;gap:8px;align-items:center">{sbtn("Retry", "refresh", "", 26)}{sbtn("Copy command", "copy", "g", 26)}<span style="flex:1"></span>{dimt("no control plane, node group or add-on data until then")}</div>
+</div>'''
+    k8s = pf_card("Kubernetes-side checks still run", pf_summary(1, 1, 3, 2, '<span style="color:var(--orange)">1 not allowed</span>'),
+                  pf_row("fail", "PodDisruptionBudget blocks node drain", f'<span {M11}>payments/ledger-writer-pdb</span> allows 0 disruptions', sbtn("Open PDB"), pad=8)
+                  + pf_row("warn", "Deprecated APIs still requested", f'<span {M11}>flowcontrol.apiserver.k8s.io/v1beta3</span> · 2 clients in 24 h', sbtn("Show requests"), pad=8)
+                  + pf_row("deny", "Can't read installed operators", f'missing <span {M11}>list clusterserviceversions.operators.coreos.com</span> at cluster scope (403 Forbidden)', sbtn("Copy RBAC rule", "copy", "g"), pad=8)
+                  + pf_passed_line("3 passed: version skew, surge capacity, Helm releases", last=False)
+                  + pf_row("info", "Add-on compatibility", "needs AWS credentials", pad=8)
+                  + pf_row("info", "Control plane &amp; node groups", "needs AWS credentials", pad=8, last=True),
+                  right=f'<span style="font-size:12px;color:var(--dim)">against 1.31 · ran 1m ago</span>', summary_line=True)
+    left = f'''<div style="flex:1.1;min-width:0;display:flex;flex-direction:column;border-right:1px solid var(--border)">
+{col_tabs("Cluster Updates · prod-eu-west-1")}
+{upd_page(upd_header("prod-eu-west-1", "Amazon EKS", "AWS API · profile prod", size=16), [creds, k8s], thumb=(2, 700))}
+</div>'''
+    avail = lambda t: f'<div style="display:flex;gap:7px;align-items:center;font-size:12.5px">{ic("check",13,C["green"],2.5)}{t}</div>'
+    gke = f'''<div class="card" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px">
+<div style="display:flex;gap:10px;align-items:flex-start">{ic("blocks",18,C["dim"])}<div style="flex:1;min-width:0">
+<div style="font-size:14px;font-weight:600">This build doesn't include the GKE provider</div>
+<div style="font-size:12.5px;color:var(--muted);line-height:19px;margin-top:3px">It was built without the <span {M115}>updates-gke</span> feature, so Kubyl can't read release channels or start control plane and node pool upgrades.</div></div></div>
+<div style="display:flex;flex-direction:column;gap:5px;padding:2px 0 2px 28px"><div style="font-size:12px;color:var(--dim)">Still available</div>{avail("Read-only version info")}{avail("Pre-flight checks")}</div>
+<div style="font-size:12px;color:var(--muted);line-height:18px;padding-left:28px">The official releases include every provider. From source:</div>
+<div class="mono" style="font-size:11.5px;padding:7px 10px;border-radius:5px;background:#23272e;margin-left:28px">cargo build --release --features updates-gke</div>
+</div>'''
+    gvc = (f'<div class="card" style="padding:12px 16px;display:flex;gap:18px;align-items:flex-start">{vc_current("v1.31.5-gke.1023000", "Kubernetes v1.31.5 · from /version", size=18)}'
+           f'<div style="display:flex;flex-direction:column;gap:8px;min-width:0">{vc_line("Kubelets", f"<span {M115}>v1.31.5</span> on 9 of 9 nodes")}{vc_line("Release channel", "<span style=color:var(--dim)>unknown without the provider</span>")}</div></div>')
+    gpf = pf_card("Pre-flight checks for 1.32", pf_summary(0, 0, 2, 1, '<span style="color:var(--orange)">1 not allowed</span>'),
+                  pf_row("pass", "Version skew", "kubelets v1.31.5 on 9 of 9 nodes", pad=8)
+                  + pf_row("pass", "No PodDisruptionBudget blocks a drain", "22 checked", pad=8)
+                  + pf_row("deny", "Can't read deprecated API usage", f'missing <span {M11}>get</span> on <span {M11}>/metrics</span> (nonResourceURLs), and no Prometheus found', sbtn("Copy RBAC rule", "copy", "g"), pad=8)
+                  + pf_row("info", "Add-on compatibility", "needs the GKE provider", pad=8, last=True),
+                  right=f'<span style="font-size:12px;color:var(--dim)">ran 3m ago</span>', summary_line=True)
+    right = f'''<div style="flex:1;min-width:0;display:flex;flex-direction:column">
+{col_tabs("Cluster Updates · gke-analytics")}
+{upd_page(upd_header("gke-analytics", "GKE", "from gke-gcloud-auth-plugin", size=16), [gke, gvc, gpf], thumb=(2, 700))}
+</div>'''
+    inner = f'''<div class="app">
+{titlebar()}
+<div class="body">{nav_sidebar("prod-eu-west-1", C["red"], True, "Cluster Updates", ocp=False, upd_dot=None)}<main class="main" style="flex-direction:row">{left}{right}</main></div>
+{statusbar()}
+</div>'''
+    return page("Update provider unavailable — Kubyl", inner)
 
 
 # ---------- 9. File browser: drag & drop to/from pods ----------
@@ -1491,6 +2109,221 @@ def webview_screen():
 {statusbar(right_extra=webfwd)}
 </div>"""
     return page("Service web view — Kubyl", inner)
+
+# ---------- 1 and 10. OpenShift Routes (phase 13, added on request) ----------
+# name, host, path, backends (service, weight), target port, tls (termination, insecure policy), admitted (state, reason), age
+ROUTES = [
+ ("shop-api", "shop.apps.ocp-dev.example.com", "/api", [("shop-web", 80), ("shop-canary", 20)], "http", ("edge", "Redirect"), ("ok", ""), "12d"),
+ ("shop-web", "shop.apps.ocp-dev.example.com", "", [("shop-web", None)], "8080", ("edge", "Redirect"), ("ok", ""), "12d"),
+ ("payments-gw", "pay.apps.ocp-dev.example.com", "", [("payments-gw", None)], None, ("passthrough", ""), ("ok", ""), "30d"),
+ ("admin-console", "admin.apps.ocp-dev.example.com", "", [("admin-ui", None)], "https", ("reencrypt", "Allow"), ("ok", ""), "6d"),
+ ("tenant-wildcard", "*.apps.example.com", "", [("tenant-router", None)], "http", ("edge", "None"), ("ok", ""), "3d"),
+ ("shop-ingress-x7k2p", "legacy.apps.ocp-dev.example.com", "", [("shop-legacy", None)], "http", ("edge", "Redirect"), ("ok", ""), "45d"),
+ ("shop-api-v2", "shop.apps.ocp-dev.example.com", "/api", [("shop-web-v2", None)], "http", ("edge", "Redirect"), ("err", "HostAlreadyClaimed"), "2h"),
+ ("metrics-internal", "metrics.apps.ocp-dev.example.com", "", [("prometheus-shop", None)], "9090", None, ("pending", ""), "8s"),
+]
+# Sized so that no cell needs an ellipsis next to a 320 px details dock: hosts in the UI font, the rest mono 11.5 px,
+# several backends on two lines.
+RT_COLS = "grid-template-columns: 130px minmax(0,1fr) 124px 78px 106px 164px 28px"
+RT_M = 'class="mono" style="font-size:11.5px'
+
+def rt_cells(name, host, path, backends, port, tls, adm, age):
+    h = f'<span style="font-size:11.5px;padding-right:8px" title="{host}{path}">{host}<span style="color:var(--dim)">{path}</span></span>'
+    if len(backends) == 1:
+        s = f'<span {RT_M}">{backends[0][0]}</span>'
+    else:
+        s = (f'<span {RT_M};line-height:15px;display:flex;flex-direction:column">'
+             + "".join(f'<span>{n} <span style="color:var(--dim)">({w}%)</span>{"," if i < len(backends) - 1 else ""}</span>' for i, (n, w) in enumerate(backends)) + '</span>')
+    p = f'<span {RT_M}">{port}</span>' if port else f'<span {RT_M};color:var(--faint)">&lt;all&gt;</span>'
+    if tls:
+        t = f'<span {RT_M}">{tls[0]}{"<span style=color:var(--dim)>/" + tls[1] + "</span>" if tls[1] else ""}</span>'
+    else:
+        t = f'<span {RT_M};color:var(--faint)">none</span>'
+    state, reason = adm
+    if state == "ok":
+        a = f'<span class="pill" style="color:var(--green);font-size:11.5px;padding-left:6px">{ic("check",12,C["green"],2.5)}default</span>'
+    elif state == "err":
+        a = f'<span class="pill" style="color:var(--red);font-size:11px;gap:4px;padding-left:6px" title="Route shop-api is older and already claims this host and path">{dot(C["red"])}default: {reason}</span>'
+    else:
+        a = '<span style="color:var(--faint);font-size:11.5px;padding-left:6px">pending</span>'
+    return f'<span {RT_M}">{name}</span>{h}{s}{p}{t}{a}<span {RT_M};color:var(--muted)">{age}</span>'
+
+def routes_center():
+    head = (f'<div class="th" style="{RT_COLS}"><span>NAME {ic("cd",10)}</span><span>HOST</span><span>SERVICES</span><span>TARGET PORT</span>'
+            f'<span>TLS</span><span style="padding-left:6px">ADMITTED</span><span>AGE</span></div>')
+    rows = "".join(f'<div class="tr{" on" if i == 0 else ""}" style="{RT_COLS};height:{42 if len(r[3]) > 1 else 32}px">{rt_cells(*r)}</div>' for i, r in enumerate(ROUTES))
+    toolbar = f'''<div class="tool">
+<div class="crumb">{ic("route",14,C["accent"])}<b>Routes</b><span>·</span><span>8 in shop</span><span style="color:var(--red)">· 1 not admitted</span></div>
+<div style="flex:1"></div>
+<div class="inp" style="width:210px">{ic("filter",12)}Filter</div>
+<div style="display:flex;gap:4px"><span class="chip on">shop {ic("x",10)}</span><span class="chip">+ namespace</span></div>
+<button class="btn g" aria-label="Columns">{ic("sliders",13)}</button>
+<span class="chip" style="color:var(--green)">{dot(C["green"])}live</span>
+</div>'''
+    return f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0">
+{toolbar}
+{head}
+<div style="flex:1;overflow:hidden">{rows}</div>
+{hints([("↵","Details"),("w","Web view"),("⇧f","Forward"),("o","Open in browser"),("e","Edit YAML"),("⌃d","Delete"),("/","Filter")])}
+</div>'''
+
+def rkv(k, v, w=76):
+    return f'<div style="display:flex;gap:8px;font-size:12px;line-height:18px"><span style="width:{w}px;flex-shrink:0;color:var(--dim)">{k}</span><div style="flex:1;min-width:0">{v}</div></div>'
+
+ROUTE_URL = "https://shop.apps.ocp-dev.example.com/api"
+
+def routes_screen():
+    mono = lambda t, c="var(--text)": f'<span class="mono" style="font-size:11.5px;color:{c}">{t}</span>'
+    ok = f'{ic("check",11,C["green"],2.5)}'
+    backend = lambda name, w, extra, sub: (f'<div style="display:flex;flex-direction:column;gap:2px;padding:6px 0;border-bottom:1px solid var(--bv)">'
+                                           f'<div style="display:flex;align-items:center;gap:7px;font-size:12px;white-space:nowrap">{ic("network",13,C["dim"])}<a href="#" class="mono" style="font-size:11.5px;text-decoration:none">{name}</a>'
+                                           f'<span class="chip" style="height:18px">weight {w}%</span><span style="flex:1"></span>{extra}</div>'
+                                           f'<div style="display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--dim);padding-left:20px;white-space:nowrap">port 80/TCP → 8080{sub}</div></div>')
+    fwd_btn = f'<button class="btn" style="height:22px;padding:0 8px">{ic("link",11)}Forward</button>'
+    running = (f'<span style="flex:1"></span><span style="display:flex;align-items:center;gap:4px;color:var(--green)">{ic("link",11,C["green"])}<span class="mono" style="font-size:11.5px">→ localhost:8080</span></span>'
+               f'<button class="ib" aria-label="Stop forward" style="width:20px;height:20px">{ic("x",11)}</button>')
+    eps = "".join(f'<span class="chip mchip">{e}</span>' for e in ["10.128.2.14:8080", "10.131.0.22:8080", "10.129.4.7:8080"])
+    pods = "".join(f'<div style="display:flex;align-items:center;gap:7px;font-size:12px;padding:1px 0">{dot(C["green"])}<a href="#" class="mono" style="font-size:11.5px;text-decoration:none">{p}</a><span style="color:var(--dim)">{s}</span></div>'
+                   for p, s in [("shop-web-6d8f9b7c4-k2x9p", "shop-web"), ("shop-web-6d8f9b7c4-p8r2m", "shop-web"), ("shop-canary-5b7c9d8f6-q4zt1", "shop-canary")])
+    dock = f'''<aside class="dock" style="width:314px">
+<div class="phead" style="border-bottom:1px solid var(--bv)"><span style="flex:1;color:var(--text);font-weight:500">Route details</span><button class="ib" aria-label="Pin">{ic("star",13)}</button><button class="ib" aria-label="Close">{ic("x",13)}</button></div>
+<div class="dsec"><div class="mono" style="font-size:12.5px;margin-bottom:6px">shop-api</div>
+<div style="display:flex;gap:6px;flex-wrap:wrap"><span class="chip" style="color:var(--green)">{ok}admitted · default</span><span class="chip mchip">edge/Redirect</span><span class="chip">12d</span></div></div>
+<div class="dsec"><p class="dtitle">Route</p>
+<div style="display:flex;flex-direction:column;gap:4px">
+{rkv("Host", mono("shop.apps.ocp-dev.example.com"))}
+{rkv("Path", mono("/api"))}
+{rkv("TLS", "edge · insecure: Redirect")}
+{rkv("Wildcard", "None <span style=color:var(--dim)>(policy)</span>")}
+{rkv("Target port", mono("http") + ' → Service port 80 → container 8080')}
+</div>
+<a href="#" class="mono" style="display:block;margin-top:8px;font-size:11.5px;text-decoration:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{ROUTE_URL}</a>
+<div style="display:flex;gap:6px;margin-top:6px"><button class="btn" style="height:24px">{ic("ext",12)}Open in browser</button><button class="btn g" style="height:24px">{ic("globe",12)}Web view</button><button class="ib" aria-label="Copy URL" title="Copy URL">{ic("copy",13)}</button></div></div>
+<div class="dsec"><p class="dtitle">Routers · 1</p>
+<div style="border:1px solid var(--bv);border-radius:6px;background:#2a2e36;padding:7px 10px;display:flex;flex-direction:column;gap:2px;font-size:12px">
+<div style="display:flex;align-items:center;gap:6px"><span class="mono" style="font-size:12px;font-weight:500">default</span><span style="flex:1"></span><span class="pill" style="color:var(--green)">{ok}Admitted · 12d</span></div>
+<div style="color:var(--dim);font-size:11.5px">canonical hostname</div><div class="mono" style="font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">router-default.apps.ocp-dev.example.com</div>
+<div style="color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">host {mono("shop.apps.ocp-dev.example.com", "var(--muted)")}</div></div></div>
+<div class="dsec"><p class="dtitle">TLS</p>
+<div style="display:flex;flex-direction:column;gap:4px">
+{rkv("Certificate", '<span style="color:var(--green)">expires in 81 days</span><span style="color:var(--dim)"> · 2026-12-16</span><div class="mono" style="font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">CN=shop.apps.ocp-dev.example.com</div>')}
+{rkv("CA", "present · 1 certificate")}
+{rkv("Key", f'<div style="display:flex;align-items:center;gap:4px"><span class="mono" style="font-size:12px;color:var(--dim);letter-spacing:1px">••••••••</span><span style="flex:1"></span><button class="ib" aria-label="Reveal key" style="width:20px;height:20px">{ic("eye",12)}</button><button class="ib" aria-label="Copy key" style="width:20px;height:20px">{ic("copy",12)}</button></div>')}
+</div></div>
+<div class="dsec" style="border-bottom:0;padding-top:10px"><p class="dtitle" style="margin-bottom:2px">Backends · 2</p>
+{backend("shop-web", 80, fwd_btn, "")}
+{backend("shop-canary", 20, "", running)}
+<div style="font-size:11.5px;color:var(--dim);margin:8px 0 4px">Endpoints · 3 ready</div>
+<div style="display:flex;gap:4px;flex-wrap:wrap">{eps}</div>
+<div style="font-size:11.5px;color:var(--dim);margin:8px 0 3px">Pods · 3</div>
+{pods}
+</div>
+</aside>'''
+    content = f'<div style="flex:1;display:flex;min-height:0">{routes_center()}{dock}</div>'
+    tb = tabs([("route", "Routes", True), ("network", "Services", False), ("box", "Pods", False)])
+    fwd = f'<span style="color:var(--text)">{ic("link",12,C["green"])}1 forward</span>'
+    inner = f'''<div class="app">
+{titlebar(OCP_DEV_CTX, "shop", False, "OpenShift · v1.30.6")}
+<div class="body">{nav_sidebar(OCP_DEV_CTX, C["accent"], False, "Routes", open_=("Network",), upd_dot=None)}<main class="main">{tb}{content}</main></div>
+{statusbar(right_extra=fwd, cluster=OCP_DEV, ns="shop")}
+</div>'''
+    return page("OpenShift Routes — Kubyl", inner)
+
+def route_webview_screen():
+    # a generic API reference served by the backend (placeholder content, not any vendor's UI)
+    method = lambda m, col: f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:11px;font-weight:600;color:#fff;background:{col};border-radius:3px;padding:1px 6px;display:inline-block;width:40px;text-align:center">{m}</span>'
+    GET, POST, DEL, PUT = "#2563eb", "#15803d", "#b91c1c", "#b45309"
+    nav = [("Products", [("GET", GET, "/api/products", True), ("GET", GET, "/api/products/{id}", False)]),
+           ("Cart", [("GET", GET, "/api/cart", False), ("POST", POST, "/api/cart/items", False), ("DEL", DEL, "/api/cart/items/{id}", False)]),
+           ("Orders", [("POST", POST, "/api/orders", False), ("GET", GET, "/api/orders/{id}", False), ("PUT", PUT, "/api/orders/{id}/cancel", False)])]
+    navh = "".join(f'<div style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;margin:12px 0 6px">{g}</div>'
+                   + "".join(f'<div style="display:flex;gap:8px;align-items:center;padding:4px 6px;border-radius:4px;{"background:#e8eefc" if on else ""}">{method(m, c)}<span style="font-family:\'IBM Plex Mono\',monospace;font-size:11.5px;color:#2a2f36">{p}</span></div>' for m, c, p, on in items)
+                   for g, items in nav)
+    js = lambda k, v: f'<div>&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#b91c1c">"{k}"</span>: {v},</div>'
+    sv = lambda v: f'<span style="color:#15803d">"{v}"</span>'
+    nv = lambda v: f'<span style="color:#b45309">{v}</span>'
+    body = ('<div>{</div><div>&nbsp;&nbsp;<span style="color:#b91c1c">"items"</span>: [</div><div>&nbsp;&nbsp;&nbsp;&nbsp;{</div>'
+            + js("id", sv("prd_1042")) + js("name", sv("Trail Runner 3")) + js("category", sv("shoes")) + js("price", nv("89.90")) + js("stock", nv("14"))
+            + '<div>&nbsp;&nbsp;&nbsp;&nbsp;},</div><div>&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#9aa1ab">… 19 more</span></div><div>&nbsp;&nbsp;],</div>'
+            + '<div>&nbsp;&nbsp;<span style="color:#b91c1c">"next"</span>: <span style="color:#15803d">"/api/products?cursor=eyJpZCI6MTA2Mn0"</span></div><div>}</div>')
+    param = lambda n, t, d: f'<div style="display:grid;grid-template-columns:110px 80px minmax(0,1fr);font-size:12px;padding:6px 0;border-top:1px solid #eef0f3"><span style="font-family:\'IBM Plex Mono\',monospace;font-size:11.5px">{n}</span><span style="color:#6b7280">{t}</span><span style="color:#4b5563">{d}</span></div>'
+    web = f"""<div style="flex:1;min-height:0;background:#f4f5f7;color:#2a2f36;font-family:'IBM Plex Sans',system-ui,sans-serif;display:flex;flex-direction:column;overflow:hidden">
+<div style="height:44px;flex-shrink:0;background:#ffffff;border-bottom:1px solid #dfe2e7;display:flex;align-items:center;gap:12px;padding:0 16px">
+<span style="width:22px;height:22px;border-radius:5px;background:#0f766e;display:block"></span><span style="font-weight:600">Shop API</span><span style="font-size:11.5px;color:#4b5563;border:1px solid #dfe2e7;border-radius:10px;padding:1px 8px">v2.3.1</span><span style="font-size:12px;color:#6b7280">OpenAPI 3.1</span>
+<div style="flex:1"></div><span style="font-size:12px;color:#4b5563;border:1px solid #dfe2e7;border-radius:4px;padding:3px 10px">Search endpoints</span><span style="font-size:12px;color:#ffffff;background:#0f766e;border-radius:4px;padding:4px 10px">Authorize</span>
+</div>
+<div style="flex:1;display:flex;min-height:0">
+<div style="width:240px;flex-shrink:0;background:#ffffff;border-right:1px solid #dfe2e7;padding:4px 12px;overflow:hidden">{navh}</div>
+<div style="flex:1;min-width:0;padding:16px 20px;display:flex;flex-direction:column;gap:12px;overflow:hidden">
+<div style="display:flex;align-items:center;gap:10px">{method("GET", GET)}<span style="font-family:'IBM Plex Mono',monospace;font-size:14px;font-weight:500">/api/products</span><span style="color:#6b7280;font-size:12.5px">List products</span></div>
+<div style="background:#ffffff;border:1px solid #dfe2e7;border-radius:6px;padding:12px 14px">
+<div style="font-size:12.5px;font-weight:600;margin-bottom:4px">Query parameters</div>
+{param("category", "string", "Only products in this category")}{param("limit", "integer", "Page size, 1–100 (default 20)")}{param("cursor", "string", "From the previous page's next field")}
+<div style="display:flex;gap:8px;margin-top:10px"><span style="font-size:12px;color:#ffffff;background:#2563eb;border-radius:4px;padding:4px 12px">Try it out</span><span style="font-size:12px;color:#4b5563;border:1px solid #dfe2e7;border-radius:4px;padding:3px 10px">Copy as curl</span></div>
+</div>
+<div style="background:#ffffff;border:1px solid #dfe2e7;border-radius:6px;padding:12px 14px;display:flex;flex-direction:column;gap:8px">
+<div style="display:flex;align-items:center;gap:8px;font-size:12.5px"><span style="font-weight:600">Response</span><span style="color:#15803d;font-weight:600">200</span><span style="color:#6b7280">application/json · 42 ms · served by shop-web-6d8f9b7c4-k2x9p</span></div>
+<div style="font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:19px;background:#f8fafc;border:1px solid #eef0f3;border-radius:4px;padding:8px 12px;color:#2a2f36">{body}</div>
+</div>
+</div></div>
+</div>"""
+    toolbar = f"""<div class="tool" style="gap:4px;height:42px">
+<button class="ib" aria-label="Back">{ic("left",14)}</button><button class="ib" aria-label="Forward">{ic("right",14)}</button><button class="ib" aria-label="Reload">{ic("refresh",13)}</button>
+<div class="inp" style="flex:1;height:28px;margin:0 6px;gap:8px">
+<span class="chip mchip" style="height:19px">{ic("link",11,C["green"])}svc/shop-web:80</span>
+<span class="mono" style="font-size:12px;color:var(--dim);white-space:nowrap">http://127.0.0.1:18080</span><span class="mono" style="font-size:12px;color:var(--text);margin-left:-8px;white-space:nowrap">/api/docs</span>
+<span style="flex:1"></span>
+<span style="font-size:11.5px;color:var(--dim);display:flex;align-items:center;gap:4px;white-space:nowrap">{ic("lock",11)}isolated session</span>
+</div>
+<span class="chip">100%</span>
+<button class="btn g" style="height:26px">{ic("ext",13)}Open in browser</button>
+<button class="ib" aria-label="Developer tools">{ic("code",14)}</button>
+<button class="ib" aria-label="More">{ic("more",14)}</button>
+</div>"""
+    center = f'<div style="flex:1;display:flex;flex-direction:column;min-width:0">{toolbar}{web}</div>'
+    openbtn = f'<button class="btn" style="height:24px;border-color:var(--accent);color:#a8cdf3;flex-shrink:0">{ic("globe",12,C["accent"])}Open · 1 tab</button>'
+    wvbtn = f'<button class="btn" style="height:24px;flex-shrink:0">{ic("globe",12)}Web view</button>'
+    wrow = lambda top, sub, btn, border=True: (f'<div style="display:flex;align-items:center;gap:10px;padding:8px 0;{"border-bottom:1px solid var(--bv)" if border else ""}">'
+                                               f'<div style="flex:1;min-width:0"><div class="mono" style="font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{top}</div>'
+                                               f'<div style="font-size:11.5px;color:var(--dim)">{sub}</div></div>{btn}</div>')
+    dock = f"""<aside class="dock" style="width:340px">
+<div class="phead" style="border-bottom:1px solid var(--bv)">{ic("route",13,C["accent"])}<span style="flex:1;color:var(--text);font-weight:500">route/shop-api</span><span style="font-size:11.5px">shop</span></div>
+<div class="dsec"><p class="dtitle">Web views</p>
+<div class="mono" style="font-size:11.5px;color:var(--muted);padding-bottom:2px">shop.apps.ocp-dev.example.com/api</div>
+{wrow('<span style="color:var(--dim)">→</span> shop-web:80', "80% · port http → 8080", openbtn)}
+{wrow('<span style="color:var(--dim)">→</span> shop-canary:80', "20% · port http → 8080", wvbtn, False)}
+<div style="display:flex;gap:8px;font-size:11.5px;color:var(--muted);line-height:17px;margin-top:6px"><span style="display:flex;padding-top:1px">{ic("info",12,C["accent"])}</span><span>Opens the backend Service through a temporary forward, even when the Route host isn't reachable from here.</span></div>
+</div>
+<div class="dsec"><p class="dtitle">Open in browser</p>
+<div style="display:flex;align-items:center;gap:10px"><a href="#" class="mono" style="flex:1;min-width:0;font-size:11.5px;text-decoration:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{ROUTE_URL}</a><button class="btn" style="height:24px;flex-shrink:0">{ic("ext",12)}Open in browser</button></div>
+<div style="font-size:11.5px;color:var(--dim);line-height:17px;margin-top:5px">Your default browser, through the Route's public host (https: edge TLS).</div>
+<div style="display:flex;gap:8px;align-items:flex-start;font-size:11.5px;color:var(--dim);line-height:17px;margin-top:8px;padding-top:8px;border-top:1px dashed var(--bv)"><span style="display:flex;padding-top:1px">{ic("info",12)}</span><span>On <span class="mono" style="font-size:11px">tenant-wildcard</span> (<span class="mono" style="font-size:11px">*.apps.example.com</span>): No browser link for wildcard hosts. The web view still works.</span></div>
+</div>
+<div class="dsec"><p class="dtitle">Temporary forward</p>
+<div style="display:flex;gap:10px;align-items:flex-start">{ic("link",14,C["green"])}<div style="flex:1;min-width:0;font-size:12px;line-height:18px">
+<div class="mono" style="font-size:12px">127.0.0.1:18080 → svc/shop-web:80</div>
+<div style="color:var(--dim)">via pod shop-web-6d8f9b7c4-k2x9p · 2 connections · 340 KB</div>
+<div style="color:var(--muted);margin-top:4px">Hidden from saved forwards. Stops when the last web view tab closes.</div></div></div>
+<div style="display:flex;gap:6px;margin-top:10px"><button class="btn d" style="height:24px">{ic("x",12)}Stop and close tabs</button></div>
+</div>
+<div class="dsec" style="border-bottom:0"><p class="dtitle">Session</p>
+<dl class="kv" style="margin:0"><dt>Storage</dt><dd>isolated · {OCP_DEV} / shop / shop-web</dd><dt>Cookies</dt><dd>kept between sessions</dd><dt>Idle stop</dt><dd>after 30 min in background</dd></dl>
+</div>
+</aside>"""
+    content = f'<div style="flex:1;display:flex;min-height:0">{center}{dock}</div>'
+    tb = f"""<div class="tabs">
+<div class="tab">{ic("route",13)}<span>Routes</span><span class="tabx">{ic("x",11)}</span></div>
+<div class="tab on">{ic("globe",13,C["accent"])}<span>shop-web · /api/docs</span><span class="tabx">{ic("x",11)}</span></div>
+<div class="tab">{ic("box",13)}<span>Pods</span><span class="tabx">{ic("x",11)}</span></div>
+<div class="tabtools"><button class="ib" aria-label="New tab">{ic("plus",14)}</button><button class="ib" aria-label="Split">{ic("split",14)}</button><button class="ib" aria-label="Zoom">{ic("max",13)}</button></div>
+</div>"""
+    webfwd = f'<span style="color:var(--text)">{ic("globe",12,C["accent"])}1 web forward</span>'
+    inner = f"""<div class="app">
+{titlebar(OCP_DEV_CTX, "shop", False, "OpenShift · v1.30.6")}
+<div class="body">{nav_sidebar(OCP_DEV_CTX, C["accent"], False, "Routes", open_=("Network",), upd_dot=None)}<main class="main">{tb}{content}</main></div>
+{statusbar(right_extra=webfwd, cluster=OCP_DEV, ns="shop")}
+</div>"""
+    return page("Route web view — Kubyl", inner)
 
 # ---------- 11. Kubeconfig editor ----------
 KC_INK = "#1b1e24"  # text and icons on accent-filled controls
@@ -2810,6 +3643,7 @@ def contexts_palette_screen():
 
 SCREENS = [
  ("Main.dc.html", "1 · Pods (k9s-style table + details)", pods_screen),
+ ("Routes.dc.html", "1 · OpenShift Routes under Network, with details", routes_screen),
  ("Logs.dc.html", "2 · Live logs, exec shell, port-forwards", logs_screen),
  ("Yaml.dc.html", "3 · YAML editor with CRD schema", yaml_screen),
  ("Overview.dc.html", "4 · Overview, Prometheus metrics, events", overview_screen),
@@ -2825,9 +3659,19 @@ SCREENS = [
  ("HelmReleases.dc.html", "7 · Helm releases", helm_screen),
  ("HelmRelease.dc.html", "7 · Helm release: values (masked), manifest, notes, history", helm_release_screen),
  ("OlmStates.dc.html", "7 · OLM not installed, and OLM v1 extensions", olm_states_screen),
- ("Updates.dc.html", "8 · Cluster updates — OpenShift-style", updates_screen),
+ ("Updates.dc.html", "8 · Cluster updates (OpenShift): cluster operators, pools and update history", updates_screen),
+ ("UpdatesChannel.dc.html", "8 · OpenShift: version card and channel selector", updates_channel_screen),
+ ("UpdatesGraph.dc.html", "8 · Update graph: recommended, conditional and blocked", updates_graph_screen),
+ ("UpdatesPreflight.dc.html", "8 · Pre-flight checks", updates_preflight_screen),
+ ("UpdatesProgress.dc.html", "8 · Progress during an update", updates_progress_screen),
+ ("UpdatesConfirm.dc.html", "8 · Update confirmation", updates_confirm_screen),
+ ("UpdatesEks.dc.html", "8 · Amazon EKS: control plane, node groups, add-ons", updates_eks_screen),
+ ("UpdatesK3s.dc.html", "8 · k3s: system-upgrade-controller plans", updates_k3s_screen),
+ ("UpdatesSelfManaged.dc.html", "8 · Self-managed / read-only fallback", updates_selfmanaged_screen),
+ ("UpdatesCredentials.dc.html", "8 · Credentials missing / provider not available", updates_credentials_screen),
  ("Files.dc.html", "9 · Pod file browser — drag & drop upload/download", files_screen),
  ("Webview.dc.html", "10 · Service web view over a temporary port-forward", webview_screen),
+ ("RouteWebview.dc.html", "10 · Route web view and Open in browser", route_webview_screen),
  ("Kubeconfig.dc.html", "11 · Kubeconfig editor: contexts, clusters, users (form)", kubeconfig_screen),
  ("KubeconfigYaml.dc.html", "11 · Kubeconfig editor: YAML tab and Test connection", kubeconfig_yaml_screen),
  ("KubeconfigWizard.dc.html", "11 · New kubeconfig wizard (CA fetched from the server)", kubeconfig_wizard_screen),
