@@ -28,9 +28,7 @@ pub fn show_notification(notification: &Notification, window: &mut Window, cx: &
                 .label(action.label.clone())
                 .on_click(move |_, window, cx| {
                     run(window, cx);
-                    toast
-                        .update(cx, |toast, cx| toast.dismiss(window, cx))
-                        .ok();
+                    toast.update(cx, |toast, cx| toast.dismiss(window, cx)).ok();
                 })
         });
     }
