@@ -16,7 +16,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use base64::Engine as _;
 use gpui::{
     AnyElement, AnyView, App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle,
     Focusable, FontWeight, IntoElement, Render, SharedString, Subscription, Task, Window, div,
@@ -49,6 +48,8 @@ use serde_json::Value;
 
 use crate::catalog;
 use crate::dialogs::{self, ConfirmSpec};
+
+mod data;
 
 /// How long the selection must stay put before related objects are loaded.
 const SETTLE: Duration = Duration::from_millis(250);
@@ -178,6 +179,8 @@ pub struct DetailsContent {
     /// The object no longer exists.
     gone: bool,
     source: Option<Entity<ResourceStore>>,
+    /// The store the list passed in (`source` may be a watch of the object itself instead).
+    given: Option<Entity<ResourceStore>>,
     own: Option<StoreHandle>,
     related: Related,
     settle: Option<Task<()>>,
@@ -186,6 +189,8 @@ pub struct DetailsContent {
     extra: HashMap<Mode, ExtraTab>,
     /// Secret `data`/`stringData` keys whose decoded value is currently revealed.
     revealed: std::collections::HashSet<String>,
+    /// ConfigMap and Secret data: decoded model, collapsed/expanded keys, key filter.
+    data: data::DataUi,
     scale_pending: Option<PendingScale>,
     scale_task: Option<Task<()>>,
     _forwards_observer: Subscription,
@@ -203,12 +208,14 @@ impl DetailsContent {
             object: None,
             gone: false,
             source: None,
+            given: None,
             own: None,
             related: Related::default(),
             settle: None,
             _source_observer: None,
             extra: HashMap::new(),
             revealed: std::collections::HashSet::new(),
+            data: data::DataUi::default(),
             scale_pending: None,
             scale_task: None,
             // Port rows show running forwards.
@@ -228,7 +235,7 @@ impl DetailsContent {
         store: Option<Entity<ResourceStore>>,
         cx: &mut Context<Self>,
     ) {
-        if target == self.target && store == self.source {
+        if target == self.target && store == self.given {
             if object.is_some() {
                 self.object = object;
             }
@@ -243,6 +250,7 @@ impl DetailsContent {
             self.extra.clear();
             self.sections = None;
             self.revealed.clear();
+            self.reset_data();
             self.scale_pending = None;
             self.scale_task = None;
             // Fall back to Summary if the new target doesn't offer the sub-tab that was open
@@ -267,6 +275,7 @@ impl DetailsContent {
         }
         self.own = None;
         self._source_observer = None;
+        self.given = store.clone();
         self.source = store.clone();
         let Some(target) = target else {
             self.settle = None;
@@ -275,19 +284,37 @@ impl DetailsContent {
         };
         let store = match store {
             Some(store) => store,
-            None => {
-                let key = StoreKey::new(
-                    target.cluster.clone(),
-                    target.gvr.clone(),
-                    target.namespace.clone(),
-                )
-                .fields(format!("metadata.name={}", target.name));
-                let handle = ResourceStores::acquire(cx, key);
-                let entity = handle.entity().clone();
-                self.own = Some(handle);
-                entity
-            }
+            None => self.watch_object(&target, cx),
         };
+        self.observe_source(store.clone(), cx);
+        if self.object.is_none() {
+            self.object = store.read(cx).get(&target.key()).cloned();
+        }
+        if !same_object {
+            self.settle = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(SETTLE).await;
+                this.update(cx, |this, cx| this.load_related(cx)).ok();
+            }));
+        }
+        cx.notify();
+    }
+
+    /// Watches the shown object by itself (full, by name).
+    fn watch_object(&mut self, target: &Target, cx: &mut Context<Self>) -> Entity<ResourceStore> {
+        let key = StoreKey::new(
+            target.cluster.clone(),
+            target.gvr.clone(),
+            target.namespace.clone(),
+        )
+        .fields(format!("metadata.name={}", target.name));
+        let handle = ResourceStores::acquire(cx, key);
+        let entity = handle.entity().clone();
+        self.own = Some(handle);
+        entity
+    }
+
+    /// Follows the object in `store`.
+    fn observe_source(&mut self, store: Entity<ResourceStore>, cx: &mut Context<Self>) {
         self.source = Some(store.clone());
         self._source_observer = Some(cx.observe(&store, |this, store, cx| {
             let Some(target) = &this.target else {
@@ -304,16 +331,6 @@ impl DetailsContent {
             }
             cx.notify();
         }));
-        if self.object.is_none() {
-            self.object = store.read(cx).get(&target.key()).cloned();
-        }
-        if !same_object {
-            self.settle = Some(cx.spawn(async move |this, cx| {
-                cx.background_executor().timer(SETTLE).await;
-                this.update(cx, |this, cx| this.load_related(cx)).ok();
-            }));
-        }
-        cx.notify();
     }
 
     /// Sections from other crates for `target` (built when the target changes).
@@ -404,6 +421,22 @@ impl DetailsContent {
         let ns = target.namespace.clone();
         let core = |resource: &str| Gvr::new("", "v1", resource);
 
+        // Lists of kinds without a column provider (ConfigMaps) watch metadata only: the Data
+        // section needs the whole object, so watch it by itself once the selection settled.
+        if matches!(target.kind.as_str(), "ConfigMap" | "Secret")
+            && self.own.is_none()
+            && self
+                .source
+                .as_ref()
+                .is_some_and(|s| s.read(cx).key().mode == kubyl_resources::StoreMode::Metadata)
+        {
+            let store = self.watch_object(&target, cx);
+            if let Some(object) = store.read(cx).get(&target.key()).cloned() {
+                self.object = Some(object);
+            }
+            self.observe_source(store, cx);
+        }
+
         // Events about the object.
         let events = match &ns {
             Some(ns) => StoreKey::new(cluster.clone(), core("events"), Some(ns.clone())).fields(
@@ -436,6 +469,13 @@ impl DetailsContent {
                 let key = StoreKey::new(cluster.clone(), core("endpoints"), ns.clone())
                     .fields(format!("metadata.name={}", target.name));
                 self.related.endpoints = Some(self.acquire(key, cx));
+            }
+            // Who uses them ("Used by").
+            "ConfigMap" | "Secret" => {
+                if let Some(ns) = &ns {
+                    let pods = StoreKey::new(cluster.clone(), core("pods"), Some(ns.clone()));
+                    self.related.pods = Some(self.acquire(pods, cx));
+                }
             }
             "PersistentVolumeClaim" => {
                 let volume = str_at(&object, "/spec/volumeName");
@@ -767,23 +807,6 @@ fn service_ports(svc: &Value) -> Vec<PortRow> {
 /// (not imported: replicating a one-line constant isn't worth a cross-crate dependency).
 const SECRET_MASK: &str = "••••••••";
 
-/// Decodes one Secret `data`/`stringData` entry into plain text, never raw base64. `data`
-/// values are base64-encoded; `stringData` values are already plain text. Falls back to a
-/// byte count when the decoded bytes aren't valid UTF-8, or when the value isn't valid base64
-/// at all.
-fn decode_secret_value(raw: &str, is_string_data: bool) -> String {
-    if is_string_data {
-        return raw.to_string();
-    }
-    match base64::engine::general_purpose::STANDARD.decode(raw) {
-        Ok(bytes) => {
-            let len = bytes.len();
-            String::from_utf8(bytes).unwrap_or_else(|_| format!("<binary, {len} bytes>"))
-        }
-        Err(_) => "<invalid base64>".to_string(),
-    }
-}
-
 fn container_state(status: Option<&Value>, now: jiff::Timestamp) -> (String, Tone) {
     let Some(status) = status else {
         return ("waiting".into(), Tone::Warning);
@@ -916,6 +939,29 @@ impl DetailsContent {
                     );
                 }
             }
+            "ConfigMap" | "Secret" => {
+                let secret = target.kind == "Secret";
+                if secret && let Some(kind) = object.get("type").and_then(Value::as_str) {
+                    pills = pills.child(Chip::new(kind.to_string()));
+                }
+                for chip in self.data_chips(object, secret) {
+                    pills = pills.child(Chip::new(chip));
+                }
+                if object.get("immutable").and_then(Value::as_bool) == Some(true) {
+                    pills = pills.child(
+                        h_flex()
+                            .gap(u(4.0))
+                            .px(u(7.0))
+                            .h(u(20.0))
+                            .rounded(u(4.0))
+                            .bg(colors.chip_background)
+                            .text_size(u(11.5))
+                            .text_color(colors.yellow)
+                            .child(Icon::new(IconName::Lock).size(11.0).color(colors.yellow))
+                            .child("immutable"),
+                    );
+                }
+            }
             _ => {
                 if let Some(phase) = object.pointer("/status/phase").and_then(Value::as_str) {
                     pills = pills.child(StatusPill::new(phase.to_string(), status_tone(phase)));
@@ -1017,7 +1063,16 @@ impl DetailsContent {
             "Service" => out.extend(self.render_service(object, target, &colors, cx)),
             "PersistentVolumeClaim" => out.extend(self.render_pvc(object, target, &colors, cx)),
             "Ingress" => out.extend(self.render_ingress(object, target, &colors)),
-            "Secret" => out.extend(self.render_secret(object, &colors, cx)),
+            "ConfigMap" | "Secret" => {
+                let secret = target.kind == "Secret";
+                out.extend(self.render_data(object, target, secret, &colors, cx));
+                let source = if secret {
+                    data::Source::Secret
+                } else {
+                    data::Source::ConfigMap
+                };
+                out.extend(self.render_used_by(target, source, &colors, cx));
+            }
             _ => {}
         }
         out.extend(self.contributed_sections(target, cx));
@@ -1923,101 +1978,6 @@ impl DetailsContent {
         vec![section("Backends", colors).child(list).into_any_element()]
     }
 
-    /// Secret `data`/`stringData`: decoded plain text, masked by default with a per-key reveal
-    /// toggle and a copy-to-clipboard button. Never shows raw base64.
-    fn render_secret(
-        &self,
-        secret: &Value,
-        colors: &Colors,
-        cx: &mut Context<Self>,
-    ) -> Vec<AnyElement> {
-        let mut entries: Vec<(String, String)> = Vec::new();
-        for (is_string_data, pointer) in [(false, "/data"), (true, "/stringData")] {
-            if let Some(map) = secret.pointer(pointer).and_then(Value::as_object) {
-                for (key, value) in map {
-                    let raw = value.as_str().unwrap_or_default();
-                    entries.push((key.clone(), decode_secret_value(raw, is_string_data)));
-                }
-            }
-        }
-        if entries.is_empty() {
-            return Vec::new();
-        }
-        entries.sort_by(|a, b| a.0.cmp(&b.0));
-        let mut list = v_flex().gap(u(6.0)).text_size(u(12.0));
-        for (key, decoded) in entries {
-            let revealed = self.revealed.contains(&key);
-            let display: SharedString = if revealed {
-                decoded.clone().into()
-            } else {
-                SECRET_MASK.into()
-            };
-            let weak = cx.entity().downgrade();
-            let reveal_key = key.clone();
-            let copy_text = decoded.clone();
-            let copy_key = key.clone();
-            list = list.child(
-                h_flex()
-                    .gap(u(8.0))
-                    .items_center()
-                    .child(
-                        div()
-                            .w(u(140.0))
-                            .flex_none()
-                            .truncate()
-                            .font_family(fonts::MONO)
-                            .text_color(colors.text_dim)
-                            .child(key.clone()),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .font_family(fonts::MONO)
-                            .text_color(colors.text)
-                            .child(display),
-                    )
-                    .child(
-                        IconButton::new(
-                            SharedString::from(format!("secret-reveal-{key}")),
-                            if revealed {
-                                IconName::EyeOff
-                            } else {
-                                IconName::Eye
-                            },
-                        )
-                        .icon_size(13.0)
-                        .toggled(revealed)
-                        .on_click(move |_, _, cx| {
-                            weak.update(cx, |this, cx| {
-                                if !this.revealed.remove(&reveal_key) {
-                                    this.revealed.insert(reveal_key.clone());
-                                }
-                                cx.notify();
-                            })
-                            .ok();
-                        }),
-                    )
-                    .child(
-                        IconButton::new(
-                            SharedString::from(format!("secret-copy-{copy_key}")),
-                            IconName::Copy,
-                        )
-                        .icon_size(13.0)
-                        .on_click(move |_, _, cx| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
-                            NotificationCenter::push(
-                                cx,
-                                Notification::info(format!("Copied {copy_key}")),
-                            );
-                        }),
-                    ),
-            );
-        }
-        vec![section("Data", colors).child(list).into_any_element()]
-    }
-
     /// Ports with a one-click forward, or the running forward (open/copy, stop). `label`: the
     /// kv label shown left of the first row (inside a kv section).
     fn port_list(
@@ -2335,6 +2295,9 @@ impl Render for DetailsContent {
         let show_terminal = terminal_applicable(&target.gvr.resource, &caps);
         let show_files = files_applicable(&target.gvr.resource, &caps);
 
+        if mode == Mode::Summary {
+            self.ensure_data_filter(window, cx);
+        }
         let body = match mode {
             Mode::Summary => v_flex()
                 .children(self.render_summary(&object, &target, cx))
@@ -2727,22 +2690,6 @@ mod tests {
         assert_eq!(extra_view_kind(Mode::Files), Some(ViewKind::Files));
         assert_eq!(extra_view_kind(Mode::Summary), None);
         assert_eq!(extra_view_kind(Mode::Describe), None);
-    }
-
-    #[test]
-    fn decodes_secret_values_without_ever_showing_raw_base64() {
-        // `data`: base64-decoded to plain text.
-        assert_eq!(decode_secret_value("aGVsbG8=", false), "hello");
-        // `stringData`: already plain text, passed through.
-        assert_eq!(decode_secret_value("hello", true), "hello");
-        // Invalid UTF-8 after decoding: a byte count, not mojibake.
-        let binary = base64::engine::general_purpose::STANDARD.encode([0xff, 0xfe, 0x00]);
-        assert_eq!(decode_secret_value(&binary, false), "<binary, 3 bytes>");
-        // Not valid base64 at all.
-        assert_eq!(
-            decode_secret_value("not base64!!", false),
-            "<invalid base64>"
-        );
     }
 
     #[test]
