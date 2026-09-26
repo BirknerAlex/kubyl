@@ -23,7 +23,7 @@ use kubyl_ui::{
     h_flex, u, v_flex,
 };
 
-use crate::catalog::{self, CUSTOM, TreeKind, ViewEntry};
+use crate::catalog::{self, CUSTOM, RowBadge, TreeKind, ViewEntry, ViewRow};
 use crate::settings::{ClusterOrder, ExplorerSettings, TreeState};
 
 actions!(
@@ -87,6 +87,11 @@ enum Item {
         entry: ViewEntry,
         depth: usize,
     },
+    /// A row another crate added (`catalog::register_view_row`).
+    Row {
+        cluster: ClusterId,
+        row: ViewRow,
+    },
 }
 
 impl Item {
@@ -101,6 +106,7 @@ impl Item {
                 None => format!("kind|{cluster}|{}", kind.gvr),
             },
             Item::View { cluster, entry, .. } => format!("view|{cluster}|{}", entry.id),
+            Item::Row { cluster, row } => format!("row|{cluster}|{}", row.id),
         }
     }
 
@@ -110,7 +116,8 @@ impl Item {
             Item::Status { cluster, .. }
             | Item::Group { cluster, .. }
             | Item::Kind { cluster, .. }
-            | Item::View { cluster, .. } => cluster,
+            | Item::View { cluster, .. }
+            | Item::Row { cluster, .. } => cluster,
         }
     }
 }
@@ -147,6 +154,8 @@ impl ClustersSection {
                 this.schedule_count_sync(cx);
                 cx.notify();
             }),
+            // Rows and root markers other crates add.
+            cx.observe_global::<catalog::ViewRows>(|_, cx| cx.notify()),
         ];
         if let Some(manager) = ConnectionManager::try_global(cx) {
             subscriptions.push(
@@ -310,6 +319,9 @@ impl ClustersSection {
         let settings = Settings::get::<ExplorerSettings>(cx).clone();
         let query = self.filter_query(cx);
         let contexts = Self::roots(&settings, self.state.connected_only, cx);
+        let view_rows = catalog::view_rows(cx);
+        let row_order: Vec<(&'static str, &'static str)> =
+            view_rows.iter().map(|r| (r.id, r.after)).collect();
         let mut items = Vec::new();
         for cluster in contexts {
             items.push(Item::Root(cluster.clone()));
@@ -358,8 +370,21 @@ impl ClustersSection {
                     .as_ref()
                     .is_none_or(|q| label.to_lowercase().contains(q))
             };
-            for group_id in catalog::ordered_groups(&settings.group_order, &settings.hidden_groups)
-            {
+            for group_id in catalog::ordered_groups_with(
+                &settings.group_order,
+                &settings.hidden_groups,
+                &row_order,
+            ) {
+                if let Some(row) = view_rows.iter().find(|r| r.id == group_id) {
+                    let visible = row.visible.as_ref().is_none_or(|v| v(&cluster, cx));
+                    if visible && matches(row.label) {
+                        items.push(Item::Row {
+                            cluster: cluster.clone(),
+                            row: row.clone(),
+                        });
+                    }
+                    continue;
+                }
                 if group_id == CUSTOM {
                     let groups = catalog::custom_groups(&discovery);
                     let mut children = Vec::new();
@@ -657,6 +682,16 @@ impl ClustersSection {
                     cx,
                 );
             }
+            Item::Row { cluster, row } => {
+                Self::activate_cluster(cluster, cx);
+                window.dispatch_action(
+                    Box::new(OpenView(ViewRequest::for_resource(
+                        row.kind.clone(),
+                        ResourceRef::list(cluster.clone(), Gvr::new("", "", ""), None),
+                    ))),
+                    cx,
+                );
+            }
             Item::View { cluster, entry, .. } => {
                 Self::activate_cluster(cluster, cx);
                 // The cluster's Overview is cluster-wide; a namespace makes it the namespace
@@ -775,6 +810,23 @@ impl ClustersSection {
                 if production {
                     row = row.end_child(ProdBadge);
                 }
+                for (ix, marker) in catalog::root_markers(cluster, cx).into_iter().enumerate() {
+                    let tooltip = marker.tooltip.clone();
+                    row = row.end_child(
+                        div()
+                            .id(SharedString::from(format!("marker-{cluster}-{ix}")))
+                            .flex()
+                            .child(
+                                Icon::new(marker.icon)
+                                    .size(12.0)
+                                    .color(kubyl_ui::tone_color(marker.tone, &colors)),
+                            )
+                            .tooltip(move |window, cx| {
+                                gpui_component::tooltip::Tooltip::new(tooltip.clone())
+                                    .build(window, cx)
+                            }),
+                    );
+                }
                 let tip = cluster.clone();
                 row.end_child(status_slot(cluster, &state, &colors))
                     .tooltip(move |window, cx| {
@@ -841,6 +893,28 @@ impl ClustersSection {
                 .depth(*depth)
                 .icon(entry.icon)
                 .selected(selected),
+            Item::Row { cluster, row } => {
+                let tree_row = TreeRow::new(id, row.label)
+                    .depth(1)
+                    .icon(row.icon)
+                    .selected(selected);
+                match row.badge.as_ref().and_then(|badge| badge(cluster, cx)) {
+                    Some(RowBadge::Count { text, tone }) => tree_row.end_child(
+                        div()
+                            .px(u(5.0))
+                            .rounded(u(8.0))
+                            .bg(kubyl_ui::tone_color(tone, &colors))
+                            .text_size(u(10.5))
+                            .font_family(fonts::MONO)
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(colors.on_accent)
+                            .child(text),
+                    ),
+                    Some(RowBadge::Check) => tree_row
+                        .end_child(Icon::new(IconName::Check).size(12.0).color(colors.green)),
+                    None => tree_row,
+                }
+            }
         };
         let item_for_click = item.clone();
         let root_menu = match item {

@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use gpui::{App, BorrowAppContext as _, Global, SharedString};
-use kubyl_core::{ClusterId, Gvr, ViewKind};
+use kubyl_core::{ClusterId, Gvr, Tone, ViewKind};
 use kubyl_kube::discovery::{ApiResourceInfo, Discovery};
 use kubyl_ui::IconName;
 
@@ -366,12 +366,30 @@ const BUILT_IN_GROUPS: &[&str] = &[
 
 /// Groups in the user's order, without hidden ones. `custom` is included (last by default).
 pub fn ordered_groups(order: &[String], hidden: &[String]) -> Vec<&'static str> {
-    let mut ids: Vec<&'static str> = GROUPS.iter().map(|g| g.id).chain([CUSTOM]).collect();
+    ordered_groups_with(order, hidden, &[])
+}
+
+/// [`ordered_groups`] with rows other crates add (`(id, after)`: a row follows the group
+/// `after` in the default order). Row ids work in `explorer.group_order` and `hidden_groups`.
+pub fn ordered_groups_with(
+    order: &[String],
+    hidden: &[String],
+    rows: &[(&'static str, &'static str)],
+) -> Vec<&'static str> {
+    let mut defaults: Vec<&'static str> = GROUPS.iter().map(|g| g.id).chain([CUSTOM]).collect();
+    for (id, after) in rows {
+        let at = defaults
+            .iter()
+            .position(|g| g == after)
+            .map_or(defaults.len(), |ix| ix + 1);
+        defaults.insert(at, id);
+    }
+    let mut ids = defaults.clone();
     ids.sort_by_key(|id| {
         order
             .iter()
             .position(|o| o == id)
-            .unwrap_or(order.len() + GROUPS.iter().position(|g| g.id == *id).unwrap_or(99))
+            .unwrap_or(order.len() + defaults.iter().position(|g| g == id).unwrap_or(99))
     });
     ids.retain(|id| !hidden.iter().any(|h| h == id));
     ids
@@ -438,6 +456,106 @@ pub fn tree_groups_changed(cx: &mut App) {
     if cx.has_global::<TreeGroups>() {
         cx.update_global::<TreeGroups, _>(|_, _| {});
     }
+}
+
+/// What a view row shows at its end: a count in a tone's color, or a check (all clear).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RowBadge {
+    Count { text: SharedString, tone: Tone },
+    Check,
+}
+
+/// Whether a view row shows for a cluster.
+pub type RowVisible = Arc<dyn Fn(&ClusterId, &App) -> bool>;
+/// A view row's badge for a cluster.
+pub type RowBadgeFn = Arc<dyn Fn(&ClusterId, &App) -> Option<RowBadge>>;
+
+/// A top-level row another crate adds under each cluster, e.g. "Alerts" after Overview. It
+/// opens `kind` for the cluster (`ResourceRef::list(cluster, Gvr::new("", "", ""), None)`),
+/// follows `explorer.group_order` and `hidden_groups` under its `id`, and shows while
+/// `visible` says so.
+#[derive(Clone)]
+pub struct ViewRow {
+    pub id: &'static str,
+    /// The group it follows in the default order (`overview`).
+    pub after: &'static str,
+    pub label: &'static str,
+    pub icon: IconName,
+    pub kind: ViewKind,
+    pub visible: Option<RowVisible>,
+    pub badge: Option<RowBadgeFn>,
+}
+
+impl std::fmt::Debug for ViewRow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ViewRow")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for ViewRow {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+/// A marker at the end of a cluster's root row, before its connection status (e.g. a red
+/// siren while a critical alert fires). Visible while the cluster is collapsed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RootMarker {
+    pub icon: IconName,
+    pub tone: Tone,
+    pub tooltip: SharedString,
+}
+
+/// A crate's root markers for a cluster.
+pub type RootMarkerFn = Arc<dyn Fn(&ClusterId, &App) -> Option<RootMarker>>;
+
+/// View rows and root markers other crates added.
+#[derive(Default)]
+pub struct ViewRows {
+    pub rows: Vec<ViewRow>,
+    pub markers: Vec<RootMarkerFn>,
+}
+
+impl Global for ViewRows {}
+
+/// Adds a top-level row under every cluster (from a feature crate's `init`).
+pub fn register_view_row(cx: &mut App, row: ViewRow) {
+    cx.default_global::<ViewRows>().rows.push(row);
+}
+
+/// Adds a marker to the cluster root rows.
+pub fn register_root_marker(
+    cx: &mut App,
+    marker: impl Fn(&ClusterId, &App) -> Option<RootMarker> + 'static,
+) {
+    cx.default_global::<ViewRows>()
+        .markers
+        .push(Arc::new(marker));
+}
+
+/// Re-renders the tree after badges, visibility or markers changed.
+pub fn view_rows_changed(cx: &mut App) {
+    if cx.has_global::<ViewRows>() {
+        cx.update_global::<ViewRows, _>(|_, _| {});
+    }
+}
+
+/// The rows other crates added.
+pub fn view_rows(cx: &App) -> Vec<ViewRow> {
+    cx.try_global::<ViewRows>()
+        .map(|r| r.rows.clone())
+        .unwrap_or_default()
+}
+
+/// The markers of a cluster's root row.
+pub fn root_markers(cluster: &ClusterId, cx: &App) -> Vec<RootMarker> {
+    let Some(rows) = cx.try_global::<ViewRows>() else {
+        return Vec::new();
+    };
+    rows.markers.iter().filter_map(|m| m(cluster, cx)).collect()
 }
 
 /// The contributed groups below `parent`.
@@ -571,6 +689,18 @@ mod tests {
             subresources: vec![],
             preferred: true,
         }
+    }
+
+    #[test]
+    fn view_rows_follow_their_group_and_the_configured_order() {
+        let rows = [("alerts", "overview")];
+        let ids = ordered_groups_with(&[], &[], &rows);
+        assert_eq!(&ids[..3], ["overview", "alerts", "events"]);
+        let ids = ordered_groups_with(&["alerts".into()], &[], &rows);
+        assert_eq!(ids[0], "alerts");
+        let ids = ordered_groups_with(&[], &["alerts".into()], &rows);
+        assert!(!ids.contains(&"alerts"));
+        assert_eq!(ordered_groups(&[], &[]).len(), GROUPS.len() + 1);
     }
 
     #[test]
