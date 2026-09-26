@@ -1,0 +1,13 @@
+{
+  "update": {
+    "id": "b5f0ba18-0000-4000-8000-000000000001",
+    "status": "Successful",
+    "type": "VersionUpdate",
+    "params": [
+      {"type": "Version", "value": "1.30"},
+      {"type": "PlatformVersion", "value": "eks.8"}
+    ],
+    "createdAt": 1725148800.0,
+    "errors": []
+  }
+}

@@ -1,0 +1,4 @@
+{
+  "addons": ["coredns", "kube-proxy", "vpc-cni"],
+  "nextToken": null
+}

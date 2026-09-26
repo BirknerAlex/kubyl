@@ -1,0 +1,53 @@
+{
+  "clusterVersions": [
+    {
+      "clusterVersion": "1.33",
+      "clusterType": "eks",
+      "defaultPlatformVersion": "eks.5",
+      "defaultVersion": false,
+      "releaseDate": 1748476800,
+      "endOfStandardSupportDate": 1785283200,
+      "endOfExtendedSupportDate": 1816819200,
+      "status": "STANDARD_SUPPORT",
+      "versionStatus": "STANDARD_SUPPORT",
+      "kubernetesPatchVersion": "1.33.1"
+    },
+    {
+      "clusterVersion": "1.32",
+      "clusterType": "eks",
+      "defaultPlatformVersion": "eks.10",
+      "defaultVersion": true,
+      "releaseDate": 1737590400,
+      "endOfStandardSupportDate": 1774224000,
+      "endOfExtendedSupportDate": 1805760000,
+      "status": "STANDARD_SUPPORT",
+      "versionStatus": "STANDARD_SUPPORT",
+      "kubernetesPatchVersion": "1.32.5"
+    },
+    {
+      "clusterVersion": "1.31",
+      "clusterType": "eks",
+      "defaultPlatformVersion": "eks.25",
+      "defaultVersion": false,
+      "releaseDate": 1727308800,
+      "endOfStandardSupportDate": 1764115200,
+      "endOfExtendedSupportDate": 1795651200,
+      "status": "STANDARD_SUPPORT",
+      "versionStatus": "STANDARD_SUPPORT",
+      "kubernetesPatchVersion": "1.31.9"
+    },
+    {
+      "clusterVersion": "1.30",
+      "clusterType": "eks",
+      "defaultPlatformVersion": "eks.33",
+      "defaultVersion": false,
+      "releaseDate": 1716422400,
+      "endOfStandardSupportDate": 1753228800,
+      "endOfExtendedSupportDate": 1784764800,
+      "status": "STANDARD_SUPPORT",
+      "versionStatus": "STANDARD_SUPPORT",
+      "kubernetesPatchVersion": "1.30.13"
+    }
+  ],
+  "nextToken": null
+}
