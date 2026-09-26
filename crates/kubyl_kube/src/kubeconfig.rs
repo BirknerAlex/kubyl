@@ -462,6 +462,68 @@ pub fn validate_yaml(yaml: &str) -> Result<Vec<String>, String> {
     Ok(config.contexts.into_iter().map(|c| c.name).collect())
 }
 
+/// An exec credential plugin in pasted YAML, for the user to check before it's added.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExecCommand {
+    /// The users running it.
+    pub users: Vec<String>,
+    /// `command arg…`.
+    pub command: String,
+    /// `NAME=value`, secret-looking values masked.
+    pub env: Vec<String>,
+}
+
+/// The exec plugins of kubeconfig YAML (one entry per distinct command line and env).
+pub fn exec_commands(yaml: &str) -> Vec<ExecCommand> {
+    let Ok(config) = Kubeconfig::from_yaml(yaml) else {
+        return Vec::new();
+    };
+    let mut found: Vec<ExecCommand> = Vec::new();
+    for user in config.auth_infos {
+        let Some(exec) = user.auth_info.and_then(|a| a.exec) else {
+            continue;
+        };
+        let mut command = exec.command.unwrap_or_default();
+        for arg in exec.args.unwrap_or_default() {
+            command.push(' ');
+            command.push_str(&arg);
+        }
+        let env = exec
+            .env
+            .unwrap_or_default()
+            .into_iter()
+            .map(|var| {
+                let name = var.get("name").cloned().unwrap_or_default();
+                let value = var.get("value").cloned().unwrap_or_default();
+                let secret = [
+                    "SECRET",
+                    "TOKEN",
+                    "PASSWORD",
+                    "PASSWD",
+                    "CREDENTIAL",
+                    "PRIVATE",
+                    "KEY",
+                ]
+                .iter()
+                .any(|s| name.to_ascii_uppercase().contains(s));
+                format!("{name}={}", if secret { "••••" } else { &value })
+            })
+            .collect::<Vec<_>>();
+        match found
+            .iter_mut()
+            .find(|c| c.command == command && c.env == env)
+        {
+            Some(existing) => existing.users.push(user.name),
+            None => found.push(ExecCommand {
+                users: vec![user.name],
+                command,
+                env,
+            }),
+        }
+    }
+    found
+}
+
 /// Saves pasted kubeconfig YAML as `<dir>/<name>.yaml`, readable only by the user.
 /// Returns the path. Doesn't overwrite: a taken name gets a counter.
 pub fn save_pasted(dir: &Path, name: &str, yaml: &str) -> std::io::Result<PathBuf> {
@@ -693,6 +755,21 @@ users:
         let broken = context_info(&config, "broken", Path::new("/tmp/new.yaml")).unwrap();
         assert!(broken.error.is_some());
         assert!(context_info(&config, "nope", Path::new("/x")).is_none());
+    }
+
+    #[test]
+    fn lists_exec_commands_of_pasted_yaml() {
+        let yaml = "apiVersion: v1\nkind: Config\nusers:\n- name: a\n  user:\n    exec:\n      apiVersion: client.authentication.k8s.io/v1\n      command: aws\n      args: [eks, get-token]\n      env: [{name: AWS_PROFILE, value: prod}, {name: SSO_TOKEN, value: hunter2}]\n- name: b\n  user:\n    exec:\n      apiVersion: client.authentication.k8s.io/v1\n      command: aws\n      args: [eks, get-token]\n      env: [{name: AWS_PROFILE, value: prod}, {name: SSO_TOKEN, value: hunter2}]\n- name: c\n  user:\n    token: abc\n";
+        let commands = exec_commands(yaml);
+        assert_eq!(
+            commands,
+            vec![ExecCommand {
+                users: vec!["a".into(), "b".into()],
+                command: "aws eks get-token".into(),
+                env: vec!["AWS_PROFILE=prod".into(), "SSO_TOKEN=••••".into()],
+            }]
+        );
+        assert!(exec_commands("users: []").is_empty());
     }
 
     #[test]
