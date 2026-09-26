@@ -6,6 +6,9 @@
 //!   cargo test -p kubyl_kubeconfig --test live -- --ignored --nocapture --test-threads=1
 //! ```
 //!
+//! The OIDC test needs `script/oidc-dev.sh` and `KUBYL_TEST_OIDC_KUBECONFIG` (the kubeconfig
+//! it prints); curl plays the browser and signs in to Dex as admin@kubyl.dev.
+//!
 //! `KUBYL_TEST_CONTEXT` picks the context (default `kind-kubyl-dev`). The tests never touch
 //! the real `~/.kube/config`: they copy what they need into temp folders. The kubectl checks
 //! need `kubectl` in `PATH`. `kind_token_that_really_expired…` waits 11 minutes (a
@@ -522,4 +525,105 @@ async fn kind_service_account_kubeconfigs_work() {
         .delete(name, &dp)
         .await
         .ok();
+}
+
+/// Signs in to the dev Dex like a browser: open the sign-in URL, post the password form, and
+/// follow the redirects to Kubyl's loopback callback.
+fn dex_sign_in(url: &str, ca: &str) {
+    let jar = tempfile::NamedTempFile::new().unwrap();
+    let jar = jar.path().to_str().unwrap();
+    let curl = |extra: &[&str], url: &str| {
+        let out = Command::new("curl")
+            .args(["-sS", "-L", "--cacert", ca, "-c", jar, "-b", jar])
+            .args(["-o", "/dev/null", "-w", "%{url_effective} %{http_code}"])
+            .args(extra)
+            .arg(url)
+            .output()
+            .expect("curl");
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        println!("curl -> {text} {}", String::from_utf8_lossy(&out.stderr));
+        text
+    };
+    // Dex's only connector is the password database: the sign-in URL lands on its form.
+    let form = curl(&[], url);
+    let form_url = form.split(' ').next().unwrap().to_string();
+    assert!(form_url.contains("/auth/local"), "{form}");
+    curl(
+        &[
+            "--data-urlencode",
+            "login=admin@kubyl.dev",
+            "--data-urlencode",
+            "password=password",
+        ],
+        &form_url,
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs script/oidc-dev.sh (KUBYL_TEST_OIDC_KUBECONFIG) and curl"]
+async fn oidc_needs_a_sign_in_then_the_test_passes() {
+    let path = PathBuf::from(
+        std::env::var("KUBYL_TEST_OIDC_KUBECONFIG").expect("KUBYL_TEST_OIDC_KUBECONFIG"),
+    );
+    let doc = Doc::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let context = doc
+        .current_context()
+        .expect("a current context")
+        .to_string();
+    let user = doc.context_refs(&context).1.unwrap();
+    let args = model::get(doc.body(Kind::User, &user).unwrap(), &["exec", "args"])
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let ca = args
+        .iter()
+        .filter_map(Value::as_str)
+        .find_map(|a| a.strip_prefix("--certificate-authority="))
+        .expect("Dex's CA in the kubelogin args")
+        .to_string();
+
+    // No session yet: the test stops at the credentials and offers "Sign in".
+    let report = test(doc.clone(), &context, &path, true).await;
+    let step = report.step(StepKind::Credentials);
+    assert_eq!(step.status, Status::Fail);
+    assert_eq!(step.fix, Some(Fix::SignIn));
+    let auth = report
+        .oidc
+        .clone()
+        .expect("the OIDC session to sign in with");
+
+    // "Sign in": the browser flow, with curl as the browser.
+    let (tx, mut rx) = mpsc::unbounded();
+    let browser = tokio::spawn(async move {
+        use futures::StreamExt as _;
+        while let Some(event) = rx.next().await {
+            if let kubyl_kube::auth::oidc::SignInEvent::WaitingForBrowser { url, .. } = event {
+                let ca = ca.clone();
+                tokio::task::spawn_blocking(move || dex_sign_in(&url, &ca))
+                    .await
+                    .unwrap();
+            }
+        }
+    });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        auth.sign_in(kubyl_kube::auth::oidc::SignInMethod::Browser, tx),
+    )
+    .await
+    .expect("sign-in finished in time")
+    .expect("signed in");
+    browser.await.ok();
+
+    // "Run again": the session is in the credential store; every step passes.
+    let report = test(doc, &context, &path, true).await;
+    assert!(report.passed(), "{:?}", report.failure());
+    let auth_step = report.step(StepKind::Auth);
+    assert!(
+        auth_step
+            .lines
+            .iter()
+            .any(|l| l.contains("oidc:admin@kubyl.dev")),
+        "{:?}",
+        auth_step.lines
+    );
 }
