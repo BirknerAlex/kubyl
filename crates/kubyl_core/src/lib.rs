@@ -7,8 +7,10 @@
 //! - [`context`]: the active cluster/namespace shown in the window chrome.
 //! - [`actions`]: app-wide actions that several crates dispatch or handle.
 //! - [`forwards`]: the port-forwards running now, for crates that show them.
+//! - [`cluster_ids`]: resolving cluster ids that may be out of date (grouped contexts).
 
 pub mod actions;
+pub mod cluster_ids;
 pub mod context;
 pub mod error;
 pub mod forwards;
@@ -17,6 +19,7 @@ pub mod registry;
 pub mod runtime;
 pub mod types;
 
+pub use cluster_ids::ClusterIds;
 pub use context::{ActiveContext, ClusterBadge};
 pub use error::{Error, Result};
 pub use notify::{Notification, NotificationCenter, NotificationLevel, NotifyResultExt};

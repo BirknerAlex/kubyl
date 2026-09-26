@@ -224,7 +224,9 @@ impl ViewRegistry {
             .unwrap_or(ViewKind::Details)
     }
 
-    /// Builds a view for `request`, or `None` if no crate handles its kind.
+    /// Builds a view for `request`, or `None` if no crate handles its kind. The target's
+    /// cluster id is resolved first ([`crate::ClusterIds`]), so restored tabs with ids from
+    /// before contexts were grouped get the current one.
     pub fn build(
         request: &ViewRequest,
         window: &mut Window,
@@ -235,7 +237,8 @@ impl ViewRegistry {
             .factories
             .get(&request.kind)?
             .clone();
-        factory(request, window, cx)
+        let request = crate::ClusterIds::normalize(cx, request);
+        factory(&request, window, cx)
     }
 }
 
