@@ -3,7 +3,7 @@ use std::sync::Arc;
 use gpui::{AnyView, App, Global, SharedString, Window};
 
 use super::views::TabHandle;
-use crate::types::ResourceRef;
+use crate::types::{ClusterId, ResourceRef};
 
 /// Which side of the status bar an item sits on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,6 +71,20 @@ pub trait DetailsSection: 'static {
     fn build(&self, target: &ResourceRef, kind: &str, cx: &mut App) -> Option<AnyView>;
 }
 
+/// A section other crates add to the Overview, below the KPI tiles (the alerts card…).
+///
+/// `build` runs once per overview and scope; the view lives while the overview shows that
+/// scope. `namespace` is `Some` for the namespace variant (opened from a favorite).
+pub trait OverviewSection: 'static {
+    fn id(&self) -> &'static str;
+    /// Lower comes first.
+    fn order(&self) -> i32 {
+        0
+    }
+    /// The section for `cluster` (and `namespace`), or `None` when it doesn't apply.
+    fn build(&self, cluster: &ClusterId, namespace: Option<&str>, cx: &mut App) -> Option<AnyView>;
+}
+
 /// A note the YAML editor shows above an object it edits, e.g. "Managed by Argo CD app
 /// `guestbook`: self-heal reverts changes made here".
 pub trait EditNotice: 'static {
@@ -91,6 +105,7 @@ pub struct ChromeRegistry {
     dock_panels: Vec<Arc<dyn DockPanel>>,
     sidebar_sections: Vec<Arc<dyn SidebarSection>>,
     details_sections: Vec<Arc<dyn DetailsSection>>,
+    overview_sections: Vec<Arc<dyn OverviewSection>>,
     edit_notices: Vec<Arc<dyn EditNotice>>,
 }
 
@@ -127,6 +142,16 @@ impl ChromeRegistry {
 
     pub fn details_sections(&self) -> &[Arc<dyn DetailsSection>] {
         &self.details_sections
+    }
+
+    pub fn add_overview_section(cx: &mut App, section: impl OverviewSection) {
+        let sections = &mut cx.default_global::<Self>().overview_sections;
+        sections.push(Arc::new(section));
+        sections.sort_by_key(|s| s.order());
+    }
+
+    pub fn overview_sections(&self) -> &[Arc<dyn OverviewSection>] {
+        &self.overview_sections
     }
 
     pub fn add_edit_notice(cx: &mut App, notice: impl EditNotice) {

@@ -26,8 +26,8 @@ pub use notify::{Notification, NotificationCenter, NotificationLevel, NotifyResu
 pub use registry::{
     ActionRegistry, ActionSpec, Align, CellAction, CellButton, CellValue, ChromeRegistry,
     ColumnDef, ColumnProvider, ColumnWidth, DetailsSection, DockPanel, DockPosition, EditNotice,
-    ResourceColumns, SidebarSection, StatusBarItem, StatusBarPosition, TabHandle, TabView, Tone,
-    ViewFactory, ViewRegistry, ViewRequest, new_tab,
+    OverviewSection, ResourceColumns, SidebarSection, StatusBarItem, StatusBarPosition, TabHandle,
+    TabView, Tone, ViewFactory, ViewRegistry, ViewRequest, new_tab,
 };
 pub use runtime::spawn_kube;
 pub use types::{ArgoCdCaps, ClusterCaps, ClusterId, ContextName, Gvk, Gvr, ResourceRef, ViewKind};
