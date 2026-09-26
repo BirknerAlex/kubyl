@@ -74,7 +74,8 @@ cargo run -p kubyl
   channel head, so an upgrade waits for approval. `--reset-manual` makes a new one wait after
   it was approved, `--v1` adds OLM v1 (operator-controller, the operatorhub.io ClusterCatalog,
   a ClusterExtension; it uses the cert-manager already running, e.g. one installed from
-  OperatorHub in Kubyl), `--delete` removes it all. Helm releases come from
+  OperatorHub in Kubyl), `--delete` removes what it installed (it marks the namespaces;
+  an OLM or cert-manager that was there stays). Helm releases come from
   `prometheus-dev.sh`.
 - Live tests against those clusters are ignored by default: see the header of
   `crates/kubyl_kube/tests/live.rs` (and of `crates/kubyl_metrics/tests/live.rs`,

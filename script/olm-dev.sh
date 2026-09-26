@@ -12,8 +12,11 @@
 #   dev cluster's Argo CD owns the CRDs argocd-operator would install).
 #   operator-controller needs cert-manager: the one running in the cluster
 #   is used (install cert-manager from OperatorHub in Kubyl first, that's the phase 12 test),
-#   else cert-manager's release manifests are applied (and its namespace marked, so --delete
-#   removes only a cert-manager this script installed).
+#   else cert-manager's release manifests are applied.
+#
+# The script marks the namespaces of what it installs (`olm`, `olmv1-system`, `cert-manager`:
+# annotation kubyl.dev/installed-by=olm-dev.sh); --delete removes only what's marked, so an OLM
+# or cert-manager that was there before stays.
 #
 # Usage:
 #   script/olm-dev.sh                 OLM v0, the catalog and the manual-approval subscription
@@ -21,9 +24,8 @@
 #                                     ClusterExtension)
 #   script/olm-dev.sh --reset-manual  the manual subscription again (after its upgrade was
 #                                     approved: a new one waits for approval)
-#   script/olm-dev.sh --delete        remove everything above again (operators installed
-#                                     through OLM stay: uninstall them in Kubyl first; so
-#                                     does a cert-manager this script didn't install)
+#   script/olm-dev.sh --delete        remove what the script installed (operators installed
+#                                     through OLM stay: uninstall them in Kubyl first)
 #
 # The catalog image is large (quay.io/operatorhubio/catalog, several hundred MB unpacked): its
 # pod takes a few minutes to become READY the first time.
@@ -83,39 +85,58 @@ operator_controller_manifest() {
       -e "s#inject-ca-from-secret: cert-manager/#inject-ca-from-secret: $1/#"
 }
 
-# Marks the cert-manager this script installs (with its version, for --delete).
+operator_controller_apply() {
+  operator_controller_manifest "$1" | k apply --server-side --force-conflicts -f -
+}
+
+# Marks a namespace as installed by this script (extra annotations after the name).
 INSTALLED_BY="kubyl.dev/installed-by"
 CERT_MANAGER_VERSION_KEY="kubyl.dev/cert-manager-version"
+mark() {
+  local namespace="$1"
+  shift
+  k annotate namespace "$namespace" --overwrite "$INSTALLED_BY=olm-dev.sh" "$@" >/dev/null
+}
+marked() {
+  [[ "$(k get namespace "$1" -o jsonpath="{.metadata.annotations.kubyl\.dev/installed-by}" 2>/dev/null || true)" == olm-dev.sh ]]
+}
 
 V1=false
 RESET=false
 for arg in "$@"; do
   case "$arg" in
     --delete)
-      log "Removing OLM v1"
+      log "Removing the ClusterExtension kubyl-v1-sample"
       k delete clusterextension kubyl-v1-sample --ignore-not-found --wait=false >/dev/null 2>&1 || true
-      k delete clustercatalog operatorhubio --ignore-not-found --wait=false >/dev/null 2>&1 || true
       k delete namespace kubyl-v1-sample --ignore-not-found --wait=false >/dev/null
-      if command -v curl >/dev/null 2>&1; then
-        cm_namespace="$(cert_manager_namespace)"
-        operator_controller_manifest "${cm_namespace:-cert-manager}" |
-          k delete --ignore-not-found --wait=false -f - >/dev/null 2>&1 || true
-      else
-        k delete -f "$OC_URL/operator-controller.yaml" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+      if marked olmv1-system; then
+        log "Removing OLM v1"
+        k delete clustercatalog operatorhubio --ignore-not-found --wait=false >/dev/null 2>&1 || true
+        if command -v curl >/dev/null 2>&1; then
+          cm_namespace="$(cert_manager_namespace)"
+          operator_controller_manifest "${cm_namespace:-cert-manager}" |
+            k delete --ignore-not-found --wait=false -f - >/dev/null 2>&1 || true
+        else
+          k delete -f "$OC_URL/operator-controller.yaml" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+        fi
+      elif k get namespace olmv1-system >/dev/null 2>&1; then
+        log "OLM v1 wasn't installed by this script: it stays"
       fi
-      # cert-manager only when --v1 installed it (a cert-manager that was there stays).
-      cm_by="$(k get namespace cert-manager -o jsonpath="{.metadata.annotations.kubyl\.dev/installed-by}" 2>/dev/null || true)"
-      if [[ "$cm_by" == olm-dev.sh ]]; then
+      if marked cert-manager; then
         cm_version="$(k get namespace cert-manager -o jsonpath="{.metadata.annotations.kubyl\.dev/cert-manager-version}")"
-        log "Removing cert-manager ${cm_version:-$CERT_MANAGER_VERSION} (installed by this script)"
+        log "Removing cert-manager ${cm_version:-$CERT_MANAGER_VERSION}"
         k delete -f "https://github.com/cert-manager/cert-manager/releases/download/${cm_version:-$CERT_MANAGER_VERSION}/cert-manager.yaml" \
           --ignore-not-found --wait=false >/dev/null 2>&1 || true
       fi
       log "Removing the manual-approval subscription"
       k delete namespace "$MANUAL_NS" --ignore-not-found --wait=false >/dev/null
-      log "Removing OLM v0"
-      k delete -f "$OLM_URL/olm.yaml" --ignore-not-found --wait=false >/dev/null 2>&1 || true
-      k delete -f "$OLM_URL/crds.yaml" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+      if marked olm; then
+        log "Removing OLM v0"
+        k delete -f "$OLM_URL/olm.yaml" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+        k delete -f "$OLM_URL/crds.yaml" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+      elif k get namespace olm >/dev/null 2>&1; then
+        log "OLM v0 wasn't installed by this script: it stays"
+      fi
       log "Done"
       exit 0
       ;;
@@ -137,6 +158,7 @@ else
   k create -f "$OLM_URL/crds.yaml" >/dev/null
   k wait --for=condition=Established -f "$OLM_URL/crds.yaml" --timeout=120s >/dev/null
   k create -f "$OLM_URL/olm.yaml" >/dev/null
+  mark olm
 fi
 k rollout status -w deployment/olm-operator -n olm --timeout=300s >/dev/null
 k rollout status -w deployment/catalog-operator -n olm --timeout=300s >/dev/null
@@ -228,17 +250,22 @@ if $V1; then
   cm_namespace="$(cert_manager_namespace)"
   if [[ -n "$cm_namespace" ]]; then
     log "cert-manager runs in $cm_namespace; OLM v1 uses it"
+    k -n "$cm_namespace" rollout status deployment/cert-manager-webhook --timeout=300s >/dev/null
   else
     log "Installing cert-manager $CERT_MANAGER_VERSION (operator-controller needs it)"
     k apply --server-side --force-conflicts -f "https://github.com/cert-manager/cert-manager/releases/download/${CERT_MANAGER_VERSION}/cert-manager.yaml" >/dev/null
-    k annotate namespace cert-manager --overwrite \
-      "$INSTALLED_BY=olm-dev.sh" "$CERT_MANAGER_VERSION_KEY=$CERT_MANAGER_VERSION" >/dev/null
+    mark cert-manager "$CERT_MANAGER_VERSION_KEY=$CERT_MANAGER_VERSION"
     k -n cert-manager rollout status deployment/cert-manager-webhook --timeout=300s >/dev/null
     cm_namespace="cert-manager"
   fi
-  log "Installing OLM v1 (operator-controller $OPERATOR_CONTROLLER_VERSION)"
-  operator_controller_manifest "$cm_namespace" |
-    k apply --server-side --force-conflicts -f - >/dev/null
+  if k get namespace olmv1-system >/dev/null 2>&1 && ! marked olmv1-system; then
+    log "OLM v1 is installed (not by this script): using it"
+  else
+    log "Installing OLM v1 (operator-controller $OPERATOR_CONTROLLER_VERSION)"
+    # cert-manager's webhook may still start: its Certificate and Issuer are retried.
+    wait_for 180 "operator-controller's manifests to apply" operator_controller_apply "$cm_namespace"
+    mark olmv1-system
+  fi
   k -n olmv1-system rollout status deployment/catalogd-controller-manager --timeout=300s >/dev/null
   k -n olmv1-system rollout status deployment/operator-controller-controller-manager --timeout=300s >/dev/null
   k apply -f "$OC_URL/default-catalogs.yaml" >/dev/null
