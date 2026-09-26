@@ -401,7 +401,14 @@ impl ConnectionManager {
                 if entry.is_group() {
                     keys.extend(entry.members.iter().map(|m| m.id.as_str()));
                 }
-                self.settings.merged(&keys)
+                let mut merged = self.settings.merged(&keys);
+                // A context of a group shown separately keeps the group's safety flags.
+                if let Some(group) = separated_group(entry) {
+                    let group = self.settings.context(group.as_str());
+                    merged.production |= group.production;
+                    merged.read_only |= group.read_only;
+                }
+                merged
             }
             None => self.settings.context(id.as_str()),
         }
@@ -744,7 +751,24 @@ impl ConnectionManager {
         f: impl FnOnce(&mut ContextSettings),
     ) {
         let entry = self.context(id).cloned();
-        let (key, members, mut settings) = match &entry {
+        // A context of a group shown separately: the group's safety flags apply to it (see
+        // `context_settings`), so turning one off clears the group's, and its other contexts
+        // keep the flag as their own.
+        let (group, siblings) = match entry.as_ref().and_then(separated_group) {
+            Some(group) => (
+                Some(group.to_string()),
+                self.entries
+                    .iter()
+                    .filter(|e| {
+                        e.group.as_ref() == Some(group)
+                            && Some(&e.id) != entry.as_ref().map(|x| &x.id)
+                    })
+                    .map(|e| e.id.to_string())
+                    .collect::<Vec<_>>(),
+            ),
+            None => (None, Vec::new()),
+        };
+        let (key, mut members, mut settings) = match &entry {
             Some(entry) if entry.is_group() => (
                 entry.id.to_string(),
                 entry.members.iter().map(|m| m.id.to_string()).collect(),
@@ -753,7 +777,7 @@ impl ConnectionManager {
             Some(entry) => (
                 entry.id.to_string(),
                 Vec::new(),
-                self.settings.context(entry.id.as_str()),
+                self.context_settings(&entry.id),
             ),
             None => (
                 id.to_string(),
@@ -761,8 +785,21 @@ impl ConnectionManager {
                 self.settings.context(id.as_str()),
             ),
         };
+        members.extend(group.clone());
         f(&mut settings);
         Settings::update::<KubeSettings>(cx, move |stored| {
+            if let Some(group_settings) =
+                group.as_ref().and_then(|g| stored.contexts.get(g)).cloned()
+            {
+                for sibling in &siblings {
+                    let own = stored.contexts.entry(sibling.clone()).or_default();
+                    own.production |= group_settings.production;
+                    own.read_only |= group_settings.read_only;
+                    if *own == ContextSettings::default() {
+                        stored.contexts.remove(sibling);
+                    }
+                }
+            }
             for member in &members {
                 let Some(member_settings) = stored.contexts.get_mut(member) else {
                     continue;
@@ -2003,6 +2040,14 @@ fn fingerprint(info: &ContextInfo, config: Option<&Arc<Kubeconfig>>) -> u64 {
     hasher.finish()
 }
 
+/// The group of a context shown separately (the group's id differs from the entry's).
+fn separated_group(entry: &ContextInfo) -> Option<&ClusterId> {
+    entry
+        .group
+        .as_ref()
+        .filter(|g| !entry.is_group() && *g != &entry.id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2397,6 +2442,63 @@ mod tests {
         manager.update(cx, |m, cx| m.set_group_separate(&group, true, cx));
         cx.run_until_parked();
         manager.read_with(cx, |m, _| assert_eq!(m.contexts().count(), 2));
+    }
+
+    #[gpui::test]
+    fn a_group_shown_separately_keeps_its_safety_flags(cx: &mut TestAppContext) {
+        let (_dir, file, manager) = oc_setup(cx, "");
+        std::fs::write(&file, oc_config(&["shop", "payments"], "shop")).unwrap();
+        manager.update(cx, |m, cx| m.reload(cx));
+        cx.run_until_parked();
+        let group = manager.read_with(cx, |m, _| m.contexts().next().unwrap().id.clone());
+        manager.update(cx, |m, cx| {
+            m.update_context_settings(&group, cx, |s| {
+                s.production = true;
+                s.read_only = true;
+            })
+        });
+        manager.update(cx, |m, cx| m.set_group_separate(&group, true, cx));
+        cx.run_until_parked();
+        let (shop, payments) = manager.read_with(cx, |m, _| {
+            let ids: Vec<ClusterId> = m.contexts().map(|c| c.id.clone()).collect();
+            assert_eq!(ids.len(), 2);
+            for id in &ids {
+                let settings = m.context_settings(id);
+                assert!(
+                    settings.production && settings.read_only,
+                    "{id}: {settings:?}"
+                );
+                assert!(m.caps(id).production && m.caps(id).read_only, "{id}");
+            }
+            let shop = ids
+                .iter()
+                .find(|i| i.as_str().starts_with("shop/"))
+                .unwrap()
+                .clone();
+            let payments = ids
+                .iter()
+                .find(|i| i.as_str().starts_with("payments/"))
+                .unwrap()
+                .clone();
+            (shop, payments)
+        });
+        // Turning a flag off on one context doesn't turn it off for the other.
+        manager.update(cx, |m, cx| {
+            m.update_context_settings(&shop, cx, |s| s.read_only = false)
+        });
+        cx.run_until_parked();
+        manager.read_with(cx, |m, _| {
+            assert!(!m.context_settings(&shop).read_only);
+            assert!(m.context_settings(&shop).production, "untouched");
+            assert!(m.context_settings(&payments).read_only);
+        });
+        // Grouped again, the group is read-only because a member is (production stays too).
+        manager.update(cx, |m, cx| m.set_group_separate(&group, false, cx));
+        cx.run_until_parked();
+        manager.read_with(cx, |m, _| {
+            let settings = m.context_settings(&group);
+            assert!(settings.production && settings.read_only);
+        });
     }
 
     #[test]
