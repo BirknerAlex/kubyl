@@ -119,6 +119,24 @@ impl DetailsContent {
             .cloned()
     }
 
+    /// The Service port the Route's target port selects on its backend `service`, like the
+    /// router (with the backend's EndpointSlices once they loaded).
+    fn route_port(
+        &self,
+        route: &Route,
+        service: &Value,
+        cx: &gpui::App,
+    ) -> Result<ServicePortMatch, String> {
+        let name = str_at(service, "/metadata/name");
+        let endpoints = self
+            .related
+            .endpoint_slices
+            .as_ref()
+            .map(|s| route::endpoint_ports(s.read(cx).objects().values().map(|o| &**o), name))
+            .unwrap_or_default();
+        route::resolve_target_port_with(route.target_port.as_ref(), service, &endpoints)
+    }
+
     /// The label selectors of a Route's backend Services (for the Pods section).
     pub(super) fn route_selectors(
         &self,
@@ -336,14 +354,14 @@ impl DetailsContent {
         let target = route.target_port_label();
         let resolved = primary
             .as_ref()
-            .map(|service| route::resolve_target_port(route.target_port.as_ref(), service));
+            .map(|service| self.route_port(route, service, cx));
         let port = match (&route.target_port, resolved) {
             (_, Some(Ok(m))) => {
                 let mut label = match &route.target_port {
                     Some(port) => format!("{port} → Service port {}", m.port),
                     None => format!("all ports · first Service port {}", m.port),
                 };
-                if m.target != m.port.to_string() {
+                if m.target != m.port.to_string() && m.target != target {
                     label.push_str(&format!(" → {}", m.target));
                 }
                 text(label, colors.text)
@@ -578,19 +596,17 @@ impl DetailsContent {
                 });
             let service = self.route_service(&backend.name, cx);
             let body = match (&service, loaded) {
-                (Some(service), _) => {
-                    match route::resolve_target_port(route.target_port.as_ref(), service) {
-                        Ok(matched) => self.forward_rows(
-                            reference,
-                            vec![port_row(&matched)],
-                            None,
-                            &format!("route-{ix}-"),
-                            colors,
-                            cx,
-                        ),
-                        Err(err) => text(err, colors.yellow).into_any_element(),
-                    }
-                }
+                (Some(service), _) => match self.route_port(route, service, cx) {
+                    Ok(matched) => self.forward_rows(
+                        reference,
+                        vec![port_row(&matched)],
+                        None,
+                        &format!("route-{ix}-"),
+                        colors,
+                        cx,
+                    ),
+                    Err(err) => text(err, colors.yellow).into_any_element(),
+                },
                 (None, Some(true)) => text(
                     format!(
                         "Service {} not found in {}",
