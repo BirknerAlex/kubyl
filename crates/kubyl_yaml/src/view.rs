@@ -990,6 +990,27 @@ impl YamlEditor {
         if let Some(key) = self.history_key() {
             self.local_history = ApplyHistory::entries(cx, &key);
         }
+        // Applies recorded under a context's own id before it was grouped with its siblings.
+        if self.local_history.is_empty()
+            && let (Some(target), Some(manager)) =
+                (self.object.as_ref(), ConnectionManager::try_global(cx))
+        {
+            let keys = manager.read(cx).settings_keys(&target.cluster);
+            for cluster in keys.iter().skip(1) {
+                let key = ApplyHistory::key(
+                    cluster,
+                    &target.gvr.group,
+                    &target.gvr.resource,
+                    target.namespace.as_deref(),
+                    target.name.as_deref().unwrap_or_default(),
+                );
+                let entries = ApplyHistory::entries(cx, &key);
+                if !entries.is_empty() {
+                    self.local_history = entries;
+                    break;
+                }
+            }
+        }
         if !self.has_workload_history() {
             return;
         }
