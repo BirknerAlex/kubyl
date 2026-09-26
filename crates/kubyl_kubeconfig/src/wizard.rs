@@ -24,7 +24,7 @@ use kubyl_ui::{ActiveColors, Button, Colors, Icon, IconName, fonts, h_flex, u, v
 use serde_json::{Map, Value, json};
 
 use crate::certs;
-use crate::conntest::Input;
+use crate::conntest::{Input, Report};
 use crate::dialogs::{self, CaState};
 use crate::files::{self, SaveOptions};
 use crate::model::{self, Doc, ExecPreset, Kind};
@@ -550,6 +550,17 @@ impl Wizard {
         TestKey::new(format!("wizard:{}", self.id), self.value("context", cx))
     }
 
+    /// The test of the document as it is now (`None`: never tested, or edited since).
+    fn report(&self, cx: &App) -> Option<Report> {
+        if self.tested.as_ref() != Some(&self.doc(cx)) {
+            return None;
+        }
+        Kubeconfigs::global(cx)
+            .read(cx)
+            .report(&self.test_key(cx))
+            .cloned()
+    }
+
     fn run_test(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let doc = self.doc(cx);
         let context = self.value("context", cx);
@@ -560,16 +571,27 @@ impl Wizard {
             file: self.target_path(cx),
             allow_exec: true,
         };
-        self.tested = Some(doc.clone());
         let global = Kubeconfigs::global(cx);
         match global.read(cx).needs_consent(&doc, None, &context) {
-            None => global.update(cx, |g, cx| g.test(key, input, cx)),
-            Some(spec) => dialogs::consent(
-                vec![(vec![context], spec)],
-                move |_, cx| global.update(cx, |g, cx| g.test(key.clone(), input.clone(), cx)),
-                window,
-                cx,
-            ),
+            None => {
+                self.tested = Some(doc);
+                global.update(cx, |g, cx| g.test(key, input, cx));
+            }
+            Some(spec) => {
+                // Tested only once the user agreed; "Cancel" leaves it untested.
+                self.tested = None;
+                let weak = cx.entity().downgrade();
+                dialogs::consent(
+                    vec![(vec![context], spec)],
+                    move |_, cx| {
+                        weak.update(cx, |this, _| this.tested = Some(doc.clone()))
+                            .ok();
+                        global.update(cx, |g, cx| g.test(key.clone(), input.clone(), cx));
+                    },
+                    window,
+                    cx,
+                );
+            }
         }
         cx.notify();
     }
@@ -588,9 +610,7 @@ impl Wizard {
         }
         if step == Step::Test {
             // A changed document restarts a test that's still running for the old one.
-            let key = self.test_key(cx);
-            let tested = Kubeconfigs::global(cx).read(cx).report(&key).is_some();
-            if !tested || self.tested.as_ref() != Some(&self.doc(cx)) {
+            if self.report(cx).is_none() {
                 self.run_test(window, cx);
             }
         }
@@ -1030,10 +1050,26 @@ impl Wizard {
             Step::Test => {
                 let key = self.test_key(cx);
                 let global = Kubeconfigs::global(cx);
-                let report = global.read(cx).report(&key).cloned();
+                let report = self.report(cx);
                 let sign_in = global.read(cx).sign_in_state(&key).cloned();
                 match report {
-                    None => widgets::hint("Starting…", &colors),
+                    // Waiting for the consent, or it was declined.
+                    None => {
+                        let weak = weak.clone();
+                        v_flex()
+                            .gap(u(10.0))
+                            .items_start()
+                            .child(widgets::hint("Not tested yet.", &colors))
+                            .child(
+                                Button::new("wiz-run-test")
+                                    .icon(IconName::Play)
+                                    .label("Test connection")
+                                    .on_click(move |_, window, cx| {
+                                        weak.update(cx, |this, cx| this.run_test(window, cx)).ok();
+                                    }),
+                            )
+                            .into_any_element()
+                    }
                     Some(report) => {
                         let mut handlers = panel::Handlers::default();
                         {
@@ -1365,11 +1401,9 @@ impl Render for Wizard {
         let blocker = self.blocker(cx);
         let body = self.body(window, cx);
         let path = self.target_path(cx);
-        let report_failed = step == Step::Test
-            && Kubeconfigs::global(cx)
-                .read(cx)
-                .report(&self.test_key(cx))
-                .is_some_and(|r| r.done && !r.passed());
+        let report = (step == Step::Test).then(|| self.report(cx)).flatten();
+        let report_failed = report.as_ref().is_some_and(|r| r.done && !r.passed());
+        let untested = step == Step::Test && report.is_none();
         let mut buttons = vec![dialogs::cancel_button("wiz-cancel")];
         if step != Step::Name {
             let weak = weak.clone();
@@ -1396,6 +1430,7 @@ impl Render for Wizard {
                 }
             }
             Step::Test if report_failed => "Save anyway".into(),
+            Step::Test if untested => "Save untested".into(),
             _ => format!("Next: {}", Step::ALL[(step.index() + 1).min(5)].title()),
         };
         buttons.push(
@@ -1484,6 +1519,34 @@ mod tests {
             );
         });
         dir
+    }
+
+    #[gpui::test]
+    fn an_exec_plugin_is_tested_only_after_consent(cx: &mut TestAppContext) {
+        let _dir = setup(cx);
+        // The consent dialog needs gpui-component's Root as the window's first view.
+        let slot: std::rc::Rc<std::cell::RefCell<Option<Entity<Wizard>>>> = Default::default();
+        let (_root, cx) = cx.add_window_view({
+            let slot = slot.clone();
+            move |window, cx| {
+                let wizard = cx.new(|cx| Wizard::new(window, cx));
+                *slot.borrow_mut() = Some(wizard.clone());
+                gpui_component::Root::new(wizard, window, cx)
+            }
+        });
+        let wizard = slot.borrow().clone().unwrap();
+        wizard.update_in(cx, |this, window, cx| {
+            this.set("name", "lab", window, cx);
+            this.input_changed("name", "lab".into(), window, cx);
+            this.set("server", "https://127.0.0.1:6443", window, cx);
+            this.ca_mode = CaMode::System;
+            this.auth = Auth::Exec;
+            this.set("exec-command", "sso-helper", window, cx);
+            this.go(Step::Test, window, cx);
+            // The consent dialog is open: nothing ran, nothing counts as tested.
+            assert!(this.tested.is_none());
+            assert!(this.report(cx).is_none());
+        });
     }
 
     #[gpui::test]
