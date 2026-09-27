@@ -2,6 +2,17 @@
 
 All notable changes to Kubyl are documented here.
 
+## [0.3.2] - 2026-09-27
+
+### Bug Fixes
+
+- Move Flathub manifest update into release.yml as a job ([b0be571](https://github.com/BirknerAlex/kubyl/commit/b0be571f08ce68728e17bf7b80aadb52e9c9b239))
+- Run manifest/artifact fetches on the Tokio runtime (#18) ([3ec09da](https://github.com/BirknerAlex/kubyl/commit/3ec09da3e2932fca6aa5a87b47aa580f9ebd4d30))
+
+### Miscellaneous
+
+- Update Flatpak manifest to v0.3.1 ([3780a0a](https://github.com/BirknerAlex/kubyl/commit/3780a0ab462a956d8ca36cf66e14cccdc45622ce))
+
 ## [0.3.1] - 2026-09-27
 
 ### Bug Fixes
