@@ -42,6 +42,7 @@ Each phase file is written so one Claude Code session can own it from start to f
 | 13 | [Cluster updates](13-cluster-updates.md) | 02, 07, 12 | `kubyl_updates` | 8 · Updates |
 | 14 | [Alerts: Alertmanager, silences, alerting rules](14-alerts.md) | 02, 05, 07 (08 optional) | `kubyl_alerts` (new) | 16 · Alerts |
 | 15 | [Polish: connection dots, one entry per cluster and user, ConfigMap data](15-sidebar-details-polish.md) | 01, 02, 03 (part 3 after 11) | none (small commits in `kubyl_explorer`, `kubyl_kube`, `kubyl_palette`) | 17 · Cluster status and ConfigMap data |
+| 16 | [Network flows: Cilium/Hubble, NetObserv, Calico/Whisker](16-network-flows.md) | 02, 05, 07 | `kubyl_netflow` (new) | 18 · Network flows |
 
 ```
 00 ─▶ 01 ─▶ 02 ─┬─▶ 03
@@ -53,11 +54,12 @@ Each phase file is written so one Claude Code session can own it from start to f
 01 + 04 ─▶ 11 (kubeconfig editor)
 02 + 05 + 07 ─▶ 14 (alerts; uses 08 for the Alertmanager/Prometheus UIs if present)
 01 + 02 + 03 ─▶ 15 (polish; context grouping after 11)
+02 + 05 + 07 ─▶ 16 (network flows: Cilium/Hubble, NetObserv, Calico/Whisker)
 09: CI part runs from 00 onward; packaging and release after the feature phases
 ```
 
-After phase 02, phases 03, 04, 05 and 07 can run in parallel sessions. Phase 08 can start once 05 is done, phase 10 once 04 and 05 are done, phase 11 once 04 is done, and phase 14 once 07 is done.
-Phases 08, 10, 11 and 14 add crates that phase 00 didn't stub (`kubyl_webview`, `kubyl_argocd`, `kubyl_kubeconfig`, `kubyl_alerts`): their first commit adds the stub crate (workspace member plus the `init` line in `crates/kubyl/src/main.rs`) in a tiny PR that lands on `main` before the feature work, so parallel sessions don't conflict (phases 10 and 11 skipped it on request: their crates landed with the feature PR).
+After phase 02, phases 03, 04, 05 and 07 can run in parallel sessions. Phase 08 can start once 05 is done, phase 10 once 04 and 05 are done, phase 11 once 04 is done, phase 14 once 07 is done, and phase 16 once 05 and 07 are done.
+Phases 08, 10, 11, 14 and 16 add crates that phase 00 didn't stub (`kubyl_webview`, `kubyl_argocd`, `kubyl_kubeconfig`, `kubyl_alerts`, `kubyl_netflow`): their first commit adds the stub crate (workspace member plus the `init` line in `crates/kubyl/src/main.rs`) in a tiny PR that lands on `main` before the feature work, so parallel sessions don't conflict (phases 10 and 11 skipped it on request: their crates landed with the feature PR).
 Phase 00 must leave stub crates and registration traits so that parallel phases never edit
 the same files. See "Extension points" below.
 
