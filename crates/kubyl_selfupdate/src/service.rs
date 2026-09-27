@@ -157,10 +157,16 @@ impl SelfUpdate {
         let for_task = manifest.clone();
         let task = kubyl_core::spawn_kube(cx, async move {
             let bytes = download::fetch_artifact(&for_task).await?;
-            crate::apply::apply(&bytes).map_err(|err| {
-                tracing::error!(error = %err, "self-update apply failed");
-                err
-            })?;
+            // Archive extraction and (on macOS) a `codesign --verify` subprocess are
+            // synchronous; run them on the blocking pool so they don't stall this runtime's
+            // worker threads, which also carry Kubernetes API calls.
+            tokio::task::spawn_blocking(move || crate::apply::apply(&bytes))
+                .await
+                .expect("apply task panicked")
+                .map_err(|err| {
+                    tracing::error!(error = %err, "self-update apply failed");
+                    err
+                })?;
             Ok::<(), ApplyOrFetch>(())
         });
         cx.spawn(async move |this, cx| {
