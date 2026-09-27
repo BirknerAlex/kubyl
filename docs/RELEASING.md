@@ -76,19 +76,15 @@ secret.
    ```sh
    gh secret set WINGET_TOKEN
    ```
-2. `publish-winget` only *updates* an existing manifest — the very first submission has to be
-   manual once, since `wingetcreate update` needs a package to already exist:
-   ```sh
-   # From a Windows machine (or install wingetcreate's .exe under Wine/a Windows CI runner)
-   irm https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
-   .\wingetcreate.exe new `
-     https://github.com/BirknerAlex/kubyl/releases/download/v<version>/kubyl-<version>-windows-x86_64.zip `
-     https://github.com/BirknerAlex/kubyl/releases/download/v<version>/kubyl-<version>-windows-aarch64.zip `
-     --submit --token <a token, or omit --submit --token to review the manifest locally first>
-   ```
-   When prompted, set `PackageIdentifier` to `BirknerAlex.Kubyl`, `InstallerType` to `zip`, and
-   the nested installer to `portable` with `kubyl.exe` as the relative path — that's the shape
-   `publish-winget`'s `wingetcreate update` expects to find and preserve on every later release.
+2. `publish-winget` only *updates* an existing manifest — the first submission needs the
+   package to already exist. **Done**: `BirknerAlex.Kubyl` v0.2.5 was submitted as
+   [microsoft/winget-pkgs#442272](https://github.com/microsoft/winget-pkgs/pull/442272) — three
+   manifest files (version, installer, `en-US` locale) written by hand against the current
+   schema (`1.12.0`) and a real reference package (Deno's, itself zip+portable), rather than
+   through `wingetcreate new`'s interactive wizard (this needs a Windows machine or Wine;
+   hand-written YAML doesn't). `InstallerType: zip` + `NestedInstallerType: portable` with
+   `kubyl.exe` as the relative path is the shape `publish-winget`'s `wingetcreate update` expects
+   to find and preserve on every later release.
 3. Once that PR is merged, `publish-winget` keeps it current automatically.
 
 ## One-time setup: silo
