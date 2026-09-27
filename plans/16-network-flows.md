@@ -1,6 +1,6 @@
 # Phase 16: Network flows (Cilium/Hubble, NetObserv, Calico/Whisker)
 
-**Status:** in progress (spike done, plan corrected)
+**Status:** done (2026-09-27; see the handoff log for what's deferred)
 **Depends on:** 02 (resource explorer, `ResourceStores`, details sections), 05 (port-forward manager, reused for gRPC transports), 07 (established provider/discovery pattern and demand-driven service cache, precedent this phase follows)
 **Owns:** `crates/kubyl_netflow` (new), `script/netflow-dev.sh`
 **Mockups:** board 18 · Network flows, to be added to `design/mockups/generate.py` before the UI work: the flow table (Wireshark-style), the topology graph, the "no flow visibility" empty state, the backend indicator, and the namespace/workload zoom levels of the graph.
@@ -55,7 +55,8 @@ Each has a recommendation; record the outcome in the README's decision table.
    Antrea's IPFIX export in this phase (it's the node pushing UDP/TCP at a configured collector,
    the reverse direction of everything else Kubyl does). gRPC can't pass through the API server's
    service proxy (it needs HTTP/2 end to end), so gRPC backends (Hubble Relay) go through
-   ephemeral forwards; HTTP backends (Whisker, Loki, Prometheus) use the service proxy. Kubyl
+   ephemeral forwards; so does Whisker (Calico's own policy keeps the proxy out, see below);
+   Loki and Prometheus use the service proxy. Kubyl
    never reads Secrets for a backend: TLS roots come from ConfigMaps, and a backend that needs a
    client certificate (mutual TLS) is reported, not worked around.
 4. **Polling model.** Recommended: demand-driven like `MetricsService` — a backend client streams
@@ -148,8 +149,12 @@ Each has a recommendation; record the outcome in the README's decision table.
 
 - Detect: the `whisker` Service in `calico-system` (Calico OSS ≥ 3.30 with the `Whisker` and
   `Goldmane` resources, which the default `custom-resources.yaml` enables).
-- Transport: HTTP through the API server's service proxy to the Whisker Service (port 8081, which
-  nginx splits into the UI and `/whisker-backend/`): `GET /whisker-backend/flows?watch=true&
+- Transport: HTTP over a temporary loopback port-forward to the Whisker Service (port 8081, which
+  nginx splits into the UI and `/whisker-backend/`), as Calico's docs do. Not the API server's
+  service proxy: the operator's `calico-system.whisker` policy (tier `calico-system`) has no
+  ingress rules, so it denies everything but host-local traffic; the proxy only worked in the
+  spike because Whisker ran on the control-plane node. RBAC: `create pods/portforward` in
+  `calico-system`. `GET /whisker-backend/flows?watch=true&
   startTimeGte=-<seconds>&filters=<json>` is a server-sent event stream (`data: {flow}`) that
   replays Goldmane's buffer from that time and then follows; without `watch` it's a paged list;
   `/whisker-backend/flows-filter-hints?type=…` lists values seen. Goldmane's own gRPC API (port
@@ -166,7 +171,7 @@ Each has a recommendation; record the outcome in the README's decision table.
 ## Tasks
 
 ### Spike first (decides transport, schema mapping and layout, ~3–4 days)
-- [ ] `script/netflow-dev.sh`: three modes of one script, one `kind` cluster each (run one at a
+- [x] `script/netflow-dev.sh`: three modes of one script, one `kind` cluster each (run one at a
   time), each free and CI-able on GitHub Actions Linux runners the way `cilium/cilium`,
   `projectcalico/calico` and NetObserv's own upstream CI already do:
   - `kind` + Cilium (Helm, `hubble.relay.enabled=true`; kindnet disabled with
@@ -178,41 +183,41 @@ Each has a recommendation; record the outcome in the README's decision table.
     isolating `NetworkPolicy` and, where the CNI has them, one explicit deny rule (a
     CiliumNetworkPolicy `ingressDeny`, a Calico `Deny`), so cross-namespace, isolated and denied
     flows all show up; mark everything, `--delete` removes only what's marked
-- [ ] Confirm each backend's exact `.proto`/API version, vendor what's needed, and confirm it's
+- [x] Confirm each backend's exact `.proto`/API version, vendor what's needed, and confirm it's
   reachable only through a Service proxy or `kubyl_portforward` ephemeral forward — no NodePort,
   no `hostNetwork` listener Kubyl would need to expose
-- [ ] Define the internal `Flow` struct and `FlowProvider` trait (`detect`, `stream_flows(filter)`,
+- [x] Define the internal `Flow` struct and `FlowProvider` trait (`detect`, `stream_flows(filter)`,
   `capabilities()` — does this backend resolve policy names, support live-only or also historical
   queries, aggregate server-side)
-- [ ] Prove the topology aggregation (group by src/dst namespace or workload + verdict, sum
+- [x] Prove the topology aggregation (group by src/dst namespace or workload + verdict, sum
   bytes/packets) and pick the layout approach (hand-rolled vs. a `cargo deny`-clean crate) against
   real flows from all three kind clusters, including the blocked-policy case
 
 ### Mockups
-- [ ] Board 18 (`design/mockups/generate.py`): flow table, topology graph (namespace and workload
+- [x] Board 18 (`design/mockups/generate.py`): flow table, topology graph (namespace and workload
   zoom), backend indicator, "no flow visibility for this CNI" empty state with a link naming which
   of the three to install
 
 ### Data layer (`kubyl_netflow`)
-- [ ] `Flow` model, `FlowProvider` trait, `detect()` (probe order: Hubble Relay, Calico Whisker,
+- [x] `Flow` model, `FlowProvider` trait, `detect()` (probe order: Hubble Relay, Calico Whisker,
   NetObserv's FlowCollector with Loki and Prometheus — the CNI's own flow API first, the
   CNI-independent fallback last; settings override per cluster, same shape as
   `updates.clusters.<cluster>.provider`)
-- [ ] `hubble`, `netobserv`, `calico_whisker` backend implementations
-- [ ] No-backend state and its hint (mirrors phase 07's "connect Prometheus" hint)
-- [ ] Demand-driven service: streams only while a view is open, bounded time-windowed ring buffer
+- [x] `hubble`, `netobserv`, `calico_whisker` backend implementations
+- [x] No-backend state and its hint (mirrors phase 07's "connect Prometheus" hint)
+- [x] Demand-driven service: streams only while a view is open, bounded time-windowed ring buffer
   per cluster
-- [ ] `FlowFilter`: every `Flow` field (namespace, pod, workload, IP, port, protocol, direction,
+- [x] `FlowFilter`: every `Flow` field (namespace, pod, workload, IP, port, protocol, direction,
   verdict, policy — source and destination independently), pushed down into `stream_flows` per
   backend's `capabilities()`; a client-side fallback filter over the ring buffer for any field a
   backend can't filter server-side, so the table's filter bar works identically on all three
-- [ ] Aggregation for the graph (namespace-level and workload-level), recomputed on the selected
+- [x] Aggregation for the graph (namespace-level and workload-level), recomputed on the selected
   time window
 
 ### UI: flow table
-- [ ] Columns: Time, Direction, Source, Destination, Protocol/Port, Verdict (colored), Policy,
+- [x] Columns: Time, Direction, Source, Destination, Protocol/Port, Verdict (colored), Policy,
   Bytes/Packets
-- [ ] Filter bar: one facet per filterable field — namespace, pod, workload, IP, port, protocol,
+- [x] Filter bar: one facet per filterable field — namespace, pod, workload, IP, port, protocol,
   direction, verdict, policy — each offered for source and destination separately, with
   autocomplete from what's actually been seen in the buffered window (like k9s's `/` filter and
   phase 05's log search, not a fixed dropdown of guessed values). Facets combine with AND; a
@@ -220,22 +225,24 @@ Each has a recommendation; record the outcome in the README's decision table.
   `ns=payments verdict=dropped port=443`), Wireshark-display-filter style rather than a second,
   separate search mechanism. Chips show which backend actually applied a facet server-side vs.
   client-side (only relevant when the active backend's `capabilities()` don't cover that field)
-- [ ] Pause/resume streaming; clearing all facets returns to the unfiltered live view
-- [ ] Row → detail panel with the raw backend fields (debugging/trust)
-- [ ] Header shows which backend is active; the empty state when none is found
+- [x] Pause/resume streaming; clearing all facets returns to the unfiltered live view
+- [x] Row → detail panel with the raw backend fields (debugging/trust)
+- [x] Header shows which backend is active; the empty state when none is found
 
 ### UI: topology graph
-- [ ] Namespace-level and workload-level zoom, nodes sized/colored by volume or health, edges
+- [x] Namespace-level and workload-level zoom, nodes sized/colored by volume or health, edges
   styled by verdict (allowed vs. dropped) and thickness by volume
-- [ ] Click a node/edge filters the table to that scope; shared time range with the table
-  (`kubyl_charts::TimeRangePicker`)
-- [ ] Stays responsive at a few hundred nodes/edges (aggregate further or paginate beyond that —
+- [x] Click a node/edge filters the table to that scope; shared time range with the table
+  (`kubyl_charts::TimeRangePicker`). Built as on board 18 (and OpenShift's and NetObserv's
+  topologies): a click selects and the side panel explains the node or edge, a double-click,
+  Enter or "Show flows" filters the table
+- [x] Stays responsive at a few hundred nodes/edges (aggregate further or paginate beyond that —
   exact threshold decided in the spike against real cluster sizes)
 
 ### Placement
-- [ ] Sidebar row "Network Flows" (cluster-wide) and a namespace-scoped variant, following the
+- [x] Sidebar row "Network Flows" (cluster-wide) and a namespace-scoped variant, following the
   `register_view_row`/overview cluster-vs-namespace split from phases 07/14
-- [ ] Palette action `> Network Flows`
+- [x] Palette action `> Network Flows`
 
 ## Acceptance criteria
 
@@ -264,8 +271,9 @@ Each has a recommendation; record the outcome in the README's decision table.
   read; no flow data (which can include pod/namespace names and, on backends with L7 visibility,
   request paths, query strings and headers) is logged, written to `settings.json` or
   `state.json`, or shown in toasts, `Debug` output or the palette. A 403 names the missing verb and
-  resource (`create pods/portforward in kube-system`, `get services/proxy in calico-system`)
-  instead of an empty state.
+  resource (`create pods/portforward in kube-system` for Hubble Relay, `create pods/portforward
+  in calico-system` for Whisker, `get services/proxy in netobserv` for Loki) instead of an empty
+  state.
 
 ## Risks
 
@@ -321,3 +329,72 @@ The plan's backend sections, acceptance criteria and risks were corrected after 
 - The user's OpenShift test cluster (read-only check): no NetObserv (no `flowcollectors` CRD) and
   OVN-Kubernetes, so there's no Loki or NetObserv to open forwards or queries to; Kubyl should
   show the empty state there (checked read-only later).
+
+### 2026-09-27 (implementation, branch `phase/16-network-flows`)
+
+Shipped in `kubyl_netflow` (plus labelled commits in `kubyl_charts::graph`, `kubyl_metrics`
+transports, `kubyl_explorer::catalog`, `kubyl_ui` icons and the workspace dependencies):
+- The data layer: the `Flow` model with redacting `Debug`, sanitizing on Tokio (query values
+  `…`, credential headers dropped), the filter language with pushdown per backend and
+  completion from the buffer, the ring buffer (20,000 flows, 60 min), detection (Hubble Relay,
+  Whisker, NetObserv; `netflow.clusters.<cluster>.backend` and endpoint overrides), the
+  demand-driven `FlowService` (leases, one stream per server-side filter, ≤60 Hz drain, 2 s grace,
+  retries that resume after the newest flow), and the three backends.
+- The view (board 18): live table with filter chips, completion, verdict chips and flow details
+  (policy links, sanitized L7, the backend's fields, "Copy as hubble observe"); the topology at
+  namespace and workload zoom (workloads grouped per namespace, loops for traffic inside a node,
+  side panel for nodes and connections, j/k and ]/[); blocking states (no source with the CNI's
+  hint, forbidden naming the permission, connecting); a compact layout for split panes. Sidebar
+  row, favorites namespace entry, details section on pods, workloads, Services and namespaces,
+  palette actions ("Network Flows: Show Network Flows", "…of the Active Namespace", "Show Flows
+  for Selection", "Look for a Flow Source Again").
+- Screenshots of every board 18 frame on the kind clusters: `design/screenshots/phase-16-flows.png`,
+  `-topology.png`, `-topology-workloads.png`, `-backends.png` (Whisker next to NetObserv with Loki
+  off), `-states.png` (no source on kindnet next to a forbidden Relay: a `view`-only
+  ServiceAccount).
+
+Tested versions (live tests in `crates/kubyl_netflow/tests/live.rs`, all passing on the final
+code): Cilium 1.20.2 with Hubble Relay 1.20.2, plain gRPC (port 80) and with server TLS (port
+443, CA from ConfigMap `cilium-root-ca.crt`); Calico v3.32.2 (Whisker, Goldmane) through the
+forward; NetObserv 2.0.0 with Loki 2.6.1 and its Prometheus (and with Loki off for the
+metrics-only screenshot); kind v0.33.0, Kubernetes v1.37.0. Vendored Hubble protos, Cilium v1.20.2, unchanged (sha256):
+`flow/flow.proto` c3256c05…9cef06, `observer/observer.proto` 99a0c75e…265554,
+`relay/relay.proto` f5d9e257…57162.
+
+Found while building it (the plan and README are corrected):
+- Whisker is not reachable through the API server's service proxy: the operator's
+  `calico-system.whisker` policy (tier `calico-system`) has no ingress rules. The spike's proxy
+  calls only worked because Whisker ran on the control-plane node (Calico lets a node reach its
+  own pods). Kubyl forwards to it like Hubble Relay (`create pods/portforward in calico-system`),
+  which is also how Calico's docs reach it. Loki and Prometheus stay on the service proxy
+  (NetObserv's own policy selects only its pipeline pods).
+- A kube client must be built on Tokio (it spawns its buffer task); building a transport on the
+  UI thread crashed the app. Transports for forwards and URLs are built inside the provider
+  futures now (`Transport::loopback` says so).
+- Hubble Relay drains its sort buffer every second: a 50 ms pause isn't the end of the history.
+  Streams count as caught up at their first live flow or after 2 s without flows; until then new
+  flows join the table in place instead of waiting behind "new flows".
+- Hubble reports replies as separate flows: the topology leaves them out (as Hubble UI does), so
+  edges point from client to server and "Show flows" of an edge matches its count.
+- On the kind Calico cluster BGP between the nodes came up once with "Invalid NEXT_HOP" (the
+  control plane had no route to the worker's pods); restarting calico-node fixed it (noted in the
+  script and AGENTS.md).
+
+Deviations: a topology click selects (side panel), a double-click/Enter/"Show flows" filters the
+table (board 18). Verdict chips count client-side; when the verdict is filtered server-side, the
+other verdicts show no count instead of a wrong 0.
+
+Deferred, with reasons:
+- OVN-Kubernetes ACL names: needs OpenShift with ACL logging; not testable on kind. On OpenShift
+  NetObserv is the backend; its drops are kernel drops, not policy names.
+- LokiStack (OpenShift's usual Loki): its gateway wants the user's token, which the service proxy
+  strips; NetObserv there shows the graph from metrics and says why the table is empty.
+- Hubble Relay with mutual TLS: the client certificate is in a Secret, which Kubyl doesn't read;
+  reported as unsupported.
+- Byte and packet counts on Hubble flows: Hubble doesn't report them per flow (the column shows
+  for Whisker and NetObserv).
+- The user's OpenShift test cluster: checked read-only in the spike (no NetObserv, OVN-Kubernetes),
+  so no forwards or queries were needed; Kubyl shows the no-source state with the NetObserv hint.
+
+User to-dos: republish the mockup artifact (board 18 was added to `design/mockups/generate.py`;
+the published artifact still shows boards 1–17).

@@ -43,6 +43,11 @@
 # 4245:80`, Loki's /loki/api/v1/query_range, or Whisker's UI (`kubectl port-forward -n
 # calico-system svc/whisker 8081`).
 #
+# Calico: if the control-plane node has no route to the worker's pods afterwards (calico-node
+# logs BGP "Invalid NEXT_HOP"), restart calico-node: kubectl -n calico-system rollout restart
+# ds/calico-node. Whisker is reachable through a port-forward only (the operator's
+# calico-system.whisker policy has no ingress rules).
+#
 # Each cluster is this script's alone: kube-system carries the annotation
 # kubyl.dev/installed-by=netflow-dev.sh and --delete removes only clusters with it. Never
 # installs anything into kind-kubyl-dev.
