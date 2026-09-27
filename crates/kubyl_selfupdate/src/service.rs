@@ -119,7 +119,7 @@ impl SelfUpdate {
         self.state = UpdateState::Checking;
         cx.notify();
         let channel = kubyl_settings::Settings::get::<SelfUpdateSettings>(cx).channel;
-        let task = cx.background_executor().spawn(async move {
+        let task = kubyl_core::spawn_kube(cx, async move {
             let manifest = download::fetch_manifest(channel).await?;
             Ok::<UpdateManifest, FetchError>(manifest)
         });
@@ -155,7 +155,7 @@ impl SelfUpdate {
         self.state = UpdateState::Downloading(manifest.clone());
         cx.notify();
         let for_task = manifest.clone();
-        let task = cx.background_executor().spawn(async move {
+        let task = kubyl_core::spawn_kube(cx, async move {
             let bytes = download::fetch_artifact(&for_task).await?;
             crate::apply::apply(&bytes).map_err(|err| {
                 tracing::error!(error = %err, "self-update apply failed");
