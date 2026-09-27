@@ -79,7 +79,7 @@ fn title_case(key: &str) -> String {
 pub fn describe(kind: &str, object: &Value, events: &[Value], now: Timestamp) -> String {
     // Whatever describes it, a Route's inline key never reaches the text.
     let masked;
-    let object = if route::has_inline_key(object) {
+    let object = if route::has_key_material(object) {
         let mut copy = object.clone();
         route::mask_inline_key(&mut copy);
         masked = copy;

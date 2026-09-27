@@ -510,13 +510,48 @@ pub fn has_inline_key(object: &Value) -> bool {
     inline_key(object).is_some()
 }
 
-/// Replaces a Route's inline key with [`MASK`], and kubectl's last-applied annotation (which
-/// holds the key too). Returns whether anything was masked.
-pub fn mask_inline_key(object: &mut Value) -> bool {
-    if !has_inline_key(object) {
+/// Whether kubectl's last-applied copy of a Route (the annotation's JSON text) holds a TLS key.
+/// Text that isn't JSON can't be checked and counts as holding one.
+pub fn applied_text_has_key(text: &str) -> bool {
+    if text.is_empty() || text == MASK {
         return false;
     }
-    if let Some(key) = object.pointer_mut("/spec/tls/key") {
+    match serde_json::from_str::<Value>(text) {
+        Ok(applied) => applied
+            .pointer("/spec/tls/key")
+            .and_then(Value::as_str)
+            .is_some_and(|k| !k.is_empty() && k != MASK),
+        Err(_) => true,
+    }
+}
+
+/// Whether a Route's last-applied annotation holds a TLS key: it can, after the key was taken
+/// out of `spec`.
+pub fn last_applied_has_key(object: &Value) -> bool {
+    is_route_object(object)
+        && object
+            .pointer("/metadata/annotations")
+            .and_then(|a| a.get(LAST_APPLIED))
+            .and_then(Value::as_str)
+            .is_some_and(applied_text_has_key)
+}
+
+/// Whether a Route holds a private key anywhere it's shown: `spec.tls.key` or kubectl's
+/// last-applied copy.
+pub fn has_key_material(object: &Value) -> bool {
+    has_inline_key(object) || last_applied_has_key(object)
+}
+
+/// Replaces a Route's inline key with [`MASK`], and kubectl's last-applied annotation when it
+/// may hold a key (the current one, or one taken out of `spec` since). Returns whether
+/// anything was masked.
+pub fn mask_inline_key(object: &mut Value) -> bool {
+    if !has_key_material(object) {
+        return false;
+    }
+    if has_inline_key(object)
+        && let Some(key) = object.pointer_mut("/spec/tls/key")
+    {
         *key = Value::String(MASK.into());
     }
     if let Some(annotation) = object
@@ -835,5 +870,29 @@ mod tests {
             "spec": {"tls": {"key": "x"}}});
         assert!(!mask_inline_key(&mut knative));
         assert!(is_route(GROUP, KIND) && !is_route("serving.knative.dev", KIND));
+    }
+
+    /// The key was taken out of `spec`, but kubectl's last-applied copy still holds it.
+    #[test]
+    fn stale_last_applied_keys_are_masked() {
+        let mut object = route_without_status(json!({"to": {"name": "web"},
+            "tls": {"termination": "edge"}}));
+        object["metadata"]["annotations"] = json!({
+            LAST_APPLIED: format!("{{\"spec\":{{\"tls\":{{\"key\":{KEY:?}}}}}}}"),
+        });
+        assert!(!has_inline_key(&object));
+        assert!(last_applied_has_key(&object));
+        assert!(has_key_material(&object));
+        assert!(mask_inline_key(&mut object));
+        assert_eq!(object["metadata"]["annotations"][LAST_APPLIED], MASK);
+        assert!(object["spec"]["tls"].get("key").is_none());
+        assert!(!object.to_string().contains("MIIEv"));
+        // A last-applied copy without a key stays readable; text that isn't JSON is masked.
+        let mut clean = route_without_status(json!({"to": {"name": "web"}}));
+        clean["metadata"]["annotations"] =
+            json!({LAST_APPLIED: "{\"spec\":{\"to\":{\"name\":\"web\"}}}"});
+        assert!(!mask_inline_key(&mut clean));
+        assert!(applied_text_has_key("not json"));
+        assert!(!applied_text_has_key(MASK));
     }
 }
