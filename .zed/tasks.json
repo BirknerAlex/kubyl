@@ -2,10 +2,10 @@
 // See: https://zed.dev/docs/tasks
 [
   {
-    "label": "Run kubyl (memory credential store)",
+    "label": "Run kubyl (file credential store, dev only)",
     "command": "cargo run -p kubyl",
     "env": {
-      "KUBYL_CREDENTIAL_STORE": "memory"
+      "KUBYL_CREDENTIAL_STORE": "file"
     },
     "use_new_terminal": false,
     "allow_concurrent_runs": false,
