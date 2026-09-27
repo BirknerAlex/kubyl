@@ -145,22 +145,22 @@ impl FlowsSection {
 impl Render for FlowsSection {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors().clone();
-        let text = match self.summary {
-            Some(summary) if summary.flows > 0 => {
-                let mut text = format!(
+        let (text, blocked) = match self.summary {
+            Some(summary) if summary.flows > 0 => (
+                format!(
                     "{} in the open Network Flows view",
                     widgets::plural(summary.flows, "flow", "flows")
-                );
-                if summary.blocked > 0 {
-                    text.push_str(&format!(" · {} blocked", widgets::count(summary.blocked)));
-                }
-                text
-            }
-            Some(_) => "No flows in the open Network Flows view.".into(),
-            None => "See this object's traffic, the policies that allow or block it and its peers."
-                .into(),
+                ),
+                (summary.blocked > 0)
+                    .then(|| format!(" · {} blocked", widgets::count(summary.blocked))),
+            ),
+            Some(_) => ("No flows in the open Network Flows view.".into(), None),
+            None => (
+                "See this object's traffic, the policies that allow or block it and its peers."
+                    .into(),
+                None,
+            ),
         };
-        let blocked = self.summary.is_some_and(|s| s.blocked > 0);
         let cluster = self.cluster.clone();
         let query = self.query.clone();
         v_flex()
@@ -177,14 +177,14 @@ impl Render for FlowsSection {
                     .child("NETWORK FLOWS"),
             )
             .child(
-                div()
+                h_flex()
+                    .flex_wrap()
                     .text_size(u(12.0))
-                    .text_color(if blocked {
-                        colors.red
-                    } else {
-                        colors.text_muted
-                    })
-                    .child(text),
+                    .text_color(colors.text_muted)
+                    .child(text)
+                    .when_some(blocked, |this, blocked| {
+                        this.child(div().text_color(colors.red).child(blocked))
+                    }),
             )
             .child(h_flex().child(widgets::button(
                 "details-show-flows",
