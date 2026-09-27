@@ -1,0 +1,40 @@
+name: Publish to Flathub
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  publish-flathub:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Update Flatpak manifest with release sha256
+        run: ./script/update-flatpak-manifest.sh "${{ steps.version.outputs.version }}"
+
+      - name: Commit updated manifest
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add io.github.birkneralex.Kubyl.yml
+          git commit -m "chore: update Flatpak manifest to v${{ steps.version.outputs.version }}" || true
+          git push origin main
+
+      - name: Submit to Flathub (manual)
+        # After first submission is approved, update the message below with the flathub-kubyl repo URL
+        run: |
+          echo "Flatpak manifest updated for v${{ steps.version.outputs.version }}"
+          echo "Flathub submission guide:"
+          echo "1. First time: Fork github.com/flathub/flathub and submit manifest via PR"
+          echo "2. After approval: Flathub CI will auto-rebuild on new releases (reads manifest from this repo)"
+          echo "3. Or: Create github.com/BirknerAlex/flathub-kubyl for Flathub to track directly"
