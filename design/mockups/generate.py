@@ -83,6 +83,7 @@ ICONS = {
  "listchecks": '<path d="M13 5h8"></path><path d="M13 12h8"></path><path d="M13 19h8"></path><path d="m3 17 2 2 4-4"></path><path d="m3 7 2 2 4-4"></path>',
  "anchor": '<path d="M12 22V8"></path><path d="M5 12H2a10 10 0 0 0 20 0h-3"></path><circle cx="12" cy="5" r="3"></circle>',
  "route": '<circle cx="6" cy="19" r="3"></circle><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"></path><circle cx="18" cy="5" r="3"></circle>',
+ "flows": '<circle cx="12" cy="4.5" r="2.5"></circle><path d="m10.2 6.3-3.9 3.9"></path><circle cx="4.5" cy="12" r="2.5"></circle><path d="M7 12h10"></path><circle cx="19.5" cy="12" r="2.5"></circle><path d="m13.8 17.7 3.9-3.9"></path><circle cx="12" cy="19.5" r="2.5"></circle>',
  "gear": '<circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>',
 }
 
@@ -267,7 +268,7 @@ def root(name, state=None, open_=False, color=C["dim"], prod=False, marker="", o
     return ti(name, 0, "wheel", open_=open_, root=True, color=color, on=on,
               extra=(PROD_MINI if prod else "") + marker + status_slot(state))
 
-def sidebar(active="Pods", cr_open=True, alerts=False):
+def sidebar(active="Pods", cr_open=True, alerts=False, flows=False):
     a = lambda n: n == active
     fav = lambda ns, cl, col, src, faint=False: (f'<div class="ti{" on" if active=="fav:"+ns+cl else ""}" style="padding-left:12px" title="{src}{" · not connected" if faint else ""}">{ic("star",13,C["yellow"],1.6,C["yellow"])}'
                                    f'<span class="n"><span style="color:{C["dim"] if faint else C["text"]}">{ns}</span> <span style="color:{C["faint"] if faint else C["dim"]}">· {cl}</span></span>'
@@ -285,6 +286,7 @@ def sidebar(active="Pods", cr_open=True, alerts=False):
         ti("Overview", 1, "gauge", on=a("Overview")),
         *([ti("Alerts", 1, "siren", on=a("Alerts"), extra=alert_badge("3", C["red"]))] if alerts else []),
         ti("Events", 1, "bell", "23", on=a("Events"), color=C["yellow"] if not a("Events") else None),
+        *([ti("Network Flows", 1, "flows", on=a("Flows"))] if flows else []),
         ti("Workloads", 1, open_=True),
         ti("Pods", 2, "box", "17", on=a("Pods")),
         ti("Deployments", 2, "layers", "9", on=a("Deployments")),
@@ -756,7 +758,7 @@ def clusters_screen(overlay=None, title="Clusters and kubeconfigs — Kubyl"):
 </div>
 <div style="display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--bv)"><button class="btn g">Cancel</button><button class="btn p">Use device code</button></div>
 </div></div>'''
-    content = f'<div style="flex:1;display:flex;min-height:0">{left}{right}</div>'
+    content = f'<div style="flex:1;display:flex;min-height:0;min-width:0">{left}{right}</div>'
     tb = tabs([("gear", "Clusters &amp; kubeconfigs", True), ("gauge", "Overview", False), ("box", "Pods", False)])
     inner = f'''<div class="app">
 {titlebar()}
@@ -3512,7 +3514,7 @@ def clusters_grouped_screen():
 <div class="card" style="overflow:hidden"><div class="th" style="{CC}"><span></span><span>CONTEXT</span><span>API SERVER</span><span>AUTH</span><span>STATUS</span></div>{rows}</div>
 <div class="card" style="padding:12px 16px;display:flex;gap:12px;align-items:center"><div style="flex:1"><div style="font-size:12.5px">One entry per cluster and user</div><div style="font-size:11.5px;color:var(--dim)">Contexts that differ only in their namespace (<span class="mono">oc project</span>) share one sidebar row · <span class="mono">kubernetes.group_contexts</span></div></div>{toggle(True)}</div>
 </div>'''
-    content = f'<div style="flex:1;display:flex;min-height:0">{left}{right}</div>'
+    content = f'<div style="flex:1;display:flex;min-height:0;min-width:0">{left}{right}</div>'
     tb = tabs([("gear", "Clusters &amp; kubeconfigs", True), ("box", "Pods", False)])
     inner = f'''<div class="app">
 {titlebar(f"{OCP_EU} · {JANE}", "shop", False, "OpenShift · v1.33.1")}
@@ -3641,6 +3643,352 @@ def contexts_palette_screen():
 </div>'''
     return page("@ contexts with status dots and aliases — Kubyl", inner)
 
+# ---------- 18. Network flows (phase 16) ----------
+VERDICT = {"forwarded": C["green"], "dropped": C["red"], "no reply": C["yellow"], "error": C["orange"], "audit": C["purple"]}
+
+def verdict_pill(v):
+    """Verdict cell: a dot and the word, colored; dropped rows also get a red tint."""
+    c = VERDICT[v]
+    return f'<span class="pill" style="color:{c}">{dot(c)}{v}</span>'
+
+def ep(ns, name, kind="pod"):
+    """An endpoint cell: namespace in dim, then the pod or workload; world and host endpoints get an icon."""
+    if kind == "world":
+        return f'<span style="display:flex;align-items:center;gap:5px;min-width:0">{ic("globe",12,C["dim"])}<span class="mono" style="font-size:11.5px;overflow:hidden;text-overflow:ellipsis">{name}</span></span>'
+    if kind == "host":
+        return f'<span style="display:flex;align-items:center;gap:5px;min-width:0">{ic("server",12,C["dim"])}<span class="mono" style="font-size:11.5px">{name}</span></span>'
+    return f'<span class="mono" style="font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block"><span style="color:var(--dim)">{ns}/</span>{name}</span>'
+
+def flows_header(cluster="prod-eu-west-1", prod=True, backend=None, active="Flows", counts=("12,418", None), paused=False, rate="184 flows/s", window="15m", compact=False):
+    """Cluster, backend indicator (tooltip: how it's reached), other backends, live state, time window."""
+    backend = backend or (f'<span class="chip" style="height:22px" title="kube-system/hubble-relay · through a temporary port-forward (127.0.0.1:51234) · Relay v1.20.2 · 8,190 flows buffered">'
+                          f'{ic("flows",11,C["green"])}Hubble Relay <span class="mono" style="font-size:11px">kube-system/hubble-relay</span> · v1.20.2 · 3/3 nodes</span>'
+                          f'<span style="font-size:12px;color:var(--dim);white-space:nowrap" title="Also found: NetObserv (FlowCollector cluster). Switch in the menu or with netflow.clusters.&lt;cluster&gt;.backend">also: NetObserv</span>')
+    live = (f'<span class="chip" style="color:var(--yellow)">{ic("pause",11,C["yellow"])}paused · 1,204 new</span>' if paused
+            else f'<span class="chip" style="color:var(--green)">{dot(C["green"])}live · {rate}</span>')
+    ranges = "".join(f'<span style="padding:3px 9px;{"background:#2d3b4d;color:#a8cdf3" if r == window else "color:var(--dim)"}">{r}</span>' for r in ["15m", "1h", "6h", "24h", "7d"])
+    picker = f'<div style="display:flex;border:1px solid var(--border);border-radius:5px;overflow:hidden;font-size:12px;flex-shrink:0">{ranges}</div>'
+    tabs_ = [("Flows", "list", counts[0]), ("Topology", "flows", counts[1])]
+    sub = "".join(f'<span style="display:flex;align-items:center;gap:6px;padding:0 10px;{"color:var(--text);box-shadow:inset 0 -2px 0 var(--accent)" if t == active else "color:var(--dim)"}">{ic(i,13,C["accent"] if t == active else C["dim"])}{t}' + (f'<span class="chip" style="height:17px">{c}</span>' if c else "") + '</span>' for t, i, c in tabs_)
+    return f'''<div style="display:flex;align-items:center;gap:10px;padding:0 12px 0 16px;height:44px;flex-shrink:0;border-bottom:1px solid var(--bv);white-space:nowrap;overflow:hidden">
+<span style="font-size:15px;font-weight:600">{cluster}</span>{'<span class="prod">PROD</span>' if prod else ''}
+{backend}
+<div style="flex:1"></div>
+{"" if compact else live}
+<button class="ib" aria-label="{"Resume" if paused else "Pause"}">{ic("play" if paused else "pause",13)}</button>
+{"" if compact else picker}
+<button class="ib" aria-label="More">{ic("more",14)}</button>
+</div>
+<div style="display:flex;gap:2px;padding:0 8px;border-bottom:1px solid var(--bv);height:34px;align-items:stretch;flex-shrink:0">{sub}</div>'''
+
+def fchip(text, server=True, removable=True):
+    """A filter term as a chip. A bolt: the backend applied it server-side; none: applied in Kubyl."""
+    mark = f'<span title="applied by Hubble Relay (server-side)" style="display:flex">{ic("zap",10,C["accent"])}</span>' if server else f'<span title="applied in Kubyl over the buffered flows" style="display:flex">{ic("filter",10,C["dim"])}</span>'
+    x = f'<span style="color:var(--dim);display:flex">{ic("x",10)}</span>' if removable else ""
+    return f'<span class="chip mchip" style="gap:5px">{mark}{text}{x}</span>'
+
+def flows_filters(expr, chips, verdicts=((("All", "12,418"), True), (("Forwarded", "12,187"), False), (("Dropped", "231"), False), (("No reply", "0"), False)), focus=False, scope="Cluster"):
+    vchips = "".join(f'<span class="chip{" on" if on else ""}">{dot(VERDICT[l.lower()]) if l.lower() in VERDICT else ""}{l}<span class="mono" style="font-size:11px;color:var(--dim)">{n}</span></span>' for (l, n), on in verdicts)
+    return f'''<div style="display:flex;flex-direction:column;gap:6px;padding:7px 12px;border-bottom:1px solid var(--bv);flex-shrink:0">
+<div style="display:flex;align-items:center;gap:6px;white-space:nowrap">
+<div class="inp{" focus" if focus else ""}" style="flex:1;height:26px;min-width:0">{ic("filter",12)}<span class="mono" style="font-size:12px;color:{"var(--text)" if expr else "var(--faint)"};overflow:hidden;white-space:nowrap">{expr or "ns=payments verdict=dropped port=443, or any text"}</span>{'<span style="width:1px;height:14px;background:var(--accent)"></span>' if focus else ""}</div>
+<button class="btn g" style="height:24px;padding:0 6px">{ic("folder",12)}{scope}{ic("cd",11)}</button>
+</div>
+<div style="display:flex;align-items:center;gap:5px;white-space:nowrap;overflow:hidden">{chips}<span style="flex:1"></span>{vchips}</div>
+</div>'''
+
+# time, dir, source, destination, proto/port (or L7), verdict, policy, bytes/pkts
+FLOWS = [
+ ("14:02:31.482", "in", ep("storefront", "shopper-6fd84cfbb4-8wr4x"), ep("payments", "ledger-api-5cd68f8d6c-qmjh7"), "TCP :80", "dropped", '<span style="color:var(--red)">isolated · no policy allows it</span>', "—"),
+ ("14:02:31.479", "in", ep("storefront", "scraper-655c844475-v6zbq"), ep("storefront", "web-574ff6d9fd-6hd5l"), "TCP :80", "dropped", f'<span style="color:var(--red);display:flex;gap:5px;align-items:center">{ic("shield",11,C["red"])}denied by web-guard</span>', "—"),
+ ("14:02:31.466", "in", ep("storefront", "shopper-6fd84cfbb4-8wr4x"), ep("storefront", "web-574ff6d9fd-8tmc5"), '<span class="mono" style="font-size:11.5px">HTTP GET /search?q=…&amp;token=…</span>', "forwarded", "web-guard", "—"),
+ ("14:02:31.421", "in", ep("payments", "checkout-client-548847d7b8-22xmb"), ep("payments", "ledger-api-5cd68f8d6c-qmjh7"), "TCP :80", "forwarded", "ledger-api-isolation", "—"),
+ ("14:02:31.409", "out", ep("payments", "checkout-client-548847d7b8-22xmb"), ep("kube-system", "coredns-559f6c778d-9ffn8"), '<span class="mono" style="font-size:11.5px">DNS ledger-api.payments.svc…</span>', "forwarded", '<span style="color:var(--dim)">—</span>', "—"),
+ ("14:02:31.388", "in", ep("", "203.0.113.24", "world"), ep("payments", "checkout-api-6f6b95ccc5-gtqjf"), "TCP :8443", "forwarded", "checkout-public", "—"),
+ ("14:02:31.371", "out", ep("payments", "payment-gateway-557f6f8557-fbfd4"), ep("", "api.bank.example.com", "world"), "TCP :443", "forwarded", "gateway-egress", "—"),
+ ("14:02:31.350", "in", ep("storefront", "shopper-6fd84cfbb4-8wr4x"), ep("payments", "checkout-api-6f6b95ccc5-kddkk"), "TCP :80", "forwarded", '<span style="color:var(--dim)">—</span>', "—"),
+ ("14:02:31.342", "in", ep("", "ip-10-0-12-41", "host"), ep("payments", "checkout-api-6f6b95ccc5-s5kk2"), "TCP :80", "forwarded", '<span style="color:var(--dim)">health check</span>', "—"),
+ ("14:02:31.318", "in", ep("storefront", "shopper-6fd84cfbb4-8wr4x"), ep("payments", "ledger-api-5cd68f8d6c-qmjh7"), "TCP :80", "dropped", '<span style="color:var(--red)">isolated · no policy allows it</span>', "—"),
+ ("14:02:31.305", "in", ep("storefront", "scraper-655c844475-v6zbq"), ep("storefront", "web-574ff6d9fd-8tmc5"), "TCP :80", "dropped", f'<span style="color:var(--red);display:flex;gap:5px;align-items:center">{ic("shield",11,C["red"])}denied by web-guard</span>', "—"),
+ ("14:02:31.277", "out", ep("storefront", "shopper-6fd84cfbb4-8wr4x"), ep("kube-system", "coredns-559f6c778d-2k7vq"), '<span class="mono" style="font-size:11.5px">DNS checkout-api.payments…</span>', "forwarded", '<span style="color:var(--dim)">—</span>', "—"),
+ ("14:02:31.240", "in", ep("payments", "checkout-events-6b4dc748-8lv8h"), ep("payments", "checkout-api-6f6b95ccc5-gtqjf"), "TCP :80", "forwarded", '<span style="color:var(--dim)">—</span>', "—"),
+ ("14:02:31.221", "in", ep("storefront", "shopper-6fd84cfbb4-8wr4x"), ep("storefront", "web-574ff6d9fd-6hd5l"), '<span class="mono" style="font-size:11.5px">HTTP GET / 200</span>', "forwarded", "web-guard", "—"),
+ ("14:02:31.198", "in", ep("payments", "checkout-client-548847d7b8-22xmb"), ep("payments", "checkout-api-6f6b95ccc5-kddkk"), "TCP :80", "forwarded", '<span style="color:var(--dim)">—</span>', "—"),
+ ("14:02:31.180", "out", ep("monitoring", "prometheus-0"), ep("payments", "checkout-api-6f6b95ccc5-s5kk2"), "TCP :9090", "forwarded", "allow-scrapes", "—"),
+ ("14:02:31.152", "in", ep("storefront", "shopper-6fd84cfbb4-8wr4x"), ep("payments", "ledger-api-5cd68f8d6c-qmjh7"), "TCP :80", "dropped", '<span style="color:var(--red)">isolated · no policy allows it</span>', "—"),
+]
+FL_COLS = "grid-template-columns: 96px 34px minmax(0,1.3fr) minmax(0,1.3fr) minmax(0,1.05fr) 88px minmax(0,1fr) 56px;column-gap:10px"
+
+def flow_rows(rows, selected=1):
+    out = []
+    for i, (t, d, s, dst, proto, v, pol, b) in enumerate(rows):
+        tint = "background:#d0727712;" if v == "dropped" and i != selected else ("background:#dec18410;" if v == "no reply" and i != selected else "")
+        out.append(f'''<div class="tr{" on" if i == selected else ""}" style="{FL_COLS};height:28px;{tint}">
+<span class="mono" style="font-size:11.5px;color:var(--muted)">{t}</span>
+<span style="font-size:11.5px;color:var(--dim)">{d}</span>{s}{dst}
+<span style="font-size:12px">{proto}</span>{verdict_pill(v)}
+<span style="font-size:12px;overflow:hidden;text-overflow:ellipsis">{pol}</span>
+<span class="mono" style="font-size:11.5px;color:var(--dim);text-align:right">{b}</span></div>''')
+    return "".join(out)
+
+FL_HEAD = f'<div class="th" style="{FL_COLS}"><span>TIME {ic("cd",10)}</span><span>DIR</span><span>SOURCE</span><span>DESTINATION</span><span>PROTOCOL · PORT</span><span>VERDICT</span><span>POLICY</span><span style="text-align:right">BYTES</span></div>'
+FL_HINTS = [("↵", "Details"), ("space", "Pause"), ("c", "Filter to connection"), ("s", "Filter to source"), ("d", "Filter to destination"), ("t", "Topology"), ("o", "Open pod"), ("/", "Filter")]
+
+def flows_shell(active_tab, content, overlay="", cluster="prod-eu-west-1", ns="payments", prod=True, meta="EKS · v1.30.4", side=None):
+    sessions = f'<span title="Network flows · svc/hubble-relay → :51234 (temporary port-forward)">{ic("flows",12,C["green"])}1 forward</span>'
+    inner = f'''<div class="app">
+{titlebar(cluster, ns, prod, meta)}
+<div class="body">
+{side or sidebar("Flows", alerts=True, flows=True)}
+<main class="main">
+{tabs([("flows", "Network Flows", True), ("box", "Pods", False), ("gauge", "Overview", False)])}
+{content}
+</main>
+</div>
+{statusbar(left_extra=sessions, cluster=cluster, ns=ns)}
+{overlay}
+</div>'''
+    return page(active_tab, inner)
+
+def flow_detail():
+    kv = lambda k, v: f'<dt>{k}</dt><dd>{v}</dd>'
+    raw = [("event_type", "5 · policy-verdict"), ("traffic_direction", "INGRESS"), ("drop_reason_desc", "POLICY_DENY"), ("policy_match_type", "1 · L3"),
+           ("ingress_denied_by", "storefront/web-guard (CiliumNetworkPolicy, rev 3)"), ("node_name", "ip-10-0-14-7"), ("source.identity", "8791"), ("destination.identity", "31844"),
+           ("l4.TCP.flags", "SYN"), ("is_reply", "false"), ("uuid", "b0c9ec1d-1166-43cf-ae43-…")]
+    raw_rows = "".join(f'<div style="display:grid;grid-template-columns:132px minmax(0,1fr);gap:8px"><span style="color:var(--dim)">{k}</span><span style="color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{v}</span></div>' for k, v in raw)
+    side = lambda title, ns, pod, wl, ip, port, labels: f'''<div class="dsec"><p class="dtitle">{title}</p>
+<div style="display:flex;align-items:center;gap:7px;font-size:12px;margin-bottom:6px">{ic("box",13,C["accent"])}<a href="#" class="mono" style="font-size:11.5px;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{ns}/{pod}</a></div>
+<dl class="kv" style="margin:0;grid-template-columns:84px minmax(0,1fr)">{kv("Workload", f'<a href="#" style="text-decoration:none">Deployment {wl}</a>')}{kv("Address", f'<span class="mono" style="font-size:11.5px">{ip}{port}</span>')}</dl>
+<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:7px">{"".join(f'<span class="chip mchip">{l}</span>' for l in labels)}</div></div>'''
+    return f'''<aside class="dock" style="width:352px;overflow:hidden">
+<div class="phead" style="border-bottom:1px solid var(--bv)"><span style="flex:1;color:var(--text);font-weight:500">Flow</span><button class="ib" aria-label="Close">{ic("x",13)}</button></div>
+<div class="dsec">
+<div style="display:flex;gap:10px;align-items:center;margin-bottom:6px">{verdict_pill("dropped")}<span class="chip">TCP :80</span><span class="chip">ingress</span></div>
+<div style="font-size:12px;color:var(--muted)">14:02:31.479 <span style="color:var(--dim)">· 12:02:31 UTC · policy verdict</span></div>
+<div style="display:flex;gap:6px;margin-top:10px"><button class="btn" style="height:24px">{ic("filter",12)}This connection</button><button class="btn g" style="height:24px">{ic("copy",12)}Copy as hubble observe</button></div>
+</div>
+<div class="dsec"><p class="dtitle">Policy</p>
+<div style="display:flex;gap:8px;align-items:flex-start;font-size:12.5px">{ic("shield",14,C["red"])}<div style="flex:1;min-width:0"><div>Denied by <a href="#" style="text-decoration:none">storefront/web-guard</a></div><div style="color:var(--dim);font-size:12px;margin-top:2px">CiliumNetworkPolicy · ingressDeny rule · revision 3</div></div></div></div>
+{side("Source", "storefront", "scraper-655c844475-v6zbq", "scraper", "10.244.1.205", ":46224", ["app=scraper", "team=storefront"])}
+{side("Destination", "storefront", "web-574ff6d9fd-6hd5l", "web", "10.244.1.117", ":80", ["app=web", "team=storefront"])}
+<div class="dsec" style="border-bottom:0"><p class="dtitle">Hubble fields</p>
+<div class="mono" style="display:flex;flex-direction:column;gap:4px;font-size:11px">{raw_rows}</div></div>
+</aside>'''
+
+def network_flows_screen():
+    chips = fchip("ns=storefront") + fchip("dst.port=80") + fchip("policy=web-guard", False) + '<span style="font-size:11.5px;color:var(--dim);margin-left:4px">1,284 of 12,418 flows</span>'
+    suggest = f'''<div style="position:absolute;left:12px;top:132px;width:300px;background:#353b45;border:1px solid var(--border);border-radius:7px;box-shadow:0 10px 30px rgba(0,0,0,.45);padding:4px;font-size:12px;z-index:3">
+<div style="padding:4px 8px;color:var(--dim);font-size:11px">verdict · seen in the buffer</div>
+{"".join(f'<div style="display:flex;align-items:center;gap:8px;padding:4px 8px;border-radius:4px;{"background:#2d3b4d" if i == 0 else ""}">{dot(VERDICT[v])}<span class="mono" style="flex:1">verdict={v.replace(" ", "-")}</span><span class="mono" style="color:var(--dim);font-size:11px">{n}</span></div>' for i, (v, n) in enumerate([("dropped", "231"), ("forwarded", "12,187")]))}
+<div style="padding:4px 8px;color:var(--faint);font-size:11px;border-top:1px solid var(--bv);margin-top:3px">tab completes · src. dst. restrict a side</div></div>'''
+    rows = [r for r in FLOWS]
+    center = f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0;position:relative">
+{flows_filters("ns=storefront dst.port=80 policy=web-guard verdict=dr", chips, focus=True)}
+{FL_HEAD}
+<div style="flex:1;overflow:hidden">{flow_rows(rows)}</div>
+{hints(FL_HINTS)}
+{suggest}
+</div>'''
+    content = f'<div style="flex:1;display:flex;flex-direction:column;min-height:0">{flows_header()}<div style="flex:1;display:flex;min-height:0">{center}{flow_detail()}</div></div>'
+    return flows_shell("Network flows — Kubyl", content)
+
+# ----- topology -----
+TOPO_NS = [  # name, x, y, r, color, flows/s
+ ("payments", 430, 290, 46, C["orange"], "96/s"), ("storefront", 220, 170, 36, C["accent"], "61/s"),
+ ("kube-system", 660, 150, 30, C["purple"], "22/s"), ("monitoring", 680, 420, 24, C["cyan"], "8/s"),
+ ("ingress-nginx", 190, 410, 26, "#c678dd", "14/s"), ("world", 430, 510, 22, C["dim"], "5/s"),
+]
+TOPO_EDGES = [  # a, b, width, kind, label
+ ("storefront", "payments", 6, "forwarded", ""), ("storefront", "payments", 2.5, "dropped", "231 dropped"),
+ ("payments", "kube-system", 3, "forwarded", ""), ("storefront", "kube-system", 2.5, "forwarded", ""),
+ ("monitoring", "payments", 2, "forwarded", ""), ("ingress-nginx", "storefront", 4.5, "forwarded", ""),
+ ("world", "ingress-nginx", 4, "forwarded", ""), ("payments", "world", 2, "forwarded", ""),
+ ("monitoring", "kube-system", 1.5, "forwarded", ""),
+]
+
+def topo_svg(nodes, edges, w, h, selected=None, sel_edge=None, labels_inside=True):
+    pos = {n: (x, y, r, c) for n, x, y, r, c, *_ in nodes}
+    out = []
+    for i, (a, b, width, kind, label) in enumerate(edges):
+        x1, y1, r1, _ = pos[a]; x2, y2, r2, _ = pos[b]
+        # Two edges between one pair bend apart.
+        bend = 18 if kind == "dropped" else (0 if not any(e[0] == a and e[1] == b and e[3] == "dropped" for e in edges) else -10)
+        mx, my = (x1 + x2) / 2, (y1 + y2) / 2
+        dx, dy = x2 - x1, y2 - y1
+        ln = math.hypot(dx, dy) or 1
+        cx, cy = mx - dy / ln * bend, my + dx / ln * bend
+        col = {"forwarded": "#6f8a5a", "dropped": C["red"], "no reply": C["yellow"]}[kind]
+        is_sel = sel_edge == i
+        dash = ' stroke-dasharray="6 4"' if kind == "dropped" else ""
+        # Arrow head at the target's rim.
+        ex, ey = x2 - (x2 - cx) / (math.hypot(x2 - cx, y2 - cy) or 1) * (r2 + 3), y2 - (y2 - cy) / (math.hypot(x2 - cx, y2 - cy) or 1) * (r2 + 3)
+        ang = math.atan2(ey - cy, ex - cx)
+        ah = 7 + width
+        p1 = (ex - ah * math.cos(ang - 0.4), ey - ah * math.sin(ang - 0.4)); p2 = (ex - ah * math.cos(ang + 0.4), ey - ah * math.sin(ang + 0.4))
+        glow = f'<path d="M{x1},{y1} Q{cx:.1f},{cy:.1f} {ex:.1f},{ey:.1f}" fill="none" stroke="{C["accent"]}" stroke-opacity=".35" stroke-width="{width + 7}"></path>' if is_sel else ""
+        out.append(f'{glow}<path d="M{x1},{y1} Q{cx:.1f},{cy:.1f} {ex:.1f},{ey:.1f}" fill="none" stroke="{col}" stroke-width="{width}" stroke-opacity=".85"{dash}></path>'
+                   f'<path d="M{ex:.1f},{ey:.1f} L{p1[0]:.1f},{p1[1]:.1f} L{p2[0]:.1f},{p2[1]:.1f} Z" fill="{col}"></path>')
+        if label:
+            out.append(f'<text x="{cx:.1f}" y="{cy - 6:.1f}" fill="{C["red"]}" font-size="11" font-family="IBM Plex Sans, system-ui, sans-serif" text-anchor="middle">{label}</text>')
+    for n, x, y, r, c, *rest in nodes:
+        is_sel = n == selected
+        ring = f'<circle cx="{x}" cy="{y}" r="{r + 5}" fill="none" stroke="{C["accent"]}" stroke-width="2"></circle>' if is_sel else ""
+        icon_node = n == "world"
+        fill = "#3b414d" if icon_node else c
+        out.append(f'{ring}<circle cx="{x}" cy="{y}" r="{r}" fill="{fill}" fill-opacity="{".9" if icon_node else ".22"}" stroke="{c}" stroke-width="2"></circle>')
+        if rest and rest[0]:
+            out.append(f'<text x="{x}" y="{y + 4}" fill="{C["text"]}" font-size="11" font-family="IBM Plex Mono, ui-monospace, monospace" text-anchor="middle">{rest[0]}</text>')
+        out.append(f'<text x="{x}" y="{y + r + 16}" fill="{C["text"] if is_sel else C["muted"]}" font-size="12" font-family="IBM Plex Sans, system-ui, sans-serif" text-anchor="middle" font-weight="{600 if is_sel else 400}">{n}</text>')
+    return f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" aria-label="Topology">{"".join(out)}</svg>'
+
+def topo_toolbar(zoom="Namespaces", summary="6 namespaces · 9 edges"):
+    seg = "".join(f'<span style="padding:3px 10px;{"background:#2d3b4d;color:#a8cdf3" if z == zoom else "color:var(--dim)"}">{z}</span>' for z in ["Namespaces", "Workloads"])
+    legend = (f'<span class="pill" style="font-size:11.5px;color:var(--muted)"><span style="width:14px;height:3px;background:#6f8a5a;display:inline-block"></span>forwarded</span>'
+              f'<span class="pill" style="font-size:11.5px;color:var(--muted)"><span style="width:14px;height:0;border-top:3px dashed {C["red"]};display:inline-block"></span>dropped</span>'
+              f'<span class="pill" style="font-size:11.5px;color:var(--muted)"><span style="width:14px;height:3px;background:{C["yellow"]};display:inline-block"></span>no reply</span>'
+              f'<span style="font-size:11.5px;color:var(--dim)">width: flows</span>')
+    return f'''<div style="display:flex;align-items:center;gap:10px;padding:0 12px;height:38px;border-bottom:1px solid var(--bv);flex-shrink:0;white-space:nowrap">
+<div style="display:flex;border:1px solid var(--border);border-radius:5px;overflow:hidden;font-size:12px">{seg}</div>
+<span style="font-size:12px;color:var(--dim)">{summary}</span>
+<div style="flex:1"></div>{legend}
+<button class="btn g" style="height:24px;padding:0 6px" title="Fit to view">{ic("max",12)}Fit</button>
+</div>'''
+
+def topo_panel(title, icon, sub, blocks, buttons):
+    return f'''<aside class="dock" style="width:320px;overflow:hidden">
+<div class="phead" style="border-bottom:1px solid var(--bv)"><span style="flex:1;color:var(--text);font-weight:500">{title}</span><button class="ib" aria-label="Close">{ic("x",13)}</button></div>
+<div class="dsec"><div style="display:flex;align-items:center;gap:8px;font-size:13px">{icon}<span class="mono" style="font-size:12.5px">{sub}</span></div>
+<div style="display:flex;gap:6px;margin-top:10px">{buttons}</div></div>
+{blocks}
+</aside>'''
+
+def peer_rows(rows):
+    return "".join(f'<div style="display:grid;grid-template-columns:minmax(0,1fr) 62px 70px;gap:8px;font-size:12px;padding:3px 0"><span class="mono" style="font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{a}</span><span class="mono" style="font-size:11.5px;color:var(--muted);text-align:right">{n}</span><span style="text-align:right;color:{C["red"] if d else "var(--dim)"}">{d or "—"}</span></div>' for a, n, d in rows)
+
+def network_topology_screen():
+    svg = topo_svg(TOPO_NS, TOPO_EDGES, 840, 600, selected="payments")
+    canvas = f'<div style="flex:1;position:relative;overflow:hidden;background:radial-gradient(circle at 1px 1px,#30353f 1px,transparent 0) 0 0/22px 22px">{svg}<div style="position:absolute;right:12px;bottom:10px;display:flex;flex-direction:column;gap:2px"><button class="ib" style="background:#2f343e;border:1px solid var(--border)" aria-label="Zoom in">{ic("plus",13)}</button><button class="ib" style="background:#2f343e;border:1px solid var(--border)" aria-label="Zoom out">{ic("minus",13)}</button></div></div>'
+    blocks = (f'<div class="dsec"><p class="dtitle">Traffic · last 15m</p><dl class="kv" style="margin:0;grid-template-columns:96px minmax(0,1fr)"><dt>In</dt><dd>5,210 flows <span style="color:var(--dim)">· 4 peers</span></dd><dt>Out</dt><dd>3,164 flows <span style="color:var(--dim)">· 3 peers</span></dd><dt>Dropped</dt><dd style="color:var(--red)">231 <span style="color:var(--dim)">· isolated, no policy allows them</span></dd></dl></div>'
+              f'<div class="dsec"><p class="dtitle">Peers <span style="text-transform:none;letter-spacing:0;font-weight:400">· flows · dropped</span></p>{peer_rows([("← storefront", "3,902", "231"), ("← monitoring", "610", ""), ("← world", "698", ""), ("→ kube-system", "2,480", ""), ("→ world", "684", "")])}</div>'
+              f'<div class="dsec" style="border-bottom:0"><p class="dtitle">Workloads</p>{peer_rows([("checkout-api", "4,012", ""), ("ledger-api", "1,361", "231"), ("checkout-client", "1,420", ""), ("payment-gateway", "702", "")])}</div>')
+    panel = topo_panel("Namespace", ic("folder", 14, C["orange"]), "payments", blocks,
+                       f'<button class="btn" style="height:24px">{ic("list",12)}Show flows</button><button class="btn g" style="height:24px">{ic("flows",12)}Workloads</button>')
+    center = f'<div style="flex:1;display:flex;flex-direction:column;min-width:0">{flows_filters("", fchip("ns=payments", True, False).replace("ns=payments", "scope: all namespaces"), focus=False)}{topo_toolbar()}{canvas}{hints([("click", "Select"), ("double-click", "Show flows"), ("drag", "Pan"), ("scroll", "Zoom"), ("w", "Workloads"), ("f", "Fit"), ("/", "Filter")])}</div>'
+    content = f'<div style="flex:1;display:flex;flex-direction:column;min-height:0">{flows_header(active="Topology", counts=("12,418", "6 · 9"))}<div style="flex:1;display:flex;min-height:0">{center}{panel}</div></div>'
+    return flows_shell("Network topology — Kubyl", content)
+
+TOPO_WL = [  # name, x, y, r, color, label
+ ("storefront/shopper", 150, 170, 26, C["accent"], ""), ("storefront/scraper", 120, 390, 18, C["accent"], ""),
+ ("storefront/web", 320, 280, 30, C["accent"], ""), ("payments/checkout-api", 540, 170, 30, C["orange"], ""),
+ ("payments/ledger-api", 540, 420, 24, C["orange"], ""), ("payments/checkout-client", 710, 300, 22, C["orange"], ""),
+ ("kube-system/coredns", 760, 90, 22, C["purple"], ""), ("payments/checkout-events", 720, 470, 16, C["orange"], ""),
+]
+TOPO_WL_EDGES = [
+ ("storefront/shopper", "storefront/web", 5, "forwarded", ""), ("storefront/scraper", "storefront/web", 3, "dropped", "denied by web-guard"),
+ ("storefront/shopper", "payments/checkout-api", 3.5, "forwarded", ""), ("storefront/shopper", "payments/ledger-api", 3, "dropped", "isolated"),
+ ("payments/checkout-client", "payments/ledger-api", 3, "forwarded", ""), ("payments/checkout-client", "payments/checkout-api", 3, "forwarded", ""),
+ ("payments/checkout-client", "kube-system/coredns", 2, "forwarded", ""), ("storefront/shopper", "kube-system/coredns", 2, "forwarded", ""),
+ ("payments/checkout-events", "payments/checkout-api", 1.5, "forwarded", ""),
+]
+
+def network_topology_workloads_screen():
+    # Namespace hulls behind the workloads.
+    hulls = (f'<rect x="70" y="120" width="310" height="330" rx="22" fill="{C["accent"]}" fill-opacity=".05" stroke="{C["accent"]}" stroke-opacity=".3" stroke-dasharray="4 4"></rect>'
+             f'<text x="86" y="140" fill="{C["accent"]}" font-size="11.5" font-family="IBM Plex Sans, system-ui, sans-serif">storefront</text>'
+             f'<rect x="480" y="120" width="300" height="400" rx="22" fill="{C["orange"]}" fill-opacity=".05" stroke="{C["orange"]}" stroke-opacity=".3" stroke-dasharray="4 4"></rect>'
+             f'<text x="496" y="140" fill="{C["orange"]}" font-size="11.5" font-family="IBM Plex Sans, system-ui, sans-serif">payments</text>')
+    svg = topo_svg(TOPO_WL, TOPO_WL_EDGES, 840, 580, sel_edge=1)
+    svg = svg.replace('aria-label="Topology">', 'aria-label="Topology">' + hulls, 1)
+    # Short labels: the workload without its namespace.
+    for n, *_ in TOPO_WL:
+        svg = svg.replace(f'>{n}</text>', f'>{n.split("/")[1]}</text>')
+    canvas = f'<div style="flex:1;position:relative;overflow:hidden;background:radial-gradient(circle at 1px 1px,#30353f 1px,transparent 0) 0 0/22px 22px">{svg}</div>'
+    blocks = (f'<div class="dsec"><dl class="kv" style="margin:0;grid-template-columns:96px minmax(0,1fr)"><dt>Flows</dt><dd>412 <span style="color:var(--dim)">· last 15m</span></dd><dt>Verdict</dt><dd>{verdict_pill("dropped")}</dd><dt>Port</dt><dd class="mono" style="font-size:11.5px">TCP :80</dd></dl></div>'
+              f'<div class="dsec"><p class="dtitle">Policy</p><div style="display:flex;gap:8px;align-items:flex-start;font-size:12.5px">{ic("shield",14,C["red"])}<div>Denied by <a href="#" style="text-decoration:none">storefront/web-guard</a><div style="color:var(--dim);font-size:12px;margin-top:2px">CiliumNetworkPolicy · ingressDeny · all 412 flows</div></div></div></div>'
+              f'<div class="dsec" style="border-bottom:0"><p class="dtitle">Pods</p>{peer_rows([("scraper-655c844475-v6zbq → web-…-6hd5l", "209", "209"), ("scraper-655c844475-v6zbq → web-…-8tmc5", "203", "203")])}</div>')
+    panel = topo_panel("Connection", ic("right", 14, C["red"]), "scraper → web", blocks,
+                       f'<button class="btn" style="height:24px">{ic("list",12)}Show flows</button><button class="btn g" style="height:24px">{ic("shield",12)}Open web-guard</button>')
+    center = f'<div style="flex:1;display:flex;flex-direction:column;min-width:0">{flows_filters("ns=storefront,payments", fchip("ns=storefront,payments"), focus=False)}{topo_toolbar("Workloads", "8 workloads · 9 edges")}{canvas}{hints([("click", "Select"), ("double-click", "Show flows"), ("drag", "Pan"), ("scroll", "Zoom"), ("n", "Namespaces"), ("f", "Fit"), ("/", "Filter")])}</div>'
+    content = f'<div style="flex:1;display:flex;flex-direction:column;min-height:0">{flows_header(active="Topology", counts=("12,418", "8 · 9"))}<div style="flex:1;display:flex;min-height:0">{center}{panel}</div></div>'
+    return flows_shell("Network topology: workloads — Kubyl", content)
+
+# ----- other backends: Calico Whisker, NetObserv without Loki -----
+WH_COLS = "grid-template-columns: 84px minmax(0,1.2fr) minmax(0,1.2fr) 58px 80px minmax(0,1.1fr) 82px;column-gap:8px"
+
+def network_backends_screen():
+    wh_rows = [
+        ("14:02:15–30", "storefront/scraper-655c844475-*", "storefront/web-574ff6d9fd-*", "TCP :80", "dropped", f'{ic("shield",11,C["red"])}<span>web-guard <span style="color:var(--dim)">· tier default</span></span>', "8 · 592 B"),
+        ("14:02:15–30", "storefront/shopper-6fd84cfbb4-*", "payments/ledger-api-5cd68f8d6c-*", "TCP :80", "dropped", f'<span style="color:var(--red)">isolated by ledger-api-isolation</span>', "30 · 2.2 KB"),
+        ("14:02:15–30", "storefront/shopper-6fd84cfbb4-*", "storefront/web-574ff6d9fd-*", "TCP :80", "forwarded", '<span>web-guard <span style="color:var(--dim)">· tier default</span></span>', "210 · 31 KB"),
+        ("14:02:15–30", "payments/checkout-client-548847d7b8-*", "payments/ledger-api-5cd68f8d6c-*", "TCP :80", "forwarded", "ledger-api-isolation", "90 · 11 KB"),
+        ("14:02:15–30", "storefront/scraper-655c844475-*", "kube-system/coredns-559f6c778d-*", "UDP :53", "forwarded", '<span style="color:var(--dim)">kns.kube-system (profile)</span>', "4 · 453 B"),
+        ("14:02:00–15", "payments/checkout-client-548847d7b8-*", "payments/checkout-api-6f6b95ccc5-*", "TCP :80", "forwarded", '<span style="color:var(--dim)">kns.payments (profile)</span>', "88 · 10 KB"),
+    ]
+    rows = "".join(f'''<div class="tr" style="{WH_COLS};height:28px;{"background:#d0727712;" if v == "dropped" else ""}"><span class="mono" style="font-size:11.5px;color:var(--muted)">{t}</span>{ep(s.split("/")[0], s.split("/")[1])}{ep(d.split("/")[0], d.split("/")[1])}<span style="font-size:12px">{p}</span>{verdict_pill(v)}<span style="font-size:12px;display:flex;gap:5px;align-items:center;overflow:hidden;white-space:nowrap">{pol}</span><span class="mono" style="font-size:11.5px;color:var(--dim);text-align:right">{b}</span></div>''' for t, s, d, p, v, pol, b in wh_rows)
+    wh_head = f'<div class="th" style="{WH_COLS}"><span>TIME</span><span>SOURCE</span><span>DESTINATION</span><span>PORT</span><span>VERDICT</span><span>POLICY</span><span style="text-align:right">PKTS · BYTES</span></div>'
+    whisker_backend = (f'<span class="chip" style="height:22px">{ic("flows",11,C["green"])}Calico Whisker <span class="mono" style="font-size:11px">calico-system/whisker</span> · v3.32.2</span>'
+                       f'<span style="font-size:12px;color:var(--dim)" title="Whisker reports 15-second aggregates per source and destination">15 s aggregates</span>')
+    left = f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0;border-right:1px solid var(--border)">
+{tabs([("flows", "Network Flows · staging", True)], tools=False)}
+{flows_header("staging-eu-west-1", False, whisker_backend, counts=("1,906", None), rate="12 records/s")}
+{flows_filters("verdict=dropped", fchip("verdict=dropped").replace("Hubble Relay", "Whisker"), verdicts=((("All", "1,906"), False), (("Forwarded", "1,860"), False), (("Dropped", "46"), True)))}
+{wh_head}<div style="flex:1;overflow:hidden">{rows}</div>
+{hints([("↵", "Details"), ("space", "Pause"), ("t", "Topology"), ("/", "Filter")])}
+</div>'''
+    netobserv_backend = (f'<span class="chip" style="height:22px;color:var(--yellow)" title="FlowCollector cluster: spec.loki.enable is false">{ic("flows",11,C["yellow"])}NetObserv 2.0 · metrics only</span>')
+    no_nodes = [("payments", 220, 200, 40, C["orange"], ""), ("storefront", 90, 110, 30, C["accent"], ""), ("kube-system", 350, 110, 26, C["purple"], ""), ("openshift-ingress", 90, 300, 26, "#c678dd", ""), ("world", 350, 300, 20, C["dim"], "")]
+    no_edges = [("storefront", "payments", 5, "forwarded", ""), ("payments", "kube-system", 3, "forwarded", ""), ("openshift-ingress", "storefront", 4, "forwarded", ""), ("world", "openshift-ingress", 3, "forwarded", ""), ("storefront", "kube-system", 2, "forwarded", "")]
+    right = f'''<div style="width:470px;flex-shrink:0;display:flex;flex-direction:column;min-width:0">
+{tabs([("flows", "Network Flows · ocp-lab", True)], tools=False)}
+{flows_header("ocp-lab.example.com", False, netobserv_backend, active="Topology", counts=(None, "5 · 5"), compact=True)}
+<div style="display:flex;gap:10px;align-items:flex-start;padding:10px 14px;border-bottom:1px solid var(--bv);font-size:12.5px;background:#dec18410">{ic("info",14,C["yellow"])}<div style="flex:1;line-height:18px"><b style="font-weight:600">No single flows: NetObserv doesn't store them here.</b> <span style="color:var(--muted)">Its FlowCollector has Loki turned off, so the Flows tab stays empty. The topology comes from NetObserv's metrics (<span class="mono" style="font-size:11.5px">netobserv_workload_ingress_bytes_total</span>) through Prometheus.</span></div></div>
+{topo_toolbar("Namespaces", "5 namespaces · bytes, 1h")}
+<div style="flex:1;position:relative;overflow:hidden;background:radial-gradient(circle at 1px 1px,#30353f 1px,transparent 0) 0 0/22px 22px;padding:30px 20px">{topo_svg(no_nodes, no_edges, 430, 420)}</div>
+{hints([("click", "Select"), ("w", "Workloads"), ("f", "Fit"), ("/", "Filter")])}
+</div>'''
+    content = f'<div style="flex:1;display:flex;min-height:0;min-width:0">{left}{right}</div>'
+    inner = f'''<div class="app">
+{titlebar("staging-eu-west-1", "storefront", False, "kind · v1.37.0")}
+<div class="body">{sidebar("Flows", flows=True)}<main class="main" style="flex-direction:row">{content}</main></div>
+{statusbar(cluster="staging-eu-west-1", ns="storefront")}
+</div>'''
+    return page("Network flows: Calico Whisker and NetObserv — Kubyl", inner)
+
+# ----- states: nothing to read, forbidden -----
+def network_states_screen():
+    checked = [("minus", "Hubble Relay", 'no <span class="mono" style="font-size:11.5px">hubble-relay</span> Service in kube-system or cilium, none labelled <span class="mono" style="font-size:11.5px">k8s-app=hubble-relay</span>'),
+               ("minus", "Calico Whisker", 'no <span class="mono" style="font-size:11.5px">calico-system/whisker</span> Service'),
+               ("minus", "NetObserv", 'no <span class="mono" style="font-size:11.5px">FlowCollector</span> (flows.netobserv.io isn\'t served)')]
+    crow = "".join(f'<div style="display:flex;gap:10px;padding:7px 0;border-bottom:1px solid var(--bv);font-size:12.5px;align-items:flex-start">{ic(i,13,C["dim"])}<div style="flex:1;min-width:0"><div>{t}</div><div style="color:var(--dim);font-size:12px;margin-top:2px">{d}</div></div></div>' for i, t, d in checked)
+    card = lambda title, text, link: f'<div class="card" style="flex:1;padding:10px 12px;display:flex;flex-direction:column;gap:5px;min-width:0"><div style="font-weight:500;font-size:12.5px">{title}</div><div style="color:var(--muted);font-size:12px;line-height:17px;flex:1">{text}</div><a href="#" style="font-size:12px;text-decoration:none;display:flex;gap:5px;align-items:center">{ic("ext",11)}{link}</a></div>'
+    none_ = f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0;border-right:1px solid var(--border)">
+{tabs([("flows", "Network Flows · homelab-k3s", True)], tools=False)}
+<div style="display:flex;align-items:center;gap:10px;padding:0 16px;height:44px;border-bottom:1px solid var(--bv);flex-shrink:0"><span style="font-size:15px;font-weight:600">homelab-k3s</span><span class="chip" style="height:22px">{ic("flows",11,C["dim"])}no flow source</span><div style="flex:1"></div><button class="btn g">{ic("refresh",13)}Look again</button></div>
+<div style="flex:1;display:flex;flex-direction:column;gap:14px;padding:26px 30px">
+<div style="display:flex;gap:12px;align-items:center">{ic("flows",22,C["dim"])}<div><div style="font-size:16px;font-weight:600">No network flows for this cluster</div><div style="font-size:12.5px;color:var(--muted);margin-top:2px">It runs flannel, which records no flows. Kubyl reads them from one of these:</div></div></div>
+<div style="display:flex;gap:10px">{card("NetObserv", "Works with any CNI, flannel included: an eBPF agent on each node. Single flows need its Loki; the topology works from its metrics.", "Install NetObserv")}{card("Cilium with Hubble", "Replaces the CNI. Hubble Relay names the policy behind each verdict and sees HTTP and DNS.", "Cilium on k3s")}{card("Calico 3.30+ with Whisker", "Replaces the CNI. Whisker's flow log shows the policy trace of each verdict.", "Calico Whisker")}</div>
+<div class="card" style="padding:6px 14px 4px"><p class="dtitle" style="margin:6px 0 2px">What was checked · 1 min ago</p>{crow}</div>
+<div style="font-size:12.5px;color:var(--muted);line-height:19px">Somewhere else? Name it in settings.json:</div>
+<div class="mono" style="font-size:11.5px;line-height:17px;padding:8px 10px;border-radius:6px;background:#23272e;color:var(--muted)">"netflow": {{ "clusters": {{ "homelab-k3s": {{ "backend": "hubble",<br>&nbsp;&nbsp;"hubble": {{ "namespace": "cilium", "service": "relay" }} }} }} }}</div>
+</div>
+</div>'''
+    forbidden = f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0">
+{tabs([("flows", "Network Flows · prod-eu-west-1", True)], tools=False)}
+<div style="display:flex;align-items:center;gap:10px;padding:0 16px;height:44px;border-bottom:1px solid var(--bv);flex-shrink:0"><span style="font-size:15px;font-weight:600">prod-eu-west-1</span><span class="prod">PROD</span><span class="chip" style="height:22px;color:var(--red)">{ic("flows",11,C["red"])}Hubble Relay · forbidden</span><div style="flex:1"></div><button class="btn g">{ic("refresh",13)}Try again</button></div>
+<div style="flex:1;display:flex;flex-direction:column;gap:14px;padding:26px 30px">
+<div style="display:flex;gap:12px;align-items:center">{ic("lock",22,C["red"])}<div><div style="font-size:16px;font-weight:600">Kubyl can't reach Hubble Relay</div><div style="font-size:12.5px;color:var(--muted);margin-top:2px">Relay speaks gRPC, which goes through a temporary port-forward on this machine.</div></div></div>
+<div class="card" style="padding:12px 14px;display:flex;gap:10px;align-items:flex-start">{ic("err",14,C["red"])}<div style="font-size:12.5px;line-height:19px">Forbidden: you can't <span class="mono" style="font-size:11.5px">create pods/portforward</span> in <span class="mono" style="font-size:11.5px">kube-system</span>.<div style="color:var(--muted)">Ask for a role that can create pods/portforward on the hubble-relay pods in kube-system. Nothing else is needed: Kubyl never reads Secrets or exposes a port.</div></div></div>
+<div style="font-size:12px;color:var(--dim)">Also found: NetObserv (FlowCollector cluster) · <a href="#" style="text-decoration:none">Use NetObserv instead</a></div>
+</div>
+</div>'''
+    content = f'<div style="flex:1;display:flex;min-height:0;min-width:0">{none_}{forbidden}</div>'
+    inner = f'''<div class="app">
+{titlebar("homelab-k3s", "default", False, "k3s · v1.36.3")}
+<div class="body">{sidebar("Flows", flows=True)}<main class="main" style="flex-direction:row">{content}</main></div>
+{statusbar(cluster="homelab-k3s", ns="default")}
+</div>'''
+    return page("Network flows: no source, forbidden — Kubyl", inner)
+
 SCREENS = [
  ("Main.dc.html", "1 · Pods (k9s-style table + details)", pods_screen),
  ("Routes.dc.html", "1 · OpenShift Routes under Network, with details", routes_screen),
@@ -3688,6 +4036,11 @@ SCREENS = [
  ("ClusterStatus.dc.html", "17 · Connection dots, one row per cluster and user", clusters_grouped_screen),
  ("ConfigMapData.dc.html", "17 · ConfigMap data in the details", configmap_screen),
  ("ContextsPalette.dc.html", "17 · @ contexts with status dots and aliases; a revealed Secret", contexts_palette_screen),
+ ("NetworkFlows.dc.html", "18 · Network flows: live table, filter chips and completion, flow details, backend indicator", network_flows_screen),
+ ("NetworkTopology.dc.html", "18 · Topology at namespace zoom, a namespace selected", network_topology_screen),
+ ("NetworkTopologyWorkloads.dc.html", "18 · Topology at workload zoom, a denied connection selected", network_topology_workloads_screen),
+ ("NetworkBackends.dc.html", "18 · Calico Whisker (aggregated records, policy trace) and NetObserv without Loki (metrics only)", network_backends_screen),
+ ("NetworkStates.dc.html", "18 · No flow source (what to install for the CNI) and a forbidden port-forward", network_states_screen),
 ]
 
 boards, order = {}, []
