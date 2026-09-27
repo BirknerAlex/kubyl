@@ -83,16 +83,27 @@ impl Ord for Version {
             .then(self.patch.unwrap_or(0).cmp(&other.patch.unwrap_or(0)))
             // `-rc.3`, `-ec.1`, `-alpha`… come before the release itself.
             .then_with(|| is_prerelease(&other.suffix).cmp(&is_prerelease(&self.suffix)))
+            // Between pre-releases the stage decides first (`-ec.3` < `-rc.1`).
+            .then_with(|| prerelease_stage(&self.suffix).cmp(&prerelease_stage(&other.suffix)))
             .then_with(|| suffix_numbers(&self.suffix).cmp(&suffix_numbers(&other.suffix)))
     }
 }
 
-/// A pre-release suffix (OpenShift's candidate channels list `-ec.N` and `-rc.N` builds).
-fn is_prerelease(suffix: &str) -> bool {
+/// Pre-release stages in their order (OpenShift's candidate channels list engineering,
+/// feature and release candidates: `-ec.N`, `-fc.N`, `-rc.N`).
+const PRERELEASE_STAGES: &[&str] = &["alpha", "beta", "ec", "fc", "pre", "rc"];
+
+/// The stage of a pre-release suffix, if it is one.
+fn prerelease_stage(suffix: &str) -> Option<usize> {
     let suffix = suffix.trim_start_matches(['-', '.']).to_ascii_lowercase();
-    ["rc", "ec", "alpha", "beta", "pre"]
+    PRERELEASE_STAGES
         .iter()
-        .any(|p| suffix.starts_with(p))
+        .position(|stage| suffix.starts_with(stage))
+}
+
+/// A pre-release suffix.
+fn is_prerelease(suffix: &str) -> bool {
+    prerelease_stage(suffix).is_some()
 }
 
 /// The numbers in a suffix (`+k3s2` → `[3, 2]`, `-gke.1014001` → `[1014001]`).
@@ -158,6 +169,10 @@ mod tests {
         // Pre-releases sort before their release, and among themselves by number.
         assert_eq!(compare("4.18.0-rc.3", "4.18.0"), Ordering::Less);
         assert_eq!(compare("4.18.0-ec.2", "4.18.0-ec.1"), Ordering::Greater);
+        // Stages first: an engineering candidate is older than any release candidate.
+        assert_eq!(compare("4.18.0-ec.1", "4.18.0-rc.1"), Ordering::Less);
+        assert_eq!(compare("4.18.0-ec.3", "4.18.0-rc.1"), Ordering::Less);
+        assert_eq!(compare("4.18.0-fc.2", "4.18.0-ec.4"), Ordering::Greater);
         assert_eq!(compare("4.18.0-rc.1", "4.17.12"), Ordering::Greater);
         // k3s/GKE build suffixes aren't pre-releases.
         assert_eq!(compare("v1.33.4+k3s2", "v1.33.4"), Ordering::Greater);
