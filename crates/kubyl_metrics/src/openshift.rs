@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use kubyl_kube::auth::BearerToken;
+use kubyl_resources::route::Route;
 use secrecy::SecretString;
 use serde_json::Value;
 use tokio::sync::Mutex;
@@ -133,31 +134,14 @@ pub fn parse_token_request(response: &Value) -> Option<SecretString> {
 /// `/api`), not a prefix to add: the router passes request paths through unchanged, so
 /// `/api/v1/query` goes to the host root.
 pub fn parse_route_url(routes: &Value, service: &str) -> Option<String> {
-    routes["items"].as_array()?.iter().find_map(|route| {
-        let spec = &route["spec"];
-        if spec["to"]["kind"].as_str().unwrap_or("Service") != "Service"
-            || spec["to"]["name"].as_str()? != service
-        {
+    routes["items"].as_array()?.iter().find_map(|object| {
+        let route = Route::parse(object);
+        let to = route.backends.first()?;
+        if !to.is_service() || to.name != service {
             return None;
         }
-        let host = route["status"]["ingress"]
-            .as_array()?
-            .iter()
-            .find(|ingress| {
-                ingress["conditions"].as_array().is_some_and(|conditions| {
-                    conditions
-                        .iter()
-                        .any(|c| c["type"] == "Admitted" && c["status"] == "True")
-                })
-            })?["host"]
-            .as_str()
-            .filter(|h| !h.is_empty())?;
-        let scheme = if spec.get("tls").is_some_and(|t| !t.is_null()) {
-            "https"
-        } else {
-            "http"
-        };
-        Some(format!("{scheme}://{host}"))
+        let host = route.admitted_host()?;
+        Some(format!("{}://{host}", route.scheme()))
     })
 }
 

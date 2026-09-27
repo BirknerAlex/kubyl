@@ -1181,16 +1181,18 @@ impl YamlEditor {
                 ),
             );
         }
-        if self.secret.is_some() {
+        if let Some(values) = &self.secret {
+            let route_key = values.route_key.is_some();
             editor_section = editor_section.child(
                 pill(
                     "pill-secrets",
                     IconName::Key,
                     colors.yellow,
-                    if self.options.reveal_secrets {
-                        "Mask secret values".into()
-                    } else {
-                        "Reveal secret values".into()
+                    match (self.options.reveal_secrets, route_key) {
+                        (true, false) => "Mask secret values".into(),
+                        (false, false) => "Reveal secret values".into(),
+                        (true, true) => "Mask the TLS key".into(),
+                        (false, true) => "Reveal the TLS key".into(),
                     },
                 )
                 .on_click(cx.listener(|this, _, window, cx| this.toggle_secrets(window, cx))),

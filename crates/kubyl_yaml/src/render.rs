@@ -4,12 +4,15 @@
 //! - Secrets: `data` values are shown masked (`••••••••`) or decoded, never base64. The
 //!   original values stay in memory ([`SecretValues`]) so masked values are sent back unchanged
 //!   and edited or decoded ones are re-encoded. Nothing decoded is written anywhere.
+//! - OpenShift Routes: an inline private key (`spec.tls.key`) is masked the same way, revealed
+//!   by the same toggle and sent back unchanged while it's still masked.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
+use kubyl_resources::route;
 use serde_json::{Map, Value};
 
 use crate::parse::{self, Node, NodeValue, Path};
@@ -32,15 +35,30 @@ impl Default for RenderOptions {
     }
 }
 
-/// A Secret's original `data`, kept in memory for re-encoding.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// A Secret's original `data` (or a Route's inline key), kept in memory for re-encoding.
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct SecretValues {
     /// Key → base64 as stored on the server.
     pub original: BTreeMap<String, String>,
     /// Keys whose value isn't UTF-8 text; they are shown (and sent) as base64.
     pub binary: BTreeSet<String>,
-    /// kubectl's last-applied annotation, which holds the whole Secret; always masked.
+    /// kubectl's last-applied annotation, which holds the whole Secret (or the Route with its
+    /// key); always masked.
     pub last_applied: Option<String>,
+    /// An OpenShift Route's `spec.tls.key` as stored on the server.
+    pub route_key: Option<String>,
+}
+
+/// Never prints the values (they end up in logs and panics otherwise).
+impl std::fmt::Debug for SecretValues {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SecretValues")
+            .field("keys", &self.original.keys().collect::<Vec<_>>())
+            .field("binary", &self.binary)
+            .field("last_applied", &self.last_applied.as_ref().map(|_| MASK))
+            .field("route_key", &self.route_key.as_ref().map(|_| MASK))
+            .finish()
+    }
 }
 
 /// kubectl's copy of the last applied object (for Secrets: including `data`).
@@ -117,7 +135,84 @@ pub fn render(object: &Value, options: RenderOptions) -> (String, Option<SecretV
         }
         secret = Some(values);
     }
+    // The key in `spec`, or only in kubectl's last-applied copy (taken out of `spec` since).
+    if route::has_key_material(&object) {
+        let mut values = SecretValues {
+            route_key: route::inline_key(&object).map(String::from),
+            ..Default::default()
+        };
+        values.last_applied = object
+            .pointer(&format!(
+                "/metadata/annotations/{}",
+                LAST_APPLIED.replace('/', "~1")
+            ))
+            .and_then(Value::as_str)
+            .map(String::from);
+        // Masks the key and the last-applied copy; a revealed key is put back in plain text.
+        route::mask_inline_key(&mut object);
+        if options.reveal_secrets
+            && let (Some(slot), Some(key)) =
+                (object.pointer_mut("/spec/tls/key"), &values.route_key)
+        {
+            *slot = Value::String(key.clone());
+        }
+        secret = Some(values);
+    }
     (to_yaml(&sorted(object)), secret)
+}
+
+/// The Route documents in `text`.
+fn route_roots(parsed: &parse::Parsed) -> impl Iterator<Item = &Node> {
+    parsed.roots().filter(|root| {
+        root.get("kind").and_then(Node::as_str) == Some(route::KIND)
+            && root
+                .get("apiVersion")
+                .and_then(Node::as_str)
+                .is_some_and(|api| api.starts_with("route.openshift.io/"))
+    })
+}
+
+/// The `spec.tls.key` entries of the Route documents in `text`.
+fn route_key_entries(parsed: &parse::Parsed) -> Vec<&parse::Entry> {
+    route_roots(parsed)
+        .filter_map(|root| root.find_entry(&Path::keys(&["spec", "tls", "key"])))
+        .collect()
+}
+
+/// Edits that mask every inline Route key in `text` (rendered manifests: Helm, Argo CD), and
+/// kubectl's last-applied copy of those Routes. Values already masked stay as they are.
+pub fn mask_route_key_edits(text: &str) -> Vec<Edit> {
+    let parsed = parse::parse(text);
+    let unmasked = |entry: &&parse::Entry| {
+        entry
+            .value
+            .as_str()
+            .is_some_and(|v| v != MASK && !v.is_empty())
+    };
+    route_roots(&parsed)
+        .filter(|root| {
+            root.find_entry(&Path::keys(&["spec", "tls", "key"]))
+                .as_ref()
+                .is_some_and(unmasked)
+                // A key taken out of `spec` may still be in the last-applied copy.
+                || root
+                    .find_entry(&Path::keys(&["metadata", "annotations", LAST_APPLIED]))
+                    .and_then(|entry| entry.value.as_str())
+                    .is_some_and(route::applied_text_has_key)
+        })
+        .flat_map(|root| {
+            [
+                root.find_entry(&Path::keys(&["spec", "tls", "key"])),
+                root.find_entry(&Path::keys(&["metadata", "annotations", LAST_APPLIED])),
+            ]
+        })
+        .flatten()
+        .filter(unmasked)
+        .map(|entry| Edit {
+            range: value_range(text, &entry.value),
+            text: MASK.to_string(),
+        })
+        .collect()
 }
 
 /// Keys in alphabetical order at every level, like `kubectl get -o yaml` (stable diffs no
@@ -141,12 +236,21 @@ pub fn to_yaml(value: &Value) -> String {
 
 /// Replaces the Secret values in `object` (from the buffer) with what the server must get:
 /// masked values → the original base64, binary values as they are, everything else encoded.
+/// A Route's masked inline key → the original key.
 pub fn restore_secret(object: &mut Value, values: Option<&SecretValues>) {
-    if !is_secret(object) {
+    let route = route::is_route_object(object) && object.get("kind").is_some();
+    if !is_secret(object) && !route {
         return;
     }
     let empty = SecretValues::default();
     let values = values.unwrap_or(&empty);
+    if route
+        && let (Some(original), Some(key)) =
+            (&values.route_key, object.pointer_mut("/spec/tls/key"))
+        && key.as_str() == Some(MASK)
+    {
+        *key = Value::String(original.clone());
+    }
     if let (Some(original), Some(annotation)) = (
         &values.last_applied,
         object
@@ -156,6 +260,9 @@ pub fn restore_secret(object: &mut Value, values: Option<&SecretValues>) {
     ) && annotation.as_str() == Some(MASK)
     {
         *annotation = Value::String(original.clone());
+    }
+    if route {
+        return;
     }
     let Some(data) = object.get_mut("data").and_then(Value::as_object_mut) else {
         return;
@@ -268,8 +375,8 @@ fn column(text: &str, offset: usize) -> usize {
     offset - parse::line_range(text, offset).start
 }
 
-/// Edits that reveal (decode) or mask the Secret values in `text`. Values the user changed
-/// stay as they are.
+/// Edits that reveal (decode) or mask the Secret values (and a Route's inline key) in `text`.
+/// Values the user changed stay as they are.
 pub fn toggle_secret_edits(text: &str, values: &SecretValues, reveal: bool) -> Vec<Edit> {
     let parsed = parse::parse(text);
     let mut edits = Vec::new();
@@ -295,6 +402,24 @@ pub fn toggle_secret_edits(text: &str, values: &SecretValues, reveal: bool) -> V
             range: value_range(text, &entry.value),
             text: replacement,
         });
+    }
+    if let Some(original) = &values.route_key {
+        for entry in route_key_entries(&parsed) {
+            let Some(current) = entry.value.as_str() else {
+                continue;
+            };
+            let replacement = if reveal && current == MASK {
+                yaml_scalar(original, column(text, entry.key.span.start))
+            } else if !reveal && current == original {
+                MASK.to_string()
+            } else {
+                continue;
+            };
+            edits.push(Edit {
+                range: value_range(text, &entry.value),
+                text: replacement,
+            });
+        }
     }
     edits
 }
@@ -454,6 +579,83 @@ mod tests {
         );
     }
 
+    const ROUTE_KEY: &str =
+        "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBg\n-----END PRIVATE KEY-----\n";
+
+    fn route() -> Value {
+        json!({
+            "apiVersion": "route.openshift.io/v1",
+            "kind": "Route",
+            "metadata": {"name": "shop-secure", "namespace": "shop",
+                "annotations": {LAST_APPLIED: format!("{{\"spec\":{{\"tls\":{{\"key\":{ROUTE_KEY:?}}}}}}}")}},
+            "spec": {
+                "host": "secure.apps.example.com",
+                "to": {"kind": "Service", "name": "shop-api"},
+                "tls": {"termination": "reencrypt", "certificate": "CERT", "key": ROUTE_KEY}
+            }
+        })
+    }
+
+    #[test]
+    fn route_keys_are_masked_revealed_and_restored() {
+        let (text, values) = render(&route(), RenderOptions::default());
+        let values = values.expect("a Route with a key keeps it in memory");
+        assert!(!text.contains("MIIEvQIBADANBg"), "{text}");
+        assert!(text.contains(&format!("key: {MASK}")), "{text}");
+        assert!(text.contains(&format!("{LAST_APPLIED}: {MASK}")), "{text}");
+        assert!(text.contains("certificate: CERT"), "{text}");
+        assert!(!format!("{values:?}").contains("MIIEvQIBADANBg"));
+
+        // The toggle reveals it as a block, masks it again, and an edit stays.
+        let revealed = apply_edits(&text, toggle_secret_edits(&text, &values, true));
+        assert!(
+            revealed.contains("key: |\n      -----BEGIN PRIVATE KEY-----\n      MIIEvQIBADANBg"),
+            "{revealed}"
+        );
+        let masked = apply_edits(&revealed, toggle_secret_edits(&revealed, &values, false));
+        assert_eq!(masked, text);
+        let (shown, _) = render(
+            &route(),
+            RenderOptions {
+                reveal_secrets: true,
+                ..Default::default()
+            },
+        );
+        assert!(shown.contains("MIIEvQIBADANBg"), "{shown}");
+        assert!(
+            shown.contains(&format!("{LAST_APPLIED}: {MASK}")),
+            "{shown}"
+        );
+
+        // Applying a masked key sends the original; a new key is sent as typed.
+        let mut object = parse::parse(&text).roots().next().unwrap().to_json();
+        restore_secret(&mut object, Some(&values));
+        assert_eq!(object["spec"]["tls"]["key"], ROUTE_KEY);
+        assert_eq!(
+            object["metadata"]["annotations"][LAST_APPLIED],
+            route()["metadata"]["annotations"][LAST_APPLIED]
+        );
+        let edited = text.replace(&format!("key: {MASK}"), "key: new-key");
+        let mut object = parse::parse(&edited).roots().next().unwrap().to_json();
+        restore_secret(&mut object, Some(&values));
+        assert_eq!(object["spec"]["tls"]["key"], "new-key");
+
+        // Rendered manifests (Helm, Argo CD) mask keys without a live object.
+        let manifest = to_yaml(&route());
+        let masked = apply_edits(&manifest, mask_route_key_edits(&manifest));
+        assert!(!masked.contains("MIIEvQIBADANBg"), "{masked}");
+        assert!(masked.contains(&format!("key: {MASK}")), "{masked}");
+        assert!(mask_route_key_edits(&masked).is_empty());
+        // Routes without a key (in `spec` or the last-applied copy) render as they are.
+        let mut plain = route();
+        plain["spec"]["tls"] = json!({"termination": "edge"});
+        plain["metadata"]
+            .as_object_mut()
+            .unwrap()
+            .remove("annotations");
+        assert!(render(&plain, RenderOptions::default()).1.is_none());
+    }
+
     #[test]
     fn managers_and_managed_fields_toggle() {
         let object = secret();
@@ -489,5 +691,29 @@ mod tests {
             json!({"metadata": {"name": "x", "resourceVersion": "1", "uid": "u"}, "status": {}});
         strip_server_fields(&mut object);
         assert_eq!(object, json!({"metadata": {"name": "x"}}));
+    }
+
+    /// The key was taken out of `spec`; kubectl's last-applied copy still holds it.
+    #[test]
+    fn stale_route_keys_in_last_applied_are_masked_and_restored() {
+        let mut stale = route();
+        stale["spec"]["tls"].as_object_mut().unwrap().remove("key");
+        let (text, values) = render(&stale, RenderOptions::default());
+        let values = values.expect("the last-applied copy is kept in memory");
+        assert!(values.route_key.is_none());
+        assert!(!text.contains("MIIEvQIBADANBg"), "{text}");
+        assert!(text.contains(&format!("{LAST_APPLIED}: {MASK}")), "{text}");
+        // Applying sends the original annotation back.
+        let mut object = parse::parse(&text).roots().next().unwrap().to_json();
+        restore_secret(&mut object, Some(&values));
+        assert_eq!(
+            object["metadata"]["annotations"][LAST_APPLIED],
+            stale["metadata"]["annotations"][LAST_APPLIED]
+        );
+        // Rendered manifests mask it too.
+        let manifest = to_yaml(&stale);
+        let masked = apply_edits(&manifest, mask_route_key_edits(&manifest));
+        assert!(!masked.contains("MIIEvQIBADANBg"), "{masked}");
+        assert!(mask_route_key_edits(&masked).is_empty());
     }
 }

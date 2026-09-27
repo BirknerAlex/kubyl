@@ -86,6 +86,7 @@ icons! {
     Plus => "plus",
     RefreshCw => "refresh-cw",
     RotateCcw => "rotate-ccw",
+    Route => "route",
     Rows => "rows-2",
     Search => "search",
     Server => "server",

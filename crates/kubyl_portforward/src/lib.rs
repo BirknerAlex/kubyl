@@ -2,7 +2,7 @@
 //!
 //! - [`resolve`]: Pod/Service/Deployment/StatefulSet/DaemonSet -> pod + remote port, re-run for
 //!   every new local connection so Service forwards survive a pod restart; the port list for
-//!   the picker and HTTP detection.
+//!   the picker and HTTP detection; Routes and Ingresses → their backend Service and port.
 //! - [`listener`]: the local TCP listener and the per-connection kube portforward bridge, off
 //!   the UI thread.
 //! - [`manager::PortForwardManager`]: starts/stops forwards, tracks their state (listening,
@@ -34,7 +34,8 @@ use resolve::{ForwardKind, RemotePort};
 actions!(
     portforward,
     [
-        /// Opens the Port-Forward dialog for the selected Pod/Service/workload.
+        /// Opens the Port-Forward dialog for the selected Pod/Service/workload (for a Route or
+        /// Ingress: its backend Service, at the port it uses).
         StartForward,
         /// Forwards the selected Pod/Service/workload's first port to a free local port,
         /// without the dialog.
@@ -54,6 +55,13 @@ const FORWARDABLE: &[&str] = &[
     "daemonsets",
 ];
 
+/// Pods, Services and workloads forward themselves; Routes and Ingresses forward their backend
+/// Service ([`resolve::BACKEND_KINDS`]).
+fn forwardable(target: &ResourceRef) -> bool {
+    FORWARDABLE.contains(&target.gvr.resource.as_str())
+        || resolve::forwards_to_backend(&target.gvr.group, &target.gvr.resource)
+}
+
 /// Registers the manager, saved forwards and actions.
 pub fn init(cx: &mut App) {
     let manager = PortForwardManager::install(cx);
@@ -66,7 +74,7 @@ pub fn init(cx: &mut App) {
     .detach();
 
     let available = |target: &ResourceRef, caps: &kubyl_core::ClusterCaps| {
-        !caps.read_only && FORWARDABLE.contains(&target.gvr.resource.as_str())
+        !caps.read_only && forwardable(target)
     };
     ActionRegistry::register(
         cx,
@@ -95,6 +103,10 @@ pub fn init(cx: &mut App) {
         let Some((target, client)) = selected(cx) else {
             return;
         };
+        if resolve::forwards_to_backend(&target.gvr.group, &target.gvr.resource) {
+            backend_forward(target, client, true, cx);
+            return;
+        }
         let namespace = target.namespace.clone().unwrap_or_default();
         let (resource, name) = (
             target.gvr.resource.clone(),
@@ -115,7 +127,11 @@ pub fn init(cx: &mut App) {
         });
     });
     cx.on_action(|_: &QuickForward, cx| {
-        if let Some((target, _)) = selected(cx) {
+        if let Some((target, client)) = selected(cx) {
+            if resolve::forwards_to_backend(&target.gvr.group, &target.gvr.resource) {
+                backend_forward(target, client, false, cx);
+                return;
+            }
             start_target_forward(
                 target,
                 ForwardChoice {
@@ -201,7 +217,7 @@ fn selected(cx: &mut App) -> Option<(ResourceRef, kube::Client)> {
     let target = ResourceSelection::global(cx)
         .primary()
         .map(|s| s.target.clone())
-        .filter(|t| t.is_object() && FORWARDABLE.contains(&t.gvr.resource.as_str()))?;
+        .filter(|t| t.is_object() && forwardable(t))?;
     let manager = ConnectionManager::global(cx);
     if manager.read(cx).caps(&target.cluster).read_only {
         let name = manager.read(cx).display_name(&target.cluster);
@@ -257,6 +273,54 @@ fn forward_port(target: ResourceRef, port: u16, cx: &mut App) {
         },
         cx,
     );
+}
+
+/// ⇧F (`dialog`) and alt-⇧F on a Route or Ingress: forwards its backend Service (a Route's
+/// `spec.to`, an Ingress's first backend) at the Service port it uses. The Route/Ingress and the
+/// Service are read on Tokio first; then ⇧F opens the Service's dialog with that port chosen
+/// and alt-⇧F starts it like the details' one-click forward. Alternate backends of a Route
+/// forward from their rows in the Route's details. Errors are toasts that say what's missing.
+fn backend_forward(target: ResourceRef, client: kube::Client, dialog: bool, cx: &mut App) {
+    let namespace = target.namespace.clone().unwrap_or_default();
+    let (group, resource, name) = (
+        target.gvr.group.clone(),
+        target.gvr.resource.clone(),
+        target.name.clone().unwrap_or_default(),
+    );
+    let task = kubyl_core::spawn_kube(cx, async move {
+        resolve::backend_forward(client, &namespace, &group, &resource, &name).await
+    });
+    cx.spawn(async move |cx| {
+        let result = task.await;
+        cx.update(|cx| match result {
+            Err(err) => error(cx, format!("Port-forward: {err}.")),
+            Ok(backend) => {
+                let service = ResourceRef::object(
+                    target.cluster.clone(),
+                    Gvr::new("", "v1", "services"),
+                    target.namespace.clone(),
+                    backend.service.clone(),
+                );
+                if !dialog {
+                    forward_port(service, backend.port, cx);
+                    return;
+                }
+                with_window(cx, move |window, cx| {
+                    let start = service.clone();
+                    dialog::forward_to(
+                        service,
+                        gpui::Task::ready(Ok(backend.ports)),
+                        Some(backend.port),
+                        Some(backend.note),
+                        move |choice, _, cx| start_target_forward(start.clone(), choice, cx),
+                        window,
+                        cx,
+                    );
+                });
+            }
+        });
+    })
+    .detach();
 }
 
 /// The local port a one-click forward tries first: the remote port, or `+ 8000` for
@@ -406,6 +470,23 @@ pub fn start_forward(client: kube::Client, spec: ForwardSpec, cx: &mut App) -> F
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn routes_and_ingresses_are_forwardable() {
+        let target = |group: &str, resource: &str| {
+            ResourceRef::object(
+                ClusterId::new("c"),
+                Gvr::new(group, "v1", resource),
+                Some("shop".into()),
+                "x".into(),
+            )
+        };
+        assert!(forwardable(&target("route.openshift.io", "routes")));
+        assert!(forwardable(&target("networking.k8s.io", "ingresses")));
+        assert!(forwardable(&target("", "services")));
+        assert!(!forwardable(&target("serving.knative.dev", "routes")));
+        assert!(!forwardable(&target("", "configmaps")));
+    }
 
     #[test]
     fn one_click_forwards_prefer_memorable_local_ports() {

@@ -197,10 +197,11 @@ fn value_tone(value: &str) -> Tone {
     }
 }
 
-/// The manifest with every value under `data` and `stringData` of `Secret` documents replaced
-/// by [`MASK`]. Everything else (comments, order) stays as rendered. Documents are handled one
-/// by one, so a syntax error in one can't leave a later Secret unmasked; a document that doesn't
-/// parse and mentions a Secret is hidden.
+/// The manifest with every value under `data` and `stringData` of `Secret` documents, and the
+/// inline TLS key of OpenShift Routes, replaced by [`MASK`]. Everything else (comments, order)
+/// stays as rendered. Documents are handled one by one, so a syntax error in one can't leave a
+/// later Secret unmasked; a document that doesn't parse and mentions a Secret (or a Route's
+/// key) is hidden.
 pub fn mask_secrets(manifest: &str) -> String {
     let mut out = String::with_capacity(manifest.len());
     let mut doc = String::new();
@@ -218,14 +219,20 @@ pub fn mask_secrets(manifest: &str) -> String {
 }
 
 fn mask_document(doc: &str) -> String {
-    if !doc.contains("Secret") {
+    let secret = doc.contains("Secret");
+    let route_key = doc.contains("Route") && doc.contains("key");
+    if !secret && !route_key {
         return doc.to_string();
     }
     let parsed = kubyl_yaml::parse::parse(doc);
     if parsed.error.is_some() {
-        return "# A Secret Kubyl couldn't parse: hidden.\n".to_string();
+        return if secret {
+            "# A Secret Kubyl couldn't parse: hidden.\n".to_string()
+        } else {
+            "# A Route Kubyl couldn't parse: hidden.\n".to_string()
+        };
     }
-    let mut edits = Vec::new();
+    let mut edits = kubyl_yaml::render::mask_route_key_edits(doc);
     for root in parsed.roots() {
         if root.get("kind").and_then(|n| n.as_str()) != Some("Secret") {
             continue;
@@ -435,6 +442,22 @@ mod tests {
         let masked_broken = mask_secrets(&broken);
         assert!(!masked_broken.contains("aHVudGVyMg=="), "{masked_broken}");
         assert!(masked_broken.contains("couldn't parse"));
+
+        // Inline Route keys (usually a block scalar) are masked too; the certificate stays.
+        let route = "---\n# Source: shop/templates/route.yaml\napiVersion: route.openshift.io/v1\nkind: Route\nmetadata:\n  name: shop\nspec:\n  to:\n    kind: Service\n    name: shop\n  tls:\n    termination: reencrypt\n    certificate: CERT\n    key: |-\n      -----BEGIN PRIVATE KEY-----\n      MIIEvQIBADANBg\n      -----END PRIVATE KEY-----\n---\napiVersion: v1\nkind: Service\nmetadata:\n  name: shop\n";
+        let masked_route = mask_secrets(route);
+        assert!(!masked_route.contains("MIIEvQIBADANBg"), "{masked_route}");
+        assert!(
+            masked_route.contains(&format!("    key: {MASK}\n---\n")),
+            "{masked_route}"
+        );
+        assert!(masked_route.contains("certificate: CERT"));
+        assert!(masked_route.contains("kind: Service\nmetadata:\n  name: shop\n"));
+        let broken_route = "kind: Route\nspec:\n  tls:\n    key: {x: [\n";
+        assert_eq!(
+            mask_secrets(broken_route),
+            "# A Route Kubyl couldn't parse: hidden.\n"
+        );
         let lines = text_lines(&masked);
         assert!(lines.iter().flatten().any(|s| s.tone == Tone::Masked));
         assert_eq!(lines[1][0].tone, Tone::Comment);

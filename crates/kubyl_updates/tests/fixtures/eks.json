@@ -1,0 +1,620 @@
+{
+  "describe-addon-coredns.json": {
+    "addon": {
+      "addonName": "coredns",
+      "clusterName": "prod-eu-west-1",
+      "status": "ACTIVE",
+      "addonVersion": "v1.11.1-eksbuild.9",
+      "health": {
+        "issues": []
+      },
+      "addonArn": "arn:aws:eks:eu-west-1:111122223333:addon/prod-eu-west-1/coredns/a1c5d1a2-0000-4000-8000-000000000001",
+      "createdAt": 1716423100.0,
+      "modifiedAt": 1726600000.0,
+      "tags": {}
+    }
+  },
+  "describe-addon-kube-proxy.json": {
+    "addon": {
+      "addonName": "kube-proxy",
+      "clusterName": "prod-eu-west-1",
+      "status": "ACTIVE",
+      "addonVersion": "v1.30.0-eksbuild.3",
+      "health": {
+        "issues": []
+      },
+      "addonArn": "arn:aws:eks:eu-west-1:111122223333:addon/prod-eu-west-1/kube-proxy/b1c5d1a2-0000-4000-8000-000000000002",
+      "createdAt": 1716423100.0,
+      "modifiedAt": 1726600000.0,
+      "tags": {}
+    }
+  },
+  "describe-addon-versions-coredns.json": {
+    "addons": [
+      {
+        "addonName": "coredns",
+        "type": "networking",
+        "addonVersions": [
+          {
+            "addonVersion": "v1.11.3-eksbuild.1",
+            "architecture": [
+              "amd64",
+              "arm64"
+            ],
+            "compatibilities": [
+              {
+                "clusterVersion": "1.31",
+                "platformVersions": [
+                  "*"
+                ],
+                "defaultVersion": true
+              },
+              {
+                "clusterVersion": "1.30",
+                "platformVersions": [
+                  "*"
+                ],
+                "defaultVersion": false
+              }
+            ],
+            "requiresConfiguration": false
+          },
+          {
+            "addonVersion": "v1.11.1-eksbuild.9",
+            "architecture": [
+              "amd64",
+              "arm64"
+            ],
+            "compatibilities": [
+              {
+                "clusterVersion": "1.31",
+                "platformVersions": [
+                  "*"
+                ],
+                "defaultVersion": false
+              },
+              {
+                "clusterVersion": "1.30",
+                "platformVersions": [
+                  "*"
+                ],
+                "defaultVersion": true
+              },
+              {
+                "clusterVersion": "1.29",
+                "platformVersions": [
+                  "*"
+                ],
+                "defaultVersion": true
+              }
+            ],
+            "requiresConfiguration": false
+          }
+        ],
+        "publisher": "eks",
+        "owner": "aws"
+      }
+    ],
+    "nextToken": null
+  },
+  "describe-addon-versions-kube-proxy.json": {
+    "addons": [
+      {
+        "addonName": "kube-proxy",
+        "type": "networking",
+        "addonVersions": [
+          {
+            "addonVersion": "v1.31.0-eksbuild.5",
+            "architecture": [
+              "amd64",
+              "arm64"
+            ],
+            "compatibilities": [
+              {
+                "clusterVersion": "1.31",
+                "platformVersions": [
+                  "*"
+                ],
+                "defaultVersion": true
+              }
+            ],
+            "requiresConfiguration": false
+          },
+          {
+            "addonVersion": "v1.30.0-eksbuild.3",
+            "architecture": [
+              "amd64",
+              "arm64"
+            ],
+            "compatibilities": [
+              {
+                "clusterVersion": "1.30",
+                "platformVersions": [
+                  "*"
+                ],
+                "defaultVersion": true
+              }
+            ],
+            "requiresConfiguration": false
+          }
+        ],
+        "publisher": "eks",
+        "owner": "aws"
+      }
+    ],
+    "nextToken": null
+  },
+  "describe-addon-versions-vpc-cni.json": {
+    "addons": [
+      {
+        "addonName": "vpc-cni",
+        "type": "networking",
+        "addonVersions": [
+          {
+            "addonVersion": "v1.19.0-eksbuild.1",
+            "architecture": [
+              "amd64",
+              "arm64"
+            ],
+            "compatibilities": [
+              {
+                "clusterVersion": "1.31",
+                "platformVersions": [
+                  "*"
+                ],
+                "defaultVersion": true
+              },
+              {
+                "clusterVersion": "1.30",
+                "platformVersions": [
+                  "*"
+                ],
+                "defaultVersion": true
+              }
+            ],
+            "requiresConfiguration": false,
+            "requiresIamPermissions": true
+          },
+          {
+            "addonVersion": "v1.18.3-eksbuild.1",
+            "architecture": [
+              "amd64",
+              "arm64"
+            ],
+            "compatibilities": [
+              {
+                "clusterVersion": "1.31",
+                "platformVersions": [
+                  "*"
+                ],
+                "defaultVersion": false
+              },
+              {
+                "clusterVersion": "1.30",
+                "platformVersions": [
+                  "*"
+                ],
+                "defaultVersion": false
+              },
+              {
+                "clusterVersion": "1.29",
+                "platformVersions": [
+                  "*"
+                ],
+                "defaultVersion": false
+              }
+            ],
+            "requiresConfiguration": false,
+            "requiresIamPermissions": true
+          },
+          {
+            "addonVersion": "v1.16.0-eksbuild.1",
+            "architecture": [
+              "amd64",
+              "arm64"
+            ],
+            "compatibilities": [
+              {
+                "clusterVersion": "1.30",
+                "platformVersions": [
+                  "*"
+                ],
+                "defaultVersion": false
+              },
+              {
+                "clusterVersion": "1.29",
+                "platformVersions": [
+                  "*"
+                ],
+                "defaultVersion": true
+              }
+            ],
+            "requiresConfiguration": false,
+            "requiresIamPermissions": true
+          }
+        ],
+        "publisher": "eks",
+        "owner": "aws"
+      }
+    ],
+    "nextToken": null
+  },
+  "describe-addon-vpc-cni.json": {
+    "addon": {
+      "addonName": "vpc-cni",
+      "clusterName": "prod-eu-west-1",
+      "status": "ACTIVE",
+      "addonVersion": "v1.16.0-eksbuild.1",
+      "health": {
+        "issues": []
+      },
+      "addonArn": "arn:aws:eks:eu-west-1:111122223333:addon/prod-eu-west-1/vpc-cni/c1c5d1a2-0000-4000-8000-000000000003",
+      "createdAt": 1716423100.0,
+      "modifiedAt": 1726600000.0,
+      "serviceAccountRoleArn": "arn:aws:iam::111122223333:role/vpc-cni-irsa",
+      "tags": {}
+    }
+  },
+  "describe-cluster-versions.json": {
+    "clusterVersions": [
+      {
+        "clusterVersion": "1.33",
+        "clusterType": "eks",
+        "defaultPlatformVersion": "eks.5",
+        "defaultVersion": false,
+        "releaseDate": 1748476800,
+        "endOfStandardSupportDate": 1785283200,
+        "endOfExtendedSupportDate": 1816819200,
+        "status": "STANDARD_SUPPORT",
+        "versionStatus": "STANDARD_SUPPORT",
+        "kubernetesPatchVersion": "1.33.1"
+      },
+      {
+        "clusterVersion": "1.32",
+        "clusterType": "eks",
+        "defaultPlatformVersion": "eks.10",
+        "defaultVersion": true,
+        "releaseDate": 1737590400,
+        "endOfStandardSupportDate": 1774224000,
+        "endOfExtendedSupportDate": 1805760000,
+        "status": "STANDARD_SUPPORT",
+        "versionStatus": "STANDARD_SUPPORT",
+        "kubernetesPatchVersion": "1.32.5"
+      },
+      {
+        "clusterVersion": "1.31",
+        "clusterType": "eks",
+        "defaultPlatformVersion": "eks.25",
+        "defaultVersion": false,
+        "releaseDate": 1727308800,
+        "endOfStandardSupportDate": 1764115200,
+        "endOfExtendedSupportDate": 1795651200,
+        "status": "STANDARD_SUPPORT",
+        "versionStatus": "STANDARD_SUPPORT",
+        "kubernetesPatchVersion": "1.31.9"
+      },
+      {
+        "clusterVersion": "1.30",
+        "clusterType": "eks",
+        "defaultPlatformVersion": "eks.33",
+        "defaultVersion": false,
+        "releaseDate": 1716422400,
+        "endOfStandardSupportDate": 1753228800,
+        "endOfExtendedSupportDate": 1784764800,
+        "status": "STANDARD_SUPPORT",
+        "versionStatus": "STANDARD_SUPPORT",
+        "kubernetesPatchVersion": "1.30.13"
+      }
+    ],
+    "nextToken": null
+  },
+  "describe-cluster.json": {
+    "cluster": {
+      "name": "prod-eu-west-1",
+      "arn": "arn:aws:eks:eu-west-1:111122223333:cluster/prod-eu-west-1",
+      "createdAt": 1716422400.123,
+      "version": "1.30",
+      "endpoint": "https://ABCDEF0123456789ABCDEF0123456789.gr7.eu-west-1.eks.amazonaws.com",
+      "roleArn": "arn:aws:iam::111122223333:role/eks-cluster-role",
+      "resourcesVpcConfig": {
+        "subnetIds": [
+          "subnet-0a1b2c3d4e5f60001",
+          "subnet-0a1b2c3d4e5f60002"
+        ],
+        "securityGroupIds": [],
+        "clusterSecurityGroupId": "sg-0a1b2c3d4e5f60001",
+        "vpcId": "vpc-0a1b2c3d4e5f60001",
+        "endpointPublicAccess": true,
+        "endpointPrivateAccess": true,
+        "publicAccessCidrs": [
+          "0.0.0.0/0"
+        ]
+      },
+      "kubernetesNetworkConfig": {
+        "serviceIpv4Cidr": "172.20.0.0/16",
+        "ipFamily": "ipv4",
+        "elasticLoadBalancing": {
+          "enabled": false
+        }
+      },
+      "logging": {
+        "clusterLogging": [
+          {
+            "types": [
+              "api",
+              "audit"
+            ],
+            "enabled": true
+          }
+        ]
+      },
+      "identity": {
+        "oidc": {
+          "issuer": "https://oidc.eks.eu-west-1.amazonaws.com/id/ABCDEF0123456789ABCDEF0123456789"
+        }
+      },
+      "status": "ACTIVE",
+      "certificateAuthority": {
+        "data": "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCkVYQU1QTEUKLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo="
+      },
+      "platformVersion": "eks.12",
+      "tags": {
+        "team": "platform"
+      },
+      "health": {
+        "issues": []
+      },
+      "accessConfig": {
+        "authenticationMode": "API_AND_CONFIG_MAP"
+      },
+      "upgradePolicy": {
+        "supportType": "EXTENDED"
+      },
+      "zonalShiftConfig": {
+        "enabled": false
+      }
+    }
+  },
+  "describe-nodegroup-general.json": {
+    "nodegroup": {
+      "nodegroupName": "general",
+      "nodegroupArn": "arn:aws:eks:eu-west-1:111122223333:nodegroup/prod-eu-west-1/general/5ec5d1a2-0000-4000-8000-000000000001",
+      "clusterName": "prod-eu-west-1",
+      "version": "1.30",
+      "releaseVersion": "1.30.4-20240917",
+      "createdAt": 1716422900.0,
+      "modifiedAt": 1726600000.0,
+      "status": "ACTIVE",
+      "capacityType": "ON_DEMAND",
+      "scalingConfig": {
+        "minSize": 2,
+        "maxSize": 6,
+        "desiredSize": 3
+      },
+      "instanceTypes": [
+        "m6i.large"
+      ],
+      "subnets": [
+        "subnet-0a1b2c3d4e5f60001",
+        "subnet-0a1b2c3d4e5f60002"
+      ],
+      "amiType": "AL2023_x86_64_STANDARD",
+      "nodeRole": "arn:aws:iam::111122223333:role/eks-node-role",
+      "labels": {
+        "role": "general"
+      },
+      "resources": {
+        "autoScalingGroups": [
+          {
+            "name": "eks-general-5ec5d1a2-0000-4000-8000-000000000001"
+          }
+        ]
+      },
+      "diskSize": 20,
+      "health": {
+        "issues": []
+      },
+      "updateConfig": {
+        "maxUnavailable": 1
+      },
+      "tags": {}
+    }
+  },
+  "describe-nodegroup-gpu.json": {
+    "nodegroup": {
+      "nodegroupName": "gpu",
+      "nodegroupArn": "arn:aws:eks:eu-west-1:111122223333:nodegroup/prod-eu-west-1/gpu/7ac5d1a2-0000-4000-8000-000000000002",
+      "clusterName": "prod-eu-west-1",
+      "version": "1.29",
+      "releaseVersion": "1.29.8-20240917",
+      "createdAt": 1716423000.0,
+      "modifiedAt": 1726600000.0,
+      "status": "ACTIVE",
+      "capacityType": "SPOT",
+      "scalingConfig": {
+        "minSize": 0,
+        "maxSize": 4,
+        "desiredSize": 2
+      },
+      "instanceTypes": [
+        "g5.xlarge"
+      ],
+      "subnets": [
+        "subnet-0a1b2c3d4e5f60001"
+      ],
+      "amiType": "AL2_x86_64_GPU",
+      "nodeRole": "arn:aws:iam::111122223333:role/eks-node-role",
+      "labels": {
+        "role": "gpu"
+      },
+      "taints": [
+        {
+          "key": "nvidia.com/gpu",
+          "value": "true",
+          "effect": "NO_SCHEDULE"
+        }
+      ],
+      "resources": {
+        "autoScalingGroups": [
+          {
+            "name": "eks-gpu-7ac5d1a2-0000-4000-8000-000000000002"
+          }
+        ]
+      },
+      "health": {
+        "issues": []
+      },
+      "updateConfig": {
+        "maxUnavailablePercentage": 33
+      },
+      "launchTemplate": {
+        "name": "gpu-nodes",
+        "version": "3",
+        "id": "lt-0a1b2c3d4e5f60001"
+      },
+      "tags": {}
+    }
+  },
+  "describe-update-done.json": {
+    "update": {
+      "id": "b5f0ba18-0000-4000-8000-000000000001",
+      "status": "Successful",
+      "type": "VersionUpdate",
+      "params": [
+        {
+          "type": "Version",
+          "value": "1.30"
+        },
+        {
+          "type": "PlatformVersion",
+          "value": "eks.8"
+        }
+      ],
+      "createdAt": 1725148800.0,
+      "errors": []
+    }
+  },
+  "describe-update-logging.json": {
+    "update": {
+      "id": "b5f0ba18-0000-4000-8000-000000000002",
+      "status": "Successful",
+      "type": "LoggingUpdate",
+      "params": [
+        {
+          "type": "ClusterLogging",
+          "value": "{\"clusterLogging\":[{\"types\":[\"api\",\"audit\"],\"enabled\":true}]}"
+        }
+      ],
+      "createdAt": 1739145600.0,
+      "errors": []
+    }
+  },
+  "describe-update-running.json": {
+    "update": {
+      "id": "c7a1f3e2-0000-4000-8000-000000000003",
+      "status": "InProgress",
+      "type": "VersionUpdate",
+      "params": [
+        {
+          "type": "Version",
+          "value": "1.31"
+        },
+        {
+          "type": "PlatformVersion",
+          "value": "eks.25"
+        }
+      ],
+      "createdAt": 1748736000.0,
+      "errors": []
+    }
+  },
+  "error-access-denied.json": {
+    "__type": "AccessDeniedException",
+    "message": "User: arn:aws:sts::111122223333:assumed-role/Developer/alice is not authorized to perform: eks:UpdateClusterVersion on resource: arn:aws:eks:eu-west-1:111122223333:cluster/prod-eu-west-1"
+  },
+  "list-addons.json": {
+    "addons": [
+      "coredns",
+      "kube-proxy",
+      "vpc-cni"
+    ],
+    "nextToken": null
+  },
+  "list-insights.json": {
+    "insights": [
+      {
+        "id": "a1b2c3d4-0000-4000-8000-000000000001",
+        "name": "Kubelet version skew",
+        "category": "UPGRADE_READINESS",
+        "kubernetesVersion": "1.31",
+        "lastRefreshTime": 1748736000.0,
+        "lastTransitionTime": 1748736000.0,
+        "description": "Checks for kubelet versions of worker nodes in the cluster to see if upgrade would cause noncompliance with supported Kubernetes kubelet version skew policy.",
+        "insightStatus": {
+          "status": "WARNING",
+          "reason": "Node kubelet versions are 1 minor version behind the control plane."
+        }
+      },
+      {
+        "id": "a1b2c3d4-0000-4000-8000-000000000002",
+        "name": "Cluster health issues",
+        "category": "UPGRADE_READINESS",
+        "kubernetesVersion": "1.31",
+        "lastRefreshTime": 1748736000.0,
+        "lastTransitionTime": 1748736000.0,
+        "description": "Checks for any cluster health issues that prevent successful upgrade to the next Kubernetes version on EKS.",
+        "insightStatus": {
+          "status": "PASSING",
+          "reason": "No cluster health issues detected."
+        }
+      },
+      {
+        "id": "a1b2c3d4-0000-4000-8000-000000000003",
+        "name": "Deprecated APIs removed in Kubernetes v1.32",
+        "category": "UPGRADE_READINESS",
+        "kubernetesVersion": "1.32",
+        "lastRefreshTime": 1748736000.0,
+        "lastTransitionTime": 1748736000.0,
+        "description": "Checks for usage of deprecated APIs that are scheduled for removal in Kubernetes v1.32.",
+        "insightStatus": {
+          "status": "ERROR",
+          "reason": "Deprecated API usage detected within last 30 days."
+        }
+      }
+    ],
+    "nextToken": null
+  },
+  "list-nodegroups.json": {
+    "nodegroups": [
+      "general",
+      "gpu"
+    ],
+    "nextToken": null
+  },
+  "list-updates.json": {
+    "updateIds": [
+      "b5f0ba18-0000-4000-8000-000000000001",
+      "b5f0ba18-0000-4000-8000-000000000002"
+    ],
+    "nextToken": null
+  },
+  "update-cluster-version.json": {
+    "update": {
+      "id": "c7a1f3e2-0000-4000-8000-000000000003",
+      "status": "InProgress",
+      "type": "VersionUpdate",
+      "params": [
+        {
+          "type": "Version",
+          "value": "1.31"
+        },
+        {
+          "type": "PlatformVersion",
+          "value": "eks.25"
+        }
+      ],
+      "createdAt": 1748736000.0,
+      "errors": []
+    }
+  }
+}

@@ -66,6 +66,12 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
+      # The cloud update providers (EKS, GKE, AKS) are behind cargo features (phase 13).
+      - name: Clippy and test the cloud update providers
+        run: |
+          cargo clippy -p kubyl_updates --all-targets --all-features --locked -- -D warnings
+          cargo test -p kubyl_updates --all-features --locked
+
       - name: Build
         run: cargo build --workspace --locked
 
@@ -94,6 +100,8 @@ jobs:
         checks: [advisories, "bans licenses sources"]
     steps:
       - uses: actions/checkout@v7
+      # The action checks with `--all-features` by default, which covers the optional
+      # dependencies of the cloud update providers (phase 13) too.
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check ${{ matrix.checks }}

@@ -10,6 +10,18 @@
 //! Creates (and deletes) the namespace `kubyl-live-pf` with a one-replica nginx deployment and
 //! a Service, forwards to the Service, deletes the pod and checks the forward still answers
 //! once the replacement is ready.
+//!
+//! `routes_and_ingresses_forward_their_backend_service` needs a cluster that serves
+//! `route.openshift.io` with Routes and Ingresses in `$KUBYL_TEST_ROUTE_NAMESPACE` (default
+//! `shop`), e.g. the fake-OpenShift kind cluster:
+//!
+//! ```sh
+//! KUBYL_TEST_KUBECONFIG=/tmp/kubyl-dev/ocp-kubeconfig \
+//!   cargo test -p kubyl_portforward --test live routes -- --ignored --nocapture
+//! ```
+//!
+//! It resolves every Route's (and Ingress's) backend Service port like ⇧F does, forwards to
+//! the plain-HTTP ones (no TLS or edge termination) and expects an HTTP answer.
 
 use std::time::Duration;
 
@@ -184,4 +196,103 @@ async fn service_forward_survives_a_pod_restart() {
         Some("HTTP/1.1 200 OK"),
         "the same local port reaches the replacement pod"
     );
+}
+
+/// Forwards to `service` at its Service port and returns the first line of `GET /`.
+async fn get_through_service(
+    client: &kube::Client,
+    namespace: &str,
+    service: &str,
+    port: u16,
+) -> Option<String> {
+    let (events_tx, mut events_rx) = mpsc::unbounded();
+    let task = tokio::spawn(listener::run(
+        client.clone(),
+        namespace.into(),
+        ForwardKind::Service {
+            service: service.into(),
+        },
+        RemotePort::Service(Some(port)),
+        "127.0.0.1".into(),
+        0,
+        events_tx,
+    ));
+    let local = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            match events_rx.next().await? {
+                ForwardEvent::Listening { local_port } => break Some(local_port),
+                other => println!("event: {other:?}"),
+            }
+        }
+    })
+    .await
+    .ok()
+    .flatten();
+    let status = match local {
+        Some(local) => get(local).await,
+        None => None,
+    };
+    task.abort();
+    status
+}
+
+#[tokio::test]
+#[ignore = "needs a cluster that serves route.openshift.io (a fake-OpenShift kind cluster)"]
+async fn routes_and_ingresses_forward_their_backend_service() {
+    use kube::api::DynamicObject;
+    use kube::discovery::ApiResource;
+    use kubyl_portforward::resolve;
+
+    let client = client().await;
+    let namespace = std::env::var("KUBYL_TEST_ROUTE_NAMESPACE").unwrap_or_else(|_| "shop".into());
+    let mut answered = Vec::new();
+    for (group, resource, kind) in resolve::BACKEND_KINDS {
+        let api_resource = ApiResource {
+            group: group.to_string(),
+            version: "v1".into(),
+            api_version: format!("{group}/v1"),
+            kind: kind.to_string(),
+            plural: resource.to_string(),
+        };
+        let api: Api<DynamicObject> =
+            Api::namespaced_with(client.clone(), &namespace, &api_resource);
+        let objects = api.list(&ListParams::default()).await.expect("list");
+        // Ingresses are optional (real namespaces often have Routes only).
+        assert!(
+            !objects.items.is_empty() || *kind != "Route",
+            "no {resource} in {namespace}"
+        );
+        for object in objects.items {
+            let name = object.metadata.name.clone().unwrap_or_default();
+            let json = serde_json::to_value(&object).unwrap();
+            let tls = json
+                .pointer("/spec/tls/termination")
+                .and_then(serde_json::Value::as_str);
+            match resolve::backend_forward(client.clone(), &namespace, group, resource, &name).await
+            {
+                Ok(backend) => {
+                    println!("{kind} {name}: {} · {}", backend.service, backend.note);
+                    assert!(backend.ports.iter().any(|p| p.port == backend.port));
+                    // The backend speaks plain HTTP unless the Route passes TLS through or
+                    // re-encrypts it.
+                    if matches!(tls, Some("passthrough" | "reencrypt")) {
+                        continue;
+                    }
+                    let status =
+                        get_through_service(&client, &namespace, &backend.service, backend.port)
+                            .await;
+                    println!("  GET / → {status:?}");
+                    assert!(
+                        status.as_deref().is_some_and(|s| s.starts_with("HTTP/1.")),
+                        "{kind} {name} answered {status:?}"
+                    );
+                    answered.push(format!("{kind} {name}"));
+                }
+                // Every listed backend must resolve, not just one of them.
+                Err(err) => panic!("{kind} {name}: {err}"),
+            }
+        }
+    }
+    println!("answered through their backend: {answered:?}");
+    assert!(answered.iter().any(|a| a.starts_with("Route ")));
 }

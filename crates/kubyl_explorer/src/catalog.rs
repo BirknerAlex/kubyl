@@ -125,6 +125,8 @@ const NETWORK: &[KnownKind] = &[
         "Ingresses",
         IconName::Globe,
     ),
+    // OpenShift (and clusters that install its Route API); only where it's served.
+    k("route.openshift.io", "routes", "Routes", IconName::Route),
     k(
         "networking.k8s.io",
         "ingressclasses",
@@ -753,6 +755,51 @@ mod tests {
         let workloads = group_kinds(group("workloads").unwrap(), &discovery);
         assert_eq!(workloads.len(), 1);
         assert_eq!(workloads[0].label, "Pods");
+    }
+
+    #[test]
+    fn routes_show_under_network_only_where_served() {
+        let network = group("network").unwrap();
+        let labels = |discovery: &Discovery| -> Vec<String> {
+            group_kinds(network, discovery)
+                .into_iter()
+                .map(|k| k.label)
+                .collect()
+        };
+        let mut discovery = Discovery {
+            groups: vec![],
+            resources: vec![
+                resource("", "Service", "services"),
+                resource("networking.k8s.io", "Ingress", "ingresses"),
+                resource("networking.k8s.io", "IngressClass", "ingressclasses"),
+            ],
+            aggregated: true,
+        };
+        assert_eq!(
+            labels(&discovery),
+            ["Services", "Ingresses", "IngressClasses"]
+        );
+
+        // OpenShift: right after Ingresses, and no longer a custom resource.
+        discovery
+            .resources
+            .push(resource("route.openshift.io", "Route", "routes"));
+        discovery
+            .resources
+            .push(resource("route.openshift.io", "Route", "routes/status"));
+        assert_eq!(
+            labels(&discovery),
+            ["Services", "Ingresses", "Routes", "IngressClasses"]
+        );
+        let routes = group_kinds(network, &discovery)
+            .into_iter()
+            .find(|k| k.label == "Routes")
+            .unwrap();
+        assert_eq!(routes.kind, "Route");
+        assert_eq!(routes.icon, IconName::Route);
+        assert!(!custom_groups(&discovery).contains_key("route.openshift.io"));
+        assert_eq!(icon_for("route.openshift.io", "routes"), IconName::Route);
+        assert_eq!(label_for("route.openshift.io", "routes", None), "Routes");
     }
 
     #[test]

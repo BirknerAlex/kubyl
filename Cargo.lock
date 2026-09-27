@@ -5379,8 +5379,34 @@ dependencies = [
 name = "kubyl_updates"
 version = "0.2.3"
 dependencies = [
+ "futures",
+ "gpui-component",
  "gpui-pre",
+ "hmac 0.13.0",
+ "http",
+ "jiff",
+ "k8s-openapi",
+ "kube",
  "kubyl_core",
+ "kubyl_explorer",
+ "kubyl_kube",
+ "kubyl_metrics",
+ "kubyl_operators",
+ "kubyl_resources",
+ "kubyl_settings",
+ "kubyl_ui",
+ "kubyl_yaml",
+ "openidconnect",
+ "regex",
+ "schemars 1.2.2",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]

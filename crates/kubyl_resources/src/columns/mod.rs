@@ -15,6 +15,7 @@ use crate::format::{
     array_at, human_duration, int_at, join_or_none, map_pairs, name, object_age, seconds_since,
     str_at, timestamp,
 };
+use crate::route::Route;
 pub use pods::{PodStatus, pod_status, status_tone};
 
 type CellFn = fn(&Value, &str, Timestamp) -> CellValue;
@@ -47,7 +48,7 @@ impl ColumnProvider for Kind {
 
 /// Registers the built-in column sets.
 pub fn register(cx: &mut App) {
-    let kinds: [KindEntry; 23] = [
+    let kinds: [KindEntry; 24] = [
         ("", "Pod", pod_columns, pod_cell),
         ("apps", "Deployment", deployment_columns, deployment_cell),
         ("apps", "StatefulSet", statefulset_columns, statefulset_cell),
@@ -61,6 +62,12 @@ pub fn register(cx: &mut App) {
             "Ingress",
             ingress_columns,
             ingress_cell,
+        ),
+        (
+            crate::route::GROUP,
+            crate::route::KIND,
+            route_columns,
+            route_cell,
         ),
         ("", "ConfigMap", configmap_columns, configmap_cell),
         ("", "Secret", secret_columns, secret_cell),
@@ -609,6 +616,80 @@ fn ingress_cell(ing: &Value, column: &str, _: Timestamp) -> CellValue {
     }
 }
 
+fn route_columns() -> Vec<ColumnDef> {
+    vec![
+        name_column(),
+        fixed("host", "Host", 240.0).mono(),
+        fixed("services", "Services", 230.0).mono(),
+        fixed("target_port", "Target port", 90.0).mono(),
+        fixed("tls", "TLS", 120.0).mono(),
+        fixed("admitted", "Admitted", 200.0),
+        age_column(),
+    ]
+}
+
+/// Like `oc get routes`: the host with its path (`*.` for Subdomain wildcards), the backends
+/// with weights, `<all>` without a target port, the termination and insecure policy, and
+/// whether each router admitted it.
+fn route_cell(object: &Value, column: &str, _: Timestamp) -> CellValue {
+    let route = Route::parse(object);
+    match column {
+        "host" => match route.display_host() {
+            Some(host) => text(format!(
+                "{host}{}",
+                route.path.as_deref().unwrap_or_default()
+            )),
+            None => muted("<none>"),
+        },
+        "services" => text(crate::route::services_label(&route)),
+        "target_port" => match &route.target_port {
+            Some(port) => text(port.to_string()),
+            None => muted("<all>"),
+        },
+        "tls" => match &route.tls {
+            Some(tls) => text(tls.label()),
+            None => muted("none"),
+        },
+        "admitted" => admitted_cell(&route),
+        _ => CellValue::Empty,
+    }
+}
+
+/// `default` (green) per router that admitted the Route, `default: HostAlreadyClaimed` (red)
+/// per router that refused it, a muted `pending` before any router reported.
+fn admitted_cell(route: &Route) -> CellValue {
+    if route.routers.is_empty() {
+        return muted("pending");
+    }
+    let label = route
+        .routers
+        .iter()
+        .map(|router| match &router.admitted {
+            Some(a) if a.status != "True" => {
+                let reason = a.reason.as_deref().unwrap_or(match a.status.as_str() {
+                    "False" => "not admitted",
+                    _ => "pending",
+                });
+                format!("{}: {reason}", router.router)
+            }
+            Some(_) => router.router.clone(),
+            None => format!("{}: pending", router.router),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let tone = if route.is_rejected() {
+        Tone::Bad
+    } else if route.routers.iter().all(|r| r.is_admitted()) {
+        Tone::Good
+    } else {
+        Tone::Warning
+    };
+    CellValue::Tinted {
+        label: label.into(),
+        tone,
+    }
+}
+
 // ----- Config -----
 
 fn configmap_columns() -> Vec<ColumnDef> {
@@ -1057,6 +1138,7 @@ pub fn is_failing(group: &str, kind: &str, object: &Value) -> bool {
         ("", "Node") => !node_status(object).starts_with("Ready"),
         ("", "PersistentVolumeClaim") => str_at(object, "/status/phase") != "Bound",
         ("" | "events.k8s.io", "Event") => str_at(object, "/type") == "Warning",
+        (crate::route::GROUP, crate::route::KIND) => Route::parse(object).is_rejected(),
         _ => false,
     }
 }
@@ -1130,6 +1212,70 @@ mod tests {
             job_cell(&job, "completions", Timestamp::now()),
             CellValue::Text("1/3".into())
         );
+    }
+
+    #[test]
+    fn route_columns_like_oc() {
+        let kind = Kind {
+            columns: route_columns,
+            cell: route_cell,
+        };
+        let admitted = |router: &str, status: &str, reason: Option<&str>| {
+            json!({"routerName": router, "host": "shop.apps.example.com",
+                "conditions": [{"type": "Admitted", "status": status, "reason": reason}]})
+        };
+        let route = json!({"apiVersion": "route.openshift.io/v1", "kind": "Route",
+            "metadata": {"name": "shop"},
+            "spec": {"host": "shop.apps.example.com", "path": "/store",
+                "to": {"kind": "Service", "name": "shop-web", "weight": 80},
+                "alternateBackends": [{"kind": "Service", "name": "shop-canary", "weight": 20}],
+                "tls": {"termination": "edge", "insecureEdgeTerminationPolicy": "Redirect"}},
+            "status": {"ingress": [admitted("default", "True", None)]}});
+        assert_eq!(cell(&kind, &route, "name"), text("shop"));
+        assert_eq!(
+            cell(&kind, &route, "host"),
+            text("shop.apps.example.com/store")
+        );
+        assert_eq!(
+            cell(&kind, &route, "services"),
+            text("shop-web(80%),shop-canary(20%)")
+        );
+        assert_eq!(cell(&kind, &route, "target_port"), muted("<all>"));
+        assert_eq!(cell(&kind, &route, "tls"), text("edge/Redirect"));
+        assert_eq!(
+            cell(&kind, &route, "admitted"),
+            CellValue::Tinted {
+                label: "default".into(),
+                tone: Tone::Good
+            }
+        );
+        assert!(!is_failing("route.openshift.io", "Route", &route));
+
+        // Refused by one router, a numeric target port, passthrough, a wildcard host.
+        let conflict = json!({"metadata": {"name": "dupe"},
+            "spec": {"host": "www.apps.example.com", "wildcardPolicy": "Subdomain",
+                "to": {"name": "web"}, "port": {"targetPort": 8080},
+                "tls": {"termination": "passthrough", "insecureEdgeTerminationPolicy": "None"}},
+            "status": {"ingress": [admitted("default", "True", None),
+                admitted("sharded", "False", Some("HostAlreadyClaimed"))]}});
+        assert_eq!(cell(&kind, &conflict, "host"), text("*.apps.example.com"));
+        assert_eq!(cell(&kind, &conflict, "services"), text("web"));
+        assert_eq!(cell(&kind, &conflict, "target_port"), text("8080"));
+        assert_eq!(cell(&kind, &conflict, "tls"), text("passthrough"));
+        assert_eq!(
+            cell(&kind, &conflict, "admitted"),
+            CellValue::Tinted {
+                label: "default, sharded: HostAlreadyClaimed".into(),
+                tone: Tone::Bad
+            }
+        );
+        assert!(is_failing("route.openshift.io", "Route", &conflict));
+
+        // No TLS, no status yet.
+        let new = json!({"metadata": {"name": "new"}, "spec": {"to": {"name": "web"}}});
+        assert_eq!(cell(&kind, &new, "tls"), muted("none"));
+        assert_eq!(cell(&kind, &new, "admitted"), muted("pending"));
+        assert_eq!(cell(&kind, &new, "host"), muted("<none>"));
     }
 
     #[test]

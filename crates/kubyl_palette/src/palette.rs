@@ -700,8 +700,43 @@ fn selection_references(cx: &App) -> Vec<(crate::references::Reference, Option<R
     };
     let cluster = selected.target.cluster.clone();
     let discovery = ConnectionManager::try_global(cx).and_then(|m| m.read(cx).discovery(&cluster));
-    references(&selected.kind, &object)
-        .into_iter()
+    let mut all = references(&selected.kind, &object);
+    // Service → the Routes that point at it, where the cluster serves Routes.
+    if selected.kind == "Service"
+        && selected.target.gvr.group.is_empty()
+        && let Some(routes) = discovery.as_ref().and_then(|d| {
+            kubyl_explorer::catalog::find(
+                d,
+                kubyl_resources::route::GROUP,
+                kubyl_resources::route::RESOURCE,
+            )
+            .cloned()
+        })
+    {
+        let namespace = selected.target.namespace.clone();
+        // Alternate backends only count from a Routes list that's already loaded.
+        let known: Vec<std::sync::Arc<serde_json::Value>> = [namespace.clone(), None]
+            .into_iter()
+            .filter_map(|ns| {
+                ResourceStores::peek(cx, &StoreKey::new(cluster.clone(), routes.gvr.clone(), ns))
+            })
+            .flat_map(|store| {
+                store
+                    .read(cx)
+                    .objects()
+                    .values()
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        all.extend(crate::references::service_routes(
+            selected.target.name.as_deref().unwrap_or_default(),
+            namespace.as_deref(),
+            &routes.gvk,
+            known.iter().map(|o| o.as_ref()),
+        ));
+    }
+    all.into_iter()
         .map(|reference| {
             let gvk: &Gvk = match &reference.target {
                 RefTarget::Object { gvk, .. } | RefTarget::Filtered { gvk, .. } => gvk,
