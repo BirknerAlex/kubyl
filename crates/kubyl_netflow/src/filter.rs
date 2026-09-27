@@ -570,7 +570,16 @@ impl Matcher {
                     })
                     .collect::<Result<_, _>>()?,
             ),
-            Field::Protocol => Matcher::Protocol(values.iter().map(|v| v.to_lowercase()).collect()),
+            // L4 aliases (`icmpv4`, `icmp6`) become the label flows carry; L7 names stay.
+            Field::Protocol => Matcher::Protocol(
+                values
+                    .iter()
+                    .map(|v| match Protocol::from_name(v) {
+                        Protocol::Unknown => v.to_lowercase(),
+                        l4 => l4.label().to_lowercase(),
+                    })
+                    .collect(),
+            ),
             Field::Policy => Matcher::Policy(
                 values
                     .iter()
@@ -1105,6 +1114,20 @@ mod tests {
 
     fn matches(filter: &str) -> bool {
         FlowFilter::parse(filter).unwrap().matches(&flow())
+    }
+
+    #[test]
+    fn protocol_aliases_match() {
+        let mut icmp = flow();
+        icmp.protocol = Protocol::Icmp;
+        let mut icmp6 = flow();
+        icmp6.protocol = Protocol::IcmpV6;
+        let hit = |text: &str, flow: &Flow| FlowFilter::parse(text).unwrap().matches(flow);
+        assert!(hit("proto=icmpv4", &icmp));
+        assert!(hit("proto=ICMP", &icmp));
+        assert!(hit("proto=icmp6", &icmp6));
+        assert!(!hit("proto=icmp6", &icmp));
+        assert!(hit("proto=tcp", &flow()));
     }
 
     #[test]

@@ -277,6 +277,27 @@ fn the_term_being_typed_waits_for_its_value(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn a_longer_window_fetches_its_history_again(cx: &mut TestAppContext) {
+    let mut t = setup(cx);
+    t.fill(2);
+    t.view.update(&mut t.cx, |view, cx| {
+        view.set_window(kubyl_charts::TimeRange::H1, cx)
+    });
+    t.cx.run_until_parked();
+    let cluster = t.cluster.clone();
+    t.service.read_with(&t.cx, |s, _| {
+        let stream = s.stream(&cluster, &FlowFilter::default()).expect("stream");
+        // Emptied for the fresh stream's history; the numbering goes on.
+        assert!(stream.buffer.is_empty());
+        assert_eq!(stream.buffer.range().start, 1_000);
+        assert!(!stream.caught_up);
+    });
+    t.push(flows(0, 300));
+    t.view
+        .update(&mut t.cx, |view, _| assert_eq!(view.rows.shown.len(), 300));
+}
+
+#[gpui::test]
 fn the_topology_aggregates_in_the_background(cx: &mut TestAppContext) {
     let mut t = setup(cx);
     t.fill(2);

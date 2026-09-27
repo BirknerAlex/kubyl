@@ -320,9 +320,16 @@ impl FlowService {
             });
         stream.idle_since = None;
         if window > stream.window {
-            // A longer window: the buffer keeps more; history isn't fetched again.
+            // A longer window: the buffer keeps more, and a fresh stream fetches the older
+            // history (the flows held so far come again with it). The numbering goes on, so
+            // what views held just expires.
             stream.window = window;
             stream.buffer.set_limits(settings.max_flows, max_age);
+            stream.buffer.clear();
+            stream.tasks.clear();
+            stream.status = StreamStatus::Starting;
+            stream.caught_up = false;
+            stream.revision += 1;
         }
         let lease = FlowLease {
             _cluster: state.lease.clone(),
@@ -535,17 +542,21 @@ impl FlowService {
         let task = cx.spawn(async move |this, cx| {
             let result = connect(&id, candidate, keep_query_values, generation, cx).await;
             this.update(cx, |this, cx| {
-                let Some(state) = this.clusters.get_mut(&id) else {
-                    return;
-                };
-                if state.generation != generation {
-                    // Rebuilt meanwhile: a forward this connection started must go.
+                let current = this
+                    .clusters
+                    .get(&id)
+                    .is_some_and(|state| state.generation == generation);
+                if !current {
+                    // Rebuilt or rekeyed meanwhile: a forward this connection started must go.
                     if let Ok((_, _, Some(forward))) = &result {
                         let forward = *forward;
                         PortForwardManager::global(cx).update(cx, |m, cx| m.stop(forward, cx));
                     }
                     return;
                 }
+                let Some(state) = this.clusters.get_mut(&id) else {
+                    return;
+                };
                 match result {
                     Ok((provider, status, forward)) => {
                         state.forward = forward;
@@ -746,7 +757,7 @@ impl FlowService {
         cx.notify();
     }
 
-    /// The Active Sessions row's stop button stopped the forward to Relay.
+    /// The Active Sessions row's stop button stopped the forward to Relay or Whisker.
     fn forward_stopped(&mut self, cluster: &ClusterId, cx: &mut Context<Self>) {
         let Some(state) = self.clusters.get_mut(cluster) else {
             return;
@@ -760,9 +771,10 @@ impl FlowService {
         if let Some(state) = self.clusters.get_mut(cluster) {
             state.backend = Backend::Failed(
                 kind,
-                ProviderError::Unavailable(
-                    "The port-forward to Hubble Relay was stopped in Active Sessions.".into(),
-                ),
+                ProviderError::Unavailable(format!(
+                    "The port-forward to {} was stopped in Active Sessions.",
+                    kind.label()
+                )),
             );
         }
         cx.notify();

@@ -531,15 +531,21 @@ async fn whisker(inputs: &Inputs) -> (Option<Candidate>, Check) {
     }
 }
 
-/// `http://loki.netobserv.svc.cluster.local.:3100/` → a Service target; other hosts stay URLs.
-pub fn in_cluster_url(url: &str) -> Option<ServiceTarget> {
+/// `http://loki.netobserv.svc.cluster.local.:3100/` → a Service target; so are cluster-only
+/// short names, `loki` (in `namespace`, the FlowCollector's) and `loki.netobserv`. Other hosts
+/// stay URLs.
+pub fn in_cluster_url(url: &str, namespace: &str) -> Option<ServiceTarget> {
     let parsed = url::Url::parse(url).ok()?;
     let host = parsed.host_str()?.trim_end_matches('.');
+    if host.eq_ignore_ascii_case("localhost") || host.parse::<std::net::IpAddr>().is_ok() {
+        return None;
+    }
     let rest = host
         .strip_suffix(".svc.cluster.local")
-        .or_else(|| host.strip_suffix(".svc"))?;
-    let (service, namespace) = rest.split_once('.')?;
-    if namespace.contains('.') {
+        .or_else(|| host.strip_suffix(".svc"))
+        .unwrap_or(host);
+    let (service, namespace) = rest.split_once('.').unwrap_or((rest, namespace));
+    if namespace.contains('.') || service.is_empty() || namespace.is_empty() {
         return None;
     }
     let scheme = parsed.scheme().to_string();
@@ -607,7 +613,13 @@ async fn netobserv(inputs: &Inputs) -> (Option<Candidate>, Check) {
         .filter(|q| q.get("mode").and_then(Value::as_str) == Some("Manual"))
         .and_then(|q| q.pointer("/manual/url"))
         .and_then(Value::as_str)
-        .and_then(in_cluster_url)
+        .and_then(|url| {
+            let namespace = spec
+                .get("namespace")
+                .and_then(Value::as_str)
+                .unwrap_or("netobserv");
+            in_cluster_url(url, namespace)
+        })
         .map_or(PromTarget::Cluster, PromTarget::Service);
     let text = match &loki {
         LokiTarget::Service(target) => format!("FlowCollector cluster, Loki {}", target.label()),
@@ -626,6 +638,13 @@ async fn netobserv(inputs: &Inputs) -> (Option<Candidate>, Check) {
 /// Where the FlowCollector's Loki is.
 pub fn loki_of(spec: &Value) -> LokiTarget {
     let loki = spec.get("loki").cloned().unwrap_or(Value::Null);
+    // Where NetObserv runs, for short Service names.
+    let namespace = spec
+        .get("namespace")
+        .and_then(Value::as_str)
+        .filter(|n| !n.is_empty())
+        .unwrap_or("netobserv")
+        .to_string();
     if loki.get("enable").and_then(Value::as_bool) == Some(false) {
         return LokiTarget::Disabled;
     }
@@ -634,7 +653,7 @@ pub fn loki_of(spec: &Value) -> LokiTarget {
             .and_then(Value::as_str)
             .filter(|u| !u.is_empty())
             .map(|u| {
-                in_cluster_url(u)
+                in_cluster_url(u, &namespace)
                     .map_or_else(|| LokiTarget::Url(u.to_string()), LokiTarget::Service)
             })
     };
@@ -659,7 +678,7 @@ pub fn loki_of(spec: &Value) -> LokiTarget {
         "Manual" => url("/manual/querierUrl").unwrap_or(LokiTarget::Disabled),
         _ => url("/monolithic/url").unwrap_or_else(|| {
             LokiTarget::Service(ServiceTarget {
-                namespace: "netobserv".into(),
+                namespace: namespace.clone(),
                 service: "loki".into(),
                 port: "3100".into(),
                 scheme: "http".into(),
@@ -725,8 +744,11 @@ mod tests {
 
     #[test]
     fn in_cluster_urls_become_service_targets() {
-        let target =
-            in_cluster_url("http://netobserv-loki.netobserv.svc.cluster.local.:3100/").unwrap();
+        let target = in_cluster_url(
+            "http://netobserv-loki.netobserv.svc.cluster.local.:3100/",
+            "other",
+        )
+        .unwrap();
         assert_eq!(target.label(), "netobserv/netobserv-loki");
         assert_eq!(
             (
@@ -736,7 +758,11 @@ mod tests {
             ),
             ("3100", "http", "")
         );
-        let prom = in_cluster_url("https://thanos.openshift-monitoring.svc:9091/api").unwrap();
+        let prom = in_cluster_url(
+            "https://thanos.openshift-monitoring.svc:9091/api",
+            "netobserv",
+        )
+        .unwrap();
         assert_eq!(
             (
                 prom.namespace.as_str(),
@@ -745,7 +771,14 @@ mod tests {
             ),
             ("openshift-monitoring", "9091", "/api")
         );
-        assert!(in_cluster_url("https://loki.example.com/").is_none());
+        assert!(in_cluster_url("https://loki.example.com/", "netobserv").is_none());
+        assert!(in_cluster_url("http://localhost:3100/", "netobserv").is_none());
+        assert!(in_cluster_url("http://10.96.0.5:3100/", "netobserv").is_none());
+        // Cluster-only short names.
+        let short = in_cluster_url("http://loki:3100/", "flows").unwrap();
+        assert_eq!(short.label(), "flows/loki");
+        let dotted = in_cluster_url("http://loki.netobserv:3100/", "flows").unwrap();
+        assert_eq!(dotted.label(), "netobserv/loki");
     }
 
     #[test]

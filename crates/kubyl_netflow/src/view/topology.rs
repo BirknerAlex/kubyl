@@ -458,8 +458,9 @@ impl NetworkFlowsView {
         let graph = self.topology.graph.as_ref()?;
         let (viewport, _) = self.topology.viewport()?;
         let mut best: Option<(f32, usize)> = None;
+        let pairs = edge_pairs(graph);
         for (i, edge) in graph.edges.iter().enumerate() {
-            for curve in curves(graph, edge) {
+            for curve in curves(graph, &pairs, edge) {
                 let (from, ctrl, to) = geometry(&self.topology, &viewport, edge, curve.bend)?;
                 for step in 0..=20 {
                     let t = step as f32 / 20.0;
@@ -496,12 +497,19 @@ struct Curve {
     bend: f32,
 }
 
+/// The (source, target) pairs of a graph's edges, to find edges with a reverse in O(1): the
+/// paint, labels and hit tests go through every edge.
+fn edge_pairs(graph: &Topology) -> std::collections::HashSet<(usize, usize)> {
+    graph.edges.iter().map(|e| (e.source, e.target)).collect()
+}
+
 /// The strokes of an edge: forwarded, dropped and unanswered traffic bend apart.
-fn curves(graph: &Topology, edge: &TopoEdge) -> Vec<Curve> {
-    let reverse = graph
-        .edges
-        .iter()
-        .any(|e| e.source == edge.target && e.target == edge.source);
+fn curves(
+    graph: &Topology,
+    pairs: &std::collections::HashSet<(usize, usize)>,
+    edge: &TopoEdge,
+) -> Vec<Curve> {
+    let reverse = pairs.contains(&(edge.target, edge.source));
     let base = if reverse { 14.0 } else { 0.0 };
     let share = |count: u64| -> u64 {
         if graph.bytes_only || edge.flows == 0 {
@@ -935,9 +943,10 @@ fn graph_canvas(
                     .unwrap_or(1)
                     .max(1);
                 let at = |p: [f32; 2]| point(bounds.origin.x + px(p[0]), bounds.origin.y + px(p[1]));
+                let pairs = edge_pairs(graph);
                 for edge in &graph.edges {
                     let is_selected = matches!(selected, Some(Selection::Edge(a, b)) if graph.nodes[edge.source].id == *a && graph.nodes[edge.target].id == *b);
-                    for curve in curves(graph, edge) {
+                    for curve in curves(graph, &pairs, edge) {
                         let Some((from, ctrl, to)) = geometry(&state, &viewport, edge, curve.bend) else {
                             continue;
                         };
@@ -1090,6 +1099,7 @@ fn graph_canvas(
             );
         }
         // Blocked edges say what blocked them.
+        let pairs = edge_pairs(graph);
         for edge in &graph.edges {
             if edge.blocked() == 0 {
                 continue;
@@ -1098,7 +1108,7 @@ fn graph_canvas(
                 &view.topology,
                 &viewport,
                 edge,
-                curves(graph, edge)
+                curves(graph, &pairs, edge)
                     .iter()
                     .find(|c| c.kind != CurveKind::Forwarded)
                     .map_or(0.0, |c| c.bend),

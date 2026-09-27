@@ -55,6 +55,13 @@ impl FlowBuffer {
         }
     }
 
+    /// Drops every flow; numbering goes on after the last one.
+    pub fn clear(&mut self) {
+        self.first = self.range().end;
+        self.flows.clear();
+        self.seen = Seen::default();
+    }
+
     pub fn set_limits(&mut self, max_flows: usize, max_age: Duration) {
         self.max_flows = max_flows.max(100);
         self.max_age = max_age;

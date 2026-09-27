@@ -248,7 +248,8 @@ pub fn aggregate<'a>(
                 entry.1 += u64::from(blocked);
             }
         }
-        for i in [a, b] {
+        // A node talking to itself counts the flow once.
+        for i in [Some(a), (a != b).then_some(b)].into_iter().flatten() {
             nodes[i].flows += 1;
             nodes[i].bytes += bytes;
             nodes[i].blocked += u64::from(blocked);
@@ -526,6 +527,8 @@ mod tests {
         );
         assert_eq!(cross.ports, vec![(80, 3)]);
         assert_eq!(namespaces.nodes[1].blocked, 2);
+        // Three from storefront, one inside (counted once), one to the world.
+        assert_eq!(namespaces.nodes[1].flows, 5);
         assert_eq!(namespaces.nodes[0].filter, "ns=storefront");
         let workloads = aggregate(&flows, Zoom::Workloads, NODE_LIMIT);
         assert_eq!(workloads.nodes.len(), 6);

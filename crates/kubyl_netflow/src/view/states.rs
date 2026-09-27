@@ -96,7 +96,11 @@ pub(super) fn render(
                     "Relay speaks gRPC: Kubyl opens a temporary port-forward to {} on this machine (it shows in Active Sessions).",
                     candidate.label()
                 ),
-                (_, Some(candidate)) => format!(
+                (BackendKind::Whisker, Some(candidate)) => format!(
+                    "Kubyl opens a temporary port-forward to {} on this machine (it shows in Active Sessions).",
+                    candidate.label()
+                ),
+                (BackendKind::NetObserv, Some(candidate)) => format!(
                     "Through the API server's service proxy ({}).",
                     candidate.label()
                 ),
