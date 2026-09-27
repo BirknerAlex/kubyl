@@ -157,6 +157,15 @@ pub fn recordable(kind: &str, yaml: &str) -> bool {
         && crate::parse::parse(yaml).roots().any(|root| {
             root.find_entry(&crate::parse::Path::keys(&["spec", "tls", "key"]))
                 .is_some()
+                // Nor one whose last-applied copy still holds a key.
+                || root
+                    .find_entry(&crate::parse::Path::keys(&[
+                        "metadata",
+                        "annotations",
+                        crate::render::LAST_APPLIED,
+                    ]))
+                    .and_then(|entry| entry.value.as_str())
+                    .is_some_and(kubyl_resources::route::applied_text_has_key)
         }))
 }
 
@@ -177,6 +186,12 @@ mod tests {
             &route("    key: |\n      -----BEGIN PRIVATE KEY-----\n")
         ));
         assert!(!recordable("Route", &route("    key: ••••••••\n")));
+        // No key in `spec`, but the last-applied copy still holds one.
+        let stale = route("").replace(
+            "metadata:\n  name: web\n",
+            "metadata:\n  name: web\n  annotations:\n    kubectl.kubernetes.io/last-applied-configuration: '{\"spec\":{\"tls\":{\"key\":\"-----BEGIN PRIVATE KEY-----\"}}}'\n",
+        );
+        assert!(!recordable("Route", &stale));
         assert!(!recordable("Secret", "kind: Secret\n"));
         assert!(recordable("ConfigMap", "kind: ConfigMap\n"));
         assert!(!recordable("ConfigMap", &"x".repeat(HISTORY_MAX_BYTES + 1)));

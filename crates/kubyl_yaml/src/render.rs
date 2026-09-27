@@ -135,9 +135,10 @@ pub fn render(object: &Value, options: RenderOptions) -> (String, Option<SecretV
         }
         secret = Some(values);
     }
-    if let Some(key) = route::inline_key(&object).map(String::from) {
+    // The key in `spec`, or only in kubectl's last-applied copy (taken out of `spec` since).
+    if route::has_key_material(&object) {
         let mut values = SecretValues {
-            route_key: Some(key),
+            route_key: route::inline_key(&object).map(String::from),
             ..Default::default()
         };
         values.last_applied = object
@@ -193,6 +194,11 @@ pub fn mask_route_key_edits(text: &str) -> Vec<Edit> {
             root.find_entry(&Path::keys(&["spec", "tls", "key"]))
                 .as_ref()
                 .is_some_and(unmasked)
+                // A key taken out of `spec` may still be in the last-applied copy.
+                || root
+                    .find_entry(&Path::keys(&["metadata", "annotations", LAST_APPLIED]))
+                    .and_then(|entry| entry.value.as_str())
+                    .is_some_and(route::applied_text_has_key)
         })
         .flat_map(|root| {
             [
@@ -640,9 +646,13 @@ mod tests {
         assert!(!masked.contains("MIIEvQIBADANBg"), "{masked}");
         assert!(masked.contains(&format!("key: {MASK}")), "{masked}");
         assert!(mask_route_key_edits(&masked).is_empty());
-        // Routes without a key render as they are.
+        // Routes without a key (in `spec` or the last-applied copy) render as they are.
         let mut plain = route();
         plain["spec"]["tls"] = json!({"termination": "edge"});
+        plain["metadata"]
+            .as_object_mut()
+            .unwrap()
+            .remove("annotations");
         assert!(render(&plain, RenderOptions::default()).1.is_none());
     }
 
@@ -681,5 +691,29 @@ mod tests {
             json!({"metadata": {"name": "x", "resourceVersion": "1", "uid": "u"}, "status": {}});
         strip_server_fields(&mut object);
         assert_eq!(object, json!({"metadata": {"name": "x"}}));
+    }
+
+    /// The key was taken out of `spec`; kubectl's last-applied copy still holds it.
+    #[test]
+    fn stale_route_keys_in_last_applied_are_masked_and_restored() {
+        let mut stale = route();
+        stale["spec"]["tls"].as_object_mut().unwrap().remove("key");
+        let (text, values) = render(&stale, RenderOptions::default());
+        let values = values.expect("the last-applied copy is kept in memory");
+        assert!(values.route_key.is_none());
+        assert!(!text.contains("MIIEvQIBADANBg"), "{text}");
+        assert!(text.contains(&format!("{LAST_APPLIED}: {MASK}")), "{text}");
+        // Applying sends the original annotation back.
+        let mut object = parse::parse(&text).roots().next().unwrap().to_json();
+        restore_secret(&mut object, Some(&values));
+        assert_eq!(
+            object["metadata"]["annotations"][LAST_APPLIED],
+            stale["metadata"]["annotations"][LAST_APPLIED]
+        );
+        // Rendered manifests mask it too.
+        let manifest = to_yaml(&stale);
+        let masked = apply_edits(&manifest, mask_route_key_edits(&manifest));
+        assert!(!masked.contains("MIIEvQIBADANBg"), "{masked}");
+        assert!(mask_route_key_edits(&masked).is_empty());
     }
 }
