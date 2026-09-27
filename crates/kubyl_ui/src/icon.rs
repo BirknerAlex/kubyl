@@ -105,6 +105,7 @@ icons! {
     TriangleAlert => "triangle-alert",
     Upload => "upload",
     User => "user",
+    Waypoints => "waypoints",
     WrapText => "wrap-text",
     X => "x",
     Zap => "zap",
