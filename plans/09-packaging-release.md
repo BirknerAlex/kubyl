@@ -45,7 +45,8 @@ a public 1.0: accessibility, performance budgets, crash reporting (opt-in) and d
 ### Docs and site
 - [x] `kubyl.dev` registered and live: landing page with the lockup from `assets/logo`, feature breakdown, roadmap, screenshots from the real app, `/download` and `/sponsor` pages, footer `/imprint` and `/privacy`
 - [ ] Deeper docs on the site: install guide, kubeconfig/auth guide, OIDC setup, keybindings reference, k9s migration guide — today the site is a single-page overview plus `/download`/`/sponsor`, nothing yet for these
-- [ ] README with badges, contributing guide, code of conduct, `LICENSE-MIT`/`LICENSE-APACHE` referenced
+- [x] README has badges (CI, release, license, sponsors) and a Contributing section, `LICENSE-MIT`/`LICENSE-APACHE` referenced in the License section
+- [ ] No code of conduct yet (no `CODE_OF_CONDUCT.md`, no section for it)
 
 ## Acceptance criteria
 
