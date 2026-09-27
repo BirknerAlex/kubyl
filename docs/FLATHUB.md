@@ -2,67 +2,73 @@
 
 Kubyl is published to Flathub, the community app store for Linux Flatpak applications.
 
-## Automatic Updates
+## Known risk: prebuilt binary, not a source build
 
-Every time a release is tagged in this repo, `.github/workflows/publish-flathub.yml`:
-1. Extracts the version from the git tag
-2. Fetches the sha256 checksum from the GitHub release
-3. Updates `io.github.birkneralex.Kubyl.yml` with the new version and checksum
-4. Commits the updated manifest back to `main`
+Flathub's policy is that apps build from source; a prebuilt-binary source (what
+`io.github.birkneralex.Kubyl.yml` uses today, matching the "use the release artifact" choice for
+Kubyl's other package managers) needs an exception granted case by case at review time. There's
+no guarantee this manifest is accepted as-is — reviewers may ask for a from-source build instead
+(compiling GPUI and its Wayland/X11/Vulkan C deps inside the Flatpak sandbox), which is
+substantially more work than anything below. Know this going in; don't be surprised if the first
+submission comes back with that ask.
 
-Flathub's CI automatically detects the new manifest and rebuilds the app.
+## Keeping this repo's copy current
+
+Every time a release is tagged, `.github/workflows/publish-flathub.yml` runs
+`script/update-flatpak-manifest.sh`, which regenerates the whole `sources:` block (both Linux
+archs' archive URL/sha256, and the desktop file/icon URLs/sha256 pinned to the new tag) and adds
+a `<release>` entry to `io.github.birkneralex.Kubyl.metainfo.xml`, then commits both back to
+`main`.
+
+**This keeps this repo's copy current — it does not publish anything to Flathub by itself.**
+Flathub only rebuilds on changes to *its own* `flathub/io.github.birkneralex.Kubyl` repo (created
+after the initial submission is accepted), not on anything that happens here. Until there's
+automation that also pushes to that repo, publishing an update after the initial submission is a
+manual step: open a PR against `flathub/io.github.birkneralex.Kubyl` with the refreshed manifest
+this workflow just produced.
 
 ## One-Time Submission to Flathub
 
-The manifest is already created at `io.github.birkneralex.Kubyl.yml` and ready for submission. Follow these steps:
+### 1. Clone Flathub's `new-pr` branch
 
-### 1. Fork flathub/flathub
+Flathub's submission flow branches off `new-pr`, not the default branch:
 
 ```bash
 # Visit https://github.com/flathub/flathub and fork it
-# Then clone your fork locally
 git clone https://github.com/YOUR_USERNAME/flathub
 cd flathub
-git checkout -b add/io.github.birkneralex.Kubyl
+git checkout new-pr
+git checkout -b add-io.github.birkneralex.Kubyl new-pr
 ```
 
-### 2. Add the manifest
+### 2. Add the manifest and Metainfo
 
 ```bash
-# Copy the manifest from kubyl repo to flathub
-cp /path/to/kubyl/io.github.birkneralex.Kubyl.yml \
-   flathub/io.github.birkneralex.Kubyl/io.github.birkneralex.Kubyl.yml
-
-# Create CHANGELOG.md for initial submission
-cat > flathub/io.github.birkneralex.Kubyl/CHANGELOG.md << 'EOF'
-# Initial Flathub submission
-- Initial release of Kubyl on Flathub
-EOF
+mkdir io.github.birkneralex.Kubyl
+cp /path/to/kubyl/io.github.birkneralex.Kubyl.yml io.github.birkneralex.Kubyl/
+cp /path/to/kubyl/io.github.birkneralex.Kubyl.metainfo.xml io.github.birkneralex.Kubyl/
 
 git add io.github.birkneralex.Kubyl/
 git commit -m "Add io.github.birkneralex.Kubyl"
-git push origin add/io.github.birkneralex.Kubyl
+git push origin add-io.github.birkneralex.Kubyl
 ```
 
 ### 3. Submit PR to flathub/flathub
 
-- Visit your fork on GitHub and open a PR to `flathub/flathub:master`
-- Flathub maintainers will review, check for compliance (permissions, dependencies, security)
+- Visit your fork on GitHub and open a PR **against `flathub/flathub`'s `new-pr` branch** (not
+  `master`)
+- Flathub maintainers will review: permissions, dependencies, security, and — per the risk noted
+  above — whether the prebuilt-binary source is acceptable for this app
 - They may ask to adjust permissions in `finish-args` (network, device, filesystem access)
-- Once approved, they merge and set up CI
+- Once approved, Flathub creates `flathub/io.github.birkneralex.Kubyl`, which is what its build
+  bot actually watches from then on
 
 ### 4. After Approval
 
-Once merged:
-- Flathub CI is configured to watch this repo (`github.com/BirknerAlex/kubyl`)
-- Every time you tag a release, Flathub automatically:
-  1. Detects the new tag
-  2. Reads the updated manifest from your repo
-  3. Builds the new version
-  4. Publishes to Flathub
-
 - Users can install with: `flatpak install flathub io.github.birkneralex.Kubyl`
 - Users can update with: `flatpak update`
+- Publishing a new version means pushing the refreshed manifest (see above) to
+  `flathub/io.github.birkneralex.Kubyl`, typically via a PR there
 
 ## Testing Locally (Before Submission)
 
@@ -94,6 +100,10 @@ These are standard for a desktop app that needs to access network APIs and home 
 
 ## References
 
-- [Flathub Contributing Guide](https://docs.flathub.org/submission/)
+- [Flathub Requirements](https://docs.flathub.org/docs/for-app-authors/requirements) (source
+  builds, Metainfo, architecture support)
+- [Flathub Submission Guide](https://docs.flathub.org/docs/for-app-authors/submission) (the
+  `new-pr` branch flow)
+- [Flathub App Maintenance](https://docs.flathub.org/docs/for-app-authors/maintenance) (how
+  updates actually get published post-acceptance)
 - [Flatpak Manifest Format](https://docs.flatpak.org/en/latest/manifests.html)
-- [Flathub CI Setup](https://docs.flathub.org/en/latest/maintenance/application-updates.html)
