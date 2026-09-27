@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use crate::model::{Endpoint, EndpointKind, Flow, Verdict};
+use crate::model::{Endpoint, EndpointKind, Flow, PolicyRef, Verdict};
 
 /// How far the graph zooms in.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -63,10 +63,20 @@ pub struct TopoEdge {
     pub forwarded: u64,
     pub dropped: u64,
     pub no_reply: u64,
-    /// Policies behind the blocked flows (`denied by storefront/web-guard`), most common first.
-    pub policies: Vec<(String, u64)>,
+    /// Policies behind the blocked flows, most common first.
+    pub policies: Vec<EdgePolicy>,
     /// Destination ports, most common first.
     pub ports: Vec<(u16, u64)>,
+}
+
+/// Why some of an edge's flows were blocked.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EdgePolicy {
+    /// `denied by storefront/web-guard`.
+    pub text: String,
+    pub flows: u64,
+    /// The policy it names, for opening it.
+    pub policy: Option<PolicyRef>,
 }
 
 impl TopoEdge {
@@ -84,6 +94,16 @@ pub struct Topology {
     pub folded: usize,
     /// Volume is bytes (metrics) rather than flow counts.
     pub bytes_only: bool,
+    /// At namespace zoom: each namespace node's workloads, busiest first.
+    pub members: HashMap<String, Vec<Member>>,
+}
+
+/// A workload inside a namespace node.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Member {
+    pub label: String,
+    pub flows: u64,
+    pub blocked: u64,
 }
 
 /// Workload nodes shown before the smallest fold into "more in <namespace>".
@@ -161,7 +181,7 @@ struct EdgeAcc {
     forwarded: u64,
     dropped: u64,
     no_reply: u64,
-    policies: HashMap<String, u64>,
+    policies: HashMap<String, (u64, Option<PolicyRef>)>,
     ports: HashMap<u16, u64>,
 }
 
@@ -175,6 +195,7 @@ pub fn aggregate<'a>(
     let mut nodes: Vec<TopoNode> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
     let mut edges: HashMap<(usize, usize), EdgeAcc> = HashMap::new();
+    let mut members: HashMap<String, HashMap<String, (u64, u64)>> = HashMap::new();
     let mut node = |key: NodeKey, nodes: &mut Vec<TopoNode>| -> usize {
         *index.entry(key.id.clone()).or_insert_with(|| {
             nodes.push(TopoNode {
@@ -191,10 +212,42 @@ pub fn aggregate<'a>(
         })
     };
     for flow in flows {
+        // Edges point from client to server, as "Show flows" filters them: replies (Hubble
+        // tells them apart) would add the opposite edge of every connection.
+        if flow.reply == Some(true) {
+            continue;
+        }
         let a = node(node_key(&flow.source, zoom), &mut nodes);
         let b = node(node_key(&flow.destination, zoom), &mut nodes);
         let bytes = flow.bytes.unwrap_or(0);
         let blocked = flow.verdict.blocked();
+        if zoom == Zoom::Namespaces {
+            let sides = [&flow.source, &flow.destination].map(|e| {
+                let key = node_key(e, Zoom::Workloads);
+                (key.kind == NodeKind::Workload).then(|| {
+                    (
+                        format!("ns:{}", key.namespace.unwrap_or_default()),
+                        key.label,
+                    )
+                })
+            });
+            for (i, side) in sides.iter().enumerate() {
+                let Some((node, label)) = side else {
+                    continue;
+                };
+                // Talking to itself counts once.
+                if i == 1 && sides[0] == sides[1] {
+                    continue;
+                }
+                let entry = members
+                    .entry(node.clone())
+                    .or_default()
+                    .entry(label.clone())
+                    .or_default();
+                entry.0 += 1;
+                entry.1 += u64::from(blocked);
+            }
+        }
         for i in [a, b] {
             nodes[i].flows += 1;
             nodes[i].bytes += bytes;
@@ -212,7 +265,15 @@ pub fn aggregate<'a>(
         if blocked {
             let summary = flow.policies.summary(flow.verdict).text();
             if !summary.is_empty() {
-                *edge.policies.entry(summary).or_default() += 1;
+                let entry = edge.policies.entry(summary).or_insert_with(|| {
+                    let named = flow
+                        .policies
+                        .denied_by
+                        .first()
+                        .or(flow.policies.isolated_by.first());
+                    (0, named.cloned())
+                });
+                entry.0 += 1;
             }
         }
         if let Some(port) = flow.destination.port {
@@ -224,8 +285,16 @@ pub fn aggregate<'a>(
         edges: edges
             .into_iter()
             .map(|((source, target), acc)| {
-                let mut policies: Vec<(String, u64)> = acc.policies.into_iter().collect();
-                policies.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+                let mut policies: Vec<EdgePolicy> = acc
+                    .policies
+                    .into_iter()
+                    .map(|(text, (flows, policy))| EdgePolicy {
+                        text,
+                        flows,
+                        policy,
+                    })
+                    .collect();
+                policies.sort_by(|a, b| b.flows.cmp(&a.flows).then_with(|| a.text.cmp(&b.text)));
                 let mut ports: Vec<(u16, u64)> = acc.ports.into_iter().collect();
                 ports.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
                 ports.truncate(5);
@@ -245,6 +314,21 @@ pub fn aggregate<'a>(
             .collect(),
         folded: 0,
         bytes_only: false,
+        members: members
+            .into_iter()
+            .map(|(node, workloads)| {
+                let mut list: Vec<Member> = workloads
+                    .into_iter()
+                    .map(|(label, (flows, blocked))| Member {
+                        label,
+                        flows,
+                        blocked,
+                    })
+                    .collect();
+                list.sort_by(|a, b| b.flows.cmp(&a.flows).then_with(|| a.label.cmp(&b.label)));
+                (node, list)
+            })
+            .collect(),
     };
     topology.edges.sort_by_key(|e| (e.source, e.target));
     if zoom == Zoom::Workloads {
@@ -318,8 +402,18 @@ fn fold(topology: &mut Topology, limit: usize) {
                 existing.forwarded += edge.forwarded;
                 existing.dropped += edge.dropped;
                 existing.no_reply += edge.no_reply;
-                existing.policies.extend(edge.policies);
-                existing.ports.extend(edge.ports);
+                for policy in edge.policies {
+                    match existing.policies.iter_mut().find(|p| p.text == policy.text) {
+                        Some(same) => same.flows += policy.flows,
+                        None => existing.policies.push(policy),
+                    }
+                }
+                for (port, flows) in edge.ports {
+                    match existing.ports.iter_mut().find(|p| p.0 == port) {
+                        Some(same) => same.1 += flows,
+                        None => existing.ports.push((port, flows)),
+                    }
+                }
             }
             None => {
                 merged.insert(
@@ -334,7 +428,17 @@ fn fold(topology: &mut Topology, limit: usize) {
         }
     }
     topology.nodes = nodes;
-    topology.edges = merged.into_values().collect();
+    topology.edges = merged
+        .into_values()
+        .map(|mut edge| {
+            edge.policies
+                .sort_by(|a, b| b.flows.cmp(&a.flows).then_with(|| a.text.cmp(&b.text)));
+            edge.ports
+                .sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            edge.ports.truncate(5);
+            edge
+        })
+        .collect();
     topology.edges.sort_by_key(|e| (e.source, e.target));
     topology.folded = folded;
 }
@@ -414,7 +518,11 @@ mod tests {
         assert_eq!((cross.forwarded, cross.dropped), (1, 2));
         assert_eq!(
             cross.policies,
-            vec![("denied: isolated, no policy allows it".to_string(), 2)]
+            vec![EdgePolicy {
+                text: "denied: isolated, no policy allows it".to_string(),
+                flows: 2,
+                policy: None,
+            }]
         );
         assert_eq!(cross.ports, vec![(80, 3)]);
         assert_eq!(namespaces.nodes[1].blocked, 2);

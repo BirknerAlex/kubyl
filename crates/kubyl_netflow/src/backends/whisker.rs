@@ -25,7 +25,7 @@ use crate::model::{
 };
 use crate::provider::{
     BATCH_WAIT, BackendKind, BackendStatus, Batcher, Capabilities, FlowProvider, FlowSink,
-    ProviderError, ProviderFuture, StreamEvent, StreamQuery,
+    HISTORY_GAP, ProviderError, ProviderFuture, StreamEvent, StreamQuery,
 };
 
 pub struct Whisker {
@@ -127,13 +127,14 @@ impl FlowProvider for Whisker {
             let mut batcher = Batcher::new(sink);
             let mut caught_up = query.since.is_none();
             let started = Timestamp::now();
+            let mut last_line = std::time::Instant::now();
             loop {
                 let line = match tokio::time::timeout(BATCH_WAIT, lines.next()).await {
                     Err(_) => {
                         if batcher.flush().await.is_err() {
                             return Ok(());
                         }
-                        if !caught_up {
+                        if !caught_up && last_line.elapsed() >= HISTORY_GAP {
                             caught_up = true;
                             if batcher.send(StreamEvent::CaughtUp).await.is_err() {
                                 return Ok(());
@@ -153,6 +154,7 @@ impl FlowProvider for Whisker {
                     }
                     Ok(Some(Ok(line))) => line,
                 };
+                last_line = std::time::Instant::now();
                 if let Some(message) = line.strip_prefix("error:") {
                     let _ = batcher.flush().await;
                     return Err(ProviderError::Unavailable(format!(

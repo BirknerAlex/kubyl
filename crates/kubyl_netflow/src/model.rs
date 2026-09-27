@@ -299,6 +299,57 @@ impl PolicyRef {
             _ => self.name.to_string(),
         }
     }
+
+    /// The API groups (most likely first) and kind that serve this policy, for opening it.
+    /// `None` for what isn't an object (Calico profiles, end of tier, OVN ACLs).
+    pub fn api(&self) -> Option<(&'static [&'static str], &'static str)> {
+        const CILIUM: &[&str] = &["cilium.io"];
+        const CALICO: &[&str] = &["projectcalico.org", "crd.projectcalico.org"];
+        const NETWORKING: &[&str] = &["networking.k8s.io"];
+        const POLICY: &[&str] = &["policy.networking.k8s.io"];
+        Some(match self.kind.as_ref() {
+            "CiliumNetworkPolicy" => (CILIUM, "CiliumNetworkPolicy"),
+            "CiliumClusterwideNetworkPolicy" => (CILIUM, "CiliumClusterwideNetworkPolicy"),
+            "NetworkPolicy" => (NETWORKING, "NetworkPolicy"),
+            "CalicoNetworkPolicy" => (CALICO, "NetworkPolicy"),
+            "GlobalNetworkPolicy" => (CALICO, "GlobalNetworkPolicy"),
+            "StagedNetworkPolicy" => (CALICO, "StagedNetworkPolicy"),
+            "StagedGlobalNetworkPolicy" => (CALICO, "StagedGlobalNetworkPolicy"),
+            "StagedKubernetesNetworkPolicy" => (CALICO, "StagedKubernetesNetworkPolicy"),
+            "AdminNetworkPolicy" => (POLICY, "AdminNetworkPolicy"),
+            "BaselineAdminNetworkPolicy" => (POLICY, "BaselineAdminNetworkPolicy"),
+            "ClusterNetworkPolicy" => (POLICY, "ClusterNetworkPolicy"),
+            _ => return None,
+        })
+    }
+}
+
+/// A backend's drop reason for people: `UNSUPPORTED_L3_PROTOCOL` → `unsupported L3 protocol`,
+/// `SKB_DROP_REASON_NETFILTER_DROP` → `netfilter drop`.
+pub fn reason_text(raw: &str) -> String {
+    const UPPER: &[&str] = &[
+        "ARP", "BPF", "CIDR", "CT", "DNS", "DSR", "ENI", "FIB", "GRE", "ICMP", "ID", "IP", "LB",
+        "MAC", "MTU", "NAT", "OVN", "SCTP", "SNAT", "DNAT", "SKB", "TCP", "TTL", "UDP", "VLAN",
+        "VTEP", "VXLAN", "XDP",
+    ];
+    let raw = raw.strip_prefix("SKB_DROP_REASON_").unwrap_or(raw);
+    raw.split(['_', ' '])
+        .filter(|word| !word.is_empty())
+        .map(|word| {
+            let upper = word.to_ascii_uppercase();
+            match upper.as_str() {
+                "IPV4" => "IPv4".to_string(),
+                "IPV6" => "IPv6".to_string(),
+                "ICMPV6" => "ICMPv6".to_string(),
+                "IPSEC" => "IPsec".to_string(),
+                _ if UPPER.contains(&upper.as_str()) => upper,
+                // L3, L7, SRV6: short tokens with digits read as acronyms.
+                _ if word.len() <= 4 && word.chars().any(|c| c.is_ascii_digit()) => upper,
+                _ => word.to_ascii_lowercase(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The policies behind a verdict, as far as the backend attributes them.
@@ -372,7 +423,7 @@ impl Policies {
         }
         if verdict.blocked() {
             if let Some(reason) = &self.reason {
-                return PolicySummary::Reason(reason.to_string());
+                return PolicySummary::Reason(reason_text(reason));
             }
             if verdict == Verdict::NoReply {
                 return PolicySummary::Reason("no answer: dropped or nothing listening".into());
@@ -550,6 +601,27 @@ mod tests {
         });
         let debug = format!("{flow:?} {:?} {:?}", flow.source, flow.l7);
         assert_eq!(debug, "Flow { .. } Endpoint { .. } Some(L7 { .. })");
+    }
+
+    #[test]
+    fn drop_reasons_read_as_words() {
+        assert_eq!(
+            reason_text("UNSUPPORTED_L3_PROTOCOL"),
+            "unsupported L3 protocol"
+        );
+        assert_eq!(
+            reason_text("SKB_DROP_REASON_NETFILTER_DROP"),
+            "netfilter drop"
+        );
+        assert_eq!(
+            reason_text("CT_MAP_INSERTION_FAILED"),
+            "CT map insertion failed"
+        );
+        assert_eq!(
+            reason_text("INVALID_IPV6_EXTENSION_HEADER"),
+            "invalid IPv6 extension header"
+        );
+        assert_eq!(reason_text("POLICY_DENY"), "policy deny");
     }
 
     #[test]

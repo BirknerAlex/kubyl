@@ -29,7 +29,7 @@ use crate::proto::observer::observer_client::ObserverClient;
 use crate::proto::observer::{GetFlowsRequest, ServerStatusRequest, get_flows_response};
 use crate::provider::{
     BATCH_WAIT, BackendKind, BackendStatus, Batcher, Capabilities, FlowProvider, FlowSink,
-    ProviderError, ProviderFuture, StreamEvent, StreamQuery,
+    HISTORY_GAP, ProviderError, ProviderFuture, StreamEvent, StreamQuery,
 };
 use crate::sanitize;
 
@@ -240,6 +240,7 @@ impl FlowProvider for Hubble {
             let mut carry = DenyCarry::default();
             let mut caught_up = query.since.is_none();
             let start = Timestamp::now();
+            let mut last_flow = std::time::Instant::now();
             loop {
                 let next = tokio::time::timeout(BATCH_WAIT, responses.next()).await;
                 let response = match next {
@@ -248,7 +249,7 @@ impl FlowProvider for Hubble {
                         if batcher.flush().await.is_err() {
                             return Ok(());
                         }
-                        if !caught_up {
+                        if !caught_up && last_flow.elapsed() >= HISTORY_GAP {
                             caught_up = true;
                             if batcher.send(StreamEvent::CaughtUp).await.is_err() {
                                 return Ok(());
@@ -270,6 +271,7 @@ impl FlowProvider for Hubble {
                 };
                 if let Some(get_flows_response::ResponseTypes::Flow(flow)) = response.response_types
                 {
+                    last_flow = std::time::Instant::now();
                     let Some(flow) = map_flow(flow, this.keep_query_values, &mut carry) else {
                         continue;
                     };

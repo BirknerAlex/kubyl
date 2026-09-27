@@ -205,6 +205,10 @@ pub type FlowSink = mpsc::Sender<StreamEvent>;
 pub const BATCH_FLOWS: usize = 512;
 pub const BATCH_WAIT: Duration = Duration::from_millis(50);
 
+/// Before the first live flow, history is over after this long without flows (Hubble Relay
+/// drains its sort buffer every second, so shorter gaps happen mid-history).
+pub const HISTORY_GAP: Duration = Duration::from_secs(2);
+
 /// A flow backend. Implementations are cheap to share (`Arc`).
 pub trait FlowProvider: Send + Sync {
     fn kind(&self) -> BackendKind;
