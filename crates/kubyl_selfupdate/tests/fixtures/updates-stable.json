@@ -1,0 +1,12 @@
+{
+  "version": "0.3.0",
+  "channel": "stable",
+  "notes_url": "https://github.com/BirknerAlex/kubyl/releases/tag/v0.3.0",
+  "platforms": {
+    "macos-universal": { "url": "https://github.com/BirknerAlex/kubyl/releases/download/v0.3.0/kubyl-0.3.0-macos-universal.dmg", "sha256": "ca9c18a35b6c531b412418703c2d3e753978c7871bf91d6e14050d558256d088" },
+    "windows-x86_64": { "url": "https://github.com/BirknerAlex/kubyl/releases/download/v0.3.0/kubyl-0.3.0-windows-x86_64.zip", "sha256": "70fa95784846608ba445058c9854ea819e50d4b65487e0683eb4fc2bd6d91c9e" },
+    "windows-aarch64": { "url": "https://github.com/BirknerAlex/kubyl/releases/download/v0.3.0/kubyl-0.3.0-windows-aarch64.zip", "sha256": "1df4524e220bc47714f316f7568032b0abbcdb05243c2073d923bae397450e6a" },
+    "linux-x86_64": { "url": "https://github.com/BirknerAlex/kubyl/releases/download/v0.3.0/kubyl-0.3.0-linux-x86_64.tar.gz", "sha256": "fa01710213dea8a4c9a7b4362b354d16d63e95da2444fb4d6f6056d1f942b2f4" },
+    "linux-aarch64": { "url": "https://github.com/BirknerAlex/kubyl/releases/download/v0.3.0/kubyl-0.3.0-linux-aarch64.tar.gz", "sha256": "872528b6084502e477c0896c49bf98f6ddb2f49e8a762be43150ec597c40bfda" }
+  }
+}

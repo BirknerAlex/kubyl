@@ -60,6 +60,7 @@ kubyl_overview.workspace = true
 kubyl_palette.workspace = true
 kubyl_portforward.workspace = true
 kubyl_resources.workspace = true
+kubyl_selfupdate.workspace = true
 kubyl_settings.workspace = true
 kubyl_terminal.workspace = true
 kubyl_ui.workspace = true

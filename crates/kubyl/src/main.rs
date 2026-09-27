@@ -43,6 +43,7 @@ fn main() {
             kubyl_kubeconfig::init(cx);
             kubyl_alerts::init(cx);
             kubyl_netflow::init(cx);
+            kubyl_selfupdate::init(cx);
 
             kubyl_settings::Settings::write_schema(cx);
             app::open_window(cx);
