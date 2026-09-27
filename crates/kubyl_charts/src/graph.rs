@@ -7,7 +7,8 @@
 //!
 //! A live graph stays calm: nodes start where the previous layout put them (by id) and the
 //! simulation only settles what changed. New nodes start next to a neighbor that's already
-//! placed, else at a spot derived from their id, so the same graph always gets the same layout.
+//! placed, else at a spot derived from their id, and nodes are simulated in id order, so the same
+//! graph always gets the same layout.
 //! [`fit`] maps the result into a view.
 
 use std::collections::HashMap;
@@ -38,8 +39,50 @@ const LABEL_ROOM: f64 = 22.0;
 /// Ticks of a cold start (d3's default: alpha from 1 to 0.001).
 const COLD_TICKS: usize = 300;
 
-/// Places `nodes` (in layout units, centered on the origin). `previous` warms the start.
+/// Places `nodes` (in layout units, centered on the origin). `previous` warms the start. The
+/// same graph gets the same layout whatever order its nodes and edges come in.
 pub fn layout(nodes: &[GraphNode], edges: &[GraphEdge], previous: &Positions) -> Vec<[f32; 2]> {
+    layout_spaced(nodes, edges, previous, SPACING)
+}
+
+fn layout_spaced(
+    nodes: &[GraphNode],
+    edges: &[GraphEdge],
+    previous: &Positions,
+    spacing: f64,
+) -> Vec<[f32; 2]> {
+    let mut order: Vec<usize> = (0..nodes.len()).collect();
+    order.sort_by(|&a, &b| nodes[a].id.cmp(&nodes[b].id));
+    let mut rank = vec![0; nodes.len()];
+    for (sorted, &original) in order.iter().enumerate() {
+        rank[original] = sorted;
+    }
+    let sorted_nodes: Vec<GraphNode> = order.iter().map(|&i| nodes[i].clone()).collect();
+    let mut sorted_edges: Vec<GraphEdge> = edges
+        .iter()
+        .filter(|e| e.source < nodes.len() && e.target < nodes.len())
+        .map(|e| GraphEdge {
+            source: rank[e.source],
+            target: rank[e.target],
+            weight: e.weight,
+        })
+        .collect();
+    sorted_edges.sort_by_key(|e| (e.source, e.target));
+    let placed = simulate(&sorted_nodes, &sorted_edges, previous, spacing);
+    (0..nodes.len()).map(|i| placed[rank[i]]).collect()
+}
+
+/// Space between linked circles, on top of their radii (heavy links get less).
+const SPACING: f64 = 150.0;
+/// Groups' circles already hold room around their members.
+const GROUP_SPACING: f64 = 70.0;
+
+fn simulate(
+    nodes: &[GraphNode],
+    edges: &[GraphEdge],
+    previous: &Positions,
+    spacing: f64,
+) -> Vec<[f32; 2]> {
     if nodes.is_empty() {
         return Vec::new();
     }
@@ -59,10 +102,11 @@ pub fn layout(nodes: &[GraphNode], edges: &[GraphEdge], previous: &Positions) ->
     let distances: Vec<f64> = edges
         .iter()
         .map(|e| {
-            radii[e.source] + radii[e.target] + 70.0 - 30.0 * f64::from(e.weight.clamp(0.0, 1.0))
+            radii[e.source] + radii[e.target] + spacing
+                - spacing * 0.4 * f64::from(e.weight.clamp(0.0, 1.0))
         })
         .collect();
-    let charges: Vec<f64> = radii.iter().map(|r| -120.0 - 4.0 * r).collect();
+    let charges: Vec<f64> = radii.iter().map(|r| -300.0 - 6.0 * r).collect();
     let collide_radii: Vec<f64> = radii.iter().map(|r| r + LABEL_ROOM).collect();
     let builder = if warm {
         // Most nodes are placed: settle the changes without shaking the rest.
@@ -76,7 +120,9 @@ pub fn layout(nodes: &[GraphNode], edges: &[GraphEdge], previous: &Positions) ->
         .build(starts.iter().map(|&[x, y]| Node::default().position(x, y)))
         .add_force(
             "link",
-            Link::new(links).distance(by_index2(distances)).iterations(2),
+            Link::new(links)
+                .distance(by_index2(distances))
+                .iterations(2),
         )
         .add_force("charge", ManyBody::new().strength(by_index(charges)))
         .add_force(
@@ -156,6 +202,134 @@ fn seed(id: &str) -> (f64, f64) {
     let angle = (hash & 0xffff) as f64 / 65_536.0 * std::f64::consts::TAU;
     let distance = 40.0 + ((hash >> 16) & 0xff) as f64;
     (angle, distance)
+}
+
+/// Room between a group's outermost circle and its edge (the group's name sits there).
+const GROUP_PADDING: f32 = 30.0;
+
+/// Places nodes that belong to groups (a namespace's workloads): each group is laid out on its
+/// own, then the groups are placed as circles that hold their members, so groups never overlap.
+/// `groups[i]` is node `i`'s group; `None` stands alone. Warm starts and determinism as
+/// [`layout`].
+pub fn layout_grouped(
+    nodes: &[GraphNode],
+    edges: &[GraphEdge],
+    groups: &[Option<String>],
+    previous: &Positions,
+) -> Vec<[f32; 2]> {
+    let mut keys: Vec<String> = Vec::new();
+    let mut member_of: Vec<usize> = Vec::with_capacity(nodes.len());
+    for (i, node) in nodes.iter().enumerate() {
+        let key = match groups.get(i).cloned().flatten() {
+            Some(group) => format!("group:{group}"),
+            None => format!("node:{}", node.id),
+        };
+        let at = match keys.iter().position(|k| *k == key) {
+            Some(at) => at,
+            None => {
+                keys.push(key);
+                keys.len() - 1
+            }
+        };
+        member_of.push(at);
+    }
+    let mut local = vec![[0.0_f32; 2]; nodes.len()];
+    let mut group_nodes: Vec<GraphNode> = Vec::with_capacity(keys.len());
+    let mut group_previous = Positions::new();
+    for (g, key) in keys.iter().enumerate() {
+        let members: Vec<usize> = (0..nodes.len()).filter(|&i| member_of[i] == g).collect();
+        let index: HashMap<usize, usize> =
+            members.iter().enumerate().map(|(k, &i)| (i, k)).collect();
+        let sub_nodes: Vec<GraphNode> = members.iter().map(|&i| nodes[i].clone()).collect();
+        let sub_edges: Vec<GraphEdge> = edges
+            .iter()
+            .filter_map(|e| {
+                Some(GraphEdge {
+                    source: *index.get(&e.source)?,
+                    target: *index.get(&e.target)?,
+                    weight: e.weight,
+                })
+            })
+            .collect();
+        // The previous layout, relative to where the group was.
+        let known: Vec<[f32; 2]> = members
+            .iter()
+            .filter_map(|&i| previous.get(&nodes[i].id).copied())
+            .collect();
+        let sub_previous: Positions = match mean(&known) {
+            Some(center) => {
+                group_previous.insert(key.clone(), center);
+                members
+                    .iter()
+                    .filter_map(|&i| {
+                        let p = previous.get(&nodes[i].id)?;
+                        Some((nodes[i].id.clone(), [p[0] - center[0], p[1] - center[1]]))
+                    })
+                    .collect()
+            }
+            None => Positions::new(),
+        };
+        let placed = if members.len() == 1 {
+            vec![[0.0, 0.0]]
+        } else {
+            layout(&sub_nodes, &sub_edges, &sub_previous)
+        };
+        let center = mean(&placed).unwrap_or_default();
+        let mut radius: f32 = 0.0;
+        for (k, &i) in members.iter().enumerate() {
+            let p = [placed[k][0] - center[0], placed[k][1] - center[1]];
+            local[i] = p;
+            let reach = (p[0] * p[0] + p[1] * p[1]).sqrt() + nodes[i].radius;
+            radius = radius.max(reach);
+        }
+        let grouped = key.starts_with("group:");
+        group_nodes.push(GraphNode {
+            id: key.clone(),
+            radius: if grouped {
+                radius + LABEL_ROOM as f32 + GROUP_PADDING
+            } else {
+                radius
+            },
+        });
+    }
+    let mut links: HashMap<(usize, usize), f32> = HashMap::new();
+    for e in edges {
+        let (Some(&a), Some(&b)) = (member_of.get(e.source), member_of.get(e.target)) else {
+            continue;
+        };
+        if a != b {
+            let key = (a.min(b), a.max(b));
+            let weight = links.entry(key).or_insert(0.0);
+            *weight = weight.max(e.weight);
+        }
+    }
+    let group_edges: Vec<GraphEdge> = links
+        .into_iter()
+        .map(|((source, target), weight)| GraphEdge {
+            source,
+            target,
+            weight,
+        })
+        .collect();
+    let centers = layout_spaced(&group_nodes, &group_edges, &group_previous, GROUP_SPACING);
+    (0..nodes.len())
+        .map(|i| {
+            let c = centers[member_of[i]];
+            [c[0] + local[i][0], c[1] + local[i][1]]
+        })
+        .collect()
+}
+
+fn mean(points: &[[f32; 2]]) -> Option<[f32; 2]> {
+    if points.is_empty() {
+        return None;
+    }
+    let n = points.len() as f32;
+    Some(
+        points
+            .iter()
+            .fold([0.0, 0.0], |acc, p| [acc[0] + p[0] / n, acc[1] + p[1] / n]),
+    )
 }
 
 /// How layout units map into a view: `view = layout * scale + offset`.
@@ -274,6 +448,57 @@ mod tests {
         }
     }
 
+    /// Groups are laid out apart: no member of one group overlaps another group's.
+    #[test]
+    fn groups_stay_apart() {
+        let (nodes, edges) = ring(18);
+        let groups: Vec<Option<String>> = (0..nodes.len())
+            .map(|i| (i % 4 != 3).then(|| format!("ns-{}", i % 3)))
+            .collect();
+        let placed = layout_grouped(&nodes, &edges, &groups, &Positions::new());
+        assert_eq!(
+            placed,
+            layout_grouped(&nodes, &edges, &groups, &Positions::new())
+        );
+        for i in 0..nodes.len() {
+            for j in i + 1..nodes.len() {
+                if groups[i].is_some() && groups[i] == groups[j] {
+                    continue;
+                }
+                let d = ((placed[i][0] - placed[j][0]).powi(2)
+                    + (placed[i][1] - placed[j][1]).powi(2))
+                .sqrt();
+                assert!(
+                    d > nodes[i].radius + nodes[j].radius + LABEL_ROOM as f32,
+                    "{i} and {j} are {d} apart"
+                );
+            }
+        }
+    }
+
+    /// Nodes that come in another order land in about the same places.
+    #[test]
+    fn node_order_does_not_change_the_layout() {
+        let (nodes, edges) = ring(12);
+        let a = layout(&nodes, &edges, &Positions::new());
+        let reversed: Vec<GraphNode> = nodes.iter().rev().cloned().collect();
+        let last = nodes.len() - 1;
+        let edges_reversed: Vec<GraphEdge> = edges
+            .iter()
+            .map(|e| GraphEdge {
+                source: last - e.source,
+                target: last - e.target,
+                weight: e.weight,
+            })
+            .collect();
+        let b = layout(&reversed, &edges_reversed, &Positions::new());
+        for (i, p) in a.iter().enumerate() {
+            let q = b[last - i];
+            let d = ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2)).sqrt();
+            assert!(d < 1.0, "node {i} moved {d}");
+        }
+    }
+
     /// A node added to a laid-out graph doesn't move the others far.
     #[test]
     fn warm_starts_keep_the_graph_calm() {
@@ -315,7 +540,11 @@ mod tests {
         let positions = layout(&nodes, &edges, &Positions::new());
         let took = start.elapsed();
         assert_eq!(positions.len(), 300);
-        assert!(positions.iter().all(|p| p[0].is_finite() && p[1].is_finite()));
+        assert!(
+            positions
+                .iter()
+                .all(|p| p[0].is_finite() && p[1].is_finite())
+        );
         assert!(took < std::time::Duration::from_secs(5), "{took:?}");
     }
 
@@ -331,12 +560,18 @@ mod tests {
         let a = viewport.apply([-110.0, -60.0]);
         let b = viewport.apply([110.0, 60.0 + LABEL_ROOM as f32]);
         // The height limits: it touches the padding, the width is centered inside it.
-        assert!((a[1] - 10.0).abs() < 0.01 && (b[1] - 230.0).abs() < 0.01, "{a:?} {b:?}");
+        assert!(
+            (a[1] - 10.0).abs() < 0.01 && (b[1] - 230.0).abs() < 0.01,
+            "{a:?} {b:?}"
+        );
         assert!(a[0] >= 10.0 && b[0] <= 430.0, "{a:?} {b:?}");
         assert!(((a[0] + b[0]) / 2.0 - 220.0).abs() < 0.01, "{a:?} {b:?}");
         let back = viewport.invert(viewport.apply([12.0, -7.0]));
         assert!((back[0] - 12.0).abs() < 0.001 && (back[1] + 7.0).abs() < 0.001);
         // One node isn't blown up.
-        assert_eq!(fit(&[[0.0, 0.0]], &[10.0], [800.0, 600.0], 20.0, 1.5).scale, 1.5);
+        assert_eq!(
+            fit(&[[0.0, 0.0]], &[10.0], [800.0, 600.0], 20.0, 1.5).scale,
+            1.5
+        );
     }
 }
