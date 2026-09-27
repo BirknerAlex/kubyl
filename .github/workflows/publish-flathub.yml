@@ -11,7 +11,14 @@ jobs:
   publish-flathub:
     runs-on: ubuntu-latest
     steps:
+      # `release: published` checks out the release tag (detached HEAD) by default. main is
+      # protected by a ruleset requiring PRs + passing status checks (see release.yml), so this
+      # needs the same RELEASE_PUSH_TOKEN bypass-actor token the version job uses, not the
+      # default GITHUB_TOKEN.
       - uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.RELEASE_PUSH_TOKEN }}
 
       - name: Extract version from tag
         id: version
@@ -31,10 +38,11 @@ jobs:
           git push origin main
 
       - name: Submit to Flathub (manual)
-        # After first submission is approved, update the message below with the flathub-kubyl repo URL
+        # After first submission is approved, update the message below with the app's own
+        # flathub/<app-id> repo URL — that's what Flathub's build bot actually watches, not
+        # this repo (see docs/FLATHUB.md).
         run: |
           echo "Flatpak manifest updated for v${{ steps.version.outputs.version }}"
           echo "Flathub submission guide:"
-          echo "1. First time: Fork github.com/flathub/flathub and submit manifest via PR"
-          echo "2. After approval: Flathub CI will auto-rebuild on new releases (reads manifest from this repo)"
-          echo "3. Or: Create github.com/BirknerAlex/flathub-kubyl for Flathub to track directly"
+          echo "1. First time: fork flathub/flathub from its new-pr branch and submit manifest via PR (see docs/FLATHUB.md)"
+          echo "2. After approval: push updated manifests to the flathub/io.github.birkneralex.Kubyl repo Flathub creates — this job only keeps this repo's copy current, it doesn't publish to Flathub by itself"
