@@ -19,9 +19,18 @@ trigger it — regular CI (`.github/workflows/ci.yml`) still runs on every push 
    that tag and the release job publishes it.
 
 Artifacts published: macOS universal (arm64+x86_64) notarized `.dmg`; Windows `x86_64`/`aarch64`
-`.zip` (unsigned — see below); Linux `x86_64`/`aarch64` `.tar.gz`, `.deb`, `.rpm`; Arch
-`.pkg.tar.zst` (amd64 only — Arch Linux is x86_64-only upstream). Plus `SHA256SUMS` and the
+`.zip` (unsigned — see below); Linux `x86_64`/`aarch64` `.tar.gz`, `.deb`, `.rpm`, `.AppImage`;
+Arch `.pkg.tar.zst` (amd64 only — Arch Linux is x86_64-only upstream). Plus `SHA256SUMS` and the
 signed self-update manifest (`updates-stable.json` + `.minisig`).
+
+The AppImage is built by `script/build-appimage.sh` (`linuxdeploy` + its GTK plugin, pinned to
+the commit tauri-bundler validates in production — its own "continuous" build has shipped broken
+AppImage output before). webkit2gtk's subprocess helpers (`WebKitWebProcess`,
+`WebKitNetworkProcess`) are hand-copied into the AppDir, the same fix tauri-bundler applies for
+apps using `wry` (kubyl_webview's underlying webview crate) — neither `linuxdeploy` nor its GTK
+plugin's dependency scan finds them on their own, since nothing directly links them. Not
+verified on a real Linux desktop yet; the first release is the test, same caveat as everything
+else new in this pipeline.
 
 After the GitHub Release publishes, three more jobs distribute it further:
 

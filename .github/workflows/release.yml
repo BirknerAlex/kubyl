@@ -392,6 +392,12 @@ jobs:
           BIN_PATH: target/${{ matrix.target }}/release/kubyl
         run: nfpm package --config nfpm.yaml --packager archlinux --target .
 
+      - name: Build AppImage
+        run: |
+          ./script/build-appimage.sh "$VERSION" \
+            "$([ '${{ matrix.arch }}' = amd64 ] && echo x86_64 || echo aarch64)" \
+            "target/${{ matrix.target }}/release/kubyl"
+
       - uses: actions/upload-artifact@v4
         with:
           name: kubyl-linux-${{ matrix.arch }}
@@ -400,6 +406,7 @@ jobs:
             *.deb
             *.rpm
             *.pkg.tar.zst
+            *.AppImage
           retention-days: 7
 
   build-update-manifest:
