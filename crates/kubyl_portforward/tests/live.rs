@@ -288,7 +288,8 @@ async fn routes_and_ingresses_forward_their_backend_service() {
                     );
                     answered.push(format!("{kind} {name}"));
                 }
-                Err(err) => println!("{kind} {name}: {err}"),
+                // Every listed backend must resolve, not just one of them.
+                Err(err) => panic!("{kind} {name}: {err}"),
             }
         }
     }
