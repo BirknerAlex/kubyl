@@ -1279,13 +1279,21 @@ async fn connect(
                         ))
                     }
                 }
-                LokiTarget::Url(url) => match kubyl_metrics::transport::Transport::external(&url, None, &Default::default()) {
-                    Ok(transport) => LokiAccess::Ready {
-                        transport,
-                        label: format!("Loki {url}"),
-                    },
-                    Err(err) => LokiAccess::Missing(format!("NetObserv's Loki URL {url}: {err}")),
-                },
+                // Built on Tokio: kube's client spawns a task when it's made.
+                LokiTarget::Url(url) => {
+                    cx.update(|cx| {
+                        spawn_kube(cx, async move {
+                            match kubyl_metrics::transport::Transport::external(&url, None, &Default::default()) {
+                                Ok(transport) => LokiAccess::Ready {
+                                    transport,
+                                    label: format!("Loki {url}"),
+                                },
+                                Err(err) => LokiAccess::Missing(format!("NetObserv's Loki URL {url}: {err}")),
+                            }
+                        })
+                    })
+                    .await
+                }
                 LokiTarget::LokiStack { namespace, name } => LokiAccess::Missing(format!(
                     "No single flows: NetObserv stores them in the LokiStack {namespace}/{name}, whose gateway needs your token, and the API server's service proxy doesn't pass it on. The topology comes from NetObserv's metrics."
                 )),

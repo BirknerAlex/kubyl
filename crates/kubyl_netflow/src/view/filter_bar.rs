@@ -70,7 +70,9 @@ pub(super) fn render(
         chips.extend(term_chips(view, state, &colors, cx));
     }
     let matched = view.rows.shown.len() + view.rows.pending.len();
-    let shown_count = if view.user_filter.is_empty() {
+    let single_flows =
+        !matches!(state, FlowState::Ready { capabilities, .. } if !capabilities.single_flows);
+    let shown_count = if view.user_filter.is_empty() || !single_flows {
         None
     } else {
         Some(format!(
@@ -95,10 +97,14 @@ pub(super) fn render(
             )
         })
         .child(div().flex_1())
-        .children(verdict_chips(view, state, &colors, cx));
+        // Metrics count bytes, not verdicts.
+        .when(single_flows, |this| {
+            this.children(verdict_chips(view, state, &colors, cx))
+        });
     let suggestions = (!view.suggestions.is_empty()
         && view.input.read(cx).focus_handle(cx).is_focused(window))
-    .then(|| suggestions(view, &colors, cx));
+    // Deferred: painted over the table below.
+    .then(|| gpui::deferred(suggestions(view, &colors, cx)).with_priority(1));
     v_flex()
         .relative()
         .flex_none()
@@ -343,6 +349,8 @@ fn suggestions(
         .unwrap_or_default();
     let values = view.suggestions.iter().any(|s| !s.text.ends_with('='));
     v_flex()
+        .id("flow-suggestions")
+        .occlude()
         .absolute()
         .top(u(42.0))
         .left(u(12.0))
@@ -526,15 +534,17 @@ pub(super) fn backend_chip(
             capabilities,
             ..
         } => {
-            let mut text = format!("{} {}", kind.label(), status.endpoint);
+            // Metrics only is what matters there; the endpoint is in the tooltip.
+            let mut text = if capabilities.single_flows {
+                format!("{} {}", kind.label(), status.endpoint)
+            } else {
+                format!("{} · metrics only", kind.label())
+            };
             if let Some(version) = &status.version {
                 text.push_str(&format!(" · v{version}"));
             }
             if let Some((connected, total)) = status.nodes {
                 text.push_str(&format!(" · {connected}/{total} nodes"));
-            }
-            if !capabilities.single_flows {
-                text.push_str(" · metrics only");
             }
             let mut tooltip = format!("{} · {}", status.endpoint, status.via);
             if let Some((held, max)) = status.buffered {
@@ -763,8 +773,10 @@ pub(super) fn more_menu(
     colors: &Colors,
     cx: &mut Context<NetworkFlowsView>,
 ) -> AnyElement {
-    let _ = (colors, cx);
+    let _ = colors;
     let cluster = view.cluster.clone();
+    // A narrow pane has no room for the time range in the header: it's here instead.
+    let windows = view.narrow.then(|| (view.window, cx.entity().downgrade()));
     MenuButton::new("flows-more")
         .ghost()
         .compact()
@@ -772,6 +784,20 @@ pub(super) fn more_menu(
         .dropdown_menu(move |menu, _, _| {
             let look = cluster.clone();
             let again = cluster.clone();
+            let mut menu = menu;
+            if let Some((current, weak)) = &windows {
+                for range in kubyl_charts::TimeRange::ALL {
+                    let weak = weak.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(format!("Last {}", range.label()))
+                            .checked(range == *current)
+                            .on_click(move |_, _, cx| {
+                                weak.update(cx, |this, cx| this.set_window(range, cx)).ok();
+                            }),
+                    );
+                }
+                menu = menu.separator();
+            }
             menu.item(PopupMenuItem::new("Look for a flow source again").on_click(
                 move |_, _, cx| {
                     if let Some(service) = FlowService::global(cx) {

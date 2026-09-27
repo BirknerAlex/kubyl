@@ -16,19 +16,36 @@ use crate::service::{FlowService, FlowState};
 
 const ROW_HEIGHT: f32 = 28.0;
 
-fn columns(bytes: bool) -> Vec<ColumnDef> {
+/// The table's columns; `narrow` (a split pane) drops the direction and tightens the rest.
+fn columns(bytes: bool, narrow: bool) -> Vec<ColumnDef> {
     let flex = |weight: f32, min: f32| ColumnWidth::Flex { weight, min };
-    let mut columns = vec![
-        ColumnDef::new("time", "Time", ColumnWidth::Fixed(96.0)),
-        ColumnDef::new("dir", "Dir", ColumnWidth::Fixed(36.0)),
-        ColumnDef::new("source", "Source", flex(1.3, 130.0)),
-        ColumnDef::new("destination", "Destination", flex(1.3, 130.0)),
-        ColumnDef::new("protocol", "Protocol · port", flex(1.05, 100.0)),
-        ColumnDef::new("verdict", "Verdict", ColumnWidth::Fixed(92.0)),
-        ColumnDef::new("policy", "Policy", flex(1.0, 110.0)),
-    ];
+    let m = |wide: f32, tight: f32| if narrow { tight } else { wide };
+    // Room for an aggregate's interval (`14:02:45–03:00`).
+    let mut columns = vec![ColumnDef::new(
+        "time",
+        "Time",
+        ColumnWidth::Fixed(m(112.0, 108.0)),
+    )];
+    if !narrow {
+        columns.push(ColumnDef::new("dir", "Dir", ColumnWidth::Fixed(36.0)));
+    }
+    columns.extend([
+        ColumnDef::new("source", "Source", flex(1.3, m(130.0, 84.0))),
+        ColumnDef::new("destination", "Destination", flex(1.3, m(130.0, 84.0))),
+        ColumnDef::new(
+            "protocol",
+            if narrow { "Port" } else { "Protocol · port" },
+            flex(1.05, m(100.0, 58.0)),
+        ),
+        ColumnDef::new("verdict", "Verdict", ColumnWidth::Fixed(m(92.0, 84.0))),
+        ColumnDef::new("policy", "Policy", flex(1.0, m(110.0, 80.0))),
+    ]);
     if bytes {
-        columns.push(ColumnDef::new("bytes", "Bytes", ColumnWidth::Fixed(70.0)));
+        columns.push(ColumnDef::new(
+            "bytes",
+            "Bytes",
+            ColumnWidth::Fixed(m(70.0, 64.0)),
+        ));
     }
     columns
 }
@@ -59,13 +76,14 @@ fn header(columns: &[ColumnDef], colors: &Colors) -> AnyElement {
             let title = def.title.to_uppercase();
             cell(def)
                 .when(def.id.as_ref() == "bytes", |c| c.flex().justify_end())
-                .child(title)
+                .child(div().truncate().child(title))
         }))
         .into_any_element()
 }
 
 /// `payments/checkout-api-…`, `🌐 api.bank.example.com`, `🖥 ip-10-0-12-41`.
-pub(super) fn endpoint_cell(endpoint: &Endpoint, colors: &Colors) -> AnyElement {
+/// `narrow`: the namespace gives way before the name (else the name is cut first).
+pub(super) fn endpoint_cell(endpoint: &Endpoint, narrow: bool, colors: &Colors) -> AnyElement {
     let icon = match endpoint.kind {
         EndpointKind::World => Some(IconName::Globe),
         EndpointKind::Host | EndpointKind::RemoteNode | EndpointKind::KubeApiServer => {
@@ -102,12 +120,14 @@ pub(super) fn endpoint_cell(endpoint: &Endpoint, colors: &Colors) -> AnyElement 
                 .min_w_0()
                 .truncate()
                 .when_some(namespace, |this, ns| {
-                    this.child(
-                        div()
-                            .flex_none()
-                            .text_color(colors.text_dim)
-                            .child(format!("{ns}/")),
-                    )
+                    let mut namespace = div().text_color(colors.text_dim).child(format!("{ns}/"));
+                    if narrow {
+                        namespace = namespace.min_w(u(24.0)).truncate();
+                        namespace.style().flex_shrink = Some(8.0);
+                    } else {
+                        namespace = namespace.flex_none();
+                    }
+                    this.child(namespace)
                 })
                 .flex()
                 .child(div().min_w_0().truncate().child(name)),
@@ -115,21 +135,32 @@ pub(super) fn endpoint_cell(endpoint: &Endpoint, colors: &Colors) -> AnyElement 
         .into_any_element()
 }
 
-fn render_cell(flow: &Flow, column: &str, today: jiff::civil::Date, colors: &Colors) -> AnyElement {
+fn render_cell(
+    flow: &Flow,
+    column: &str,
+    today: jiff::civil::Date,
+    narrow: bool,
+    colors: &Colors,
+) -> AnyElement {
     match column {
         "time" => div()
+            .truncate()
             .font_family(fonts::MONO)
             .text_size(u(11.5))
             .text_color(colors.text_muted)
-            .child(widgets::clock(flow.time, today))
+            .child(match flow.start {
+                // Aggregated records (Whisker, NetObserv) cover an interval.
+                Some(start) if start < flow.time => widgets::interval(start, flow.time, today),
+                _ => widgets::clock(flow.time, today),
+            })
             .into_any_element(),
         "dir" => div()
             .text_size(u(11.5))
             .text_color(colors.text_dim)
             .child(flow.direction.label())
             .into_any_element(),
-        "source" => endpoint_cell(&flow.source, colors),
-        "destination" => endpoint_cell(&flow.destination, colors),
+        "source" => endpoint_cell(&flow.source, narrow, colors),
+        "destination" => endpoint_cell(&flow.destination, narrow, colors),
         "protocol" => div()
             .truncate()
             .text_size(u(12.0))
@@ -160,7 +191,8 @@ impl NetworkFlowsView {
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let colors = cx.colors().clone();
-        let columns = columns(bytes);
+        let narrow = self.narrow;
+        let columns = columns(bytes, narrow);
         let today = jiff::Timestamp::now()
             .to_zoned(jiff::tz::TimeZone::system())
             .date();
@@ -220,7 +252,7 @@ impl NetworkFlowsView {
                     }
                 })
                 .children(columns.iter().map(|def| {
-                    cell(def).child(render_cell(&flow, def.id.as_ref(), today, &colors))
+                    cell(def).child(render_cell(&flow, def.id.as_ref(), today, narrow, &colors))
                 }))
                 .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                     this.focus.focus(window, cx);
@@ -253,36 +285,7 @@ pub(super) fn render(
     }
     let status = super::stream_status(view, cx);
     let caught_up = status.as_ref().is_some_and(|(_, _, c)| *c);
-    let notice = (!capabilities.single_flows).then(|| {
-        let reason = match state {
-            FlowState::Ready { status, .. } => status.notes.join(" "),
-            _ => String::new(),
-        };
-        h_flex()
-            .flex_none()
-            .items_start()
-            .gap(u(10.0))
-            .px(u(14.0))
-            .py(u(10.0))
-            .border_b_1()
-            .border_color(colors.border_variant)
-            .bg(colors.yellow.opacity(0.06))
-            .text_size(u(12.5))
-            .child(Icon::new(IconName::Info).size(14.0).color(colors.yellow))
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .gap(u(2.0))
-                    .child(div().font_weight(FontWeight::SEMIBOLD).child("No single flows here"))
-                    .child(div().text_color(colors.text_muted).child(if reason.is_empty() {
-                        "This backend doesn't keep single flows Kubyl can read. The Topology tab shows the traffic from its metrics.".to_string()
-                    } else {
-                        format!("{reason} The Topology tab shows the traffic.")
-                    })),
-            )
-            .into_any_element()
-    });
+    let notice = no_single_flows(state, &capabilities, &colors);
     let body = if view.rows.shown.is_empty() {
         let message: SharedString = if view.scanning {
             "Filtering…".into()
@@ -299,7 +302,7 @@ pub(super) fn render(
         };
         widgets::empty(message, &colors)
     } else {
-        let columns = columns(capabilities.bytes);
+        let columns = columns(capabilities.bytes, view.narrow);
         let bytes = capabilities.bytes;
         let waiting = view.rows.pending.len();
         let banner = (waiting > 0 && !view.paused).then(|| {
@@ -364,4 +367,44 @@ pub(super) fn render(
                 .children(details),
         )
         .into_any_element()
+}
+
+/// Why a backend's Flows tab stays empty (NetObserv without Loki), above the table and the
+/// topology.
+pub(super) fn no_single_flows(
+    state: &FlowState,
+    capabilities: &crate::provider::Capabilities,
+    colors: &Colors,
+) -> Option<AnyElement> {
+    (!capabilities.single_flows).then(|| {
+        let reason = match state {
+            FlowState::Ready { status, .. } => status.notes.join(" "),
+            _ => String::new(),
+        };
+        h_flex()
+            .flex_none()
+            .items_start()
+            .gap(u(10.0))
+            .px(u(14.0))
+            .py(u(10.0))
+            .border_b_1()
+            .border_color(colors.border_variant)
+            .bg(colors.yellow.opacity(0.06))
+            .text_size(u(12.5))
+            .child(Icon::new(IconName::Info).size(14.0).color(colors.yellow))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap(u(2.0))
+                    .child(div().font_weight(FontWeight::SEMIBOLD).child("No single flows here"))
+                    .child(div().text_color(colors.text_muted).child(
+                        match reason.strip_prefix("No single flows: ").unwrap_or(&reason) {
+                            "" => "This backend doesn't keep single flows Kubyl can read. The topology comes from its metrics.".to_string(),
+                            reason => widgets::capitalize(reason),
+                        },
+                    )),
+            )
+            .into_any_element()
+    })
 }

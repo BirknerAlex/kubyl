@@ -91,6 +91,34 @@ pub fn clock(time: Timestamp, today: jiff::civil::Date) -> String {
     }
 }
 
+/// `Denied by`, from `denied by`.
+pub fn capitalize(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
+/// An aggregate's interval: `14:02:15–30`, `14:02:45–03:00` (the end as far as it differs).
+pub fn interval(start: Timestamp, end: Timestamp, today: jiff::civil::Date) -> String {
+    let zone = jiff::tz::TimeZone::system();
+    let (a, b) = (start.to_zoned(zone.clone()), end.to_zoned(zone));
+    let head = if a.date() == today {
+        a.strftime("%H:%M:%S").to_string()
+    } else {
+        a.strftime("%m-%d %H:%M:%S").to_string()
+    };
+    let tail = if a.date() != b.date() || a.hour() != b.hour() {
+        b.strftime("%H:%M:%S")
+    } else if a.minute() != b.minute() {
+        b.strftime("%M:%S")
+    } else {
+        b.strftime("%S")
+    };
+    format!("{head}–{tail}")
+}
+
 /// `14:02:31.482 · 12:02:31 UTC`, with the date.
 pub fn local_and_utc(time: Timestamp) -> String {
     let local = time.to_zoned(jiff::tz::TimeZone::system());

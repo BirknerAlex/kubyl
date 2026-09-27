@@ -218,7 +218,8 @@ impl Transport {
 
     /// Plain HTTP to a loopback port (a temporary port-forward), under `path`. Nothing is
     /// authenticated: the forward is the access, so no credentials ever go this way. There's no
-    /// read timeout, so a quiet event stream stays open (requests still time out).
+    /// read timeout, so a quiet event stream stays open (requests still time out). Call it on
+    /// the Tokio runtime (`spawn_kube`): making a kube client spawns a task.
     pub fn loopback(port: u16, path: &str) -> Result<Self, PromError> {
         let uri = parse_url(&format!("http://127.0.0.1:{port}"))?;
         let mut config = kube::Config::new(uri);

@@ -38,11 +38,11 @@ pub struct Whisker {
     pub local_port: u16,
 }
 
-impl Whisker {
-    fn transport(&self) -> Result<Transport, ProviderError> {
-        Transport::loopback(self.local_port, "/whisker-backend")
-            .map_err(|e| ProviderError::Unavailable(format!("Calico Whisker: {e}")))
-    }
+/// The HTTP client for the forward. Build it on Tokio, inside a provider future: kube's client
+/// spawns a task when it's made.
+fn transport(local_port: u16) -> Result<Transport, ProviderError> {
+    Transport::loopback(local_port, "/whisker-backend")
+        .map_err(|e| ProviderError::Unavailable(format!("Calico Whisker: {e}")))
 }
 
 /// A proxy error in Kubyl's words.
@@ -84,12 +84,11 @@ impl FlowProvider for Whisker {
     }
 
     fn probe(&self) -> ProviderFuture<Result<BackendStatus, ProviderError>> {
-        let transport = self.transport();
         let target = self.target.clone();
         let client = self.client.clone();
         let local_port = self.local_port;
         Box::pin(async move {
-            transport?
+            transport(local_port)?
                 .get("/flows", &[("page", "0".into()), ("pageSize", "1".into())])
                 .await
                 .map_err(|e| proxy_error(e, &target, "Calico Whisker"))?;
@@ -109,10 +108,10 @@ impl FlowProvider for Whisker {
         query: StreamQuery,
         sink: FlowSink,
     ) -> ProviderFuture<Result<(), ProviderError>> {
-        let transport = self.transport();
+        let local_port = self.local_port;
         let target = self.target.clone();
         Box::pin(async move {
-            let transport = transport?;
+            let transport = transport(local_port)?;
             let mut params: Vec<(&str, String)> = vec![("watch", "true".into())];
             if let Some(since) = query.since {
                 let seconds = Timestamp::now().duration_since(since).as_secs().max(1);

@@ -251,6 +251,32 @@ fn verdict_chips_and_filters_narrow_the_rows(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn the_term_being_typed_waits_for_its_value(cx: &mut TestAppContext) {
+    let mut t = setup(cx);
+    t.fill(4);
+    t.view.update(&mut t.cx, |view, cx| {
+        view.query_edited("verdict=dropped src.pod=shop", true, cx);
+        assert!(!view.suggestions.is_empty());
+    });
+    t.cx.run_until_parked();
+    t.view.update(&mut t.cx, |view, cx| {
+        // Only the finished term applies.
+        assert_eq!(view.user_filter.canonical(), "verdict=dropped");
+        assert_eq!(view.rows.shown.len(), 200);
+        view.query_edited("verdict=dropped src.pod=shopper-1 ", true, cx);
+    });
+    t.cx.run_until_parked();
+    t.view.update(&mut t.cx, |view, cx| {
+        assert_eq!(view.rows.shown.len(), 67);
+        // A value nothing extends applies at once (and finds nothing).
+        view.query_edited("src.ns=nowhere", true, cx);
+    });
+    t.cx.run_until_parked();
+    t.view
+        .update(&mut t.cx, |view, _| assert!(view.rows.shown.is_empty()));
+}
+
+#[gpui::test]
 fn the_topology_aggregates_in_the_background(cx: &mut TestAppContext) {
     let mut t = setup(cx);
     t.fill(2);

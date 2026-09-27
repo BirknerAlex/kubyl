@@ -270,7 +270,7 @@ fn policy_section(
     let mut title = h_flex()
         .flex_wrap()
         .gap(u(4.0))
-        .child(div().child(capitalize(verb)));
+        .child(div().child(widgets::capitalize(verb)));
     if let Some(policy) = named {
         let label = policy.label();
         // More than one policy: the rest follow as plain text.
@@ -328,14 +328,6 @@ fn policy_section(
     )
 }
 
-fn capitalize(text: &str) -> String {
-    let mut chars = text.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-        None => String::new(),
-    }
-}
-
 fn endpoint_section(
     title: &'static str,
     id: &'static str,
@@ -378,7 +370,7 @@ fn endpoint_section(
                 )
                 .into_any_element()
         }
-        _ => super::table::endpoint_cell(endpoint, colors),
+        _ => super::table::endpoint_cell(endpoint, false, colors),
     };
     if let Some(workload) = &endpoint.workload {
         rows.push((

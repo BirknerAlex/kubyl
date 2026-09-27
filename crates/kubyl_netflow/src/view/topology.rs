@@ -49,6 +49,8 @@ pub struct TopologyState {
     /// Layout units, index-aligned with `graph.nodes`.
     pub positions: Vec<[f32; 2]>,
     radii: Vec<f32>,
+    /// What fitting keeps in view: the nodes and the tops of their loops.
+    fit: (Vec<[f32; 2]>, Vec<f32>),
     previous: Positions,
     pub selected: Option<Selection>,
     /// The user's zoom and pan on top of fitting.
@@ -71,6 +73,7 @@ impl TopologyState {
             graph: None,
             positions: Vec::new(),
             radii: Vec::new(),
+            fit: (Vec::new(), Vec::new()),
             previous: Positions::new(),
             selected: None,
             scale: 1.0,
@@ -100,7 +103,13 @@ impl TopologyState {
     fn viewport(&self) -> Option<(Viewport, [f32; 2])> {
         let bounds = self.bounds.get()?;
         let size = [f32::from(bounds.size.width), f32::from(bounds.size.height)];
-        let base = graph::fit(&self.positions, &self.radii, size, 40.0, 1.6);
+        let (points, radii) = if self.fit.0.len() >= self.positions.len() && !self.fit.0.is_empty()
+        {
+            (&self.fit.0, &self.fit.1)
+        } else {
+            (&self.positions, &self.radii)
+        };
+        let base = graph::fit(points, radii, size, 40.0, 1.6);
         let center = [size[0] / 2.0, size[1] / 2.0];
         let scale = base.scale * self.scale;
         let offset = [
@@ -323,6 +332,20 @@ impl NetworkFlowsView {
             .zip(&positions)
             .map(|(n, p)| (n.id.clone(), *p))
             .collect();
+        // Loops and their labels need room when fitting: their tops join the nodes.
+        let center = middle(&positions);
+        let mut fit_points = positions.clone();
+        let mut fit_radii = radii.clone();
+        for edge in topology.edges.iter().filter(|e| e.source == e.target) {
+            let (Some(&p), Some(&r)) = (positions.get(edge.source), radii.get(edge.source)) else {
+                continue;
+            };
+            let out = loop_angle(p, center);
+            let reach = r * LOOP_REACH * 0.75 + LOOP_EXTRA;
+            fit_points.push([p[0] + reach * out.cos(), p[1] + reach * out.sin()]);
+            fit_radii.push(26.0);
+        }
+        self.topology.fit = (fit_points, fit_radii);
         self.topology.positions = positions;
         self.topology.radii = radii;
         self.topology.graph = Some(Arc::new(topology));
@@ -517,6 +540,36 @@ fn curves(graph: &Topology, edge: &TopoEdge) -> Vec<Curve> {
     out
 }
 
+/// How far a loop's control point reaches: this many radii plus a constant (view pixels).
+const LOOP_REACH: f32 = 1.9;
+const LOOP_EXTRA: f32 = 24.0;
+
+/// The middle of a layout.
+fn middle(positions: &[[f32; 2]]) -> [f32; 2] {
+    let count = positions.len().max(1) as f32;
+    positions.iter().fold([0.0, 0.0], |acc, p| {
+        [acc[0] + p[0] / count, acc[1] + p[1] / count]
+    })
+}
+
+/// Where a node's loop points: away from the middle of the graph, where the other nodes are,
+/// and never into the label under the node. The same in layout and view coordinates.
+fn loop_angle(node: [f32; 2], middle: [f32; 2]) -> f32 {
+    use std::f32::consts::{FRAC_PI_2, PI, TAU};
+    let (dx, dy) = (node[0] - middle[0], node[1] - middle[1]);
+    let out = if dx.abs() + dy.abs() < 1.0 {
+        -FRAC_PI_2
+    } else {
+        dy.atan2(dx)
+    };
+    let off = (out - FRAC_PI_2 + PI).rem_euclid(TAU) - PI;
+    if off.abs() < 1.3 {
+        FRAC_PI_2 + 1.3 * off.signum()
+    } else {
+        out
+    }
+}
+
 /// Start, control and end point of a curve, from the source's rim to the target's. Traffic
 /// inside a node (a namespace talking to itself) loops above it.
 fn geometry(
@@ -530,25 +583,8 @@ fn geometry(
     let ra = state.radii.get(edge.source).copied().unwrap_or(10.0) * viewport.scale;
     let r = state.radii.get(edge.target).copied().unwrap_or(10.0) * viewport.scale;
     if edge.source == edge.target {
-        // Away from the middle of the graph, where the other nodes are.
-        let count = state.positions.len().max(1) as f32;
-        let middle = state.positions.iter().fold([0.0, 0.0], |acc, p| {
-            [acc[0] + p[0] / count, acc[1] + p[1] / count]
-        });
-        let middle = viewport.apply(middle);
-        let (ox, oy) = (a[0] - middle[0], a[1] - middle[1]);
-        let mut out = if ox.abs() + oy.abs() < 1.0 {
-            -std::f32::consts::FRAC_PI_2
-        } else {
-            oy.atan2(ox)
-        };
-        // Not into the label under the node.
-        let down = std::f32::consts::FRAC_PI_2;
-        let off = (out - down + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
-            - std::f32::consts::PI;
-        if off.abs() < 1.3 {
-            out = down + 1.3 * if off < 0.0 { -1.0 } else { 1.0 };
-        }
+        let middle = viewport.apply(middle(&state.positions));
+        let out = loop_angle(a, middle);
         let rim = |angle: f32, extra: f32| {
             [
                 a[0] + (r + extra) * angle.cos(),
@@ -558,7 +594,7 @@ fn geometry(
         let from = rim(out - 0.63, 0.0);
         // Arrow heads sit a little off the rim, as on other edges.
         let to = rim(out + 0.63, 3.0);
-        let reach = r * 2.4 + 28.0 + bend.abs();
+        let reach = r * LOOP_REACH + LOOP_EXTRA + bend.abs();
         let ctrl = [a[0] + reach * out.cos(), a[1] + reach * out.sin()];
         return Some((from, ctrl, to));
     }
@@ -610,11 +646,18 @@ pub(super) fn render(
     let _ = window;
     view.refresh_topology(state, cx);
     let colors = cx.colors().clone();
+    let notice = match state {
+        FlowState::Ready { capabilities, .. } => {
+            super::table::no_single_flows(state, capabilities, &colors)
+        }
+        _ => None,
+    };
     let toolbar = toolbar(view, &colors, cx);
     let canvas = graph_canvas(view, &colors, cx);
     let panel = side_panel(view, &colors, cx);
     v_flex()
         .size_full()
+        .children(notice)
         .child(toolbar)
         .child(
             div()
@@ -852,9 +895,10 @@ fn graph_canvas(
         let graph = graph.clone();
         let positions = view.topology.positions.clone();
         let radii = view.topology.radii.clone();
+        let fit = view.topology.fit.clone();
         let selected = view.topology.selected.clone();
         let colors = colors.clone();
-        (graph, positions, radii, selected, colors)
+        (graph, positions, radii, fit, selected, colors)
     };
     let scale_cell = view.topology.scale;
     let pan_cell = view.topology.pan;
@@ -867,13 +911,14 @@ fn graph_canvas(
                 if changed {
                     window.refresh();
                 }
-                let (graph, positions, radii, selected, colors) = &edge_state;
+                let (graph, positions, radii, fit, selected, colors) = &edge_state;
                 let Some(graph) = graph else {
                     return;
                 };
                 let state = TopologyState {
                     positions: positions.clone(),
                     radii: radii.clone(),
+                    fit: fit.clone(),
                     bounds: Rc::new(Cell::new(Some(bounds))),
                     scale: scale_cell,
                     pan: pan_cell,
@@ -1381,7 +1426,17 @@ fn side_panel(
                 .child(
                     h_flex()
                         .gap(u(8.0))
-                        .child(Icon::new(IconName::Folder).size(14.0).color(colors.accent))
+                        .child(
+                            Icon::new(match node.kind {
+                                NodeKind::Namespace => IconName::Folder,
+                                NodeKind::Workload => IconName::Box,
+                                NodeKind::Folded => IconName::Layers,
+                                NodeKind::World => IconName::Globe,
+                                _ => IconName::Server,
+                            })
+                            .size(14.0)
+                            .color(colors.accent),
+                        )
                         .child(widgets::mono(node.label.clone(), colors).text_size(u(12.5))),
                 )
                 .child(h_flex().gap(u(6.0)).child(show).children(zoom_in))

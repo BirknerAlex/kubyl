@@ -243,7 +243,8 @@ impl FlowProvider for NetObserv {
                 return Ok(None);
             };
             let by = match zoom {
-                Zoom::Namespaces => "SrcK8S_Namespace, DstK8S_Namespace",
+                // The type keeps nodes apart from the world outside.
+                Zoom::Namespaces => "SrcK8S_Namespace, SrcK8S_Type, DstK8S_Namespace, DstK8S_Type",
                 Zoom::Workloads => {
                     "SrcK8S_Namespace, SrcK8S_OwnerName, SrcK8S_Type, DstK8S_Namespace, DstK8S_OwnerName, DstK8S_Type"
                 }

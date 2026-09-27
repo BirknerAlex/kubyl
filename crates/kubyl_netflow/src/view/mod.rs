@@ -50,6 +50,9 @@ pub const GRAPH_CONTEXT: &str = "NetworkTopology";
 /// How long typing waits before the backend's server-side filter changes.
 const PUSH_DELAY: Duration = Duration::from_millis(600);
 
+/// Narrower than this (a split pane), the header and table get compact.
+const NARROW: f32 = 860.0;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Tab {
     #[default]
@@ -151,6 +154,9 @@ pub struct NetworkFlowsView {
     /// Asked the connection manager to connect the cluster (once: a tab restored at startup,
     /// or of another cluster than the active one).
     connect_asked: bool,
+    /// The view's width at the last paint, and whether that's a narrow (split) pane.
+    width: std::rc::Rc<std::cell::Cell<f32>>,
+    pub(crate) narrow: bool,
     _ticker: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -173,10 +179,17 @@ impl NetworkFlowsView {
             |this, input, event: &InputEvent, window, cx| match event {
                 InputEvent::Change => {
                     let text = input.read(cx).value().to_string();
-                    this.query_changed(&text, cx);
+                    let typing = input.read(cx).focus_handle(cx).is_focused(window);
+                    this.query_edited(&text, typing, cx);
                 }
                 InputEvent::PressEnter { .. } if !this.accept_suggestion(window, cx) => {
                     this.focus_active(window, cx)
+                }
+                // Leaving the filter applies all of it, the term that was being typed too.
+                InputEvent::Blur => {
+                    let text = input.read(cx).value().to_string();
+                    this.query_changed(&text, cx);
+                    this.suggestions.clear();
                 }
                 _ => {}
             },
@@ -232,6 +245,8 @@ impl NetworkFlowsView {
             }),
             pending_input: None,
             connect_asked: false,
+            width: std::rc::Rc::default(),
+            narrow: false,
             _ticker: ticker,
             _subscriptions: subscriptions,
         };
@@ -274,7 +289,20 @@ impl NetworkFlowsView {
     }
 
     pub(crate) fn query_changed(&mut self, text: &str, cx: &mut Context<Self>) {
-        match FlowFilter::parse(text) {
+        self.query_edited(text, false, cx);
+    }
+
+    /// `typing`: the user types in the filter, so the term being completed waits until it's
+    /// finished (a space, a picked value, or a value no suggestion extends) and the table keeps
+    /// the other terms meanwhile.
+    fn query_edited(&mut self, text: &str, typing: bool, cx: &mut Context<Self>) {
+        self.update_suggestions(text, cx);
+        let applied = if typing {
+            self.finished_part(text)
+        } else {
+            text
+        };
+        match FlowFilter::parse(applied) {
             Ok(filter) => {
                 self.parse_error = None;
                 if filter != self.user_filter {
@@ -290,8 +318,22 @@ impl NetworkFlowsView {
             }
             Err(err) => self.parse_error = Some(err),
         }
-        self.update_suggestions(text, cx);
         self.sync(cx);
+    }
+
+    /// `text` without the term under completion when the suggestions offer to finish it and
+    /// none is what's typed.
+    fn finished_part<'a>(&self, text: &'a str) -> &'a str {
+        let Some(first) = self.suggestions.first() else {
+            return text;
+        };
+        let start = first.range.start.min(text.len());
+        if text.ends_with(char::is_whitespace)
+            || self.suggestions.iter().any(|s| s.text == text[start..])
+        {
+            return text;
+        }
+        &text[..start]
     }
 
     /// Replaces the filter text (chips, clicks in the table and graph).
@@ -776,14 +818,15 @@ impl NetworkFlowsView {
                 )
             })
             .children(states::header_action(self, state, &colors))
-            .when(!blocked, |this| this.child(picker))
+            .when(!blocked && !self.narrow, |this| this.child(picker))
             .child(filter_bar::more_menu(self, &colors, cx))
             .into_any_element()
     }
 
-    fn render_tabs(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_tabs(&self, single_flows: bool, cx: &mut Context<Self>) -> AnyElement {
         let colors = cx.colors().clone();
         let flows = self.rows.shown.len() + self.rows.pending.len();
+        let flows = single_flows.then(|| widgets::count(flows));
         let graph = self.topology.summary();
         let tab = |id: &'static str,
                    tab: Tab,
@@ -842,7 +885,7 @@ impl NetworkFlowsView {
                 Tab::Flows,
                 IconName::List,
                 "Flows",
-                Some(widgets::count(flows)),
+                flows,
                 cx,
             ))
             .child(tab(
@@ -876,6 +919,20 @@ impl NetworkFlowsView {
                 hints
             }
         };
+        if self.narrow {
+            // A split pane shows the essentials only.
+            const KEEP: &[&str] = &[
+                "Details",
+                "Pause",
+                "Topology",
+                "Flows",
+                "Select",
+                "Workloads",
+                "Namespaces",
+                "Fit",
+            ];
+            hints.retain(|(_, label)| KEEP.contains(&label.as_ref()));
+        }
         hints.push(("/".into(), "Filter".into()));
         hints
     }
@@ -948,6 +1005,8 @@ impl Render for NetworkFlowsView {
                 .update(cx, |input, cx| input.set_value(text, window, cx));
         }
         let colors: Colors = cx.colors().clone();
+        let width = self.width.get();
+        self.narrow = width > 0.0 && width < NARROW;
         let state = self.state(cx);
         let blocking = states::blocking(self, &state, cx);
         let blocked = blocking.is_some();
@@ -955,7 +1014,10 @@ impl Render for NetworkFlowsView {
         // Nothing to filter or switch to while a state blocks the view.
         let chrome = (!blocked).then(|| {
             (
-                self.render_tabs(cx),
+                self.render_tabs(
+                    !matches!(&state, FlowState::Ready { capabilities, .. } if !capabilities.single_flows),
+                    cx,
+                ),
                 filter_bar::render(self, &state, window, cx),
                 kubyl_ui::KeyHints::new(self.hints(cx)),
             )
@@ -971,9 +1033,26 @@ impl Render for NetworkFlowsView {
             Some((tabs, filters, hints)) => (Some(tabs), Some(filters), Some(hints)),
             None => (None, None, None),
         };
+        let measured = self.width.clone();
         v_flex()
             .key_context(VIEW_CONTEXT)
+            .relative()
             .size_full()
+            // The width decides the narrow layout of the next frame.
+            .child(
+                gpui::canvas(
+                    |_, _, _| (),
+                    move |bounds, _, window, _| {
+                        let width = f32::from(bounds.size.width);
+                        if (measured.get() - width).abs() > 0.5 {
+                            measured.set(width);
+                            window.refresh();
+                        }
+                    },
+                )
+                .absolute()
+                .size_full(),
+            )
             .bg(colors.background)
             .text_color(colors.text)
             .font_family(fonts::UI)
