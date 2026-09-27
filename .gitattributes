@@ -1,0 +1,4 @@
+# Fixtures whose exact bytes are cryptographically signed must never be touched by Git's line
+# ending normalization (Windows checkouts default to CRLF, which would invalidate the
+# signature).
+crates/kubyl_selfupdate/tests/fixtures/* -text

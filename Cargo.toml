@@ -31,6 +31,7 @@ kubyl_overview = { path = "crates/kubyl_overview" }
 kubyl_palette = { path = "crates/kubyl_palette" }
 kubyl_portforward = { path = "crates/kubyl_portforward" }
 kubyl_resources = { path = "crates/kubyl_resources" }
+kubyl_selfupdate = { path = "crates/kubyl_selfupdate" }
 kubyl_settings = { path = "crates/kubyl_settings" }
 kubyl_terminal = { path = "crates/kubyl_terminal" }
 kubyl_ui = { path = "crates/kubyl_ui" }
@@ -111,6 +112,9 @@ granit-parser = "1.3.0"
 hmac = "0.13.0"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 lsp-types = "0.97.0" # the version gpui-component uses for editor hover/completion types
+# Verifies the ed25519-signed self-update manifest (phase 09); CI signs it with the `minisign`
+# CLI (script/sign-update-manifest.sh), this only ever verifies.
+minisign-verify = "0.3.0"
 notify = "8.2.0"
 nucleo-matcher = "0.3.1"
 open = "5.4.4"
@@ -118,6 +122,10 @@ parking_lot = "0.12.5"
 regex = "1.13.1"
 rust-embed = { version = "8.12.0", features = ["include-exclude"] }
 schemars = "1.2.2"
+# In-place executable replacement for self-update (phase 09): handles the platform quirks
+# (Windows can't overwrite a running .exe; rename-then-replace instead).
+self-replace = "1.5.0"
+semver = "1.0.28"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 serde-saphyr = "1.3.0"
@@ -131,6 +139,8 @@ tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "
 tracing = "0.1.44"
 url = "2.5.8"
 winresource = "0.1.31"
+# Reads the downloaded Windows .zip update artifact (phase 09); deflate only, no encryption.
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 

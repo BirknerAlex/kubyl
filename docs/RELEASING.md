@@ -20,16 +20,94 @@ trigger it — regular CI (`.github/workflows/ci.yml`) still runs on every push 
 
 Artifacts published: macOS universal (arm64+x86_64) notarized `.dmg`; Windows `x86_64`/`aarch64`
 `.zip` (unsigned — see below); Linux `x86_64`/`aarch64` `.tar.gz`, `.deb`, `.rpm`; Arch
-`.pkg.tar.zst` (amd64 only — Arch Linux is x86_64-only upstream). Plus `SHA256SUMS`.
+`.pkg.tar.zst` (amd64 only — Arch Linux is x86_64-only upstream). Plus `SHA256SUMS` and the
+signed self-update manifest (`updates-stable.json` + `.minisig`).
+
+After the GitHub Release publishes, three more jobs distribute it further:
+
+- `build-update-manifest` runs *before* `release` (its output ships as release assets):
+  signs `updates-stable.json` with `minisign` so `kubyl_selfupdate` can verify it.
+- `publish-winget` submits a manifest update to `microsoft/winget-pkgs` via `wingetcreate`.
+- `publish-silo` pushes the `.deb`/`.rpm`/`.pkg.tar.zst` to the `kubyl` repo (channel `stable`)
+  on the silo instance at `silo.tyrola.dev`, via the reusable action in
+  `BirknerAlex/silo/.github/actions/publish`.
+
+The macOS Homebrew cask (`birkneralex/homebrew-tap`) isn't pushed from this repo's CI at all —
+that tap's own scheduled workflow polls `kubyl`'s GitHub releases and opens its own PR (see
+"Homebrew cask" below).
 
 ## Known gaps (not covered yet)
 
 - **Windows binaries are unsigned.** No Authenticode certificate is configured, so Windows will
   show a SmartScreen warning. Get an EV code-signing cert or set up Azure Trusted Signing, then
   add a signing step to the `build-windows` job.
-- No AppImage, Flatpak, MSI/MSIX, winget manifest, or Homebrew cask yet — see
-  `plans/09-packaging-release.md` for the full packaging backlog.
-- No auto-update mechanism; users update by re-downloading.
+- No AppImage or MSI/MSIX yet — see `plans/09-packaging-release.md` for the full packaging
+  backlog. Flatpak (Flathub) is set up — see `docs/FLATHUB.md`.
+- Self-update (`kubyl_selfupdate`) only replaces the binary in a manual `.dmg`/`.zip`/`.tar.gz`
+  install. Homebrew, winget, apt/dnf/pacman, Flatpak and snap installs defer to their own tool
+  (`kubyl_selfupdate::installed::detect`) and never self-update.
+
+## One-time setup: self-update signing key
+
+`build-update-manifest` signs the update manifest with `minisign` (ed25519). The public half is
+hardcoded in `crates/kubyl_selfupdate/src/verify.rs` — only the private half needs to stay
+secret.
+
+1. Install `minisign` (`brew install minisign` or your distro's package).
+2. Generate an unencrypted key pair (unencrypted so CI can sign non-interactively — nothing
+   downstream trusts this key without the manifest first passing the app's own checks, so a
+   password on top buys little and would need its own secret anyway):
+   ```sh
+   minisign -G -W -s minisign.key -p minisign.pub -c "kubyl release signing key"
+   ```
+3. Add the **secret key file's full contents** (both lines) as repo secret
+   `UPDATE_SIGNING_KEY`:
+   ```sh
+   gh secret set UPDATE_SIGNING_KEY < minisign.key
+   ```
+4. Delete `minisign.key` from disk once it's in the secret store. If the public key in
+   `minisign.pub` differs from the one hardcoded in `verify.rs`, update that constant to match
+   (every future manifest is signed with the key from step 2, so the two must agree).
+
+## One-time setup: winget
+
+1. Get a GitHub personal access token with `public_repo` scope (submits PRs to
+   `microsoft/winget-pkgs` on your behalf) and add it as repo secret `WINGET_TOKEN`:
+   ```sh
+   gh secret set WINGET_TOKEN
+   ```
+2. `publish-winget` only *updates* an existing manifest — the very first submission has to be
+   manual once, since `wingetcreate update` needs a package to already exist:
+   ```sh
+   # From a Windows machine (or install wingetcreate's .exe under Wine/a Windows CI runner)
+   irm https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
+   .\wingetcreate.exe new `
+     https://github.com/BirknerAlex/kubyl/releases/download/v<version>/kubyl-<version>-windows-x86_64.zip `
+     https://github.com/BirknerAlex/kubyl/releases/download/v<version>/kubyl-<version>-windows-aarch64.zip `
+     --submit --token <a token, or omit --submit --token to review the manifest locally first>
+   ```
+   When prompted, set `PackageIdentifier` to `BirknerAlex.Kubyl`, `InstallerType` to `zip`, and
+   the nested installer to `portable` with `kubyl.exe` as the relative path — that's the shape
+   `publish-winget`'s `wingetcreate update` expects to find and preserve on every later release.
+3. Once that PR is merged, `publish-winget` keeps it current automatically.
+
+## One-time setup: silo
+
+1. Create a repo `kubyl` on the silo instance (`silo.tyrola.dev`) with channel `stable` (or let
+   the first publish create it, if your silo version supports that).
+2. From the silo CLI, mint a token scoped to the `kubyl` repo and add it as a secret:
+   ```sh
+   silo login  # if not already
+   gh secret set SILO_KUBYL_TOKEN
+   ```
+
+## Homebrew cask
+
+Unlike the above, there's nothing to configure in *this* repo — `BirknerAlex/homebrew-tap`
+tracks `Casks/kubyl.rb` and its own `bump-formulae` workflow (scheduled every 3 hours) checks
+`kubyl`'s latest GitHub release and opens a PR with `brew bump-cask-pr` when it's newer. Merge
+that PR to publish. Kubyl's own `.dmg` being one universal binary (not per-arch) means the cask
+needs no by-hand bump script, unlike `silo`'s formula.
 
 ## One-time setup: pushing the version-bump commit to a protected `main`
 
@@ -124,7 +202,8 @@ and fall back to the login keychain, which asks after every rebuild; use
 
 **Settings → Secrets and variables → Actions → New repository secret** for each of:
 `MACOS_CERTIFICATE_P12`, `MACOS_CERTIFICATE_PASSWORD`, `MACOS_PROVISIONING_PROFILE`,
-`APPLE_API_KEY_P8`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`.
+`APPLE_API_KEY_P8`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`, plus `UPDATE_SIGNING_KEY`,
+`WINGET_TOKEN` and `SILO_KUBYL_TOKEN` (below) for the distribution jobs.
 
 ### If notarization or launch fails
 
