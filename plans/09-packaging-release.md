@@ -1,7 +1,9 @@
 # Phase 09: Packaging, release, auto-update, hardening
 
 **Status:** in progress (manual build pipeline landed 2026-09-24; distribution jobs and
-auto-update landed 2026-09-27; hardening and docs site still open)
+auto-update landed and verified against a real release 2026-09-27 — v0.3.1, macOS/Linux/silo
+all confirmed working, winget PR awaiting moderator review, Flathub submission not yet filed;
+hardening and docs site still open)
 **Depends on:** 00 for CI (already running), then feature phases for the release
 **Owns:** `script/bundle-*`, `.github/workflows/release.yml`, bundling metadata in `crates/kubyl`
 **Mockups:** none (logo/icons in `assets/logo`)
@@ -22,7 +24,7 @@ a public 1.0: accessibility, performance budgets, crash reporting (opt-in) and d
 - [x] **Linux**: `.deb`, `.rpm`, amd64 Arch `.pkg.tar.zst`. `.desktop` file (`packaging/linux/kubyl.desktop`) plus hicolor icons. Wayland and X11
 - [x] **Linux silo**: `publish-silo` CI job pushes `.deb`/`.rpm`/`.pkg.tar.zst` to silo repo `kubyl` channel `stable` via the reusable `BirknerAlex/silo/.github/actions/publish` action (GitHub Actions, not GitLab). `package.kubyl.dev` CNAME alias still open (needs `kubyl.dev`, itself unregistered — see Docs and site)
 - [x] **Linux AppImage**: `script/build-appimage.sh` (`linuxdeploy` + GTK plugin, both Linux archs, wired into `build-linux`). Not verified on a real Linux desktop yet — see handoff log
-- [ ] **Linux Flatpak (Flathub)**: manifest `io.github.birkneralex.Kubyl.yml` + `io.github.birkneralex.Kubyl.metainfo.xml` in repo, kept current via `.github/workflows/publish-flathub.yml` on release (regenerates sources incl. both Linux archs, commits to `main` — does *not* publish to Flathub by itself, see `docs/FLATHUB.md`). Known risk: Flathub prefers source builds over the prebuilt-binary approach used here; may need rework at review time. Submission to flathub/flathub still open
+- [ ] **Linux Flatpak (Flathub)**: manifest `io.github.birkneralex.Kubyl.yml` + `io.github.birkneralex.Kubyl.metainfo.xml` in repo, kept current via `release.yml`'s `publish-flathub` job (regenerates sources incl. both Linux archs, commits to `main` — does *not* publish to Flathub by itself, see `docs/FLATHUB.md`). Zed's own Flathub package also ships a prebuilt binary (same GPUI framework), strong precedent the source-build risk is overstated for this app category. Submission to flathub/flathub still open
 - [ ] Per-platform "open with / register URL handler" `kubyl://` for deep links (open a context/namespace/resource)
 - [ ] CLI shim `kubyl` (optional), e.g. `kubyl --context prod -n payments pods`
 
@@ -235,3 +237,37 @@ a public 1.0: accessibility, performance budgets, crash reporting (opt-in) and d
   `.AppImage`, are both still open. If it fails, the webkit2gtk subprocess-helper paths (uses
   `webkit2gtk-4.1`; Ubuntu's actual layout should match since that's the same package name
   `release.yml` already installs) are the most likely culprit.
+- **2026-09-27 (first real v0.3.x release)**: Triggered the release pipeline for real — the
+  first time everything landed in this phase actually ran end to end. Two bugs surfaced, both
+  fixed and re-verified on a second real run:
+  - `build-update-manifest` failed: `taiki-e/install-action` has no prebuilt-binary mapping for
+    `minisign` and silently fell through to `cargo-binstall`, which fails outright ("no binaries
+    specified nor inferred") since the `minisign` crate isn't binstall-compatible. This isn't
+    something a `dry_run` would have caught. Fixed by installing the real CLI via `apt` instead
+    (Ubuntu ships it, confirmed via packages.ubuntu.com). Because `build-update-manifest` gates
+    `release`, this also meant **v0.3.0 built everything successfully but was never published**
+    — the tag and changelog commit exist, but no GitHub Release. Left as-is (harmless); v0.3.1
+    carries the fix and is the first real published release of this phase's work.
+  - `publish-flathub.yml` (the standalone `on: release: published` workflow) never fired at all,
+    for v0.3.0 or v0.3.1 — zero runs, confirmed via `gh run list`. Root cause: the `release` job
+    creates the GitHub Release with the default `GITHUB_TOKEN`, and GitHub's anti-recursion rule
+    means a `GITHUB_TOKEN`-authored event doesn't trigger other workflows' `on:` listeners. This
+    is exactly why `publish-winget` and `publish-silo` were already ordinary jobs inside
+    `release.yml` instead of separate event-triggered workflows — `publish-flathub` gets the same
+    treatment now (`needs: [version, release]`), and the standalone workflow file is deleted.
+  - What did work on the first try: macOS notarization (real Developer ID sign + notarize +
+    staple, not just "the secrets exist" — this is the first actual verification since the
+    2026-09-26 provisioning-profile work), both Linux `.AppImage`s built successfully, and
+    `publish-silo` published real `.deb`/`.rpm`/`.pkg.tar.zst` for both v0.3.0 and v0.3.1 to the
+    live silo server (independently confirmed via `silo list --repo kubyl --channel stable`, not
+    just the green checkmark). `publish-winget` failed as expected — the winget PR
+    ([#442272](https://github.com/microsoft/winget-pkgs/pull/442272)) hasn't been merged yet, so
+    `wingetcreate update` has no existing package to update against.
+  - winget PR #442272: all nine automated checks finished. Eight passed; `08. Installation
+    Validation` came back `NEUTRAL` with label `Validation-Executable-Error`, which Microsoft's
+    own docs define as "the test was unable to locate the primary application" — expected for a
+    `zip`+`portable` installer type, which doesn't register in Add/Remove Programs the way a
+    traditional installer does. Per that same doc's instruction for exactly this case, left an
+    explanatory comment on the PR. `10. Validation Completed: SUCCESS` overall; now in the
+    `New-Package` queue for a human moderator (see the "no human involved?" discussion — the
+    checks are the first gate, not the whole review).

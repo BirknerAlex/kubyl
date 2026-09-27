@@ -14,7 +14,7 @@ submission comes back with that ask.
 
 ## Keeping this repo's copy current
 
-Every time a release is tagged, `.github/workflows/publish-flathub.yml` runs
+Every time a release is published, `.github/workflows/release.yml`'s `publish-flathub` job runs
 `script/update-flatpak-manifest.sh`, which regenerates the whole `sources:` block (both Linux
 archs' archive URL/sha256, and the desktop file/icon URLs/sha256 pinned to the new tag) and adds
 a `<release>` entry to `io.github.birkneralex.Kubyl.metainfo.xml`, then commits both back to
