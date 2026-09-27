@@ -92,21 +92,17 @@ jobs:
           fi
 
   deny:
-    name: cargo-deny (${{ matrix.checks }}${{ matrix.arguments && ', all features' || '' }})
+    name: cargo-deny (${{ matrix.checks }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         checks: [advisories, "bans licenses sources"]
-        arguments: [""]
-        include:
-          # The cloud update providers' features (phase 13) must stay license-clean too.
-          - checks: "bans licenses sources"
-            arguments: "--all-features"
     steps:
       - uses: actions/checkout@v7
+      # The action checks with `--all-features` by default, which covers the optional
+      # dependencies of the cloud update providers (phase 13) too.
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check ${{ matrix.checks }}
-          arguments: ${{ matrix.arguments }}
           rust-version: ${{ env.RUST_TOOLCHAIN }}
