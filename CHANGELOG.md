@@ -2,6 +2,119 @@
 
 All notable changes to Kubyl are documented here.
 
+## [0.2.4] - 2026-09-27
+
+### AGENTS.md
+
+- Phase 13 live tests, cloud provider fixtures and mock endpoints ([1d3017c](https://github.com/BirknerAlex/kubyl/commit/1d3017cad01e2b0efb1308f408d0dd6233b77655))
+
+### CI
+
+- Clippy and test the cloud update providers' features, cargo-deny with all features (phase 13) ([3832633](https://github.com/BirknerAlex/kubyl/commit/3832633523a0c53f51b8c35dee672395bae8b10a))
+- Cargo-deny keeps the action's default --all-features (review) ([f31b819](https://github.com/BirknerAlex/kubyl/commit/f31b819a1dd2342c8acc1c18d8c4aa3ad29048cc))
+
+### Design
+
+- Board 8 frames (OpenShift channel, update graph, pre-flight, progress, confirmation, EKS, k3s, read-only, credentials) and the Route frames (Routes under Network, Route web view) ([2c08474](https://github.com/BirknerAlex/kubyl/commit/2c0847486bf77ee6ea2f3e002c04fb05decfab15))
+- Phase 13 Routes screenshots ([2cf0f0f](https://github.com/BirknerAlex/kubyl/commit/2cf0f0ff23118b7ba1ee1e701ae7468963ce9fe0))
+- Phase 13 screenshots (OpenShift updates, channel, graph, pre-flight, progress, confirmation, EKS, k3s, self-managed, read-only, credentials missing, provider not built, 403, Route details) ([8bf209a](https://github.com/BirknerAlex/kubyl/commit/8bf209a1af37328945bf4481ae085f6b3c7acbda))
+
+### Kubyl
+
+- Forward the cloud update provider features (updates-eks, updates-gke, updates-aks) ([87c3d90](https://github.com/BirknerAlex/kubyl/commit/87c3d90db7b0422f1842eea2cc37f3d553a5c4d8))
+
+### Kubyl_argocd
+
+- Route keys stay masked in live/desired diffs (phase 13) ([bedca86](https://github.com/BirknerAlex/kubyl/commit/bedca86f3c416b5de22c65ec96a252b0cfc12034))
+- The TLS key note covers a stale last-applied copy (review) ([7044cd7](https://github.com/BirknerAlex/kubyl/commit/7044cd797075f2852ca3ceff994d3c6930eeb9fa))
+
+### Kubyl_explorer
+
+- Routes under Network with their own details (phase 13) ([27b2c50](https://github.com/BirknerAlex/kubyl/commit/27b2c50c55029dda54ab777bd005566c2b8eb151))
+- Route details resolve numeric target ports through the endpoints (phase 13) ([3910027](https://github.com/BirknerAlex/kubyl/commit/39100278258a4f5e4f3a53f0983b88dbdefc2e53))
+
+### Kubyl_metrics
+
+- Read monitoring Routes through the shared Route model (phase 13) ([2bc41db](https://github.com/BirknerAlex/kubyl/commit/2bc41dbe8cf6ddd2100e766e020a1cfc2481faa9))
+
+### Kubyl_operators
+
+- Mask inline Route keys in Helm manifests (phase 13) ([c036b4a](https://github.com/BirknerAlex/kubyl/commit/c036b4aa0b200dd1daf8343a7c887fb0e9bfb570))
+
+### Kubyl_palette
+
+- Route and Service references (phase 13) ([1d47bc0](https://github.com/BirknerAlex/kubyl/commit/1d47bc07407092ab3066d61940740c0ce7bec21c))
+
+### Kubyl_portforward
+
+- Forward a Route's or Ingress's backend Service (phase 13) ([f3266e1](https://github.com/BirknerAlex/kubyl/commit/f3266e19ac15eb041330b6585a7467c4ca2f57e6))
+- Route forwards read the backend's EndpointSlices (phase 13) ([188c1f9](https://github.com/BirknerAlex/kubyl/commit/188c1f9c86f5bbcf3966fa72aa3147141d8f2875))
+- The Route live test takes namespaces without Ingresses (real clusters) ([44ed669](https://github.com/BirknerAlex/kubyl/commit/44ed669a23aa79d6945379392e1f3349b0989304))
+- Backend forwards match the API group as well as the resource (review) ([342a17c](https://github.com/BirknerAlex/kubyl/commit/342a17c4ee706146f2ecaa5861056afe7ec03cf5))
+- The Route live test fails when a backend doesn't resolve (review) ([8d4a895](https://github.com/BirknerAlex/kubyl/commit/8d4a8950d8724b03f20efcfb42beb8ab3d6626a8))
+
+### Kubyl_resources
+
+- Route model, columns and target port resolution (phase 13) ([27c0d35](https://github.com/BirknerAlex/kubyl/commit/27c0d35b823b74c3b8bf38f69fea70e216bd37c4))
+- Resolve numeric Route target ports through the endpoints (phase 13) ([6dc7a3b](https://github.com/BirknerAlex/kubyl/commit/6dc7a3b7d9c67ae5198115cff4eb4cf18377e405))
+- A Route's named target port reports the number its endpoints serve (phase 13) ([b6122dc](https://github.com/BirknerAlex/kubyl/commit/b6122dcc0e19debff00ef3e0a4c783ee0f968a69))
+- Wider Services and Admitted columns for Routes (phase 13) ([07893ee](https://github.com/BirknerAlex/kubyl/commit/07893ee3c8f07a21367a916ffa20af17ea862309))
+- Mask a Route's last-applied copy when it still holds a key taken out of spec (review) ([8856f0c](https://github.com/BirknerAlex/kubyl/commit/8856f0c6cb732e0b06402a8fa717835f3a44a691))
+
+### Kubyl_ui
+
+- Route icon (OpenShift Routes, phase 13) ([67e5912](https://github.com/BirknerAlex/kubyl/commit/67e59124e70a8e444437f9e02217bbe0080ead16))
+
+### Kubyl_updates
+
+- Provider trait, detection, model, versions, removed-API table, settings ([bf19337](https://github.com/BirknerAlex/kubyl/commit/bf19337c01f64cf66bba01c6a22d2606cbbe0a4f))
+- OpenShift, k3s/RKE2 (system-upgrade-controller), Cluster API and read-only providers, pre-flight checks, the update service and the Cluster Updates tab ([0dcec4a](https://github.com/BirknerAlex/kubyl/commit/0dcec4a46a1f236c5724d0ffb4776e49fbe193d2))
+- Provider override in settings, live tests against the dev clusters ([26bcdd6](https://github.com/BirknerAlex/kubyl/commit/26bcdd6cdd1281473cfac9d51b4c9669515c38fd))
+- Shared cloud provider plumbing (CLIs, HTTP, errors, exec plugin, credential cache) ([64ed5d5](https://github.com/BirknerAlex/kubyl/commit/64ed5d551460e84949def110ed91b3fc6d7e01c3))
+- Amazon EKS update provider (updates-eks) ([12dc54f](https://github.com/BirknerAlex/kubyl/commit/12dc54fc3b2b2146193eef533bdd4bcad4a17075))
+- Cloud API endpoint overrides (KUBYL_UPDATES_{EKS,GKE,AKS}_ENDPOINT) ([962b53f](https://github.com/BirknerAlex/kubyl/commit/962b53fb17f132338275ee02d4dd5e843c281fb8))
+- Google GKE update provider (updates-gke) ([21881ae](https://github.com/BirknerAlex/kubyl/commit/21881aef941eaeb119dc9307a0f86858d0f8ed77))
+- Azure AKS update provider (updates-aks) ([e09175a](https://github.com/BirknerAlex/kubyl/commit/e09175ae87b2b3e99c5aec4ab6d1b371cfc178a7))
+- The read-only OpenShift live test runs the pre-flight checks too ([3f2b4d2](https://github.com/BirknerAlex/kubyl/commit/3f2b4d2474bbd16a256998a451fe274bcda5b951))
+- Operators and pools first while an update runs, wait for Prometheus discovery before the checks, node pools follow the control plane, write hints only where the provider can write, wrapping and graph fixes ([f667089](https://github.com/BirknerAlex/kubyl/commit/f667089084b402ce1d8e374ac274219ea21bfb6c))
+- Live test that updates the k3d cluster through its Plans and follows it ([11f2571](https://github.com/BirknerAlex/kubyl/commit/11f25715c5a68fe05d5eb0613d845955c9b0bb8a))
+- One recorded-response bundle per cloud (tests/fixtures/{eks,gke,aks}.json) ([3f1ec7d](https://github.com/BirknerAlex/kubyl/commit/3f1ec7d78233f2e7f243e22e5e8739d949baba53))
+- Review fixes: the last-applied scan picks the kind's own group and never passes on an incomplete scan, pre-releases sort before their release, a pre-flight run without inputs finishes, one note for failed EKS add-on versions, AKS pools target only newer versions ([75892bf](https://github.com/BirknerAlex/kubyl/commit/75892bf628cc40052be734658a562f6c32f02d47))
+- Pre-release stages order before their numbers (ec < fc < rc) (review) ([f2873b9](https://github.com/BirknerAlex/kubyl/commit/f2873b9b88362487fc7effb7fcdacf9ebc0b34dd))
+
+### Kubyl_webview
+
+- Web views of Route backends (phase 13) ([659df65](https://github.com/BirknerAlex/kubyl/commit/659df65225faa68fff3e079f20ec170086fc4bd2))
+- Route web views resolve numeric target ports through the endpoints (phase 13) ([a6a502b](https://github.com/BirknerAlex/kubyl/commit/a6a502bda97e170ea41d214f4fc15e8272c847d6))
+
+### Kubyl_yaml
+
+- Route template and inline TLS key masking (phase 13) ([330b578](https://github.com/BirknerAlex/kubyl/commit/330b578d0c912de9c9b3f7c278f120010de44be8))
+- Stale Route keys in the last-applied copy stay masked in the editor, manifests and apply history (review) ([50aab37](https://github.com/BirknerAlex/kubyl/commit/50aab375f2e04dd64933e061134220d8bfbc3119))
+
+### Plans/12
+
+- OpenShift check done on the user's test cluster ([3525e80](https://github.com/BirknerAlex/kubyl/commit/3525e8035dfd3998562db2111dd663478f8ffbcc))
+
+### Plans/13
+
+- Track the OpenShift Routes work (added on request) ([8d93ec1](https://github.com/BirknerAlex/kubyl/commit/8d93ec16ad7aa4286b57d689b45a67db2457176e))
+- Done, handoff log ([a65773a](https://github.com/BirknerAlex/kubyl/commit/a65773a541d321c22e1115d227751c4f3a2e2c9c))
+- Test counts ([35db59b](https://github.com/BirknerAlex/kubyl/commit/35db59b9a7b12c5e385131dccd46c731701e4170))
+
+### Plans/README
+
+- Phase 13 decisions (update providers, writes, removed and deprecated APIs, cloud credentials, features, Routes) ([42c17c0](https://github.com/BirknerAlex/kubyl/commit/42c17c08777f54e3b68eed61ee31e0316394d7f3))
+- Phase 13 extension points (update state, provider trait, Route helpers) and the cloud providers' details ([0d3180c](https://github.com/BirknerAlex/kubyl/commit/0d3180cafc9ea9cf5c2b27dd8f820cf82092f20e))
+
+### Script
+
+- Updates-dev.sh (PDB and removed-API Helm release on kind, a fake OpenShift cluster with ClusterVersion, operators, pools, APIRequestCounts and Routes, a k3s cluster with system-upgrade-controller) ([54236b6](https://github.com/BirknerAlex/kubyl/commit/54236b62fa7f50ac5fa70141ab35196f5fed3418))
+
+### Workspace
+
+- Hmac for SigV4 signing of the EKS update provider (phase 13) ([5e7b7ca](https://github.com/BirknerAlex/kubyl/commit/5e7b7ca1a1780a7c8362d3c9f914ab754fc24a5a))
+
 ## [0.2.3] - 2026-09-26
 
 ### Bug Fixes
