@@ -58,7 +58,7 @@ pub fn masked_note(item: &ResourceDiff) -> Option<&'static str> {
         && [item.live(), item.desired()]
             .iter()
             .flatten()
-            .any(kubyl_resources::route::has_inline_key);
+            .any(kubyl_resources::route::has_key_material);
     route_key.then_some("TLS key masked")
 }
 
@@ -164,5 +164,25 @@ mod tests {
             Some("values masked")
         );
         assert_eq!(masked_note(&ResourceDiff::default()), None);
+
+        // The key was taken out of `spec`, but the live last-applied copy still holds it.
+        let stale = serde_json::json!({"apiVersion": "route.openshift.io/v1", "kind": "Route",
+            "metadata": {"name": "shop", "annotations": {"kubectl.kubernetes.io/last-applied-configuration":
+                "{\"spec\":{\"tls\":{\"key\":\"STALE-PRIVATE-KEY\"}}}"}},
+            "spec": {"host": "a.example.com", "to": {"kind": "Service", "name": "shop"},
+                     "tls": {"termination": "edge"}}});
+        let item = ResourceDiff {
+            group: "route.openshift.io".into(),
+            kind: "Route".into(),
+            normalized_live_state: stale.to_string(),
+            predicted_live_state: route("NEW-PRIVATE-KEY", "b.example.com").to_string(),
+            ..Default::default()
+        };
+        for hunk in &resource_diff(&item).hunks {
+            for line in &hunk.lines {
+                assert!(!line.text.contains("PRIVATE-KEY"), "{}", line.text);
+            }
+        }
+        assert_eq!(masked_note(&item), Some("TLS key masked"));
     }
 }
