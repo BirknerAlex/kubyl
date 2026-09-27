@@ -21,7 +21,7 @@ a public 1.0: accessibility, performance budgets, crash reporting (opt-in) and d
 - [x] Windows arm64 build (`aarch64-pc-windows-msvc`, cross-compiled)
 - [x] **Linux**: `.deb`, `.rpm`, amd64 Arch `.pkg.tar.zst`. `.desktop` file (`packaging/linux/kubyl.desktop`) plus hicolor icons. Wayland and X11
 - [x] **Linux silo**: `publish-silo` CI job pushes `.deb`/`.rpm`/`.pkg.tar.zst` to silo repo `kubyl` channel `stable` via the reusable `BirknerAlex/silo/.github/actions/publish` action (GitHub Actions, not GitLab). `package.kubyl.dev` CNAME alias still open (needs `kubyl.dev`, itself unregistered — see Docs and site)
-- [ ] Linux AppImage: standalone executable container
+- [x] **Linux AppImage**: `script/build-appimage.sh` (`linuxdeploy` + GTK plugin, both Linux archs, wired into `build-linux`). Not verified on a real Linux desktop yet — see handoff log
 - [ ] **Linux Flatpak (Flathub)**: manifest `io.github.birkneralex.Kubyl.yml` + `io.github.birkneralex.Kubyl.metainfo.xml` in repo, kept current via `.github/workflows/publish-flathub.yml` on release (regenerates sources incl. both Linux archs, commits to `main` — does *not* publish to Flathub by itself, see `docs/FLATHUB.md`). Known risk: Flathub prefers source builds over the prebuilt-binary approach used here; may need rework at review time. Submission to flathub/flathub still open
 - [ ] Per-platform "open with / register URL handler" `kubyl://` for deep links (open a context/namespace/resource)
 - [ ] CLI shim `kubyl` (optional), e.g. `kubyl --context prod -n payments pods`
@@ -209,3 +209,29 @@ a public 1.0: accessibility, performance budgets, crash reporting (opt-in) and d
   Scan, Installation Validation — the last two actually run and install the .zip) was still
   pending as of this entry; that bot feedback, not this handoff, is the real test of whether the
   manifest is accepted.
+- **2026-09-27 (AppImage)**: Added `script/build-appimage.sh`, wired into `build-linux`'s existing
+  matrix (reuses the binary that job already built, both archs). Researched two real references
+  before writing anything: Zed's own `script/bundle-linux` turned out not to build an AppImage at
+  all (hand-curated library tarball instead, excluding glibc-family libs to avoid host conflicts —
+  no `linuxdeploy`/`appimagetool` anywhere), so no shortcut there. `tauri-bundler`'s
+  `bundle/linux/appimage/linuxdeploy.rs` did have exactly what was needed: kubyl_webview uses
+  `wry`, the same webview crate Tauri uses, and both hit the identical webkit2gtk problem —
+  neither `linuxdeploy` nor its GTK plugin's dependency scan finds `WebKitWebProcess`,
+  `WebKitNetworkProcess` or the injected-bundle `.so` (nothing directly links them), so they have
+  to be copied into the AppDir by hand at the same relative path they'd have on a real system.
+  Mirrored tauri-bundler's exact tool provenance rather than "latest": `linuxdeploy` pinned to the
+  commit (`07333c6`) and `AppRun` binary from `tauri-apps/binary-releases` that ships in
+  production Tauri apps today, not `linuxdeploy`'s own "continuous" build (which tauri-bundler
+  specifically avoids — it has shipped broken AppImage output before). The GTK plugin script
+  itself has no downloadable release asset upstream (confirmed via the GitHub API), so it's
+  fetched fresh from `linuxdeploy-plugin-gtk`'s `master` branch at build time, matching how
+  tauri-bundler vendors the same file. Also replicated a `dd` byte-patch that zeroes the
+  AppImage type-2 magic bytes in the downloaded `linuxdeploy` tool itself (not kubyl's output) —
+  otherwise a desktop's AppImage integration daemon tries to "integrate" `linuxdeploy` while it's
+  only used transiently as a build tool. Validated what's checkable without a real Linux GUI
+  session: `bash -n` and `shellcheck` clean, YAML syntax valid. **Not verified**: nothing in this
+  step has run in CI or launched on a real Linux desktop yet (no FUSE/X11 session available
+  here) — the first CI run building it, and someone actually launching the resulting
+  `.AppImage`, are both still open. If it fails, the webkit2gtk subprocess-helper paths (uses
+  `webkit2gtk-4.1`; Ubuntu's actual layout should match since that's the same package name
+  `release.yml` already installs) are the most likely culprit.
