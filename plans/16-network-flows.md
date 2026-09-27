@@ -7,9 +7,10 @@
 
 ## Goal
 
-One cluster-agnostic **Network Flows** view: a live, filterable flow table (time, direction,
-source, destination, protocol/port, verdict allowed/dropped, matched NetworkPolicy, bytes/packets)
-plus a topology graph (nodes = namespaces or workloads, edges = aggregated flows, styled by verdict
+One cluster-agnostic **Network Flows** view: a live flow table (time, direction, source,
+destination, protocol/port, verdict allowed/dropped, matched NetworkPolicy, bytes/packets),
+filterable on every one of those fields — pod, IP, port, namespace, protocol, direction, verdict,
+policy — not a preselected subset, plus a topology graph (nodes = namespaces or workloads, edges = aggregated flows, styled by verdict
 and sized by volume, like OpenShift Console's topology). Both are driven by one internal `Flow`
 model; which of three backends actually supplies it is detected per cluster and shown, never
 assumed.
@@ -56,7 +57,15 @@ Each has a recommendation; record the outcome in the README's decision table.
    are never written to disk or logs (they can contain pod/namespace names but also, depending on
    the backend's L7 visibility, request paths — treat any L7 field as sensitive until proven
    otherwise, same bar as Secret data).
-5. **Graph layout.** Recommended: a small hand-rolled force-directed layout in `kubyl_netflow` (or
+5. **Filtering.** Recommended: every field on the `Flow` model is filterable, not just a
+   preselected few — namespace, pod, workload, IP, port, protocol, direction, verdict and matched
+   policy, on source and destination independently, combinable (AND) plus free text. Filters are
+   pushed down into `stream_flows(filter)` and applied server-side wherever the active backend's
+   API supports it (`capabilities()` says which fields); any field a backend can't filter
+   server-side is still filterable client-side against the buffered window, so the filter bar
+   behaves identically regardless of which backend is active — the abstraction covers filtering
+   too, not only the columns shown.
+6. **Graph layout.** Recommended: a small hand-rolled force-directed layout in `kubyl_netflow` (or
    `kubyl_charts` if it's judged reusable), rather than a third-party graph crate — evaluated
    against a maintained MIT/Apache crate in the spike if one exists and clears `cargo deny`.
    OpenShift's topology view is the closest reference for interaction (zoom, click node → filter,
@@ -144,14 +153,26 @@ Each has a recommendation; record the outcome in the README's decision table.
 - [ ] `hubble`, `netobserv`, `calico_whisker` backend implementations
 - [ ] No-backend state and its hint (mirrors phase 07's "connect Prometheus" hint)
 - [ ] Demand-driven service: streams only while a view is open, bounded time-windowed ring buffer
-  per cluster, namespace/verdict/protocol filters pushed down where the backend supports it
+  per cluster
+- [ ] `FlowFilter`: every `Flow` field (namespace, pod, workload, IP, port, protocol, direction,
+  verdict, policy — source and destination independently), pushed down into `stream_flows` per
+  backend's `capabilities()`; a client-side fallback filter over the ring buffer for any field a
+  backend can't filter server-side, so the table's filter bar works identically on all three
 - [ ] Aggregation for the graph (namespace-level and workload-level), recomputed on the selected
   time window
 
 ### UI: flow table
 - [ ] Columns: Time, Direction, Source, Destination, Protocol/Port, Verdict (colored), Policy,
-  Bytes/Packets; filter bar (namespace, verdict, protocol, free text on pod/IP), pause/resume,
-  search
+  Bytes/Packets
+- [ ] Filter bar: one facet per filterable field — namespace, pod, workload, IP, port, protocol,
+  direction, verdict, policy — each offered for source and destination separately, with
+  autocomplete from what's actually been seen in the buffered window (like k9s's `/` filter and
+  phase 05's log search, not a fixed dropdown of guessed values). Facets combine with AND; a
+  free-text/expression box covers ad-hoc queries across all fields at once (e.g.
+  `ns=payments verdict=dropped port=443`), Wireshark-display-filter style rather than a second,
+  separate search mechanism. Chips show which backend actually applied a facet server-side vs.
+  client-side (only relevant when the active backend's `capabilities()` don't cover that field)
+- [ ] Pause/resume streaming; clearing all facets returns to the unfiltered live view
 - [ ] Row → detail panel with the raw backend fields (debugging/trust)
 - [ ] Header shows which backend is active; the empty state when none is found
 
@@ -178,6 +199,11 @@ Each has a recommendation; record the outcome in the README's decision table.
 - On `kind` + Calico/Whisker: flows show up with allow/deny reflected.
 - Switching to a cluster with a different backend switches the active adapter transparently; a
   cluster with none of the three shows the empty-state hint naming what to install.
+- Filtering by any single field (pod, IP, port, namespace, protocol, direction, verdict, policy),
+  alone or combined, narrows both the table and the graph identically on all three backends —
+  server-side where the active backend's API supports it, client-side over the buffered window
+  otherwise; the acceptance test on each `kind` cluster includes filtering the sample traffic down
+  to one pod and to the deliberately blocked flows by verdict.
 - Nothing is exposed beyond loopback forwards and the API server's own service proxy; no flow data
   (which can include pod/namespace names and, on backends with L7 visibility, request paths) is
   logged or written to `state.json`.
