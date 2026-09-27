@@ -402,9 +402,57 @@ jobs:
             *.pkg.tar.zst
           retention-days: 7
 
+  build-update-manifest:
+    name: Build and sign self-update manifest
+    needs: [version, build-macos, build-windows, build-linux]
+    if: needs.version.outputs.proceed == 'true'
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.version.outputs.tag }}
+
+      - uses: actions/download-artifact@v5
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum -- * > SHA256SUMS
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: minisign
+
+      # Signs with kubyl_selfupdate's release key (verified against the public half hardcoded
+      # in crates/kubyl_selfupdate/src/verify.rs). Setup: docs/RELEASING.md.
+      - name: Sign manifest
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$UPDATE_SIGNING_KEY" ]; then
+            echo "::error::Secret UPDATE_SIGNING_KEY is missing (docs/RELEASING.md)"
+            exit 1
+          fi
+          echo "$UPDATE_SIGNING_KEY" > "$RUNNER_TEMP/minisign.key"
+          DIST=dist MINISIGN_KEY_FILE="$RUNNER_TEMP/minisign.key" \
+            ./script/sign-update-manifest.sh "$VERSION" stable
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kubyl-update-manifest
+          path: |
+            updates-*.json
+            updates-*.json.minisig
+          retention-days: 7
+
   release:
     name: Publish GitHub Release
-    needs: [version, build-macos, build-windows, build-linux]
+    needs: [version, build-macos, build-windows, build-linux, build-update-manifest]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v5
@@ -426,3 +474,53 @@ jobs:
             --repo "${{ github.repository }}" \
             --title "Kubyl ${{ needs.version.outputs.tag }}" \
             --notes-file RELEASE_NOTES.md
+
+  publish-winget:
+    name: Submit winget manifest update
+    needs: [version, release]
+    if: needs.version.outputs.proceed == 'true'
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - name: Install wingetcreate
+        run: Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
+
+      # First submission (`BirknerAlex.Kubyl` doesn't exist in microsoft/winget-pkgs yet) is a
+      # one-time manual `wingetcreate new` — see docs/RELEASING.md. This only updates an
+      # already-submitted manifest, so it fails until that's done once.
+      - name: Update and submit manifest
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          if (-not $env:WINGET_TOKEN) {
+            Write-Error "Secret WINGET_TOKEN is missing (docs/RELEASING.md)"
+            exit 1
+          }
+          $x64 = "https://github.com/BirknerAlex/kubyl/releases/download/v$env:VERSION/kubyl-$env:VERSION-windows-x86_64.zip"
+          $arm64 = "https://github.com/BirknerAlex/kubyl/releases/download/v$env:VERSION/kubyl-$env:VERSION-windows-aarch64.zip"
+          .\wingetcreate.exe update BirknerAlex.Kubyl --version $env:VERSION `
+            --urls $x64 $arm64 --submit --token $env:WINGET_TOKEN
+
+  publish-silo:
+    name: Publish Linux packages to silo
+    needs: [version, build-linux]
+    if: needs.version.outputs.proceed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: kubyl-linux-*
+          path: dist
+          merge-multiple: true
+
+      - uses: BirknerAlex/silo/.github/actions/publish@v0.14.0
+        with:
+          server: https://silo.tyrola.dev
+          token: ${{ secrets.SILO_KUBYL_TOKEN }}
+          repo: kubyl
+          channel: stable
+          files: |
+            dist/*.deb
+            dist/*.rpm
+            dist/*.pkg.tar.zst
