@@ -8,13 +8,13 @@
 //!   winget, Flatpak, snap) — those skip self-update entirely and point at their own tool.
 //! - [`apply`]: extracts the new binary and replaces the running executable with it.
 //! - [`service`]: the app-wide [`service::SelfUpdate`] global — the poll loop and state machine.
-//! - [`settings`]: the `updates_app` (channel, auto-check) `settings.json` section.
+//! - [`settings`]: the `self_update` (channel, auto-check) `settings.json` section.
 //! - [`ui`]: the status bar item.
 //!
 //! Linux and Windows package-manager installs (`.deb`/`.rpm`/`.pkg.tar.zst`, winget) and
 //! Flatpak/snap never self-update — `installed::detect` recognizes them and the service just
 //! never checks. A manual `.dmg`/`.zip`/`.tar.gz` install self-updates on a 6-hour poll when
-//! `updates_app.auto_check` is on (the default).
+//! `self_update.auto_check` is on (the default).
 
 pub mod apply;
 pub mod download;

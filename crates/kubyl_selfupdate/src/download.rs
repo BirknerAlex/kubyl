@@ -26,6 +26,10 @@ pub enum FetchError {
 fn client() -> reqwest::Client {
     reqwest::ClientBuilder::new()
         .user_agent(concat!("kubyl/", env!("CARGO_PKG_VERSION")))
+        // Without a timeout, a stalled request leaves the service stuck in Checking or
+        // Downloading forever — start_poll and check() both skip re-checking in those states.
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(15 * 60))
         .build()
         .expect("the reqwest client builder never fails with these options")
 }
