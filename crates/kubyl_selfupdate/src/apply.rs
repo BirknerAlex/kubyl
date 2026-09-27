@@ -9,7 +9,7 @@
 //! `.dmg` — only the binary changes. Good enough for "restart to pick up the new version";
 //! revisit if a release ever needs an Info.plist change to take effect without a fresh install.
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", all(test, target_os = "linux")))]
 use std::io::Cursor;
 use std::path::Path;
 
