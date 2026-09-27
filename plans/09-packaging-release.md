@@ -22,7 +22,7 @@ a public 1.0: accessibility, performance budgets, crash reporting (opt-in) and d
 - [x] **Linux**: `.deb`, `.rpm`, amd64 Arch `.pkg.tar.zst`. `.desktop` file (`packaging/linux/kubyl.desktop`) plus hicolor icons. Wayland and X11
 - [x] **Linux silo**: `publish-silo` CI job pushes `.deb`/`.rpm`/`.pkg.tar.zst` to silo repo `kubyl` channel `stable` via the reusable `BirknerAlex/silo/.github/actions/publish` action (GitHub Actions, not GitLab). `package.kubyl.dev` CNAME alias still open (needs `kubyl.dev`, itself unregistered — see Docs and site)
 - [ ] Linux AppImage: standalone executable container
-- [ ] **Linux Flatpak (Flathub)**: manifest `io.github.birkneralex.Kubyl.yml` in repo, auto-update via `.github/workflows/publish-flathub.yml` on release (updates sha256, commits manifest). Infra done; submission to flathub/flathub still open (see `docs/FLATHUB.md`)
+- [ ] **Linux Flatpak (Flathub)**: manifest `io.github.birkneralex.Kubyl.yml` + `io.github.birkneralex.Kubyl.metainfo.xml` in repo, kept current via `.github/workflows/publish-flathub.yml` on release (regenerates sources incl. both Linux archs, commits to `main` — does *not* publish to Flathub by itself, see `docs/FLATHUB.md`). Known risk: Flathub prefers source builds over the prebuilt-binary approach used here; may need rework at review time. Submission to flathub/flathub still open
 - [ ] Per-platform "open with / register URL handler" `kubyl://` for deep links (open a context/namespace/resource)
 - [ ] CLI shim `kubyl` (optional), e.g. `kubyl --context prod -n payments pods`
 
@@ -30,7 +30,7 @@ a public 1.0: accessibility, performance budgets, crash reporting (opt-in) and d
 - [x] Manual release workflow (`.github/workflows/release.yml`, `workflow_dispatch` only — merges to `main` never trigger it): build matrix, macOS sign+notarize, upload to GitHub Releases, checksums (`SHA256SUMS`)
 - [x] **Distribution**: post-build jobs publish packages: GitHub Releases (all platforms), `publish-winget` (winget manifest PR), `publish-silo` (silo CLI to `kubyl` repo). macOS Homebrew auto-bumping lives entirely in homebrew-tap's own scheduled workflow (no push from kubyl CI)
 - [ ] SBOM (`cargo cyclonedx`), provenance attestation
-- [x] **Auto-update**: new crate `kubyl_selfupdate`. Signed update manifest (`updates-stable.json`/`updates-preview.json`, ed25519 via `minisign`, public key hardcoded in `verify.rs`), `build-update-manifest` CI job signs and publishes it as a release asset. Background check (6 h poll) → download → sha256 verify → `self_replace` the running executable → status bar item "restart to update to vX.Y.Z" (click relaunches, never automatic). `updates_app.channel`/`updates_app.auto_check` in `settings.json`. Homebrew, winget, apt/dnf/pacman, Flatpak and snap installs are detected (`installed::detect`) and skip self-update entirely, deferring to their own tool
+- [x] **Auto-update**: new crate `kubyl_selfupdate`. Signed update manifest (`updates-stable.json`/`updates-preview.json`, ed25519 via `minisign`, public key hardcoded in `verify.rs`), `build-update-manifest` CI job signs and publishes it as a release asset. Background check (6 h poll) → download → sha256 verify → `self_replace` the running executable → status bar item "restart to update to vX.Y.Z" (click relaunches, never automatic). `self_update.channel`/`self_update.auto_check` in `settings.json`. Homebrew, winget, apt/dnf/pacman, Flatpak and snap installs are detected (`installed::detect`) and skip self-update entirely, deferring to their own tool
 - [x] Changelog generation from conventional commits (`git-cliff`, `cliff.toml`), also drives semantic version bumps (`cargo set-version`) — see `docs/RELEASING.md`
 - [ ] Third-party notices: `cargo-about` generates `THIRD_PARTY_LICENSES.html` in CI, bundled into every package (and the About dialog), together with the IBM Plex OFL and Lucide ISC licenses
 
@@ -121,7 +121,7 @@ a public 1.0: accessibility, performance budgets, crash reporting (opt-in) and d
     `Info.plist`/icon/signature, only the binary), `service.rs` (GPUI global, 6 h poll, state machine
     Idle→Checking→Available→Downloading→ReadyToRestart, never auto-restarts), `ui.rs` (status bar
     item, "restart to update to vX.Y.Z" click triggers `SelfUpdate::restart`), `settings.rs`
-    (`updates_app.channel`/`.auto_check`). Wired into `crates/kubyl/src/main.rs` (append-only line).
+    (`self_update.channel`/`.auto_check`). Wired into `crates/kubyl/src/main.rs` (append-only line).
     New workspace deps: `minisign-verify`, `self-replace`, `semver`, `zip` (Windows-only target dep).
   - Full validation: `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`
     (clean), `cargo test --workspace` (all green, `kubyl_selfupdate` alone: 10 unit + 2 integration),
@@ -138,3 +138,60 @@ a public 1.0: accessibility, performance budgets, crash reporting (opt-in) and d
   real app). No deeper docs yet — no install guide, kubeconfig/auth guide, OIDC setup page,
   keybindings reference or k9s migration guide; those still need their own pages. `package.kubyl.dev`
   as a silo alias is unblocked now that the domain exists, still not done.
+- **2026-09-27 (PR review pass)**: Fixed a Windows CI failure and 16 CodeRabbit findings on
+  PR #16 (`phase/09-packaging-release`).
+  - **Windows CI**: `tests/e2e_signature.rs`'s fixture files had no `.gitattributes` entry, so
+    Windows' checkout applied its default CRLF normalization and broke the byte-exact minisign
+    signature. Added `.gitattributes` marking `crates/kubyl_selfupdate/tests/fixtures/* -text`.
+  - **macOS self-update, corrected**: the original `apply.rs` only swapped
+    `Kubyl.app/Contents/MacOS/kubyl`, leaving the bundle's `_CodeSignature/CodeResources` sealed
+    over the *old* binary's hash — the hardened runtime would have refused to launch the updated
+    app. Rewrote it to stage the *whole* `Kubyl.app` from the mounted `.dmg` (via `ditto`, which
+    preserves resource forks/xattrs a plain recursive copy could drop), verify it with
+    `codesign --verify --deep --strict` before ever touching the installed copy, then swap the
+    bundle directories (a rename, which Unix allows even while the old bundle's executable is
+    the one currently running this code) with a restore-on-failure fallback. Added local tests
+    for the new `app_bundle_root` path logic (finally something verifiable on this dev machine).
+  - `download.rs`: added a 30 s connect / 15 min total timeout to the reqwest client — without
+    one, a stalled request left the service stuck in `Checking`/`Downloading` forever (both
+    states skip re-checking).
+  - Fixed a settings-key doc typo (`updates_app` → `self_update`, the real
+    `SelfUpdateSettings::KEY`) in `lib.rs` and this file.
+  - **`publish-flathub.yml` had a real bug**: `release: published` checks out the release tag
+    (detached HEAD) by default, so the commit landed nowhere and `git push origin main` pushed
+    the *old* main. Fixed with an explicit `ref: main` checkout — which then needs
+    `RELEASE_PUSH_TOKEN` instead of the default `GITHUB_TOKEN`, same reason the `version` job
+    needs it (main's ruleset requires PRs/status checks and the default token isn't a bypass
+    actor). Skipped CodeRabbit's SHA-pinning/`persist-credentials: false` suggestions — neither
+    matches this repo's existing convention (every other workflow uses tag refs, no job sets
+    `persist-credentials: false`); flagging rather than silently diverging.
+  - **The Flatpak manifest had several real bugs**, found by checking the actual release.yml
+    output against the manifest's assumptions: the Linux archive's binary is nested in a
+    version-named staging directory (`kubyl-$VERSION-linux-$ARCH/kubyl`), not at the archive
+    root — added `strip-components: 1`. Added an `aarch64` source (release.yml builds both
+    Linux archs; the manifest only had x86_64) via `only-arches`. Added the AppStream Metainfo
+    Flathub requires (`io.github.birkneralex.Kubyl.metainfo.xml`, new file). Switched the
+    desktop file and icon sources from local `path:` to `url:` (raw.githubusercontent.com,
+    pinned to the release tag) — a real Flathub submission only ever checks out the manifest
+    itself, not the rest of this repo, so local paths would 404 in that context.
+  - **`update-flatpak-manifest.sh` had three real bugs**: wrong archive filename (guessed
+    `kubyl-v$VERSION-x86_64-unknown-linux-gnu.tar.gz`; release.yml actually produces
+    `kubyl-$VERSION-linux-amd64.tar.gz`), a nonexistent per-file `.sha256` sidecar (release.yml
+    only publishes one combined `SHA256SUMS`), and a placeholder-only `sed` that would silently
+    stop updating anything after the first successful run. Rewrote it to regenerate the whole
+    `sources:` block from scratch each run (both archs, desktop file, icons, Metainfo reference)
+    instead of patching specific strings, and to append a dated `<release>` to the Metainfo file
+    (skipped if one for that version already exists). Verified end-to-end against the real
+    v0.2.5 release: fetched real `SHA256SUMS`, regenerated the manifest, and it byte-matched the
+    hand-written version; confirmed the metainfo append is idempotent and correctly prepends
+    newer releases.
+  - **Flagged, not fixed**: Flathub's own policy prefers apps built from source; a prebuilt
+    binary (the choice made for every other package manager here) needs a case-by-case
+    exception. Documented as a known risk in `docs/FLATHUB.md` rather than silently rewriting to
+    a from-source Flatpak build (a much larger undertaking that would reverse an earlier
+    decision) — the first real submission is what actually tests whether reviewers accept it.
+  - `docs/FLATHUB.md` corrected: Flathub's submission flow branches off `new-pr` (not the
+    default branch), the manifest-copy destination was double-nested and skipped creating the
+    directory, and the "After Approval" section overstated what triggers a Flathub rebuild
+    (it's `flathub/io.github.birkneralex.Kubyl`, a repo Flathub creates after acceptance — not
+    anything in this repo).
