@@ -17,6 +17,8 @@ use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use futures::io::AsyncBufReadExt as _;
+use futures::stream::{BoxStream, StreamExt as _};
 use http::header::{AUTHORIZATION, HeaderName, HeaderValue};
 use secrecy::{ExposeSecret as _, SecretString};
 use serde_json::Value;
@@ -214,6 +216,23 @@ impl Transport {
         })
     }
 
+    /// Plain HTTP to a loopback port (a temporary port-forward), under `path`. Nothing is
+    /// authenticated: the forward is the access, so no credentials ever go this way. There's no
+    /// read timeout, so a quiet event stream stays open (requests still time out). Call it on
+    /// the Tokio runtime (`spawn_kube`): making a kube client spawns a task.
+    pub fn loopback(port: u16, path: &str) -> Result<Self, PromError> {
+        let uri = parse_url(&format!("http://127.0.0.1:{port}"))?;
+        let mut config = kube::Config::new(uri);
+        config.connect_timeout = Some(Duration::from_secs(10));
+        config.read_timeout = None;
+        Ok(Self {
+            client: build(config)?,
+            base: normalize_prefix(path),
+            bearer: None,
+            headers: Vec::new(),
+        })
+    }
+
     /// A client for an external URL. `authorization` is the full header value (`Bearer …`,
     /// `Basic …`), marked sensitive and never logged; it's only sent over HTTPS (or to
     /// loopback). Callers that must not send it without TLS verification check `tls.insecure`
@@ -280,7 +299,8 @@ impl Transport {
         }
     }
 
-    async fn send(&self, mut request: http::Request<Vec<u8>>) -> Result<String, PromError> {
+    /// Adds the bearer token and the extra headers.
+    async fn authorize(&self, request: &mut http::Request<Vec<u8>>) -> Result<(), PromError> {
         if let Some(bearer) = &self.bearer {
             let token = bearer.get().await.map_err(PromError::Transport)?;
             let mut value = HeaderValue::from_str(&format!("Bearer {}", token.expose_secret()))
@@ -291,19 +311,39 @@ impl Transport {
         for (name, value) in &self.headers {
             request.headers_mut().insert(name.clone(), value.clone());
         }
+        Ok(())
+    }
+
+    async fn send(&self, mut request: http::Request<Vec<u8>>) -> Result<String, PromError> {
+        self.authorize(&mut request).await?;
         match tokio::time::timeout(REQUEST_TIMEOUT, self.client.request_text(request)).await {
             Err(_) => Err(PromError::Timeout),
             Ok(Ok(text)) => Ok(text),
-            Ok(Err(kube::Error::Api(status))) => {
-                // Prometheus reports bad queries as 400/422 with its own JSON body.
-                if let Ok(body) = serde_json::from_str::<Value>(&status.message)
-                    && body.get("status").and_then(Value::as_str) == Some("error")
-                {
-                    return Err(query_error(&body));
-                }
-                Err(PromError::Http(status.code, short(&status.message)))
-            }
-            Ok(Err(err)) => Err(PromError::Transport(short(&err.to_string()))),
+            Ok(Err(err)) => Err(map_error(err)),
+        }
+    }
+
+    /// `GET` whose body arrives line by line for as long as the server keeps the response open
+    /// (server-sent events, JSON lines). Only the wait for the response has a timeout; the
+    /// stream ends when the server closes it or the stream is dropped.
+    pub async fn get_lines(
+        &self,
+        path: &str,
+        params: &[(&str, String)],
+        accept: &'static str,
+    ) -> Result<BoxStream<'static, Result<String, PromError>>, PromError> {
+        let mut request = http::Request::get(self.uri(path, params))
+            .header(http::header::ACCEPT, accept)
+            .body(Vec::new())
+            .map_err(|e| PromError::Transport(e.to_string()))?;
+        self.authorize(&mut request).await?;
+        match tokio::time::timeout(REQUEST_TIMEOUT, self.client.request_stream(request)).await {
+            Err(_) => Err(PromError::Timeout),
+            Ok(Ok(body)) => Ok(Box::pin(body)
+                .lines()
+                .map(|line| line.map_err(|e| PromError::Transport(short(&e.to_string()))))
+                .boxed()),
+            Ok(Err(err)) => Err(map_error(err)),
         }
     }
 
@@ -346,6 +386,21 @@ impl Transport {
             .body(Vec::new())
             .map_err(|e| PromError::Transport(e.to_string()))?;
         self.send(request).await.map(|_| ())
+    }
+}
+
+fn map_error(err: kube::Error) -> PromError {
+    match err {
+        kube::Error::Api(status) => {
+            // Prometheus reports bad queries as 400/422 with its own JSON body.
+            if let Ok(body) = serde_json::from_str::<Value>(&status.message)
+                && body.get("status").and_then(Value::as_str) == Some("error")
+            {
+                return query_error(&body);
+            }
+            PromError::Http(status.code, short(&status.message))
+        }
+        err => PromError::Transport(short(&err.to_string())),
     }
 }
 
@@ -395,6 +450,70 @@ mod tests {
         assert!(!format!("{ok:?}").contains("s3cr3t"));
     }
 
+    /// Streamed lines arrive while the response is still open (server-sent events); an error
+    /// status fails the request itself.
+    #[tokio::test]
+    async fn lines_arrive_before_the_response_ends() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (sent_first, first_sent) = tokio::sync::oneshot::channel::<()>();
+        let (go_on, carry_on) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = vec![0; 8192];
+            let n = socket.read(&mut buffer).await.unwrap();
+            let request = String::from_utf8_lossy(&buffer[..n]).to_lowercase();
+            assert!(request.starts_with("get /flows?watch=true"), "{request}");
+            assert!(request.contains("accept: text/event-stream"), "{request}");
+            let chunk = |text: &str| format!("{:x}\r\n{text}\r\n", text.len());
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n")
+                .await
+                .unwrap();
+            socket
+                .write_all(chunk("data: {\"n\":1}\n\n").as_bytes())
+                .await
+                .unwrap();
+            sent_first.send(()).ok();
+            carry_on.await.ok();
+            socket
+                .write_all(chunk("data: {\"n\":2}\n\n").as_bytes())
+                .await
+                .unwrap();
+            socket.write_all(b"0\r\n\r\n").await.unwrap();
+            drop(socket);
+            // A second connection answers 403.
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let _ = socket.read(&mut buffer).await.unwrap();
+            socket
+                .write_all(b"HTTP/1.1 403 Forbidden\r\ncontent-length: 9\r\nconnection: close\r\n\r\nforbidden")
+                .await
+                .unwrap();
+        });
+        let transport =
+            Transport::external(&format!("http://{address}"), None, &ExternalTls::default())
+                .unwrap();
+        let mut lines = transport
+            .get_lines("/flows", &[("watch", "true".into())], "text/event-stream")
+            .await
+            .unwrap();
+        first_sent.await.unwrap();
+        assert_eq!(lines.next().await.unwrap().unwrap(), r#"data: {"n":1}"#);
+        assert_eq!(lines.next().await.unwrap().unwrap(), "");
+        go_on.send(()).unwrap();
+        let rest: Vec<String> = lines.map(|l| l.unwrap()).collect().await;
+        assert_eq!(rest, vec![r#"data: {"n":2}"#.to_string(), String::new()]);
+        let err = transport
+            .get_lines("/flows", &[], "text/event-stream")
+            .await
+            .err()
+            .unwrap();
+        assert!(matches!(err, PromError::Http(403, _)), "{err:?}");
+        server.await.unwrap();
+    }
+
     /// Direct calls carry the bearer token, posts send JSON, deletes work with empty answers.
     #[tokio::test]
     async fn direct_posts_and_deletes() {
@@ -439,5 +558,43 @@ mod tests {
         assert!(post.ends_with(r#"{"comment":"x"}"#), "{post}");
         assert!(requests[1].starts_with("DELETE /api/v2/silence/abc"));
         assert!(!format!("{transport:?}").contains("s3cr3t"));
+    }
+
+    /// A loopback transport sends no credentials, keeps its path prefix and streams lines that
+    /// arrive after a quiet spell.
+    #[tokio::test]
+    async fn loopback_streams_without_credentials() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = vec![0; 8192];
+            let n = socket.read(&mut request).await.unwrap();
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\ndata: 1\n")
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            socket.write_all(b"data: 2\n").await.unwrap();
+            drop(socket);
+            String::from_utf8_lossy(&request[..n]).to_string()
+        });
+        let transport = Transport::loopback(port, "whisker-backend/").unwrap();
+        let lines: Vec<String> = transport
+            .get_lines("/flows", &[("watch", "true".into())], "text/event-stream")
+            .await
+            .unwrap()
+            .filter_map(|line| async move { line.ok() })
+            .collect()
+            .await;
+        assert_eq!(lines, ["data: 1", "data: 2"]);
+        let request = server.await.unwrap().to_lowercase();
+        assert!(
+            request.starts_with("get /whisker-backend/flows?watch=true "),
+            "{request}"
+        );
+        assert!(!request.contains("authorization"));
     }
 }

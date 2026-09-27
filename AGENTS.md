@@ -89,12 +89,24 @@ cargo run -p kubyl
   Plans pinned to its version. `--delete` removes only what it marked. Kubernetes v1.37 serves no
   deprecated group-version, so `apiserver_requested_deprecated_apis` only shows v1
   ComponentStatus and Endpoints on kind.
+- Network flows: `script/netflow-dev.sh --cilium|--calico|--netobserv` makes a kind cluster
+  `kubyl-<mode>` (`/tmp/kubyl-dev/<mode>-kubeconfig`, context `kind-kubyl-<mode>`): Cilium with
+  Hubble Relay (`--relay-tls` for Relay with server TLS and its CA in a ConfigMap), Calico with
+  Whisker and Goldmane, or kindnet with NetObserv (its Loki and Prometheus). All get fixture
+  traffic from `storefront` to `payments`, an isolated `payments/ledger-api` and, where the CNI
+  has deny rules, the `web-guard` policy that denies `storefront/scraper`. `--busy` adds load,
+  `--delete` removes only clusters it created. Each needs 3–4 GB of Docker memory: run one or two
+  next to `kubyl-dev`. On Calico, if the control-plane node has no route to the worker's pods
+  (calico-node logs BGP "Invalid NEXT_HOP"), `kubectl -n calico-system rollout restart
+  ds/calico-node`. `spec.loki.enable: false` in the FlowCollector shows NetObserv's metrics-only
+  mode.
 - Live tests against those clusters are ignored by default: see the header of
   `crates/kubyl_kube/tests/live.rs` (and of `crates/kubyl_metrics/tests/live.rs`,
   `crates/kubyl_alerts/tests/live.rs`, `crates/kubyl_operators/tests/live.rs`,
   `crates/kubyl_updates/tests/live.rs` for the update providers and pre-flight checks on the
-  `updates-dev.sh` clusters, and `crates/kubyl_portforward/tests/live.rs` for Route backends,
-  `KUBYL_TEST_ROUTE_NAMESPACE`).
+  `updates-dev.sh` clusters, `crates/kubyl_portforward/tests/live.rs` for Route backends,
+  `KUBYL_TEST_ROUTE_NAMESPACE`, and `crates/kubyl_netflow/tests/live.rs` for the Hubble, Whisker
+  and NetObserv backends on the `netflow-dev.sh` clusters, `KUBYL_TEST_KUBECONFIG`).
 - Cloud update providers (`--features updates-eks,updates-gke,updates-aks`) are tested with
   recorded responses (`crates/kubyl_updates/tests/fixtures/`). For screenshots without an
   account, `KUBYL_UPDATES_{EKS,GKE,AKS}_ENDPOINT=http://127.0.0.1:<port>` points a provider at a

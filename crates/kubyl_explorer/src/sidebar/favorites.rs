@@ -110,12 +110,18 @@ pub fn open_favorite(favorite: &Favorite, window: &mut Window, cx: &mut App) {
 
 /// Opens the namespace variant of the Overview for a favorite.
 pub fn open_favorite_overview(favorite: &Favorite, window: &mut Window, cx: &mut App) {
+    open_favorite_view(favorite, ViewKind::Overview, window, cx);
+}
+
+/// Opens a cluster-level view of `kind` scoped to the favorite's namespace (the namespace
+/// Overview, a crate's [`crate::catalog::NamespaceView`]).
+pub fn open_favorite_view(favorite: &Favorite, kind: ViewKind, window: &mut Window, cx: &mut App) {
     let Some(cluster) = activate_favorite(favorite, cx) else {
         return;
     };
     window.dispatch_action(
         Box::new(OpenView(ViewRequest::for_resource(
-            ViewKind::Overview,
+            kind,
             ResourceRef::list(
                 cluster,
                 kubyl_core::Gvr::new("", "", ""),
@@ -353,6 +359,17 @@ impl Render for FavoritesSection {
                         menu.item(PopupMenuItem::new("Open Namespace Overview").on_click(
                             move |_, window, cx| open_favorite_overview(&overview, window, cx),
                         ))
+                    })
+                    .map(|mut menu| {
+                        for view in crate::catalog::namespace_views(cx) {
+                            let favorite = menu_favorite.clone();
+                            menu = menu.item(PopupMenuItem::new(view.label).on_click(
+                                move |_, window, cx| {
+                                    open_favorite_view(&favorite, view.kind.clone(), window, cx)
+                                },
+                            ));
+                        }
+                        menu
                     })
                     .item(PopupMenuItem::new("Open Favorites Workspace").on_click(
                         |_, window, cx| {

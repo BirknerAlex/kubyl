@@ -25,6 +25,7 @@ kubyl_kube = { path = "crates/kubyl_kube" }
 kubyl_kubeconfig = { path = "crates/kubyl_kubeconfig" }
 kubyl_logs = { path = "crates/kubyl_logs" }
 kubyl_metrics = { path = "crates/kubyl_metrics" }
+kubyl_netflow = { path = "crates/kubyl_netflow" }
 kubyl_operators = { path = "crates/kubyl_operators" }
 kubyl_overview = { path = "crates/kubyl_overview" }
 kubyl_palette = { path = "crates/kubyl_palette" }
@@ -87,6 +88,17 @@ webkit2gtk = { version = "=2.0.2", features = ["v2_38"] }
 # Terminal backend (Apache-2.0, same approach as Zed without Zed's GPL view code).
 alacritty_terminal = "0.26.0"
 
+# gRPC client for Hubble Relay (phase 16): client only (no server, no axum), TLS on ring like
+# kube. Code is generated from vendored .proto files in build.rs by protox (pure Rust, no protoc).
+tonic = { version = "0.14.6", default-features = false, features = ["channel", "codegen", "tls-ring"] }
+tonic-prost = "0.14.6"
+tonic-prost-build = { version = "0.14.6", default-features = false }
+prost = "0.14.4"
+prost-types = "0.14.4"
+protox = "0.9.1"
+# Force-directed layout of the network topology (phase 16): d3-force ported to Rust, no dependencies.
+fjadra = "0.2.1"
+
 # General
 anyhow = "1.0.104"
 base64 = "0.22.1"
@@ -138,6 +150,8 @@ taffy = { opt-level = 3 }
 resvg = { opt-level = 3 }
 rustybuzz = { opt-level = 3 }
 ttf-parser = { opt-level = 3 }
+# The topology layout runs every second while a graph is live.
+fjadra = { opt-level = 3 }
 
 [profile.release]
 lto = "thin"

@@ -522,11 +522,21 @@ pub struct RootMarker {
 /// A crate's root markers for a cluster.
 pub type RootMarkerFn = Arc<dyn Fn(&ClusterId, &App) -> Option<RootMarker>>;
 
+/// A namespace-scoped entry another crate adds to the menu of favorite namespaces, next to
+/// "Open Namespace Overview": opens `kind` for the favorite's cluster with its namespace as the
+/// request's namespace (phase 16: "Open Namespace Network Flows").
+#[derive(Clone, Debug, PartialEq)]
+pub struct NamespaceView {
+    pub label: &'static str,
+    pub kind: ViewKind,
+}
+
 /// View rows and root markers other crates added.
 #[derive(Default)]
 pub struct ViewRows {
     pub rows: Vec<ViewRow>,
     pub markers: Vec<RootMarkerFn>,
+    pub namespace_views: Vec<NamespaceView>,
 }
 
 impl Global for ViewRows {}
@@ -544,6 +554,18 @@ pub fn register_root_marker(
     cx.default_global::<ViewRows>()
         .markers
         .push(Arc::new(marker));
+}
+
+/// Adds an entry to the menu of favorite namespaces (from a feature crate's `init`).
+pub fn register_namespace_view(cx: &mut App, view: NamespaceView) {
+    cx.default_global::<ViewRows>().namespace_views.push(view);
+}
+
+/// The namespace entries other crates added.
+pub fn namespace_views(cx: &App) -> Vec<NamespaceView> {
+    cx.try_global::<ViewRows>()
+        .map(|r| r.namespace_views.clone())
+        .unwrap_or_default()
 }
 
 /// Re-renders the tree after badges, visibility or markers changed.
@@ -843,5 +865,31 @@ mod tests {
         assert_eq!(plural_label("Endpoints", "endpoints"), "Endpoints");
         assert_eq!(label_for("", "pods", None), "Pods");
         assert_eq!(label_for("x.io", "widgets", Some("Widget")), "Widgets");
+    }
+
+    #[gpui::test]
+    fn namespace_views_are_listed_in_registration_order(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            assert!(namespace_views(cx).is_empty());
+            register_namespace_view(
+                cx,
+                NamespaceView {
+                    label: "Open Namespace Network Flows",
+                    kind: ViewKind::Custom("network_flows".into()),
+                },
+            );
+            register_namespace_view(
+                cx,
+                NamespaceView {
+                    label: "Open Namespace Alerts",
+                    kind: ViewKind::Custom("alerts".into()),
+                },
+            );
+            let labels: Vec<&str> = namespace_views(cx).iter().map(|v| v.label).collect();
+            assert_eq!(
+                labels,
+                ["Open Namespace Network Flows", "Open Namespace Alerts"]
+            );
+        });
     }
 }
