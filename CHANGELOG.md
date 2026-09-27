@@ -2,6 +2,12 @@
 
 All notable changes to Kubyl are documented here.
 
+## [0.3.1] - 2026-09-27
+
+### Bug Fixes
+
+- Install minisign via apt, not taiki-e/install-action ([0e77618](https://github.com/BirknerAlex/kubyl/commit/0e776184217a166ddb27450e9edc7b0aef4ca447))
+
 ## [0.3.0] - 2026-09-27
 
 ### Bug Fixes
