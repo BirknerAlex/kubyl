@@ -9,10 +9,11 @@
 #   script/dev-cluster.sh --recreate delete and create again
 #   script/dev-cluster.sh --delete   delete the cluster
 #
-# Needs: docker (running), kind, kubectl. Respects $KUBECONFIG.
+# Needs: docker (running), kind, kubectl. Respects $KUBECONFIG. $KUBYL_DEV_CLUSTER names another
+# kind cluster (script/netflow-dev.sh applies the same workloads to its clusters that way).
 set -euo pipefail
 
-CLUSTER="kubyl-dev"
+CLUSTER="${KUBYL_DEV_CLUSTER:-kubyl-dev}"
 CONTEXT="kind-${CLUSTER}"
 NAMESPACE="payments"
 CERT_MANAGER_VERSION="${CERT_MANAGER_VERSION:-v1.21.2}"
