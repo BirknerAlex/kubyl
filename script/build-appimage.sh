@@ -40,13 +40,20 @@ for size in 16 32 48 64 128 256 512 1024; do
   install -Dm644 "$src" "$APPDIR/usr/share/icons/hicolor/${size}x${size}/apps/kubyl.png"
 done
 
-for dir in "/usr/lib/$ARCH-linux-gnu" /usr/lib64 /usr/lib /usr/libexec; do
-  for file in WebKitNetworkProcess WebKitWebProcess injected-bundle/libwebkit2gtkinjectedbundle.so; do
+for file in WebKitNetworkProcess WebKitWebProcess injected-bundle/libwebkit2gtkinjectedbundle.so; do
+  found=""
+  for dir in "/usr/lib/$ARCH-linux-gnu" /usr/lib64 /usr/lib /usr/libexec; do
     source="$dir/webkit2gtk-4.1/$file"
     if [ -f "$source" ]; then
       install -Dm755 "$source" "$APPDIR/${source#/}"
+      found=1
+      break
     fi
   done
+  if [ -z "$found" ]; then
+    echo "::error::couldn't find $file under any webkit2gtk-4.1 dir — the AppImage would be built without it and fail to render web views"
+    exit 1
+  fi
 done
 
 # --- Fetch the build tools ---
@@ -65,9 +72,10 @@ curl -sSL --fail -o "$APPRUN" \
 chmod +x "$APPRUN"
 cp "$APPRUN" "$APPDIR/AppRun"
 
+# Vendored, not fetched from upstream's mutable master: see the file's own header for why
+# (pins to reviewed content, and carries a Wayland fix upstream's master doesn't have).
 GTK_PLUGIN="$TOOLS/linuxdeploy-plugin-gtk.sh"
-curl -sSL --fail -o "$GTK_PLUGIN" \
-  "https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/master/linuxdeploy-plugin-gtk.sh"
+cp packaging/linux/vendor/linuxdeploy-plugin-gtk.sh "$GTK_PLUGIN"
 chmod +x "$GTK_PLUGIN"
 
 # --- Top-level AppDir icon + desktop symlinks linuxdeploy's AppImage output plugin expects ---
