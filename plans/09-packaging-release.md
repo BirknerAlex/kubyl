@@ -43,7 +43,8 @@ a public 1.0: accessibility, performance budgets, crash reporting (opt-in) and d
 - [ ] Light theme finished. Custom theme loading (Zed theme JSON compatibility would be a nice extra)
 
 ### Docs and site
-- [ ] `kubyl.dev` (domain was unregistered on 2026-09-24, register it): landing page with the lockup from `assets/logo`, docs (install, kubeconfig/auth guide, OIDC setup, keybindings, k9s migration guide), screenshots from the real app
+- [x] `kubyl.dev` registered and live: landing page with the lockup from `assets/logo`, feature breakdown, roadmap, screenshots from the real app, `/download` and `/sponsor` pages, footer `/imprint` and `/privacy`
+- [ ] Deeper docs on the site: install guide, kubeconfig/auth guide, OIDC setup, keybindings reference, k9s migration guide — today the site is a single-page overview plus `/download`/`/sponsor`, nothing yet for these
 - [ ] README with badges, contributing guide, code of conduct, `LICENSE-MIT`/`LICENSE-APACHE` referenced
 
 ## Acceptance criteria
@@ -126,8 +127,13 @@ a public 1.0: accessibility, performance budgets, crash reporting (opt-in) and d
     `cargo deny check` (advisories/bans/licenses/sources all ok).
   - Not done: Windows Authenticode signing (unchanged — winget accepts unsigned zips, so this was
     deliberately not blocking), SBOM/provenance, third-party notices, AppImage, Flatpak's actual
-    Flathub submission (infra ready, PR not filed), `package.kubyl.dev` (blocked on registering
-    `kubyl.dev`), and the whole Hardening/Docs sections. Nothing in this session has run against a
-    real release yet — `build-update-manifest`/`publish-winget`/`publish-silo` are new and their
-    first real invocation is the test, same caveat as the macOS provisioning profile in the
-    2026-09-26 entry above.
+    Flathub submission (infra ready, PR not filed), `package.kubyl.dev` (silo alias — `kubyl.dev`
+    itself is registered now, see below), and the whole Hardening section. Nothing in this session
+    has run against a real release yet — `build-update-manifest`/`publish-winget`/`publish-silo`
+    are new and their first real invocation is the test, same caveat as the macOS provisioning
+    profile in the 2026-09-26 entry above.
+- **2026-09-27 (later still)**: `kubyl.dev` is registered and live (landing page, `/download`,
+  `/sponsor`, footer `/imprint` and `/privacy`; feature breakdown, roadmap and screenshots from the
+  real app). No deeper docs yet — no install guide, kubeconfig/auth guide, OIDC setup page,
+  keybindings reference or k9s migration guide; those still need their own pages. `package.kubyl.dev`
+  as a silo alias is unblocked now that the domain exists, still not done.
