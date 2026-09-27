@@ -1218,24 +1218,53 @@ async fn connect(
             }
         }
         Candidate::Whisker(target) => {
+            // A forward, not the service proxy: Calico's own policy only lets Whisker be
+            // reached from inside its pod (see backends::whisker).
             if !can(
-                "get",
-                "services",
-                Some("proxy"),
+                "create",
+                "pods",
+                Some("portforward"),
                 target.namespace.clone(),
                 cx,
             )
             .await
             {
                 return Err(ProviderError::forbidden(
-                    "get",
-                    "services/proxy",
+                    "create",
+                    "pods/portforward",
                     Some(&target.namespace),
                 ));
             }
-            let whisker = Whisker { client, target };
-            let status = cx.update(|cx| spawn_kube(cx, whisker.probe())).await?;
-            Ok((Arc::new(whisker), status, None))
+            let port: u16 = target.port.parse().map_err(|_| {
+                ProviderError::Unsupported(format!(
+                    "Whisker's port {} isn't a number (netflow.clusters.<cluster>.whisker.port)",
+                    target.port
+                ))
+            })?;
+            let (forward, local_port) = start_forward(
+                cluster,
+                &client,
+                &target.namespace,
+                &target.service,
+                port,
+                generation,
+                cx,
+            )
+            .await?;
+            let whisker = Whisker {
+                client,
+                target,
+                local_port,
+            };
+            match cx.update(|cx| spawn_kube(cx, whisker.probe())).await {
+                Ok(status) => Ok((Arc::new(whisker), status, Some(forward))),
+                Err(err) => {
+                    cx.update(|cx| {
+                        PortForwardManager::global(cx).update(cx, |m, cx| m.stop(forward, cx))
+                    });
+                    Err(err)
+                }
+            }
         }
         Candidate::NetObserv { loki, prometheus } => {
             let loki = match loki {

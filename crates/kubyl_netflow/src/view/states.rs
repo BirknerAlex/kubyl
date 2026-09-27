@@ -243,22 +243,48 @@ fn checks(detection: &Detection, colors: &Colors) -> AnyElement {
         .into_any_element()
 }
 
-fn button(
-    id: &'static str,
-    icon: IconName,
-    label: &'static str,
-    primary: bool,
-    cluster: kubyl_core::ClusterId,
-    action: fn(&mut FlowService, &kubyl_core::ClusterId, &mut Context<FlowService>),
+type ServiceAction = fn(&mut FlowService, &kubyl_core::ClusterId, &mut Context<FlowService>);
+
+/// The header's action while a state blocks the view: look for a source again, or retry the
+/// connection (both are in the "…" menu too).
+pub(super) fn header_action(
+    view: &NetworkFlowsView,
+    state: &FlowState,
     colors: &Colors,
-) -> AnyElement {
-    widgets::button(id, Some(icon), label, primary, colors, move |_, _, cx| {
-        if let Some(service) = FlowService::global(cx) {
-            let cluster = cluster.clone();
-            service.update(cx, |s, cx| action(s, &cluster, cx));
-        }
-    })
-    .into_any_element()
+) -> Option<AnyElement> {
+    let (id, label, action): (&'static str, &'static str, ServiceAction) = match state {
+        FlowState::NoBackend(_) => ("flows-look-again", "Look again", FlowService::redetect),
+        FlowState::Failed { .. } => ("flows-try-again", "Try again", FlowService::reconnect),
+        _ => return None,
+    };
+    let cluster = view.cluster.clone();
+    let hover = colors.hover;
+    Some(
+        h_flex()
+            .id(id)
+            .flex_none()
+            .gap(u(6.0))
+            .px(u(8.0))
+            .py(u(3.0))
+            .rounded(u(5.0))
+            .cursor_pointer()
+            .text_size(u(12.5))
+            .text_color(colors.text_muted)
+            .hover(move |s| s.bg(hover))
+            .child(
+                Icon::new(IconName::RefreshCw)
+                    .size(13.0)
+                    .color(colors.text_dim),
+            )
+            .child(label)
+            .on_click(move |_, _, cx| {
+                if let Some(service) = FlowService::global(cx) {
+                    let cluster = cluster.clone();
+                    service.update(cx, |s, cx| action(s, &cluster, cx));
+                }
+            })
+            .into_any_element(),
+    )
 }
 
 fn no_backend(
@@ -352,18 +378,6 @@ fn no_backend(
             .text_color(colors.text_muted)
             .child(snippet)
             .into_any_element(),
-        h_flex()
-            .gap(u(8.0))
-            .child(button(
-                "flows-look-again",
-                IconName::RefreshCw,
-                "Look again",
-                false,
-                view.cluster.clone(),
-                FlowService::redetect,
-                colors,
-            ))
-            .into_any_element(),
     ])
 }
 
@@ -388,7 +402,9 @@ fn failed(
         BackendKind::Hubble => {
             "Relay speaks gRPC, which goes through a temporary port-forward on this machine."
         }
-        BackendKind::Whisker => "Whisker is read through the API server's service proxy.",
+        BackendKind::Whisker => {
+            "Whisker is read through a temporary port-forward on this machine, as Calico's own policy keeps other paths out."
+        }
         BackendKind::NetObserv => {
             "NetObserv's Loki and metrics are read through the API server's service proxy."
         }
@@ -461,28 +477,5 @@ fn failed(
             .into_any_element(),
     ];
     children.extend(switch);
-    children.push(
-        h_flex()
-            .gap(u(8.0))
-            .child(button(
-                "flows-try-again",
-                IconName::RefreshCw,
-                "Try again",
-                true,
-                view.cluster.clone(),
-                FlowService::reconnect,
-                colors,
-            ))
-            .child(button(
-                "flows-look-again",
-                IconName::Search,
-                "Look again",
-                false,
-                view.cluster.clone(),
-                FlowService::redetect,
-                colors,
-            ))
-            .into_any_element(),
-    );
     page(children)
 }

@@ -1,8 +1,10 @@
-//! Calico's Whisker (README "Flow transports"): the Whisker backend's HTTP API through the API
-//! server's service proxy (Calico 3.30 or newer, tested 3.32.2). `GET
-//! /whisker-backend/flows?watch=true` is a server-sent event stream that replays Goldmane's
-//! buffer from `startTimeGte` and then follows. Goldmane's own gRPC needs a client certificate
-//! from a Secret, so Kubyl doesn't use it.
+//! Calico's Whisker (README "Flow transports"): the Whisker backend's HTTP API over a temporary
+//! loopback port-forward to the `whisker` Service (Calico 3.30 or newer, tested 3.32.2), as
+//! Calico's docs reach it. Not the API server's service proxy: the operator's
+//! `calico-system.whisker` policy denies all ingress, so the proxy only gets through when Whisker
+//! runs on the API server's own node. `GET /whisker-backend/flows?watch=true` is a server-sent
+//! event stream that replays Goldmane's buffer from `startTimeGte` and then follows. Goldmane's
+//! own gRPC needs a client certificate from a Secret, so Kubyl doesn't use it.
 //!
 //! Records are 15-second aggregates per source and destination (pods aggregated to
 //! `<replicaset>-*`) with packets, bytes and a policy trace. An explicit Deny names its policy;
@@ -29,20 +31,17 @@ use crate::provider::{
 };
 
 pub struct Whisker {
+    /// Reads the Whisker Deployment for its version.
     pub client: kube::Client,
     pub target: ServiceTarget,
+    /// The local end of the temporary forward to the Service.
+    pub local_port: u16,
 }
 
 impl Whisker {
-    fn transport(&self) -> Transport {
-        Transport::service_proxy(
-            self.client.clone(),
-            &self.target.namespace,
-            &self.target.service,
-            &self.target.port,
-            &self.target.scheme,
-            "/whisker-backend",
-        )
+    fn transport(&self) -> Result<Transport, ProviderError> {
+        Transport::loopback(self.local_port, "/whisker-backend")
+            .map_err(|e| ProviderError::Unavailable(format!("Calico Whisker: {e}")))
     }
 }
 
@@ -88,14 +87,15 @@ impl FlowProvider for Whisker {
         let transport = self.transport();
         let target = self.target.clone();
         let client = self.client.clone();
+        let local_port = self.local_port;
         Box::pin(async move {
-            transport
+            transport?
                 .get("/flows", &[("page", "0".into()), ("pageSize", "1".into())])
                 .await
                 .map_err(|e| proxy_error(e, &target, "Calico Whisker"))?;
             Ok(BackendStatus {
                 endpoint: target.label(),
-                via: "through the API server's service proxy".into(),
+                via: format!("through a temporary port-forward (127.0.0.1:{local_port})"),
                 version: whisker_version(&client, &target.namespace).await,
                 nodes: None,
                 buffered: None,
@@ -112,6 +112,7 @@ impl FlowProvider for Whisker {
         let transport = self.transport();
         let target = self.target.clone();
         Box::pin(async move {
+            let transport = transport?;
             let mut params: Vec<(&str, String)> = vec![("watch", "true".into())];
             if let Some(since) = query.since {
                 let seconds = Timestamp::now().duration_since(since).as_secs().max(1);

@@ -16,8 +16,8 @@
 //! ```
 //!
 //! Each test detects its backend like the app does, reaches it the way the app does (a
-//! loopback forward through `kubyl_portforward`'s listener for Hubble, the API server's service
-//! proxy for Whisker and Loki), streams the fixture traffic for a while and checks the corrected
+//! loopback forward through `kubyl_portforward`'s listener for Hubble and Whisker, the API
+//! server's service proxy for Loki and Prometheus), streams the fixture traffic for a while and checks the corrected
 //! acceptance criteria: flows of both namespaces, the isolated `payments/ledger-api` and, where
 //! the CNI has deny rules, the named `storefront/web-guard`; filtering down to one pod and to
 //! the blocked flows. Flow contents are only asserted on, never printed.
@@ -395,4 +395,109 @@ async fn netobserv_reads_loki_and_metrics() {
         let (a, b) = (&workloads.nodes[e.source], &workloads.nodes[e.target]);
         a.namespace.as_deref() == Some("storefront") || b.namespace.as_deref() == Some("storefront")
     }));
+}
+
+#[tokio::test]
+#[ignore = "needs the kind cluster of script/netflow-dev.sh --calico"]
+async fn whisker_streams_policy_traces_and_filters() {
+    use kubyl_netflow::backends::whisker::Whisker;
+
+    let client = client().await;
+    let detection = detection(&client).await;
+    let Some(Candidate::Whisker(target)) = detection
+        .find(kubyl_netflow::provider::BackendKind::Whisker)
+        .cloned()
+    else {
+        panic!("no Calico Whisker found: {:?}", detection.checks);
+    };
+    // Through a forward, like the app: Calico's policy keeps the service proxy out.
+    let local_port = forward(
+        &client,
+        &target.namespace,
+        &target.service,
+        target.port.parse().expect("port"),
+    )
+    .await;
+    let whisker = Whisker {
+        client: client.clone(),
+        target,
+        local_port,
+    };
+    let status = whisker.probe().await.expect("probe");
+    println!(
+        "{} · {} · {:?}",
+        status.endpoint, status.via, status.version
+    );
+
+    // Records are aggregated over 15 s: history first, then a live interval.
+    let flows = collect(
+        &whisker,
+        StreamQuery {
+            filter: FlowFilter::default(),
+            since: since(300),
+        },
+        20,
+    )
+    .await;
+    println!("{} records", flows.len());
+    assert!(flows.len() > 10, "{}", flows.len());
+    assert!(
+        count(
+            &flows,
+            "src.ns=storefront dst.ns=payments verdict=forwarded"
+        ) > 0
+    );
+    // Isolated by the NetworkPolicy: Calico's end-of-tier trigger names it.
+    let isolated = count(
+        &flows,
+        "src.workload=shopper dst.workload=ledger-api verdict=dropped policy=isolated",
+    );
+    let named = count(
+        &flows,
+        "src.workload=shopper dst.workload=ledger-api verdict=dropped policy=ledger-api-isolation",
+    );
+    assert!(
+        isolated > 0 && named == isolated,
+        "{named} of {isolated} named"
+    );
+    // The Deny rule.
+    let denied = count(
+        &flows,
+        "src.workload=scraper dst.workload=web verdict=dropped",
+    );
+    let by_guard = count(
+        &flows,
+        "src.workload=scraper dst.workload=web verdict=dropped policy=web-guard",
+    );
+    assert!(
+        denied > 0 && by_guard == denied,
+        "{by_guard} of {denied} named"
+    );
+    // Allowed by the NetworkPolicy.
+    assert!(
+        count(
+            &flows,
+            "src.workload=checkout-client dst.workload=ledger-api verdict=forwarded policy=ledger-api-isolation"
+        ) > 0
+    );
+
+    // Filtering server-side: one workload's blocked flows.
+    let pushed = whisker.pushdown(
+        &FlowFilter::parse("src.ns=storefront src.workload=scraper verdict=dropped").unwrap(),
+    );
+    assert_eq!(pushed.terms.len(), 3);
+    let scraper = collect(
+        &whisker,
+        StreamQuery {
+            filter: pushed,
+            since: since(120),
+        },
+        8,
+    )
+    .await;
+    assert!(!scraper.is_empty());
+    assert_eq!(
+        count(&scraper, "src.workload=scraper verdict=dropped"),
+        scraper.len()
+    );
 }

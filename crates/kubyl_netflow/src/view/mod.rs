@@ -148,6 +148,9 @@ pub struct NetworkFlowsView {
     pub(crate) scroll: UniformListScrollHandle,
     pub(crate) topology: topology::TopologyState,
     pending_input: Option<String>,
+    /// Asked the connection manager to connect the cluster (once: a tab restored at startup,
+    /// or of another cluster than the active one).
+    connect_asked: bool,
     _ticker: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -228,6 +231,7 @@ impl NetworkFlowsView {
                 crate::aggregate::Zoom::Namespaces
             }),
             pending_input: None,
+            connect_asked: false,
             _ticker: ticker,
             _subscriptions: subscriptions,
         };
@@ -357,6 +361,15 @@ impl NetworkFlowsView {
             return;
         };
         let state = service.read(cx).state(&self.cluster, cx);
+        if matches!(state, FlowState::NotConnected)
+            && !self.connect_asked
+            && let Some(manager) = ConnectionManager::try_global(cx)
+            && manager.read(cx).context(&self.cluster).is_some()
+        {
+            self.connect_asked = true;
+            let id = self.cluster.clone();
+            manager.update(cx, |m, cx| m.ensure_connected(&id, cx));
+        }
         if matches!(state, FlowState::NotConnected) {
             self.cluster_lease = None;
             self.stream_lease = None;
@@ -692,6 +705,7 @@ impl NetworkFlowsView {
     fn render_header(
         &mut self,
         state: &FlowState,
+        blocked: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -761,7 +775,8 @@ impl NetworkFlowsView {
                     }),
                 )
             })
-            .child(picker)
+            .children(states::header_action(self, state, &colors))
+            .when(!blocked, |this| this.child(picker))
             .child(filter_bar::more_menu(self, &colors, cx))
             .into_any_element()
     }
@@ -841,28 +856,24 @@ impl NetworkFlowsView {
             .into_any_element()
     }
 
-    fn hints(&self, blocked: bool, cx: &App) -> Vec<(SharedString, SharedString)> {
-        let mut hints: Vec<(SharedString, SharedString)> = if blocked {
-            Vec::new()
-        } else {
-            match self.tab {
-                Tab::Flows => kubyl_core::ActionRegistry::global(cx).hints(LIST_CONTEXT),
-                Tab::Topology => {
-                    // The mouse first (as on the board); enter shows flows like a double click.
-                    let mut hints: Vec<(SharedString, SharedString)> = vec![
-                        ("click".into(), "Select".into()),
-                        ("double click".into(), "Show flows".into()),
-                        ("drag".into(), "Pan".into()),
-                        ("scroll".into(), "Zoom".into()),
-                    ];
-                    hints.extend(
-                        kubyl_core::ActionRegistry::global(cx)
-                            .hints(GRAPH_CONTEXT)
-                            .into_iter()
-                            .filter(|(_, label)| label != "Show flows"),
-                    );
-                    hints
-                }
+    fn hints(&self, cx: &App) -> Vec<(SharedString, SharedString)> {
+        let mut hints: Vec<(SharedString, SharedString)> = match self.tab {
+            Tab::Flows => kubyl_core::ActionRegistry::global(cx).hints(LIST_CONTEXT),
+            Tab::Topology => {
+                // The mouse first (as on the board); enter shows flows like a double click.
+                let mut hints: Vec<(SharedString, SharedString)> = vec![
+                    ("click".into(), "Select".into()),
+                    ("double click".into(), "Show flows".into()),
+                    ("drag".into(), "Pan".into()),
+                    ("scroll".into(), "Zoom".into()),
+                ];
+                hints.extend(
+                    kubyl_core::ActionRegistry::global(cx)
+                        .hints(GRAPH_CONTEXT)
+                        .into_iter()
+                        .filter(|(_, label)| label != "Show flows"),
+                );
+                hints
             }
         };
         hints.push(("/".into(), "Filter".into()));
@@ -939,8 +950,16 @@ impl Render for NetworkFlowsView {
         let colors: Colors = cx.colors().clone();
         let state = self.state(cx);
         let blocking = states::blocking(self, &state, cx);
-        let header = self.render_header(&state, window, cx);
-        let tabs = self.render_tabs(cx);
+        let blocked = blocking.is_some();
+        let header = self.render_header(&state, blocked, window, cx);
+        // Nothing to filter or switch to while a state blocks the view.
+        let chrome = (!blocked).then(|| {
+            (
+                self.render_tabs(cx),
+                filter_bar::render(self, &state, window, cx),
+                kubyl_ui::KeyHints::new(self.hints(cx)),
+            )
+        });
         let body = match blocking {
             Some(blocking) => states::render(self, blocking, &state, &colors, cx),
             None => match self.tab {
@@ -948,7 +967,10 @@ impl Render for NetworkFlowsView {
                 Tab::Topology => topology::render(self, &state, window, cx),
             },
         };
-        let hints = self.hints(states::blocking(self, &state, cx).is_some(), cx);
+        let (tabs, filters, hints) = match chrome {
+            Some((tabs, filters, hints)) => (Some(tabs), Some(filters), Some(hints)),
+            None => (None, None, None),
+        };
         v_flex()
             .key_context(VIEW_CONTEXT)
             .size_full()
@@ -958,10 +980,10 @@ impl Render for NetworkFlowsView {
             .text_size(u(sizes::UI_FONT))
             .map(|this| crate::actions::bind_view_actions(this, cx))
             .child(header)
-            .child(tabs)
-            .child(filter_bar::render(self, &state, window, cx))
+            .children(tabs)
+            .children(filters)
             .child(div().flex_1().min_h_0().flex().child(body))
-            .child(kubyl_ui::KeyHints::new(hints))
+            .children(hints)
     }
 }
 
