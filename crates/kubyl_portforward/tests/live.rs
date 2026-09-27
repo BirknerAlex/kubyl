@@ -268,7 +268,8 @@ async fn routes_and_ingresses_forward_their_backend_service() {
             let tls = json
                 .pointer("/spec/tls/termination")
                 .and_then(serde_json::Value::as_str);
-            match resolve::backend_forward(client.clone(), &namespace, resource, &name).await {
+            match resolve::backend_forward(client.clone(), &namespace, group, resource, &name).await
+            {
                 Ok(backend) => {
                     println!("{kind} {name}: {} · {}", backend.service, backend.note);
                     assert!(backend.ports.iter().any(|p| p.port == backend.port));

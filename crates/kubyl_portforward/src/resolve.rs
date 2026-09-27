@@ -653,13 +653,15 @@ fn title_case(what: &str) -> String {
 pub async fn backend_forward(
     client: kube::Client,
     namespace: &str,
+    group: &str,
     resource: &str,
     name: &str,
 ) -> Result<BackendForward, String> {
+    // Group and resource: a Knative `routes` isn't an OpenShift Route.
     let Some((group, resource, kind)) = BACKEND_KINDS
         .iter()
         .copied()
-        .find(|(_, r, _)| *r == resource)
+        .find(|(g, r, _)| *g == group && *r == resource)
     else {
         return Err(format!("port-forwarding isn't supported for {resource}"));
     };

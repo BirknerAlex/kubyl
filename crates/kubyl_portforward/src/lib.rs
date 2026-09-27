@@ -282,12 +282,13 @@ fn forward_port(target: ResourceRef, port: u16, cx: &mut App) {
 /// forward from their rows in the Route's details. Errors are toasts that say what's missing.
 fn backend_forward(target: ResourceRef, client: kube::Client, dialog: bool, cx: &mut App) {
     let namespace = target.namespace.clone().unwrap_or_default();
-    let (resource, name) = (
+    let (group, resource, name) = (
+        target.gvr.group.clone(),
         target.gvr.resource.clone(),
         target.name.clone().unwrap_or_default(),
     );
     let task = kubyl_core::spawn_kube(cx, async move {
-        resolve::backend_forward(client, &namespace, &resource, &name).await
+        resolve::backend_forward(client, &namespace, &group, &resource, &name).await
     });
     cx.spawn(async move |cx| {
         let result = task.await;
