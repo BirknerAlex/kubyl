@@ -177,13 +177,7 @@ Kubyl is free, and every feature stays free for everyone. If it saves you time, 
 Developer Program (notarization), Windows code signing, the domain and hosting; anything above
 that buys development time.
 
-| Tier | Per month | Perks |
-|------|-----------|-------|
-| Supporter | €5 | Your name on the [sponsors page](https://kubyl.dev/sponsor), a sponsor badge, a vote on the roadmap |
-| Backer | €15 | Also your name in the app's About dialog and early builds |
-| Company | €100 | Also your logo on kubyl.dev and in this README, and a yearly consultation |
-
-Details on [kubyl.dev/sponsor](https://kubyl.dev/sponsor). You can cancel any time.
+Any amount helps. More on [kubyl.dev/sponsor](https://kubyl.dev/sponsor).
 
 ## License
 
