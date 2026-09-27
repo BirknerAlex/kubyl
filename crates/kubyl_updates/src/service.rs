@@ -521,7 +521,7 @@ impl Updates {
                     .timer(Duration::from_millis(300))
                     .await;
             }
-            let Some(work) = cx.update(|cx| {
+            let work = cx.update(|cx| {
                 let inputs = inputs(&id, detected.kind, &target, cx)?;
                 let extras = provider.preflight_extras(&status, &target);
                 Some(spawn_kube(cx, async move {
@@ -529,10 +529,18 @@ impl Updates {
                     checks.extend(extras);
                     checks
                 }))
-            }) else {
-                return;
+            });
+            let checks = match work {
+                Some(work) => work.await,
+                // The cluster went away while waiting: finish the run, don't leave it
+                // "running" forever.
+                None => vec![Check::new(
+                    "inputs",
+                    "Pre-flight checks",
+                    check::CheckStatus::Unknown,
+                    "The cluster disconnected before the checks could run. Re-run them.",
+                )],
             };
-            let checks = work.await;
             this.update(cx, |this, cx| {
                 if let Some(run) = this
                     .clusters
@@ -612,6 +620,18 @@ impl Updates {
         state.read = ReadState::Ready(status);
         self.clusters.insert(cluster.clone(), state);
         cx.notify();
+    }
+
+    /// Sets a cluster's provider without detection (GPUI tests).
+    #[cfg(test)]
+    pub(crate) fn set_provider_for_test(
+        &mut self,
+        cluster: &ClusterId,
+        provider: Arc<dyn UpdateProvider>,
+    ) {
+        if let Some(state) = self.clusters.get_mut(cluster) {
+            state.provider = Some(provider);
+        }
     }
 }
 
@@ -854,4 +874,58 @@ fn fallback_for(
         }
     });
     Some((fallback, note))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::TestAppContext;
+
+    struct Idle;
+
+    impl UpdateProvider for Idle {
+        fn kind(&self) -> ProviderKind {
+            ProviderKind::OpenShift
+        }
+
+        fn read(&self) -> crate::provider::ProviderFuture<Result<Status, ProviderError>> {
+            Box::pin(async { Ok(Status::default()) })
+        }
+    }
+
+    /// A cluster that's gone before the checks start (no connection, no discovery) finishes
+    /// the run with a "not checked" result instead of leaving it running forever.
+    #[gpui::test]
+    fn a_run_without_inputs_finishes(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let updates = cx.update(|cx| {
+            kubyl_core::init(cx);
+            kubyl_settings::init_with_dir(cx, dir.path());
+            Updates::install(false, cx)
+        });
+        let cluster = ClusterId::new("gone");
+        let mut status = Status::default();
+        status.current.version = "4.17.8".into();
+        updates.update(cx, |u, cx| {
+            u.insert_for_test(
+                &cluster,
+                Detected {
+                    kind: ProviderKind::OpenShift,
+                    reason: "test".into(),
+                },
+                status,
+                cx,
+            );
+            u.set_provider_for_test(&cluster, Arc::new(Idle));
+            u.run_preflight(&cluster, "4.17.12", cx);
+            assert!(u.preflight(&cluster, "4.17.12").unwrap().running());
+        });
+        cx.run_until_parked();
+        updates.read_with(cx, |u, _| {
+            let run = u.preflight(&cluster, "4.17.12").unwrap();
+            assert!(!run.running());
+            assert_eq!(run.checks.len(), 1);
+            assert_eq!(run.checks[0].status, check::CheckStatus::Unknown);
+        });
+    }
 }

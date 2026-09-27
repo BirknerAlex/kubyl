@@ -379,10 +379,12 @@ pub fn agent_pool(pool: &AgentPool, control_plane: &str) -> Pool {
         .clone()
         .or(pool.orchestrator_version.clone());
     row.version = running.clone();
+    // `orchestratorVersion` may be a minor alias (`1.29` while `1.29.7` runs): only a newer
+    // version is a target, as for the control plane.
     row.target_version = pool
         .orchestrator_version
         .clone()
-        .filter(|v| Some(v) != running.as_ref());
+        .filter(|v| running.as_deref().is_some_and(|r| newer(v, r)));
     row.nodes = pool.count.map(|n| n as usize);
     row.surge = pool.upgrade_settings.as_ref().and_then(|s| {
         let surge = s.max_surge.as_ref().map(|v| format!("maxSurge {v}"));

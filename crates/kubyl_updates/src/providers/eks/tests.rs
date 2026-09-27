@@ -921,3 +921,28 @@ async fn a_missing_cluster_fails_the_read() {
         Err(ProviderError::NotFound(m)) if m.contains("cluster prod-eu-west-1")
     ));
 }
+
+/// Every add-on's versions denied: one note, not one per add-on.
+#[tokio::test]
+async fn denied_add_on_versions_make_one_note() {
+    let mut routes: Vec<mock::Route> = routes()
+        .into_iter()
+        .filter(|r| !r.1.starts_with("/addons/supported-versions"))
+        .collect();
+    for addon in ["coredns", "kube-proxy", "vpc-cni"] {
+        routes.push((
+            "GET",
+            format!("/addons/supported-versions?addonName={addon}"),
+            403,
+            fixture("eks", "error-access-denied.json"),
+        ));
+    }
+    let (base, _) = mock::serve(routes).await;
+    let status = test_provider(base).read().await.unwrap();
+    let notes = status
+        .notes
+        .iter()
+        .filter(|n| format!("{} {}", n.title, n.text).contains("add-on versions"))
+        .count();
+    assert_eq!(notes, 1, "{:?}", status.notes);
+}

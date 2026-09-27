@@ -95,9 +95,13 @@ pub fn scan_kinds(discovery: &kubyl_kube::discovery::Discovery) -> Vec<ScanKind>
         seen.push(removal.resource.to_string());
         let served = discovery
             .preferred()
-            .filter(|r| r.gvr.resource == removal.resource && r.is_listable())
-            // The same plural in an unrelated group (a CRD) isn't the kind.
-            .find(|r| r.gvk.kind == removal.kind);
+            .filter(|r| {
+                r.gvr.resource == removal.resource && r.gvk.kind == removal.kind && r.is_listable()
+            })
+            // The same plural and kind can live in an unrelated group (OpenShift's
+            // `ingresses.config.openshift.io` is kind `Ingress`): only the groups the table
+            // names for the kind, or its replacement's.
+            .find(|r| kind_group(removal, &r.gvr.group));
         if let Some(info) = served {
             out.push(ScanKind {
                 resource: kubyl_resources::store::api_resource(info),
@@ -106,6 +110,18 @@ pub fn scan_kinds(discovery: &kubyl_kube::discovery::Discovery) -> Vec<ScanKind>
         }
     }
     out
+}
+
+/// Whether `group` serves the kind of `removal`: a group the table lists for it, or the group of
+/// its replacement.
+fn kind_group(removal: &Removed, group: &str) -> bool {
+    removed::REMOVED
+        .iter()
+        .any(|r| r.resource == removal.resource && r.kind == removal.kind && r.group == group)
+        || removal
+            .replacement
+            .split_once('/')
+            .is_some_and(|(g, _)| g == group)
 }
 
 /// Runs every Tokio-side check.
@@ -813,6 +829,8 @@ async fn stored(
 ) -> Check {
     let mut findings = Vec::new();
     let mut denied = Vec::new();
+    // Kinds whose scan stopped early (an error, or the object limit).
+    let mut incomplete = Vec::new();
     let mut scanned = 0usize;
     for kind in scan {
         let api: kube::Api<DynamicObject> = kube::Api::all_with(client.clone(), &kind.resource);
@@ -840,7 +858,14 @@ async fn stored(
                         }
                     }
                     match list.metadata.continue_ {
-                        Some(token) if !token.is_empty() && seen < SCAN_LIMIT => {
+                        Some(token) if !token.is_empty() => {
+                            if seen >= SCAN_LIMIT {
+                                incomplete.push(format!(
+                                    "{} (the first {SCAN_LIMIT} only)",
+                                    kind.resource.plural
+                                ));
+                                break;
+                            }
                             params = params.continue_token(&token);
                         }
                         _ => break,
@@ -849,6 +874,8 @@ async fn stored(
                 Err(err) => {
                     if kube_api::is_forbidden(&err) {
                         denied.push(kind.resource.plural.clone());
+                    } else {
+                        incomplete.push(format!("{}: {err}", kind.resource.plural));
                     }
                     break;
                 }
@@ -856,7 +883,7 @@ async fn stored(
         }
         scanned += seen;
     }
-    stored_check(findings, denied, scanned, current)
+    stored_check(findings, denied, incomplete, scanned, current)
 }
 
 /// A finding from one object's last-applied configuration.
@@ -896,6 +923,7 @@ pub fn stored_finding(
 pub fn stored_check(
     findings: Vec<StoredFinding>,
     denied: Vec<String>,
+    incomplete: Vec<String>,
     scanned: usize,
     current: Option<(u64, u64)>,
 ) -> Check {
@@ -936,19 +964,30 @@ pub fn stored_check(
                 .with_sub(format!("you can't list {} cluster-wide", denied.join(", "))),
         );
     }
+    for kind in &incomplete {
+        details.push(Detail::new(CheckStatus::Unknown, "Scan incomplete").with_sub(kind.clone()));
+    }
     if findings.is_empty() {
-        let (status, summary) = if denied.is_empty() {
+        let (status, summary) = if !denied.is_empty() {
+            (
+                CheckStatus::Unknown,
+                format!("Partly checked: you can't list {}.", denied.join(", ")),
+            )
+        } else if !incomplete.is_empty() {
+            (
+                CheckStatus::Unknown,
+                format!(
+                    "Partly checked: {} scanned, but some kinds couldn't be read to the end.",
+                    plural(scanned, "object", "objects")
+                ),
+            )
+        } else {
             (
                 CheckStatus::Pass,
                 format!(
                     "{} scanned; none was last applied with a removed API.",
                     plural(scanned, "object", "objects")
                 ),
-            )
-        } else {
-            (
-                CheckStatus::Unknown,
-                format!("Partly checked: you can't list {}.", denied.join(", ")),
             )
         };
         return Check::new("removed-apis-objects", title, status, summary).details(details);
@@ -1512,13 +1551,61 @@ mod tests {
         assert!(
             stored_finding(current, Some("shop"), Some("web"), &resource, Some((1, 31))).is_none()
         );
-        let check = stored_check(vec![finding], Vec::new(), 10, Some((1, 30)));
+        let check = stored_check(vec![finding], Vec::new(), Vec::new(), 10, Some((1, 30)));
         // Removed long before the current version: a warning, not this update's failure.
         assert_eq!(check.status, CheckStatus::Warn);
         assert_eq!(
-            stored_check(Vec::new(), vec!["ingresses".into()], 0, None).status,
+            stored_check(Vec::new(), vec!["ingresses".into()], Vec::new(), 0, None).status,
             CheckStatus::Unknown
         );
+        // A scan that stopped early (an error, the object limit) never passes.
+        let partial = stored_check(
+            Vec::new(),
+            Vec::new(),
+            vec!["ingresses (the first 20000 only)".into()],
+            20_000,
+            None,
+        );
+        assert_eq!(partial.status, CheckStatus::Unknown);
+        assert_eq!(partial.details[0].text, "Scan incomplete");
+        assert_eq!(
+            stored_check(Vec::new(), Vec::new(), Vec::new(), 5, None).status,
+            CheckStatus::Pass
+        );
+    }
+
+    /// OpenShift serves `ingresses.config.openshift.io` (kind `Ingress`) next to the real
+    /// Ingresses: the scan must pick `networking.k8s.io` whatever the server's order.
+    #[test]
+    fn scan_kinds_pick_the_kind_s_own_group() {
+        use kubyl_core::{Gvk, Gvr};
+        use kubyl_kube::discovery::{ApiResourceInfo, Discovery};
+        let info = |group: &str, namespaced: bool| ApiResourceInfo {
+            gvk: Gvk::new(group, "v1", "Ingress"),
+            gvr: Gvr::new(group, "v1", "ingresses"),
+            singular: "ingress".into(),
+            namespaced,
+            verbs: vec!["list".into(), "watch".into()],
+            short_names: vec![],
+            categories: vec![],
+            subresources: vec![],
+            preferred: true,
+        };
+        let discovery = Discovery {
+            groups: vec![],
+            resources: vec![
+                info("config.openshift.io", false),
+                info("networking.k8s.io", true),
+            ],
+            aggregated: true,
+        };
+        let kinds = scan_kinds(&discovery);
+        let ingress = kinds
+            .iter()
+            .find(|k| k.resource.plural == "ingresses")
+            .unwrap();
+        assert_eq!(ingress.resource.group, "networking.k8s.io");
+        assert!(ingress.namespaced);
     }
 
     fn node(name: &str, pool: &str, cpu: &str, memory: &str, kubelet: &str) -> Value {

@@ -1327,6 +1327,8 @@ impl Inner {
         });
 
         let mut addon_versions = HashMap::new();
+        // One note for however many add-ons failed, whatever the order of the results.
+        let mut versions_error = None;
         let fetched = join_all(addons.iter().map(|a| async {
             (
                 a.addon_name.clone(),
@@ -1339,11 +1341,13 @@ impl Inner {
                 Ok(versions) => {
                     addon_versions.insert(name, versions);
                 }
-                Err(err) if addon_versions.is_empty() => {
-                    notes.push(note_for("the add-on versions", &err));
+                Err(err) => {
+                    versions_error.get_or_insert(err);
                 }
-                Err(_) => {}
             }
+        }
+        if let Some(err) = versions_error {
+            notes.push(note_for("the add-on versions", &err));
         }
 
         let mut nodegroup_updates = HashMap::new();

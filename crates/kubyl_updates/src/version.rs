@@ -81,8 +81,18 @@ impl Ord for Version {
             .cmp(&other.major)
             .then(self.minor.cmp(&other.minor))
             .then(self.patch.unwrap_or(0).cmp(&other.patch.unwrap_or(0)))
+            // `-rc.3`, `-ec.1`, `-alpha`… come before the release itself.
+            .then_with(|| is_prerelease(&other.suffix).cmp(&is_prerelease(&self.suffix)))
             .then_with(|| suffix_numbers(&self.suffix).cmp(&suffix_numbers(&other.suffix)))
     }
+}
+
+/// A pre-release suffix (OpenShift's candidate channels list `-ec.N` and `-rc.N` builds).
+fn is_prerelease(suffix: &str) -> bool {
+    let suffix = suffix.trim_start_matches(['-', '.']).to_ascii_lowercase();
+    ["rc", "ec", "alpha", "beta", "pre"]
+        .iter()
+        .any(|p| suffix.starts_with(p))
 }
 
 /// The numbers in a suffix (`+k3s2` → `[3, 2]`, `-gke.1014001` → `[1014001]`).
@@ -145,6 +155,12 @@ mod tests {
             Ordering::Less
         );
         assert_eq!(compare("4.18.0", "4.17.99"), Ordering::Greater);
+        // Pre-releases sort before their release, and among themselves by number.
+        assert_eq!(compare("4.18.0-rc.3", "4.18.0"), Ordering::Less);
+        assert_eq!(compare("4.18.0-ec.2", "4.18.0-ec.1"), Ordering::Greater);
+        assert_eq!(compare("4.18.0-rc.1", "4.17.12"), Ordering::Greater);
+        // k3s/GKE build suffixes aren't pre-releases.
+        assert_eq!(compare("v1.33.4+k3s2", "v1.33.4"), Ordering::Greater);
     }
 
     #[test]

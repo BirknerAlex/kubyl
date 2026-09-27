@@ -606,3 +606,26 @@ async fn denied_writes_and_unknown_clusters() {
         "{err:?}"
     );
 }
+
+/// `orchestratorVersion` can be a minor alias of the running patch: that's no target.
+#[test]
+fn agent_pools_target_only_newer_versions() {
+    let pool = |wanted: &str, running: &str| AgentPool {
+        name: "user".into(),
+        count: Some(3),
+        orchestrator_version: Some(wanted.into()),
+        current_orchestrator_version: Some(running.into()),
+        provisioning_state: Some("Succeeded".into()),
+        ..AgentPool::default()
+    };
+    assert_eq!(
+        agent_pool(&pool("1.29", "1.29.7"), "1.29.7").target_version,
+        None
+    );
+    assert_eq!(
+        agent_pool(&pool("1.30.3", "1.29.7"), "1.30.3")
+            .target_version
+            .as_deref(),
+        Some("1.30.3")
+    );
+}
