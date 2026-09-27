@@ -9,11 +9,13 @@
 //! - [`Meter`]: a usage bar with an optional marker (e.g. the request).
 //! - [`TimeRange`] and [`TimeRangePicker`]: 15m/1h/6h/24h/7d with steps and refresh intervals.
 //! - [`data`]: aligning samples to a time grid, stacking, top-N plus "other".
+//! - [`graph`]: force-directed layout for node-link views (the network topology).
 //! - [`palette`]: series colors from the theme's hues, stepped in lightness (color-blind safe),
 //!   and the [`ColorRegistry`] that keeps an entity's color the same on every chart.
 
 pub mod chart;
 pub mod data;
+pub mod graph;
 pub mod meter;
 mod paint;
 pub mod palette;
