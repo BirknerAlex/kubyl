@@ -216,6 +216,22 @@ impl Transport {
         })
     }
 
+    /// Plain HTTP to a loopback port (a temporary port-forward), under `path`. Nothing is
+    /// authenticated: the forward is the access, so no credentials ever go this way. There's no
+    /// read timeout, so a quiet event stream stays open (requests still time out).
+    pub fn loopback(port: u16, path: &str) -> Result<Self, PromError> {
+        let uri = parse_url(&format!("http://127.0.0.1:{port}"))?;
+        let mut config = kube::Config::new(uri);
+        config.connect_timeout = Some(Duration::from_secs(10));
+        config.read_timeout = None;
+        Ok(Self {
+            client: build(config)?,
+            base: normalize_prefix(path),
+            bearer: None,
+            headers: Vec::new(),
+        })
+    }
+
     /// A client for an external URL. `authorization` is the full header value (`Bearer …`,
     /// `Basic …`), marked sensitive and never logged; it's only sent over HTTPS (or to
     /// loopback). Callers that must not send it without TLS verification check `tls.insecure`
@@ -541,5 +557,43 @@ mod tests {
         assert!(post.ends_with(r#"{"comment":"x"}"#), "{post}");
         assert!(requests[1].starts_with("DELETE /api/v2/silence/abc"));
         assert!(!format!("{transport:?}").contains("s3cr3t"));
+    }
+
+    /// A loopback transport sends no credentials, keeps its path prefix and streams lines that
+    /// arrive after a quiet spell.
+    #[tokio::test]
+    async fn loopback_streams_without_credentials() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = vec![0; 8192];
+            let n = socket.read(&mut request).await.unwrap();
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\ndata: 1\n")
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            socket.write_all(b"data: 2\n").await.unwrap();
+            drop(socket);
+            String::from_utf8_lossy(&request[..n]).to_string()
+        });
+        let transport = Transport::loopback(port, "whisker-backend/").unwrap();
+        let lines: Vec<String> = transport
+            .get_lines("/flows", &[("watch", "true".into())], "text/event-stream")
+            .await
+            .unwrap()
+            .filter_map(|line| async move { line.ok() })
+            .collect()
+            .await;
+        assert_eq!(lines, ["data: 1", "data: 2"]);
+        let request = server.await.unwrap().to_lowercase();
+        assert!(
+            request.starts_with("get /whisker-backend/flows?watch=true "),
+            "{request}"
+        );
+        assert!(!request.contains("authorization"));
     }
 }
