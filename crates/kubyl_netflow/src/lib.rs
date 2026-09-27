@@ -1,5 +1,15 @@
 //! Network flows (phase 16, board 18).
 
+pub mod aggregate;
+pub mod backends;
+pub mod buffer;
+pub mod detect;
+pub mod filter;
+pub mod model;
+pub mod provider;
+pub mod sanitize;
+pub mod settings;
+
 pub mod proto {
     //! The generated Hubble API (`proto/`, Cilium v1.20.2).
     #![allow(clippy::all, clippy::pedantic, missing_docs)]

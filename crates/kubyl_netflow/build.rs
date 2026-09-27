@@ -5,7 +5,11 @@ use std::path::Path;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = Path::new("proto");
-    for file in ["flow/flow.proto", "observer/observer.proto", "relay/relay.proto"] {
+    for file in [
+        "flow/flow.proto",
+        "observer/observer.proto",
+        "relay/relay.proto",
+    ] {
         println!("cargo:rerun-if-changed={}", root.join(file).display());
     }
     // observer.proto imports the other two.
