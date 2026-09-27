@@ -2,6 +2,47 @@
 
 All notable changes to Kubyl are documented here.
 
+## [0.3.0] - 2026-09-27
+
+### Bug Fixes
+
+- Import Cursor for the Linux test module too ([edd0c23](https://github.com/BirknerAlex/kubyl/commit/edd0c23c20cecc0b96e2f00ad33ac0a38527ffee))
+- Replace the whole app bundle on macOS, add HTTP timeouts ([fe35140](https://github.com/BirknerAlex/kubyl/commit/fe35140da4d832531d6363787e793ce8210d81e2))
+- Publish-flathub committed to a detached HEAD, not main ([e9c1e60](https://github.com/BirknerAlex/kubyl/commit/e9c1e608ba3b8f0e657ae38bea7573eab906b22e))
+- Correct binary path, add aarch64 and Metainfo, fix update script ([2bda980](https://github.com/BirknerAlex/kubyl/commit/2bda9806ebd6a97b66664234659321d85564a409))
+- Vendor the GTK plugin, fail loudly on a missing WebKit helper ([6d142f8](https://github.com/BirknerAlex/kubyl/commit/6d142f87c42982850d0e2e6b5a3b3c283aad49c8))
+
+### CI
+
+- Prevent Windows CRLF normalization on signed test fixtures ([40f9c7e](https://github.com/BirknerAlex/kubyl/commit/40f9c7e0f3760d402ac5e8ea809dee18586077ab))
+
+### Documentation
+
+- Winget PR submitted, PR #16 merged ([7b58785](https://github.com/BirknerAlex/kubyl/commit/7b5878504dbc0d61f7f0a04e66fbe03bee04d952))
+
+### Features
+
+- Add Linux AppImage packaging ([d128ecd](https://github.com/BirknerAlex/kubyl/commit/d128ecd98d8e6262cc9c110d9e34e0ee88dc33c7))
+
+### Packaging
+
+- Add Flathub manifest and auto-update workflow ([ee23b69](https://github.com/BirknerAlex/kubyl/commit/ee23b69390f81076dc995b06852f2de132a8ecd9))
+
+### Plans
+
+- Update phase 09 with distribution and auto-update status ([cecb0cd](https://github.com/BirknerAlex/kubyl/commit/cecb0cdd91da74cde279b0b594608b71885745a2))
+- Kubyl.dev is registered and live ([5fff87f](https://github.com/BirknerAlex/kubyl/commit/5fff87f77b3e9b10ad5b70cb01c005b6a6689598))
+- README badges/contributing/license already done ([0337700](https://github.com/BirknerAlex/kubyl/commit/0337700d6ac9f8934ee6146dd0de095f2f33ffb9))
+- Log the CodeRabbit review pass and Windows CI fix ([0790223](https://github.com/BirknerAlex/kubyl/commit/079022329900fe9d1196988be6607139b30fb8db))
+
+### Release
+
+- Sign the update manifest and publish to winget and silo ([00420b8](https://github.com/BirknerAlex/kubyl/commit/00420b89d8f475821c6a1d9839c443d7e3946d76))
+
+### Selfupdate
+
+- Add kubyl_selfupdate crate for app auto-update ([d97903f](https://github.com/BirknerAlex/kubyl/commit/d97903f78c8bf41515ef9867fba096b8636639dd))
+
 ## [0.2.5] - 2026-09-27
 
 ### Plan
