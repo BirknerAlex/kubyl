@@ -1578,6 +1578,13 @@ impl UninstallDialog {
     }
 
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Enter bypasses the disabled button: an uninstall is already running.
+        if Olm::global(cx).is_some_and(|o| {
+            o.read(cx)
+                .is_busy(&format!("uninstall:{}", self.operator.key))
+        }) {
+            return;
+        }
         if !self.typed_ok(cx) {
             self.error = Some("Type the operator's name to confirm.".into());
             cx.notify();
@@ -1697,7 +1704,8 @@ impl Render for UninstallDialog {
             for (crd, _) in self
                 .crds
                 .iter()
-                .filter(|(crd, _)| !self.shared.contains_key(&crd.name))
+                // Only CRDs submit() deletes: served ones (the rest are kept, see the rows above).
+                .filter(|(crd, watch)| watch.is_some() && !self.shared.contains_key(&crd.name))
             {
                 lines.push(line(
                     IconName::Trash,
