@@ -227,6 +227,16 @@ impl PortForwardManager {
 
     /// Starts a forward and returns its id.
     pub fn start(client: kube::Client, spec: ForwardSpec, cx: &mut App) -> ForwardId {
+        Self::start_with(client, spec, false, cx)
+    }
+
+    /// [`Self::start`]; `fallback_any`: a taken `local_port` falls back to a free one.
+    pub fn start_with(
+        client: kube::Client,
+        spec: ForwardSpec,
+        fallback_any: bool,
+        cx: &mut App,
+    ) -> ForwardId {
         let manager = Self::global(cx);
         let id = manager.update(cx, |this, _| {
             let id = this.next_id;
@@ -254,6 +264,7 @@ impl PortForwardManager {
                         port,
                         bind_address,
                         local_port,
+                        fallback_any,
                         events_tx,
                     )
                     .await

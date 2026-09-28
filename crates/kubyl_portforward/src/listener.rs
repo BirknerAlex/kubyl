@@ -37,8 +37,22 @@ pub enum ForwardEvent {
     Error(String),
 }
 
+/// Binds `bind_address:local_port`; with `fallback_any`, a taken port falls back to a free one
+/// (no probe-then-bind race).
+async fn bind(
+    bind_address: &str,
+    local_port: u16,
+    fallback_any: bool,
+) -> std::io::Result<TcpListener> {
+    match TcpListener::bind((bind_address, local_port)).await {
+        Err(_) if fallback_any && local_port != 0 => TcpListener::bind((bind_address, 0)).await,
+        result => result,
+    }
+}
+
 /// Runs the forward until dropped. Binds `bind_address:local_port` (`local_port == 0` picks a
 /// free port; the actual port is reported via [`ForwardEvent::Listening`]).
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     client: kube::Client,
     namespace: String,
@@ -46,9 +60,10 @@ pub async fn run(
     port: RemotePort,
     bind_address: String,
     local_port: u16,
+    fallback_any: bool,
     events: mpsc::UnboundedSender<ForwardEvent>,
 ) -> anyhow::Result<()> {
-    let listener = TcpListener::bind((bind_address.as_str(), local_port)).await?;
+    let listener = bind(&bind_address, local_port, fallback_any).await?;
     let actual_port = listener.local_addr()?.port();
     events
         .unbounded_send(ForwardEvent::Listening {
@@ -140,4 +155,24 @@ async fn handle_connection(
     }
     forwarder.join().await.ok();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn taken_port_falls_back_only_when_asked() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let held = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let port = held.local_addr().unwrap().port();
+            assert!(bind("127.0.0.1", port, false).await.is_err());
+            let other = bind("127.0.0.1", port, true).await.unwrap();
+            assert_ne!(other.local_addr().unwrap().port(), port);
+        });
+    }
 }

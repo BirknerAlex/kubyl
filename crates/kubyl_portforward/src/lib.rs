@@ -143,6 +143,7 @@ pub fn init(cx: &mut App) {
                     open_browser: false,
                     save: false,
                     auto_start: false,
+                    local_fallback: false,
                 },
                 cx,
             );
@@ -275,9 +276,8 @@ fn forward_port(target: ResourceRef, port: u16, cx: &mut App) {
         NotificationCenter::push(cx, Notification::info(message));
         return;
     }
-    let local_port = preferred_local_port(port)
-        .filter(|&local| std::net::TcpListener::bind(("127.0.0.1", local)).is_ok())
-        .unwrap_or(0);
+    // Binding happens off the UI thread; a taken port falls back to a free one there.
+    let local_port = preferred_local_port(port).unwrap_or(0);
     let (http, https) = resolve::http_kind(port, None, None);
     start_target_forward(
         target,
@@ -290,6 +290,7 @@ fn forward_port(target: ResourceRef, port: u16, cx: &mut App) {
             open_browser: false,
             save: false,
             auto_start: false,
+            local_fallback: true,
         },
         cx,
     );
@@ -386,6 +387,7 @@ pub fn start_saved(saved: &SavedForward, cx: &mut App) {
             open_browser: false,
             save: false,
             auto_start: saved.auto_start,
+            local_fallback: false,
         },
         cx,
     );
@@ -420,6 +422,7 @@ pub fn start_target_forward(target: ResourceRef, choice: ForwardChoice, cx: &mut
         ephemeral: None,
     };
     let save = choice.save.then_some(choice.auto_start);
+    let fallback = choice.local_fallback;
     match target.gvr.resource.as_str() {
         "pods" => {
             let spec = spec(
@@ -427,7 +430,7 @@ pub fn start_target_forward(target: ResourceRef, choice: ForwardChoice, cx: &mut
                 RemotePort::Container(choice.remote_port),
                 target.cluster.clone(),
             );
-            start_and_save(client, spec, save, cx);
+            start_and_save(client, spec, save, fallback, cx);
         }
         "services" => {
             let spec = spec(
@@ -435,7 +438,7 @@ pub fn start_target_forward(target: ResourceRef, choice: ForwardChoice, cx: &mut
                 RemotePort::Service(choice.remote_port),
                 target.cluster.clone(),
             );
-            start_and_save(client, spec, save, cx);
+            start_and_save(client, spec, save, fallback, cx);
         }
         resource @ ("deployments" | "statefulsets" | "daemonsets") => {
             let (select_client, ns, resource) =
@@ -457,7 +460,7 @@ pub fn start_target_forward(target: ResourceRef, choice: ForwardChoice, cx: &mut
                         kind: ForwardKind::Workload { label_selector },
                         ..base
                     };
-                    start_and_save(client, spec, save, cx);
+                    start_and_save(client, spec, save, fallback, cx);
                 }),
                 Err(err) => cx.update(|cx| error(cx, format!("Port-forward failed: {err:#}"))),
             })
@@ -472,6 +475,7 @@ fn start_and_save(
     client: kube::Client,
     spec: ForwardSpec,
     save: Option<bool>,
+    fallback: bool,
     cx: &mut App,
 ) -> ForwardId {
     if let Some(auto_start) = save {
@@ -479,7 +483,7 @@ fn start_and_save(
         saved.auto_start = auto_start;
         SavedForwards::global(cx).update(cx, |this, cx| this.update_state(cx, |s| s.upsert(saved)));
     }
-    PortForwardManager::start(client, spec, cx)
+    PortForwardManager::start_with(client, spec, fallback, cx)
 }
 
 /// Starts a forward with an already resolved spec (other crates, tests).
