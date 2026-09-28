@@ -779,7 +779,7 @@ fn cordon(unschedulable: bool, cx: &mut App) {
         ("Uncordon", "Uncordoned")
     };
     let mut spec = ConfirmSpec::new(format!("{verb} {}?", describe_targets(&items)), verb);
-    spec.lines = items.iter().map(line).collect();
+    spec.lines = selection_lines(cx, &items);
     spec.note = Some(
         if unschedulable {
             "No new pods are scheduled on the node; running pods stay."

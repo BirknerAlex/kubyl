@@ -20,7 +20,8 @@ pub fn config_dir() -> PathBuf {
 }
 
 /// A directory under `base` that only the current user can use: `kubyl-<user>` when that is
-/// ours and mode 0700, else a fresh `kubyl-<user>-<pid>` created with mode 0700.
+/// ours and mode 0700, else a fresh `kubyl-<user>-<pid>-<n>` created with mode 0700. If neither works the path is
+/// unusable (every write fails) rather than an unverified directory.
 fn private_dir_in(base: &Path) -> PathBuf {
     let user = ["USER", "USERNAME", "LOGNAME"]
         .iter()
@@ -35,14 +36,23 @@ fn private_dir_in(base: &Path) -> PathBuf {
     if create_private(&dir, true) {
         return dir;
     }
-    let dir = base.join(format!("{name}-{}", std::process::id()));
-    if !create_private(&dir, false) {
-        tracing::warn!(
-            "could not create a private config dir in {}",
-            base.display()
-        );
+    // Someone else may have pre-created the pid-based name, so retry with an unguessable suffix.
+    for attempt in 0..4u32 {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_nanos());
+        let dir = base.join(format!("{name}-{}-{nanos:x}{attempt}", std::process::id()));
+        if create_private(&dir, false) {
+            return dir;
+        }
     }
-    dir
+    tracing::warn!(
+        "could not create a private config dir in {}",
+        base.display()
+    );
+    // An interior NUL makes every filesystem call on this path fail, so nothing gets written
+    // into a directory we could not verify.
+    base.join("kubyl-unavailable\0")
 }
 
 /// Creates `dir` with mode 0700. With `reuse`, an existing directory is accepted when we own it
@@ -197,6 +207,15 @@ mod tests {
         assert_eq!(private_dir_in(base.path()), dir);
         let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
         assert_eq!(mode & 0o077, 0);
+    }
+
+    #[test]
+    fn unusable_fallback_never_returns_an_unverified_dir() {
+        let base = tempfile::tempdir().unwrap();
+        let missing = base.path().join("does-not-exist").join("nested");
+        let dir = private_dir_in(&missing);
+        assert!(write_atomic(&dir.join("state.json"), b"x").is_err());
+        assert!(!missing.exists());
     }
 
     #[test]

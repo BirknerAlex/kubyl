@@ -377,12 +377,12 @@ impl PortForwardManager {
 
     /// The clusters that have forwards.
     pub fn clusters(&self) -> Vec<ClusterId> {
-        let mut clusters: Vec<ClusterId> = self
-            .forwards
-            .values()
-            .map(|f| f.spec.cluster.clone())
-            .collect();
-        clusters.dedup();
+        let mut clusters: Vec<ClusterId> = Vec::new();
+        for f in self.forwards.values() {
+            if !clusters.contains(&f.spec.cluster) {
+                clusters.push(f.spec.cluster.clone());
+            }
+        }
         clusters
     }
 
