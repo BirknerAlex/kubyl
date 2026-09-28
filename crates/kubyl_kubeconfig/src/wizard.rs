@@ -140,8 +140,23 @@ pub struct Wizard {
     error: Option<String>,
     saving: bool,
     focus: FocusHandle,
+    /// The certificate file named in the form, read once per path off the UI thread.
+    cert_file: Option<CertFile>,
+    _cert_read: Option<Task<()>>,
     _tasks: Vec<Task<()>>,
     _subscriptions: Vec<Subscription>,
+}
+
+struct CertFile {
+    path: PathBuf,
+    /// `None` until read, or when it holds no readable certificate.
+    info: Option<Vec<certs::CertInfo>>,
+}
+
+/// The certificates in the PEM file at `path` (blocking: call off the UI thread).
+fn read_certificates(path: &std::path::Path) -> Option<Vec<certs::CertInfo>> {
+    let pem = std::fs::read_to_string(path).ok()?;
+    certs::certificates(&pem).ok()
 }
 
 /// Opens the wizard.
@@ -248,9 +263,46 @@ impl Wizard {
             error: None,
             saving: false,
             focus: cx.focus_handle(),
+            cert_file: None,
+            _cert_read: None,
             _tasks: Vec::new(),
             _subscriptions: subscriptions,
         }
+    }
+
+    /// The certificates of the file in the "cert-file" input. Reads happen in the background
+    /// (once per path); until one finishes this is `None`.
+    fn cert_file_info(&mut self, cx: &mut Context<Self>) -> Option<Vec<certs::CertInfo>> {
+        let value = self.value("cert-file", cx);
+        if value.is_empty() {
+            self.cert_file = None;
+            self._cert_read = None;
+            return None;
+        }
+        let path = model::resolve_path(&value, None);
+        if let Some(cached) = self.cert_file.as_ref().filter(|c| c.path == path) {
+            return cached.info.clone();
+        }
+        self.cert_file = Some(CertFile {
+            path: path.clone(),
+            info: None,
+        });
+        let read_path = path.clone();
+        let read = cx
+            .background_executor()
+            .spawn(async move { read_certificates(&read_path) });
+        // Replacing the task drops a read for a path that is no longer shown.
+        self._cert_read = Some(cx.spawn(async move |this, cx| {
+            let info = read.await;
+            this.update(cx, |this, cx| {
+                if let Some(cached) = this.cert_file.as_mut().filter(|c| c.path == path) {
+                    cached.info = info;
+                    cx.notify();
+                }
+            })
+            .ok();
+        }));
+        None
     }
 
     fn value(&self, key: &str, cx: &App) -> String {
@@ -1270,12 +1322,7 @@ impl Wizard {
                 };
                 let cert_info = match self.cert_input {
                     PemInput::Paste => certs::certificates(&self.area("cert-pem", cx)).ok(),
-                    PemInput::File => std::fs::read_to_string(model::resolve_path(
-                        &self.value("cert-file", cx),
-                        None,
-                    ))
-                    .ok()
-                    .and_then(|p| certs::certificates(&p).ok()),
+                    PemInput::File => self.cert_file_info(cx),
                 };
                 col = col
                     .child(labelled(
@@ -1519,6 +1566,16 @@ mod tests {
             );
         });
         dir
+    }
+
+    #[test]
+    fn reads_certificates_from_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.crt");
+        assert!(read_certificates(&missing).is_none());
+        let junk = dir.path().join("junk.crt");
+        std::fs::write(&junk, "not a certificate").unwrap();
+        assert!(read_certificates(&junk).is_none());
     }
 
     #[gpui::test]
