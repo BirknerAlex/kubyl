@@ -314,7 +314,7 @@ pub fn targets(
             .as_ref()
             .filter(|v| newer(v, current)),
     };
-    let next = format!("{}.{}", cur.major, cur.minor + 1);
+    let next = format!("{}.{}", cur.major, cur.minor.saturating_add(1));
     newer_versions
         .into_iter()
         .filter_map(|v| {

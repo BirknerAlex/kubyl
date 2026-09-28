@@ -55,7 +55,9 @@ impl Version {
                 i64::MIN
             };
         }
-        other.minor as i64 - self.minor as i64
+        // The difference of two u64 can exceed i64: widen, then clamp.
+        (i128::from(other.minor) - i128::from(self.minor))
+            .clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64
     }
 }
 
@@ -131,13 +133,13 @@ pub fn minor_of(text: &str) -> Option<(u64, u64)> {
 
 /// The Kubernetes minor an OpenShift minor ships (4.y ships 1.(y+13)).
 pub fn openshift_kube_minor(openshift: &Version) -> Option<(u64, u64)> {
-    (openshift.major == 4).then_some((1, openshift.minor + 13))
+    (openshift.major == 4).then_some((1, openshift.minor.saturating_add(13)))
 }
 
 /// The next minor: `1.30.4` → `1.31`.
 pub fn next_minor(text: &str) -> Option<String> {
     let v = Version::parse(text)?;
-    Some(format!("{}.{}", v.major, v.minor + 1))
+    Some(format!("{}.{}", v.major, v.minor.checked_add(1)?))
 }
 
 #[cfg(test)]
@@ -184,6 +186,26 @@ mod tests {
         let b = Version::parse("1.32").unwrap();
         assert_eq!(a.minors_to(&b), 2);
         assert_eq!(next_minor("v1.37.0").as_deref(), Some("1.38"));
+    }
+
+    /// Versions come from servers: huge numbers must not overflow or panic (debug builds).
+    #[test]
+    fn huge_numbers_dont_overflow() {
+        let max = u64::MAX;
+        let big = Version::parse(&format!("1.{max}")).unwrap();
+        let low = Version::parse("1.0").unwrap();
+        assert_eq!(low.minors_to(&big), i64::MAX);
+        assert_eq!(big.minors_to(&low), i64::MIN);
+        assert_eq!(next_minor(&format!("1.{max}")), None);
+        assert_eq!(
+            openshift_kube_minor(&Version::parse(&format!("4.{max}")).unwrap()),
+            Some((1, max))
+        );
+        assert!(Version::parse("99999999999999999999.1").is_none());
+    }
+
+    #[test]
+    fn openshift_minors() {
         assert_eq!(
             openshift_kube_minor(&Version::parse("4.17.8").unwrap()),
             Some((1, 30))

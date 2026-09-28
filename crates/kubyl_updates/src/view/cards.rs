@@ -650,7 +650,7 @@ fn empty_path(
         let options: Vec<String> = crate::version::Version::parse(&base)
             .map(|v| {
                 (1..=2)
-                    .map(|d| format!("{}.{}", v.major, v.minor + d))
+                    .map(|d| format!("{}.{}", v.major, v.minor.saturating_add(d)))
                     .collect()
             })
             .unwrap_or_default();

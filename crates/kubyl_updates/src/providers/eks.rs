@@ -336,7 +336,7 @@ pub fn targets(
     };
     newer.sort_by_key(|v| std::cmp::Reverse(v.minor_key()));
     newer.dedup_by_key(|v| v.minor_key());
-    let next = format!("{}.{}", cur.major, cur.minor + 1);
+    let next = format!("{}.{}", cur.major, cur.minor.saturating_add(1));
     newer
         .iter()
         .map(|v| {

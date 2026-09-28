@@ -316,7 +316,7 @@ pub fn plan(status: &Status, scope: &Scope, target: &str, _cluster: &str) -> Res
             return Err(format!(
                 "Kubernetes updates one minor at a time: {}.{} first.",
                 current.major,
-                current.minor + 1
+                current.minor.saturating_add(1)
             ));
         }
     }
