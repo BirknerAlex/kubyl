@@ -1704,7 +1704,8 @@ impl Render for UninstallDialog {
             for (crd, _) in self
                 .crds
                 .iter()
-                .filter(|(crd, _)| !self.shared.contains_key(&crd.name))
+                // Only CRDs submit() deletes: served ones (the rest are kept, see the rows above).
+                .filter(|(crd, watch)| watch.is_some() && !self.shared.contains_key(&crd.name))
             {
                 lines.push(line(
                     IconName::Trash,
