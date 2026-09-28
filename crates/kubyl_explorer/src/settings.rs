@@ -69,3 +69,31 @@ pub struct TreeState {
 impl StateSection for TreeState {
     const KEY: &'static str = "explorer";
 }
+
+/// A user-created folder in the Clusters section (e.g. "Prod", "Staging") that groups cluster
+/// roots regardless of which kubeconfig they came from.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SidebarGroup {
+    /// Stable id, unrelated to the name so a rename doesn't lose drag-and-drop membership.
+    pub id: String,
+    pub name: String,
+    /// Member cluster ids, in display order. A member whose cluster no longer resolves (a
+    /// removed kubeconfig) is kept, in case it comes back.
+    pub members: Vec<String>,
+}
+
+/// What state.json stores under `explorer_groups`. See [`crate::groups::SidebarGroups`] for the
+/// observable model views use.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SidebarGroupsState {
+    /// In display order.
+    pub groups: Vec<SidebarGroup>,
+    /// Collapsed folder ids.
+    pub collapsed: BTreeSet<String>,
+}
+
+impl StateSection for SidebarGroupsState {
+    const KEY: &'static str = "explorer_groups";
+}
