@@ -637,20 +637,42 @@ const SUCCESS_PAGE: &str = "<!doctype html><meta charset=utf-8><title>Kubyl</tit
 <body style=\"font:15px system-ui;background:#282c33;color:#dce0e5;display:grid;place-items:center;height:90vh\">\
 <div><h2 style=\"font-weight:600\">Signed in to Kubyl</h2><p>You can close this tab and return to the app.</p></div>";
 
-/// Serves the loopback redirect until a request carries `code` and the right `state` (any
-/// path).
-pub async fn wait_for_code(
-    listener: &tokio::net::TcpListener,
-    state: &str,
-) -> Result<String, AuthError> {
-    loop {
-        let (mut stream, _) = listener
-            .accept()
-            .await
-            .map_err(|err| fail("loopback server failed", err))?;
-        let mut buf = vec![0u8; 8192];
-        let mut len = 0;
-        // Read the request head; the redirect is a small GET.
+/// How long a loopback connection may take to send its request head.
+const CALLBACK_READ_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// What one loopback request means for the sign-in.
+#[derive(Debug, PartialEq)]
+enum Callback {
+    Code(String),
+    Error(String),
+    /// Favicon requests, stale tabs from an earlier attempt, requests with another `state`…
+    Ignore,
+}
+
+/// Classifies a request target. Only a request carrying the right `state` counts, `?error=`
+/// included, so a stray request can't abort the sign-in.
+fn classify_callback(target: &str, state: &str) -> Callback {
+    let query = callback_params(target);
+    if query.get("state").map(String::as_str) != Some(state) {
+        return Callback::Ignore;
+    }
+    if let Some(error) = query.get("error") {
+        let description = query.get("error_description").cloned().unwrap_or_default();
+        return Callback::Error(format!("{error} {description}").trim().to_string());
+    }
+    match query.get("code") {
+        Some(code) => Callback::Code(code.clone()),
+        None => Callback::Ignore,
+    }
+}
+
+/// Reads one request and answers it. A connection that stays silent is dropped after
+/// [`CALLBACK_READ_TIMEOUT`].
+async fn serve_callback(mut stream: tokio::net::TcpStream, state: &str) -> Callback {
+    let mut buf = vec![0u8; 8192];
+    let mut len = 0;
+    // Read the request head; the redirect is a small GET.
+    let read_head = async {
         while len < buf.len() {
             match stream.read(&mut buf[len..]).await {
                 Ok(0) | Err(_) => break,
@@ -662,47 +684,64 @@ pub async fn wait_for_code(
                 }
             }
         }
-        let head = String::from_utf8_lossy(&buf[..len]);
-        let target = head
-            .lines()
-            .next()
-            .and_then(|line| line.split_whitespace().nth(1))
-            .unwrap_or("/");
-        let query = callback_params(target);
-        let respond = |status: &str, body: &str| {
-            format!(
-                "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            )
-        };
-        if let Some(error) = query.get("error") {
-            let description = query.get("error_description").cloned().unwrap_or_default();
+    };
+    if tokio::time::timeout(CALLBACK_READ_TIMEOUT, read_head)
+        .await
+        .is_err()
+    {
+        return Callback::Ignore;
+    }
+    let head = String::from_utf8_lossy(&buf[..len]);
+    let target = head
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .unwrap_or("/");
+    let outcome = classify_callback(target, state);
+    let respond = |status: &str, body: &str| {
+        format!(
+            "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    };
+    let response = match &outcome {
+        Callback::Error(message) => {
+            let error = message.split_whitespace().next().unwrap_or_default();
             let page = format!("<p>Sign-in failed: {}</p>", html_escape(error));
-            stream
-                .write_all(respond("400 Bad Request", &page).as_bytes())
-                .await
-                .ok();
-            return Err(AuthError::Failed(
-                format!("sign-in failed: {error} {description}")
-                    .trim()
-                    .to_string(),
-            ));
+            respond("400 Bad Request", &page)
         }
-        match (query.get("code"), query.get("state")) {
-            (Some(code), Some(got)) if got == state => {
-                stream
-                    .write_all(respond("200 OK", SUCCESS_PAGE).as_bytes())
-                    .await
-                    .ok();
-                return Ok(code.clone());
+        Callback::Code(_) => respond("200 OK", SUCCESS_PAGE),
+        Callback::Ignore => respond("404 Not Found", ""),
+    };
+    tokio::time::timeout(CALLBACK_READ_TIMEOUT, stream.write_all(response.as_bytes()))
+        .await
+        .ok();
+    outcome
+}
+
+/// Serves the loopback redirect until a request carries `code` and the right `state` (any
+/// path). Connections are served concurrently, so an idle one can't stall the sign-in.
+pub async fn wait_for_code(
+    listener: &tokio::net::TcpListener,
+    state: &str,
+) -> Result<String, AuthError> {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    loop {
+        tokio::select! {
+            accepted = listener.accept() => {
+                let (stream, _) = accepted.map_err(|err| fail("loopback server failed", err))?;
+                let (tx, state) = (tx.clone(), state.to_string());
+                tokio::spawn(async move {
+                    tx.send(serve_callback(stream, &state).await).ok();
+                });
             }
-            _ => {
-                // Favicon requests, stale tabs from an earlier attempt…
-                stream
-                    .write_all(respond("404 Not Found", "").as_bytes())
-                    .await
-                    .ok();
-            }
+            Some(outcome) = rx.recv() => match outcome {
+                Callback::Code(code) => return Ok(code),
+                Callback::Error(message) => {
+                    return Err(AuthError::Failed(format!("sign-in failed: {message}")));
+                }
+                Callback::Ignore => {}
+            },
         }
     }
 }
@@ -815,6 +854,56 @@ mod tests {
             stream.read_to_string(&mut response).await.ok();
         }
         assert_eq!(server.await.unwrap().ok().unwrap(), "c0de");
+    }
+
+    #[test]
+    fn callback_error_needs_the_right_state() {
+        assert_eq!(
+            classify_callback("/?error=access_denied&state=other", "good"),
+            Callback::Ignore
+        );
+        assert_eq!(
+            classify_callback("/?error=access_denied", "good"),
+            Callback::Ignore
+        );
+        assert_eq!(
+            classify_callback(
+                "/?error=access_denied&error_description=no&state=good",
+                "good"
+            ),
+            Callback::Error("access_denied no".into())
+        );
+        assert_eq!(
+            classify_callback("/?code=c&state=good", "good"),
+            Callback::Code("c".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn idle_connection_does_not_block_the_callback() {
+        let (listener, port) = bind_loopback(&[0]).await.unwrap();
+        let port = if port == 0 {
+            listener.local_addr().unwrap().port()
+        } else {
+            port
+        };
+        let server = tokio::spawn(async move { wait_for_code(&listener, "good").await });
+        // Connects and never sends anything.
+        let _idle = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        stream
+            .write_all(b"GET /?code=c0de&state=good HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        let code = tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("the idle connection blocked the callback")
+            .unwrap();
+        assert_eq!(code.ok().unwrap(), "c0de");
     }
 
     #[tokio::test]
