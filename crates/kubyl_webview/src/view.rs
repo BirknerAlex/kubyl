@@ -429,6 +429,7 @@ impl WebViewTab {
             cookies: crate::session::cookies_for(&self.target, cx),
         };
         let events = self.events.clone();
+        let private = self.private;
         cx.spawn_in(window, async move |this, cx| {
             let started = Instant::now();
             let result = NativeWebView::create(&parent, options, events);
@@ -436,6 +437,9 @@ impl WebViewTab {
             this.update_in(cx, |this, window, cx| {
                 this.creating = false;
                 match result {
+                    // Switched between private and isolated while it was being created: this
+                    // one has the wrong storage. Drop it and create another.
+                    Ok(_) if this.private != private => this.forward_changed(window, cx),
                     Ok(native) => {
                         let embedded = Embedded::new(native, window.window_handle());
                         crate::start_pump(cx);
