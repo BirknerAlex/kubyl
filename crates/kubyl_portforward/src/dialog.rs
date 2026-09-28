@@ -28,6 +28,8 @@ pub struct ForwardChoice {
     pub open_browser: bool,
     pub save: bool,
     pub auto_start: bool,
+    /// A taken `local_port` falls back to any free one (one-click forwards).
+    pub local_fallback: bool,
 }
 
 type OnStart = Rc<dyn Fn(ForwardChoice, &mut Window, &mut App)>;
@@ -279,6 +281,7 @@ impl ForwardDialog {
             open_browser: self.open_browser && http,
             save: self.save,
             auto_start: self.save && self.auto_start,
+            local_fallback: false,
         };
         window.close_dialog(cx);
         (self.on_start)(choice, window, cx);
