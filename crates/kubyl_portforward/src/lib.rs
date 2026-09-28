@@ -208,6 +208,10 @@ pub fn init(cx: &mut App) {
                 .cloned()
                 .collect();
             let forwards = PortForwardManager::global(cx);
+            // Auto-start stays quiet on a read-only cluster (no toast per saved forward).
+            if manager.read(cx).caps(cluster).read_only {
+                return;
+            }
             for forward in saved {
                 if !forwards.read(cx).is_running(&forward, cx) {
                     start_saved(&forward, cx);
@@ -396,10 +400,14 @@ pub fn start_saved(saved: &SavedForward, cx: &mut App) {
 /// Starts a forward to `target` with the dialog's choices (resolving a workload's selector
 /// first), and saves it when asked.
 pub fn start_target_forward(target: ResourceRef, choice: ForwardChoice, cx: &mut App) {
-    let Some(client) = ConnectionManager::global(cx)
-        .read(cx)
-        .client(&target.cluster)
-    else {
+    // Saved and auto-start forwards come through here too, not just the guarded actions.
+    let manager = ConnectionManager::global(cx);
+    if manager.read(cx).caps(&target.cluster).read_only {
+        let name = manager.read(cx).display_name(&target.cluster);
+        error(cx, format!("{name} is read-only."));
+        return;
+    }
+    let Some(client) = manager.read(cx).client(&target.cluster) else {
         error(cx, "The cluster isn't connected.");
         return;
     };
