@@ -210,7 +210,11 @@ impl AppView {
                 if now != connected {
                     connected = now;
                     this.api_tree = None;
+                    this.api_error = None;
                     this.diffs = None;
+                    // Requests of the old session must not land in the new one.
+                    this._api_task = None;
+                    this._diff_task = None;
                     this.sync_live_stores(cx);
                     this.fetch_api(cx);
                 }
