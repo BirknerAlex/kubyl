@@ -414,6 +414,7 @@ where
     Fut: std::future::Future<Output = Result<(), String>> + Send + 'static,
 {
     let label = describe_targets(&items);
+    let total = items.len();
     let jobs: Vec<_> = items
         .iter()
         .filter_map(|item| {
@@ -425,6 +426,7 @@ where
         error(cx, "Not connected.");
         return;
     }
+    let skipped = total - jobs.len();
     let op = Arc::new(op);
     let task = spawn_kube(cx, async move {
         let mut errors = Vec::new();
@@ -437,15 +439,30 @@ where
     });
     cx.spawn(async move |cx| {
         let errors = task.await;
-        cx.update(|cx| {
-            if errors.is_empty() {
-                success(cx, format!("{verb} {label}"));
-            } else {
-                error(cx, errors.join("\n"));
-            }
+        cx.update(|cx| match run_report(verb, &label, &errors, skipped) {
+            Ok(message) => success(cx, message),
+            Err(message) => error(cx, message),
         });
     })
     .detach();
+}
+
+/// The toast for a finished [`run_each`]: `Ok` only when every item was done. `skipped` items
+/// had no connected cluster and were never tried.
+fn run_report(
+    verb: &str,
+    label: &str,
+    errors: &[String],
+    skipped: usize,
+) -> Result<String, String> {
+    if errors.is_empty() && skipped == 0 {
+        return Ok(format!("{verb} {label}"));
+    }
+    let mut lines = errors.to_vec();
+    if skipped > 0 {
+        lines.push(format!("{skipped} skipped: not connected"));
+    }
+    Err(lines.join("\n"))
 }
 
 /// Typed confirmation on PROD: the object's name, or `delete N` for several.
@@ -970,6 +987,20 @@ mod tests {
         assert!(!yaml[0].contains("MIIEvQ"), "{}", yaml[0]);
         assert!(yaml[0].contains("key: ••••••••"), "{}", yaml[0]);
         assert!(yaml[1].contains("key: value"));
+    }
+
+    #[test]
+    fn run_report_names_skipped_and_failed_items() {
+        assert_eq!(
+            run_report("Scaled", "2 deployments", &[], 0),
+            Ok("Scaled 2 deployments".into())
+        );
+        let partial = run_report("Scaled", "3 deployments", &["api: boom".into()], 1);
+        assert_eq!(partial, Err("api: boom\n1 skipped: not connected".into()));
+        assert_eq!(
+            run_report("Scaled", "2 deployments", &[], 1),
+            Err("1 skipped: not connected".into())
+        );
     }
 
     #[test]
