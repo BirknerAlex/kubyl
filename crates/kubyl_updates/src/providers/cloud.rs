@@ -204,6 +204,15 @@ async fn run_program(
         .await
         .ok()
         .flatten();
+    // Arguments come from the kubeconfig's exec plugin (profile, role ARN, region, tenant) and
+    // may end up on a `cmd /C` line on Windows, where quoting can't neutralize `%VAR%`, `^` or
+    // `&`. Real names never hold these characters.
+    if args.iter().any(|arg| cmd_unsafe(arg)) {
+        return Err(CliError::Io(
+            "an argument contains characters that aren't allowed (& | < > ^ % \" ! or parentheses)"
+                .into(),
+        ));
+    }
     let mut cmd = command(program, path.as_ref());
     cmd.args(args);
     if let Some(path) = &path {
@@ -242,6 +251,13 @@ async fn run_program(
         });
     }
     Ok(output.stdout)
+}
+
+/// Whether `arg` holds a character that `cmd.exe` interprets even inside quotes.
+fn cmd_unsafe(arg: &str) -> bool {
+    arg.chars().any(|c| {
+        c.is_control() || matches!(c, '&' | '|' | '<' | '>' | '^' | '%' | '"' | '!' | '(' | ')')
+    })
 }
 
 /// The command to run, resolved against the login shell's `PATH` like exec plugins are. On
@@ -1249,5 +1265,35 @@ users:
             matches!(&error, ProviderError::Unavailable(m) if m.contains("AWS CLI") && m.contains("getting-started-install")),
             "{error:?}"
         );
+    }
+
+    #[test]
+    fn cmd_metacharacters_are_refused() {
+        for bad in [
+            "a&calc", "p|q", "%PATH%", "x^y", "a\"b", "a\nb", "a>b", "(x)", "!x",
+        ] {
+            assert!(cmd_unsafe(bad), "{bad:?}");
+        }
+        for ok in [
+            "prod",
+            "arn:aws:iam::123456789012:role/my-role_1",
+            "eu-west-1",
+            "a1b2-c3.example.com",
+            "my profile",
+        ] {
+            assert!(!cmd_unsafe(ok), "{ok:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn arguments_with_metacharacters_never_spawn() {
+        let error = run_program(
+            "kubyl-no-such-cli",
+            &["--profile", "x&calc"],
+            &CliEnv::default(),
+            Duration::from_secs(5),
+        )
+        .await;
+        assert!(matches!(error, Err(CliError::Io(_))), "{error:?}");
     }
 }
