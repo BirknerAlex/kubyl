@@ -89,6 +89,9 @@ struct ClusterUpdates {
     wanted_until: Instant,
     preflight: HashMap<String, Preflight>,
     busy: Option<String>,
+    /// Which write `busy` belongs to (the state moves when the cluster is rekeyed, so a write
+    /// finds it again by this and not by the id it started under).
+    busy_token: u64,
     helm: Option<HelmLease>,
     /// Reads, pre-flight runs, the poll loop. Finished ones are pruned (a task must not drop
     /// itself).
@@ -114,6 +117,7 @@ impl ClusterUpdates {
             wanted_until: Instant::now() + KEEP,
             preflight: HashMap::new(),
             busy: None,
+            busy_token: 0,
             helm: None,
             tasks: Vec::new(),
             poll: None,
@@ -133,6 +137,8 @@ pub struct Updates {
     clusters: HashMap<ClusterId, ClusterUpdates>,
     /// Poll on timers (off in GPUI tests).
     poll: bool,
+    /// The last write token handed out.
+    writes: u64,
     _subscriptions: Vec<gpui::Subscription>,
 }
 
@@ -167,6 +173,7 @@ impl Updates {
             Self {
                 clusters: HashMap::new(),
                 poll,
+                writes: 0,
                 _subscriptions: subscriptions,
             }
         });
@@ -581,20 +588,23 @@ impl Updates {
             return;
         }
         state.busy = Some(plan.title.clone());
+        self.writes += 1;
+        let token = self.writes;
+        state.busy_token = token;
         cx.notify();
         let work = spawn_kube(cx, async move { provider.start(&plan).await });
-        let id = cluster.clone();
         let task = cx.spawn(async move |this, cx| {
             let result = work.await;
             this.update(cx, |this, cx| {
-                if let Some(state) = this.clusters.get_mut(&id) {
-                    state.busy = None;
-                }
+                // The cluster may have been rekeyed meanwhile: `id` is then the old one.
+                let current = finish_write(&mut this.clusters, token);
                 match result {
                     Ok(message) => NotificationCenter::push(cx, Notification::info(message)),
                     Err(err) => NotificationCenter::push(cx, Notification::error(err.to_string())),
                 }
-                this.read(&id, cx);
+                if let Some(current) = current {
+                    this.read(&current, cx);
+                }
                 cx.notify();
             })
             .ok();
@@ -661,6 +671,19 @@ impl Updates {
             state.provider = Some(provider);
         }
     }
+}
+
+/// Clears the busy mark of write `token` wherever its cluster is now, and returns that id.
+fn finish_write(
+    clusters: &mut HashMap<ClusterId, ClusterUpdates>,
+    token: u64,
+) -> Option<ClusterId> {
+    let (id, state) = clusters
+        .iter_mut()
+        .find(|(_, state)| state.busy_token == token)?;
+    state.busy = None;
+    state.busy_token = 0;
+    Some(id.clone())
 }
 
 /// The inputs of a pre-flight run, from the connection, discovery, Prometheus and Helm.
@@ -955,5 +978,24 @@ mod tests {
             assert_eq!(run.checks.len(), 1);
             assert_eq!(run.checks[0].status, check::CheckStatus::Unknown);
         });
+    }
+
+    /// A write that finishes after its cluster was rekeyed clears `busy` on the new id.
+    #[test]
+    fn a_write_finishing_after_a_rekey_clears_busy() {
+        let mut state = ClusterUpdates::new(Rc::new(()));
+        state.busy = Some("Update".into());
+        state.busy_token = 7;
+        let mut clusters = HashMap::new();
+        // `Rekeyed` moved the state from the old id to the new one.
+        clusters.insert(ClusterId::new("new-id"), state);
+        clusters.insert(ClusterId::new("other"), ClusterUpdates::new(Rc::new(())));
+        assert_eq!(
+            finish_write(&mut clusters, 7),
+            Some(ClusterId::new("new-id"))
+        );
+        assert!(clusters[&ClusterId::new("new-id")].busy.is_none());
+        // Nothing left to clear.
+        assert_eq!(finish_write(&mut clusters, 7), None);
     }
 }
