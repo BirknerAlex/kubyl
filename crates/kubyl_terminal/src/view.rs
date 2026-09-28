@@ -628,9 +628,7 @@ impl TerminalView {
 
             while let Some(bytes) = output_rx.next().await {
                 let mut batch = bytes;
-                while let Ok(more) = output_rx.try_recv() {
-                    batch.extend_from_slice(&more);
-                }
+                fill_batch(&mut batch, &mut output_rx);
                 let alive = this.update(cx, |this, cx| this.receive(&batch, cx)).is_ok();
                 if !alive {
                     break;
@@ -1665,4 +1663,43 @@ impl Render for TerminalView {
 /// Shows an error toast (for sessions that couldn't start before a view existed).
 pub(crate) fn notify_error(cx: &mut App, message: impl Into<SharedString>) {
     NotificationCenter::push(cx, Notification::error(message));
+}
+
+/// The most output parsed in one go on the UI thread; the rest waits for the next round.
+const MAX_BATCH: usize = 256 * 1024;
+
+/// Appends queued output to `batch` until it holds `MAX_BATCH` bytes, so a flood (`cat` of a
+/// big file) is parsed in slices and the UI keeps painting and handling input.
+fn fill_batch(batch: &mut Vec<u8>, rx: &mut mpsc::UnboundedReceiver<Vec<u8>>) {
+    while batch.len() < MAX_BATCH {
+        match rx.try_recv() {
+            Ok(more) => batch.extend_from_slice(&more),
+            Err(_) => break,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn output_batches_are_capped_and_nothing_is_lost() {
+        let (tx, mut rx) = mpsc::unbounded();
+        let chunk = vec![b'x'; 64 * 1024];
+        for _ in 0..20 {
+            tx.unbounded_send(chunk.clone()).unwrap();
+        }
+        let mut total = 0;
+        let mut rounds = 0;
+        while let Ok(first) = rx.try_recv() {
+            let mut batch = first;
+            fill_batch(&mut batch, &mut rx);
+            assert!(batch.len() <= MAX_BATCH + chunk.len());
+            total += batch.len();
+            rounds += 1;
+        }
+        assert_eq!(total, 20 * chunk.len());
+        assert!(rounds > 1);
+    }
 }
