@@ -62,11 +62,11 @@ impl Op {
         )
     }
 
-    /// The Kubernetes verb Kubernetes mode needs.
-    fn verb(&self) -> &'static str {
+    /// The Kubernetes verbs Kubernetes mode needs (a delete first patches the finalizers).
+    fn verbs(&self) -> &'static [&'static str] {
         match self {
-            Op::Delete(_) => "delete",
-            _ => "patch",
+            Op::Delete(_) => &["patch", "delete"],
+            _ => &["patch"],
         }
     }
 
@@ -260,7 +260,9 @@ async fn run_kubernetes(
     let (Some(client), Some((_, resource))) = (client, resource) else {
         return Err("the cluster isn't connected".into());
     };
-    check_access(cluster, target, op.verb(), cx).await?;
+    for verb in op.verbs() {
+        check_access(cluster, target, verb, cx).await?;
+    }
     if let Op::Rollback {
         disable_auto_sync: true,
         ..
@@ -314,8 +316,8 @@ mod tests {
     #[test]
     fn labels_and_messages() {
         assert_eq!(Op::Refresh { hard: true }.label(), "Hard refresh");
-        assert_eq!(Op::Delete(Cascade::None).verb(), "delete");
-        assert_eq!(Op::Sync(SyncRequest::default()).verb(), "patch");
+        assert_eq!(Op::Delete(Cascade::None).verbs(), ["patch", "delete"]);
+        assert_eq!(Op::Sync(SyncRequest::default()).verbs(), ["patch"]);
         assert_eq!(
             Op::Delete(Cascade::None).done("guestbook"),
             "guestbook deleted; its resources stay"
