@@ -529,8 +529,11 @@ impl AlertsService {
                 }
             }
             ConnectionEvent::Rekeyed { from, to } => {
-                if let Some(state) = self.clusters.remove(from) {
-                    self.clusters.insert(to.clone(), state);
+                // Discovery and reads in flight report under the old id and are dropped: start
+                // the new id over (new generation), or `discovering`/`in_flight` stay set.
+                if let Some(old) = self.clusters.remove(from) {
+                    stop_forwards(old.forwards, cx);
+                    self.reset(to, cx);
                 }
                 if let Some(t) = self.demand.borrow_mut().remove(from) {
                     self.demand.borrow_mut().insert(to.clone(), t);
@@ -539,6 +542,7 @@ impl AlertsService {
                     self.notices.insert(to.clone(), n);
                 }
                 cx.notify();
+                self.tick(cx);
             }
             ConnectionEvent::ContextsChanged => {
                 // Production/read-only flags or settings keys may have changed.
@@ -1812,6 +1816,33 @@ mod tests {
             let generation = s.clusters[&cluster].generation;
             s.fetched(&cluster, generation + 1, output(Vec::new()), cx);
             assert_eq!(s.clusters[&cluster].alerts.len(), 1);
+        });
+    }
+
+    #[gpui::test]
+    fn a_rekeyed_cluster_starts_over(cx: &mut TestAppContext) {
+        let (_dir, service) = setup(cx, serde_json::json!({}));
+        let from = ClusterId::new("old");
+        let to = ClusterId::new("new");
+        service.update(cx, |s, cx| {
+            s.insert_for_test(&from, vec![firing("A", Severity::Critical)], cx);
+            let state = s.clusters.get_mut(&from).unwrap();
+            state.discovering = true;
+            state.fetch.in_flight = true;
+            let old_generation = state.generation;
+            s.connection_event(
+                &ConnectionEvent::Rekeyed {
+                    from: from.clone(),
+                    to: to.clone(),
+                },
+                cx,
+            );
+            assert!(!s.clusters.contains_key(&from));
+            let state = &s.clusters[&to];
+            // Nothing stays stuck waiting for a task that reports under the old id.
+            assert!(!state.discovering && !state.fetch.in_flight);
+            assert_eq!(state.phase, Phase::Unknown);
+            assert!(state.generation > old_generation);
         });
     }
 
