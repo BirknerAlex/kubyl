@@ -249,8 +249,15 @@ fn debug_container(target: ResourceRef, cx: &mut App) {
     });
 }
 
-/// Asks, then opens a node shell. Also used by the Terminal panel's `+` on a node-shell tab.
-pub(crate) fn node_shell(target: ResourceRef, cx: &mut App) {
+/// Shows the node-shell confirmation (creates a privileged pod, PROD asks for the typed node
+/// name) and, once confirmed, calls `on_confirm`. Shared by the `Node: Shell…` action and
+/// [`view::TerminalView`]'s unconfirmed node shell (the Details view's Terminal sub-tab).
+pub(crate) fn confirm_node_shell(
+    target: ResourceRef,
+    on_confirm: impl Fn(dialogs::ConfirmResult, &mut Window, &mut App) + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let node = target.name.clone().unwrap_or_default();
     let manager = ConnectionManager::global(cx);
     if manager.read(cx).caps(&target.cluster).read_only {
@@ -273,9 +280,15 @@ pub(crate) fn node_shell(target: ResourceRef, cx: &mut App) {
         Some("The pod is deleted when the shell closes, and after 12 hours at the latest.".into());
     spec.danger = true;
     spec.typed = production.then(|| node.clone());
+    dialogs::confirm(spec, on_confirm, window, cx);
+}
+
+/// Asks, then opens a node shell. Also used by the Terminal panel's `+` on a node-shell tab.
+pub(crate) fn node_shell(target: ResourceRef, cx: &mut App) {
     with_window(cx, move |window, cx| {
-        dialogs::confirm(
-            spec,
+        let settings = Settings::get::<TerminalSettings>(cx).clone();
+        confirm_node_shell(
+            target.clone(),
             move |_, _, cx| {
                 open(
                     TerminalSpec {
