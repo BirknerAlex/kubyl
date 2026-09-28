@@ -261,9 +261,7 @@ impl Olm {
                 if let Some(state) = self.clusters.remove(from) {
                     self.ensure(to, Some(state.lease), cx);
                 }
-                if let Some(hub) = self.hub.remove(from) {
-                    self.hub.insert(to.clone(), hub);
-                }
+                rekey_hub(&mut self.hub, from, to);
                 cx.notify();
             }
             _ => {}
@@ -637,6 +635,16 @@ impl Olm {
     }
 }
 
+/// Moves a finished hub fetch to the new id. One in flight is dropped (with its task, which
+/// would report under the old id): the next ask fetches again.
+fn rekey_hub(hub: &mut HashMap<ClusterId, HubState>, from: &ClusterId, to: &ClusterId) {
+    if let Some(state) = hub.remove(from)
+        && !state.loading
+    {
+        hub.insert(to.clone(), state);
+    }
+}
+
 fn status_code(status: &StoreStatus) -> u64 {
     match status {
         StoreStatus::Waiting => 0,
@@ -794,6 +802,35 @@ fn build(state: &ClusterOlm, cx: &App) -> Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rekey_moves_finished_hub_and_drops_one_in_flight() {
+        let (from, to) = (ClusterId::new("a"), ClusterId::new("b"));
+        let mut hub = HashMap::new();
+        hub.insert(
+            from.clone(),
+            HubState {
+                fetched_at: Some(Instant::now()),
+                ..Default::default()
+            },
+        );
+        rekey_hub(&mut hub, &from, &to);
+        assert!(!hub.contains_key(&from) && hub[&to].fetched_at.is_some());
+
+        let mut hub = HashMap::new();
+        hub.insert(
+            from.clone(),
+            HubState {
+                loading: true,
+                ..Default::default()
+            },
+        );
+        rekey_hub(&mut hub, &from, &to);
+        assert!(
+            hub.is_empty(),
+            "a fetch in flight must restart, not stay loading"
+        );
+    }
 
     /// A watch the installed operators don't come from (OLM v1, catalogs) is a problem to show,
     /// not one that hides the operators; a failing Subscription or CSV watch is.
