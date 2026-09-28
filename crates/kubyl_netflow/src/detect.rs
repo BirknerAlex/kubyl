@@ -95,7 +95,11 @@ impl std::fmt::Debug for RelayTls {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LokiTarget {
     Service(ServiceTarget),
+    /// A URL the user set in settings; the desktop requests it directly.
     Url(String),
+    /// A URL only the FlowCollector names (outside the cluster, an IP or localhost). The cluster
+    /// doesn't get to pick what the desktop connects to, so it is shown, not requested.
+    External(String),
     /// A LokiStack gateway: needs the user's token, which the service proxy doesn't forward.
     LokiStack {
         namespace: String,
@@ -623,7 +627,9 @@ async fn netobserv(inputs: &Inputs) -> (Option<Candidate>, Check) {
         .map_or(PromTarget::Cluster, PromTarget::Service);
     let text = match &loki {
         LokiTarget::Service(target) => format!("FlowCollector cluster, Loki {}", target.label()),
-        LokiTarget::Url(url) => format!("FlowCollector cluster, Loki {url}"),
+        LokiTarget::Url(url) | LokiTarget::External(url) => {
+            format!("FlowCollector cluster, Loki {url}")
+        }
         LokiTarget::LokiStack { namespace, name } => {
             format!("FlowCollector cluster, LokiStack {namespace}/{name} (metrics only)")
         }
@@ -654,7 +660,7 @@ pub fn loki_of(spec: &Value) -> LokiTarget {
             .filter(|u| !u.is_empty())
             .map(|u| {
                 in_cluster_url(u, &namespace)
-                    .map_or_else(|| LokiTarget::Url(u.to_string()), LokiTarget::Service)
+                    .map_or_else(|| LokiTarget::External(u.to_string()), LokiTarget::Service)
             })
     };
     match loki
@@ -800,7 +806,7 @@ mod tests {
         let external = serde_json::json!({ "loki": { "mode": "Manual", "manual": { "querierUrl": "https://loki.example.com" } } });
         assert_eq!(
             loki_of(&external),
-            LokiTarget::Url("https://loki.example.com".into())
+            LokiTarget::External("https://loki.example.com".into())
         );
     }
 }

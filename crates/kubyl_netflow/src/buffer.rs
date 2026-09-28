@@ -12,7 +12,8 @@ use jiff::Timestamp;
 use crate::filter::{Field, SeenValues};
 use crate::model::{Direction, Flow, L7};
 
-/// Distinct values kept per field (IPs and pods can be many).
+/// Distinct values offered per field (IPs and pods can be many). Every value in the buffer is
+/// counted, so the counts stay exact as flows leave; only the answer is cut.
 const MAX_VALUES: usize = 2_000;
 
 pub struct FlowBuffer {
@@ -161,11 +162,7 @@ impl Seen {
     fn add(&mut self, flow: &Flow) {
         for (field, value) in keys(flow) {
             let map = self.maps.entry(field).or_default();
-            if let Some(count) = map.get_mut(&value) {
-                *count += 1;
-            } else if map.len() < MAX_VALUES {
-                map.insert(value, 1);
-            }
+            *map.entry(value).or_insert(0) += 1;
         }
     }
 
@@ -190,7 +187,13 @@ impl SeenValues for Seen {
             .get(&field)
             .map(|m| m.iter().map(|(k, v)| (k.clone(), *v)).collect())
             .unwrap_or_default();
-        values.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        let order =
+            |a: &(String, u32), b: &(String, u32)| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0));
+        if values.len() > MAX_VALUES {
+            values.select_nth_unstable_by(MAX_VALUES, order);
+            values.truncate(MAX_VALUES);
+        }
+        values.sort_by(order);
         values
     }
 }
@@ -266,6 +269,26 @@ mod tests {
         };
         flow.verdict = verdict;
         flow
+    }
+
+    #[test]
+    fn counts_stay_exact_past_the_value_limit() {
+        let mut buffer = FlowBuffer::new(MAX_VALUES + 7, Duration::from_secs(600));
+        let mut flows: Vec<Flow> = (0..MAX_VALUES + 5)
+            .map(|i| flow(1_000, &format!("ns-{i}"), Verdict::Forwarded))
+            .collect();
+        // "late" arrives when the field already holds more values than the limit.
+        flows.push(flow(1_001, "late", Verdict::Forwarded));
+        flows.push(flow(1_002, "late", Verdict::Forwarded));
+        buffer.push(flows);
+        let values = buffer.seen().values(Field::Namespace);
+        assert_eq!(values.len(), MAX_VALUES);
+        assert_eq!(values[0], ("late".to_string(), 2));
+        // Evicting older flows must not take counts away from "late".
+        buffer.push(vec![flow(1_003, "new", Verdict::Forwarded); 3]);
+        let values = buffer.seen().values(Field::Namespace);
+        assert_eq!(values[0], ("new".to_string(), 3));
+        assert_eq!(values[1], ("late".to_string(), 2));
     }
 
     #[test]

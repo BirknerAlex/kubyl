@@ -15,7 +15,20 @@ const SECRET_HEADERS: &[&str] = &[
     "x-api-key",
     "x-auth-token",
     "x-amz-security-token",
+    "x-vault-token",
+    "private-token",
+    "x-csrf-token",
+    "x-xsrf-token",
+    "x-goog-api-key",
 ];
+
+/// Words that mark a header as a credential whatever its exact name.
+const SECRET_WORDS: &[&str] = &["token", "secret", "password", "api-key", "apikey"];
+
+fn is_secret_header(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    SECRET_HEADERS.contains(&name.as_str()) || SECRET_WORDS.iter().any(|w| name.contains(w))
+}
 
 /// What replaces a dropped value.
 pub const HIDDEN: &str = "…";
@@ -81,7 +94,7 @@ pub fn path_of(url: &str) -> &str {
 pub fn headers<'a>(raw: impl IntoIterator<Item = (&'a str, &'a str)>) -> Vec<(String, String)> {
     raw.into_iter()
         .map(|(name, value)| {
-            let secret = SECRET_HEADERS.iter().any(|s| name.eq_ignore_ascii_case(s));
+            let secret = is_secret_header(name);
             (
                 name.to_string(),
                 if secret {
@@ -122,6 +135,20 @@ mod tests {
             "https://api.example.com/v1?x=1"
         );
         assert_eq!(url("http://a@b@host", false), "http://host");
+    }
+
+    #[test]
+    fn more_credential_headers_are_dropped() {
+        let sanitized = headers([
+            ("X-Vault-Token", "v"),
+            ("PRIVATE-TOKEN", "p"),
+            ("X-CSRF-Token", "c"),
+            ("X-Goog-Api-Key", "g"),
+            ("X-Custom-Secret", "s"),
+            ("Accept", "*/*"),
+        ]);
+        assert!(sanitized[..5].iter().all(|(_, v)| v == HIDDEN));
+        assert_eq!(sanitized[5].1, "*/*");
     }
 
     #[test]

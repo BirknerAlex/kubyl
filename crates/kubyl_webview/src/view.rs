@@ -140,6 +140,9 @@ pub struct WebViewTab {
     menu_open: bool,
     /// The page went to a host outside the forward (an app redirecting to its external URL).
     external: Option<String>,
+    /// A page outside the forward the app tried to open in a new window; asked about, not
+    /// opened.
+    popup: Option<String>,
     allowed_hosts: HashSet<String>,
     accepted: Rc<RefCell<Vec<[u8; 32]>>>,
     shortcuts: Rc<RefCell<Vec<Keystroke>>>,
@@ -281,6 +284,7 @@ impl WebViewTab {
             zoom: memory.zoom.unwrap_or(1.0),
             menu_open: false,
             external: None,
+            popup: None,
             allowed_hosts: HashSet::new(),
             accepted,
             shortcuts: Rc::default(),
@@ -429,6 +433,7 @@ impl WebViewTab {
             cookies: crate::session::cookies_for(&self.target, cx),
         };
         let events = self.events.clone();
+        let private = self.private;
         cx.spawn_in(window, async move |this, cx| {
             let started = Instant::now();
             let result = NativeWebView::create(&parent, options, events);
@@ -436,6 +441,9 @@ impl WebViewTab {
             this.update_in(cx, |this, window, cx| {
                 this.creating = false;
                 match result {
+                    // Switched between private and isolated while it was being created: this
+                    // one has the wrong storage. Drop it and create another.
+                    Ok(_) if this.private != private => this.forward_changed(window, cx),
                     Ok(native) => {
                         let embedded = Embedded::new(native, window.window_handle());
                         crate::start_pump(cx);
@@ -604,7 +612,9 @@ impl WebViewTab {
             request.private = Some(self.private);
             crate::open_in(request, window, cx);
         } else if url.starts_with("http://") || url.starts_with("https://") {
-            cx.open_url(&url);
+            // A page can call window.open without any click: ask before the browser opens.
+            self.popup = Some(url);
+            cx.notify();
         }
     }
 
@@ -755,6 +765,15 @@ impl WebViewTab {
         let minutes = WebViewSettings::get(cx).idle_stop_minutes;
         if minutes > 0 && self.last_seen.elapsed() > Duration::from_secs(u64::from(minutes) * 60) {
             tracing::debug!(target = %self.target, "idle in the background: stopping the forward");
+            // The page keeps running scripts and holds the forward's cookies, and another
+            // forward may take the port: park it on a blank page, and come back to this path.
+            if let Some(path) = self.current_url().and_then(|u| target::remembered_path(&u)) {
+                self.initial = path;
+            }
+            if let Some(embedded) = &self.embedded {
+                embedded.native.load_url("about:blank");
+            }
+            self.origin = None;
             self.set_phase(Phase::Idle);
             self.hold(false, cx);
             cx.notify();
@@ -914,7 +933,8 @@ impl WebViewTab {
 
     fn proceed(&mut self, cert: &CertInfo, window: &mut Window, cx: &mut Context<Self>) {
         self.accepted.borrow_mut().push(cert.sha256);
-        if let Some(key) = self.key.clone() {
+        // Private mode leaves nothing behind: the choice lasts for this view only.
+        if let Some(key) = self.key.clone().filter(|_| !self.private) {
             let sha = cert.sha256;
             store::update(cx, |state| state.accept(key, &sha));
         }
@@ -1265,8 +1285,50 @@ impl WebViewTab {
     }
 
     fn render_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let url = self.external.clone()?;
         let colors = cx.colors().clone();
+        if let Some(url) = self.popup.clone() {
+            return Some(
+                h_flex()
+                    .flex_none()
+                    .px(u(12.0))
+                    .py(u(6.0))
+                    .gap(u(8.0))
+                    .border_b_1()
+                    .border_color(colors.border)
+                    .bg(colors.subheader_background)
+                    .text_size(u(12.5))
+                    .child(
+                        Icon::new(IconName::TriangleAlert)
+                            .size(13.0)
+                            .color(colors.yellow),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(format!("This app wants to open {url} in your browser.")),
+                    )
+                    .child(Button::new("popup-open").label("Open in browser").on_click(
+                        cx.listener(move |this, _, _, cx| {
+                            this.popup = None;
+                            cx.open_url(&url);
+                            cx.notify();
+                        }),
+                    ))
+                    .child(
+                        Button::new("popup-dismiss")
+                            .ghost()
+                            .label("Dismiss")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.popup = None;
+                                cx.notify();
+                            })),
+                    )
+                    .into_any_element(),
+            );
+        }
+        let url = self.external.clone()?;
         let host = url::Url::parse(&url)
             .ok()
             .and_then(|u| u.host_str().map(String::from))

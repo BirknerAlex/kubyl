@@ -206,16 +206,9 @@ impl FlowProvider for NetObserv {
                     };
                     let (records, full) =
                         fetch(&transport, &label, &logql, start, end, "forward").await?;
-                    for (ns, flow, hash) in records {
-                        // Records at the cursor were sent last time.
-                        if ns == cursor && boundary.contains(&hash) {
-                            continue;
-                        }
-                        if ns > cursor {
-                            cursor = ns;
-                            boundary.clear();
-                        }
-                        boundary.insert(hash);
+                    let fresh = advance(&mut cursor, &mut boundary, records);
+                    let stalled = fresh.is_empty();
+                    for flow in fresh {
                         if batcher.push(flow).await.is_err() {
                             return Ok(());
                         }
@@ -225,6 +218,12 @@ impl FlowProvider for NetObserv {
                     }
                     if !full {
                         break;
+                    }
+                    if stalled {
+                        // A full page of records we already sent (the limit or more share one
+                        // timestamp): step past it instead of asking for the same page forever.
+                        cursor = cursor.saturating_add(1);
+                        boundary.clear();
                     }
                 }
             }
@@ -270,6 +269,28 @@ impl FlowProvider for NetObserv {
             Ok(Some(topology))
         })
     }
+}
+
+/// The records not sent yet, moving `cursor` and the hashes `boundary` seen at it forward.
+fn advance(
+    cursor: &mut u64,
+    boundary: &mut HashSet<u64>,
+    records: Vec<(u64, Flow, u64)>,
+) -> Vec<Flow> {
+    let mut fresh = Vec::new();
+    for (ns, flow, hash) in records {
+        // Records at the cursor were sent last time.
+        if ns == *cursor && boundary.contains(&hash) {
+            continue;
+        }
+        if ns > *cursor {
+            *cursor = ns;
+            boundary.clear();
+        }
+        boundary.insert(hash);
+        fresh.push(flow);
+    }
+    fresh
 }
 
 fn nanos(time: Timestamp) -> u64 {
@@ -370,13 +391,21 @@ pub fn pushdown(filter: &FlowFilter) -> FlowFilter {
     filter.subset(pushable)
 }
 
+/// `value` as regex text inside a double-quoted LogQL string: the string's own escaping applies
+/// on top of the regex's, so a regex `\.` is written `\\.`, a literal backslash `\\\\`.
 fn regex_escape(value: &str) -> String {
     let mut out = String::new();
     for c in value.chars() {
-        if "\\.+*?()|[]{}^$".contains(c) {
-            out.push_str("\\\\");
+        match c {
+            '\\' => out.push_str("\\\\\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            c if ".+*?()|[]{}^$".contains(c) => {
+                out.push_str("\\\\");
+                out.push(c);
+            }
+            c => out.push(c),
         }
-        out.push(c);
     }
     out
 }
@@ -566,7 +595,7 @@ fn tcp_flags(record: &Value) -> Vec<String> {
 /// One Loki record (stream labels and JSON line).
 pub fn map_record(labels: &BTreeMap<String, String>, record: &Value) -> Option<Flow> {
     let end = number(record, "TimeFlowEndMs")
-        .or_else(|| number(record, "TimeReceived").map(|s| s * 1000))?;
+        .or_else(|| number(record, "TimeReceived").and_then(|s| s.checked_mul(1000)))?;
     let time = Timestamp::from_millisecond(i64::try_from(end).ok()?).ok()?;
     let mut flow = Flow::new(time);
     flow.start = number(record, "TimeFlowStartMs")
@@ -735,6 +764,47 @@ fn metric_flow(labels: &BTreeMap<String, String>, bytes: f64) -> Flow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn advance_skips_sent_records_and_reports_a_stalled_page() {
+        let mut cursor = 10;
+        let mut boundary: HashSet<u64> = [1, 2].into();
+        // A full page of records that were all sent last time: nothing fresh, so the poll
+        // loop knows to step past the cursor.
+        let page = vec![
+            (10, Flow::new(Timestamp::UNIX_EPOCH), 1),
+            (10, Flow::new(Timestamp::UNIX_EPOCH), 2),
+        ];
+        assert!(advance(&mut cursor, &mut boundary, page).is_empty());
+        assert_eq!(cursor, 10);
+        // A new record at the same timestamp and a later one both count.
+        let page = vec![
+            (10, Flow::new(Timestamp::UNIX_EPOCH), 2),
+            (10, Flow::new(Timestamp::UNIX_EPOCH), 3),
+            (12, Flow::new(Timestamp::UNIX_EPOCH), 4),
+        ];
+        assert_eq!(advance(&mut cursor, &mut boundary, page).len(), 2);
+        assert_eq!(cursor, 12);
+        assert_eq!(boundary, [4].into());
+    }
+
+    #[test]
+    fn overflowing_timestamps_are_skipped() {
+        let record = serde_json::json!({ "TimeReceived": u64::MAX });
+        assert!(map_record(&BTreeMap::new(), &record).is_none());
+    }
+
+    #[test]
+    fn regex_values_survive_the_logql_string() {
+        assert_eq!(regex_escape("a.b"), r"a\\.b");
+        assert_eq!(regex_escape(r"a\b"), r"a\\\\b");
+        assert_eq!(regex_escape(r#"a"b"#), r#"a\"b"#);
+        assert_eq!(regex_escape("a\nb"), r"a\nb");
+        assert_eq!(
+            matcher("l", &["x.y".into(), "z".into()]),
+            r#"l=~"^(x\\.y|z)$""#
+        );
+    }
 
     fn labels(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs
