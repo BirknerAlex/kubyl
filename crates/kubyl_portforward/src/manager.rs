@@ -346,6 +346,59 @@ impl PortForwardManager {
         }
     }
 
+    /// The clusters that have forwards.
+    pub fn clusters(&self) -> Vec<ClusterId> {
+        let mut clusters: Vec<ClusterId> = self
+            .forwards
+            .values()
+            .map(|f| f.spec.cluster.clone())
+            .collect();
+        clusters.dedup();
+        clusters
+    }
+
+    /// Stops the forwards whose cluster isn't connected any more (disconnected, reconnecting
+    /// with a new client, or removed from the kubeconfig): they hold the old client and would
+    /// keep a dead listener open. Saved auto-start forwards begin again when the cluster
+    /// reconnects. A temporary forward's owner is told, like after a stop from Active Sessions.
+    pub fn stop_disconnected(
+        &mut self,
+        connected: impl Fn(&ClusterId) -> bool,
+        cx: &mut Context<Self>,
+    ) {
+        let stale: Vec<u64> = self
+            .forwards
+            .iter()
+            .filter(|(_, f)| !connected(&f.spec.cluster))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in stale {
+            let Some(forward) = self.forwards.get(&id) else {
+                continue;
+            };
+            SessionRegistry::remove(cx, forward.session_id);
+            if forward.spec.ephemeral.is_none() {
+                NotificationCenter::push(
+                    cx,
+                    Notification::info(format!(
+                        "Port-forward {} stopped: the cluster disconnected.",
+                        forward.spec.target_label()
+                    )),
+                );
+            }
+            self.stopped_by_user(id, cx);
+        }
+    }
+
+    /// A cluster entry's id changed without reconnecting: its forwards follow.
+    pub fn rekey(&mut self, from: &ClusterId, to: &ClusterId) {
+        for forward in self.forwards.values_mut() {
+            if forward.spec.cluster == *from {
+                forward.spec.cluster = to.clone();
+            }
+        }
+    }
+
     /// A forward's state, or `None` once it stopped.
     pub fn info(&self, id: ForwardId) -> Option<ForwardInfo> {
         let forward = self.forwards.get(&id.0)?;

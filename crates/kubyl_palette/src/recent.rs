@@ -24,7 +24,9 @@ impl StateSection for Recent {
 
 impl Recent {
     pub fn load(cx: &App) -> Self {
-        State::get::<Self>(cx)
+        let mut recent = State::get::<Self>(cx);
+        recent.keys.truncate(LIMIT);
+        recent
     }
 
     /// Moves `key` to the front and saves.
@@ -40,8 +42,9 @@ impl Recent {
 
     /// Recency boost for `key`: `MAX_BOOST` for the latest, 0 when unknown.
     pub fn boost(&self, key: &str) -> u32 {
-        self.rank(key)
-            .map_or(0, |ix| MAX_BOOST * (LIMIT - ix) as u32 / LIMIT as u32)
+        self.rank(key).map_or(0, |ix| {
+            MAX_BOOST * LIMIT.saturating_sub(ix) as u32 / LIMIT as u32
+        })
     }
 
     /// Position in the list (0 = most recent).
@@ -68,5 +71,14 @@ mod tests {
             recent.push(&i.to_string());
         }
         assert_eq!(recent.keys.len(), LIMIT);
+    }
+
+    #[test]
+    fn oversized_stored_list_does_not_underflow() {
+        let recent = Recent {
+            keys: (0..LIMIT + 20).map(|i| i.to_string()).collect(),
+        };
+        assert_eq!(recent.boost(&(LIMIT + 10).to_string()), 0);
+        assert_eq!(recent.boost("0"), MAX_BOOST);
     }
 }

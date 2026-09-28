@@ -173,6 +173,26 @@ pub fn init(cx: &mut App) {
     // Saved forwards with auto-start begin when their cluster connects.
     if let Some(manager) = ConnectionManager::try_global(cx) {
         cx.subscribe(&manager, |manager, event: &ConnectionEvent, cx| {
+            // Forwards hold the client they started with: drop them when it goes away.
+            match event {
+                ConnectionEvent::Rekeyed { from, to } => {
+                    PortForwardManager::global(cx).update(cx, |m, _| m.rekey(from, to));
+                }
+                ConnectionEvent::StateChanged(_) | ConnectionEvent::ContextsChanged => {
+                    let connections = manager.read(cx);
+                    let stale: Vec<ClusterId> = PortForwardManager::global(cx)
+                        .read(cx)
+                        .clusters()
+                        .into_iter()
+                        .filter(|c| connections.client(c).is_none())
+                        .collect();
+                    if !stale.is_empty() {
+                        PortForwardManager::global(cx)
+                            .update(cx, |m, cx| m.stop_disconnected(|c| !stale.contains(c), cx));
+                    }
+                }
+                _ => {}
+            }
             let ConnectionEvent::StateChanged(cluster) = event else {
                 return;
             };

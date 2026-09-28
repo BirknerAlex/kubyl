@@ -126,9 +126,15 @@ pub fn object_age(object: &Value, now: Timestamp) -> String {
 /// Parses a Kubernetes quantity (`250m`, `1.5Gi`, `2`, `1e3`) into a plain number.
 pub fn parse_quantity(quantity: &str) -> Option<f64> {
     let quantity = quantity.trim();
+    // `e`/`E` is an exponent only when a digit or sign follows; otherwise it's the `E`/`Ei` suffix.
+    let bytes = quantity.as_bytes();
     let split = quantity
-        .find(|c: char| c.is_ascii_alphabetic() && c != 'e' && c != 'E')
-        .unwrap_or(quantity.len());
+        .char_indices()
+        .find(|&(i, c)| match c {
+            'e' | 'E' => !matches!(bytes.get(i + 1), Some(b'0'..=b'9' | b'+' | b'-')),
+            c => c.is_ascii_alphabetic(),
+        })
+        .map_or(quantity.len(), |(i, _)| i);
     let (number, suffix) = quantity.split_at(split);
     let number: f64 = number.parse().ok()?;
     let factor = match suffix {
@@ -258,6 +264,10 @@ mod tests {
         assert_eq!(parse_quantity("100M"), Some(1e8));
         assert_eq!(parse_quantity("1e3"), Some(1000.0));
         assert_eq!(parse_quantity("12Xi"), None);
+        assert_eq!(parse_quantity("2E"), Some(2e18));
+        assert_eq!(parse_quantity("1Ei"), Some(1024.0_f64.powi(6)));
+        assert_eq!(parse_quantity("1E3"), Some(1000.0));
+        assert_eq!(parse_quantity("1e-3"), Some(0.001));
         assert_eq!(format_cpu(0.184), "184m");
         assert_eq!(format_cpu(2.0), "2");
         assert_eq!(format_bytes(312.0 * 1024.0 * 1024.0), "312Mi");
