@@ -12,7 +12,7 @@
 //! is retried on the fresh object, never overwritten.
 
 use kube::Client;
-use kube::api::{Api, DeleteParams, DynamicObject, Patch, PatchParams};
+use kube::api::{Api, DeleteParams, DynamicObject, Patch, PatchParams, Preconditions};
 use kube::discovery::ApiResource;
 use serde_json::{Value, json};
 
@@ -523,6 +523,24 @@ pub fn finalizers_for(current: &[String], cascade: Cascade, deleting: bool) -> O
     }
 }
 
+fn uid_of(app: &Value) -> Option<String> {
+    app.pointer("/metadata/uid")
+        .and_then(Value::as_str)
+        .filter(|uid| !uid.is_empty())
+        .map(String::from)
+}
+
+/// A delete that only applies to the object with `uid`.
+fn delete_params(uid: Option<String>) -> DeleteParams {
+    DeleteParams {
+        preconditions: uid.map(|uid| Preconditions {
+            uid: Some(uid),
+            resource_version: None,
+        }),
+        ..DeleteParams::default()
+    }
+}
+
 /// Deletes the app: sets or removes the resources finalizer for `cascade`, then deletes.
 pub async fn delete(
     client: Client,
@@ -530,7 +548,10 @@ pub async fn delete(
     target: AppTarget,
     cascade: Cascade,
 ) -> Result<(), OpError> {
+    // The object the finalizers were set on: the delete must hit that one, not a re-created app.
+    let uid = std::sync::Mutex::new(None);
     patch_fresh(client.clone(), &resource, &target, |app| {
+        *uid.lock().unwrap() = uid_of(app);
         let current: Vec<String> = app
             .pointer("/metadata/finalizers")
             .and_then(Value::as_array)
@@ -547,7 +568,7 @@ pub async fn delete(
     })
     .await?;
     match api(client, &resource, &target)
-        .delete(&target.name, &DeleteParams::default())
+        .delete(&target.name, &delete_params(uid.into_inner().unwrap()))
         .await
     {
         Ok(_) => Ok(()),
@@ -560,6 +581,19 @@ pub async fn delete(
 mod tests {
     use super::*;
     use crate::model::tests::guestbook;
+
+    #[test]
+    fn delete_is_bound_to_the_object_it_prepared() {
+        let app = json!({"metadata": {"name": "guestbook", "uid": "abc-123"}});
+        assert_eq!(uid_of(&app).as_deref(), Some("abc-123"));
+        assert_eq!(uid_of(&json!({"metadata": {"uid": ""}})), None);
+        let params = delete_params(uid_of(&app));
+        assert_eq!(
+            params.preconditions.and_then(|p| p.uid).as_deref(),
+            Some("abc-123")
+        );
+        assert!(delete_params(None).preconditions.is_none());
+    }
 
     #[test]
     fn sync_operation_like_the_api_server() {

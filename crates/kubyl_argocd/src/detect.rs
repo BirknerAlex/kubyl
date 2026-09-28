@@ -220,9 +220,21 @@ async fn inspect(client: Client, namespace: &str, hinted: bool) -> Option<Instal
     Some(install)
 }
 
+/// `url` from argocd-cm when it is a plain http(s) URL: it gets opened in the browser, so
+/// `file:`, custom schemes and anything with control characters are dropped.
+fn web_url(url: &str) -> Option<String> {
+    let url = url.trim();
+    let scheme_ok = ["http://", "https://"].iter().any(|scheme| {
+        url.get(..scheme.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(scheme))
+    });
+    (scheme_ok && url.len() > "https://".len() && !url.chars().any(char::is_control))
+        .then(|| url.to_string())
+}
+
 fn apply_cm(install: &mut Install, cm: &ConfigMap) {
     let data = cm.data.clone().unwrap_or_default();
-    install.url = data.get("url").filter(|u| !u.is_empty()).cloned();
+    install.url = data.get("url").and_then(|u| web_url(u));
     install.tracking = data
         .get("application.resourceTrackingMethod")
         .filter(|t| !t.is_empty())
@@ -448,6 +460,30 @@ mod tests {
             Some("v3.4.9")
         );
         assert_eq!(image_version("registry:5000/argoproj/argocd"), None);
+    }
+
+    #[test]
+    fn only_web_urls_are_kept() {
+        assert_eq!(
+            web_url(" https://argocd.example.com/ ").as_deref(),
+            Some("https://argocd.example.com/")
+        );
+        assert_eq!(
+            web_url("HTTP://argocd.local").as_deref(),
+            Some("HTTP://argocd.local")
+        );
+        for bad in [
+            "",
+            "https://",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "ms-msdt:/id",
+            "argocd.example.com",
+            "https://a\nb",
+            "é",
+        ] {
+            assert_eq!(web_url(bad), None, "{bad}");
+        }
     }
 
     #[test]

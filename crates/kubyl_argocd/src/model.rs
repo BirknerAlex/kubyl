@@ -264,9 +264,11 @@ pub fn short_repo(url: &str) -> String {
             break;
         }
     }
-    // Credentials never show (`user:token@host`).
-    if let Some((_, host)) = rest.split_once('@') {
-        rest = host;
+    // Credentials never show (`user:token@host`). They end at the last `@` before the path, so
+    // a password with a raw `@` doesn't leak its tail and an `@` in the path stays.
+    let authority_end = rest.find('/').unwrap_or(rest.len());
+    if let Some(at) = rest[..authority_end].rfind('@') {
+        rest = &rest[at + 1..];
     }
     let mut out = rest.replacen(':', "/", usize::from(!url.contains("://")));
     if let Some(stripped) = out.strip_suffix(".git") {
@@ -1311,6 +1313,15 @@ pub(crate) mod tests {
         assert_eq!(
             short_repo("https://user:secret@gitlab.example.com/g/p.git"),
             "gitlab.example.com/g/p"
+        );
+        // A raw `@` in the password: none of it shows. An `@` in the path stays.
+        assert_eq!(
+            short_repo("https://user:p@ss@gitlab.example.com/g/p.git"),
+            "gitlab.example.com/g/p"
+        );
+        assert_eq!(
+            short_repo("https://github.com/acme/deploy@v1"),
+            "github.com/acme/deploy@v1"
         );
         assert_eq!(
             short_repo("ssh://git@bitbucket.org/ws/repo.git"),

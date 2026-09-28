@@ -152,6 +152,12 @@ pub fn parse_duration_minutes(text: &str) -> Option<i64> {
     Some((total_seconds / 60.0).ceil() as i64)
 }
 
+/// Longest window duration honoured, in minutes (20 years).
+const MAX_WINDOW_MINUTES: i64 = 20 * 366 * 24 * 60;
+/// Most backward steps `is_active` takes: one per minute inside a matching hour, one per hour
+/// or day skipped otherwise.
+const MAX_WINDOW_STEPS: u32 = 200_000;
+
 /// Whether `window` is active at `now`.
 pub fn is_active(window: &SyncWindow, now: Timestamp) -> bool {
     let (Some(schedule), Some(minutes)) = (
@@ -175,11 +181,19 @@ pub fn is_active(window: &SyncWindow, now: Timestamp) -> bool {
         return false;
     };
     // A start at minute t covers [t, t + duration): look for one in (start - duration, start].
-    let Ok(earliest) = start.checked_sub(minutes.minutes()) else {
+    // A longer window is clamped (20 years covers any real schedule) so `Span` cannot overflow.
+    let minutes = minutes.clamp(0, MAX_WINDOW_MINUTES);
+    let Ok(span) = jiff::Span::new().try_minutes(minutes) else {
+        return false;
+    };
+    let Ok(earliest) = start.checked_sub(span) else {
         return false;
     };
     let mut time = start;
-    while time > earliest {
+    // Bounds the walk back on the UI thread even for a decades-long window on a sparse schedule.
+    let mut steps = 0u32;
+    while time > earliest && steps < MAX_WINDOW_STEPS {
+        steps += 1;
         let previous = if !schedule.day_matches(&time) {
             // The last minute of the day before (DST-safe: from the start of this day).
             time.start_of_day().and_then(|t| t.checked_sub(1.minute()))
@@ -204,16 +218,37 @@ pub fn is_active(window: &SyncWindow, now: Timestamp) -> bool {
 
 /// A glob as Argo CD matches app names, namespaces and clusters (`*`, `?`, `guestbook-*`).
 pub fn glob_match(pattern: &str, value: &str) -> bool {
-    fn go(p: &[u8], v: &[u8]) -> bool {
-        match (p.first(), v.first()) {
-            (None, None) => true,
-            (Some(b'*'), _) => go(&p[1..], v) || (!v.is_empty() && go(p, &v[1..])),
-            (Some(b'?'), Some(_)) => go(&p[1..], &v[1..]),
-            (Some(a), Some(b)) if a == b => go(&p[1..], &v[1..]),
-            _ => false,
+    // Iterative, remembering the last `*` to retry from: at most pattern x value steps, where
+    // the recursive form was exponential on `*a*a*a*b`.
+    let (p, v) = (pattern.as_bytes(), value.as_bytes());
+    let (mut pi, mut vi) = (0, 0);
+    let mut star: Option<(usize, usize)> = None;
+    while vi < v.len() {
+        match p.get(pi) {
+            Some(b'*') => {
+                star = Some((pi, vi));
+                pi += 1;
+            }
+            Some(b'?') => {
+                pi += 1;
+                vi += 1;
+            }
+            Some(a) if *a == v[vi] => {
+                pi += 1;
+                vi += 1;
+            }
+            _ => match star {
+                Some((star_pi, star_vi)) => {
+                    // Let the star swallow one more byte.
+                    pi = star_pi + 1;
+                    vi = star_vi + 1;
+                    star = Some((star_pi, star_vi + 1));
+                }
+                None => return false,
+            },
         }
     }
-    go(pattern.as_bytes(), value.as_bytes())
+    p[pi..].iter().all(|c| *c == b'*')
 }
 
 /// Whether `window` applies to `app` (by name, destination namespace or cluster).
@@ -298,6 +333,35 @@ mod tests {
         assert_eq!(parse_duration_minutes("10"), None);
         assert_eq!(parse_duration_minutes(""), None);
         assert_eq!(parse_duration_minutes("5x"), None);
+    }
+
+    #[test]
+    fn huge_durations_neither_panic_nor_hang() {
+        // Used to overflow `Span` and panic.
+        let huge = window("deny", "0 22 * * *", "9999999999999h");
+        assert!(is_active(&huge, at("2026-09-25T23:30:00Z")));
+        let sparse = window("deny", "0 0 29 2 *", "99999999999h");
+        let _ = is_active(&sparse, at("2026-09-25T23:30:00Z"));
+        let overflow = window("deny", "0 22 * * *", &format!("{}h", "9".repeat(400)));
+        let _ = is_active(&overflow, at("2026-09-25T23:30:00Z"));
+    }
+
+    #[test]
+    fn glob_matching() {
+        assert!(glob_match("*", ""));
+        assert!(glob_match("guestbook-*", "guestbook-prod"));
+        assert!(glob_match("g?estbook", "guestbook"));
+        assert!(glob_match("*book*", "guestbook-prod"));
+        assert!(glob_match("a*b*c", "aXXbYYc"));
+        assert!(!glob_match("guestbook", "guestbook-prod"));
+        assert!(!glob_match("a*b", "acc"));
+        assert!(!glob_match("?", ""));
+        assert!(glob_match("", ""));
+        assert!(!glob_match("", "x"));
+        // Exponential for the recursive form; must return at once.
+        let value = "a".repeat(60);
+        assert!(!glob_match("*a*a*a*a*a*a*a*a*a*a*b", &value));
+        assert!(glob_match("*a*a*a*a*a*a*a*a*a*a*", &value));
     }
 
     #[test]

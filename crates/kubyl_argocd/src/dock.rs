@@ -540,7 +540,9 @@ impl Render for AppDock {
                     on,
                     enabled,
                     &colors,
-                    move |_, _, cx| run::run(target.clone(), Op::Policy(change(!on)), cx).detach(),
+                    move |_, window, cx| {
+                        dialogs::run_confirmed(target.clone(), Op::Policy(change(!on)), window, cx)
+                    },
                 ))
         };
         let policy_section = widgets::section("Sync policy", &colors)
