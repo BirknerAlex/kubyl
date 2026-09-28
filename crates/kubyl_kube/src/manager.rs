@@ -969,11 +969,18 @@ impl ConnectionManager {
             .unwrap_or_default()
     }
 
-    /// Capabilities, including the user's production and read-only flags.
+    /// Capabilities, including the user's production and read-only flags. Those flags come from
+    /// the settings, so they also hold while the cluster is disconnected (a reset connection
+    /// starts with default caps).
     pub fn caps(&self, id: &ClusterId) -> ClusterCaps {
+        let settings = self.context_settings(id);
         match self.clusters.get(&self.key(id)) {
-            Some(cluster) => cluster.caps.clone(),
-            None => cluster_info::caps(None, None, &self.context_settings(id)),
+            Some(cluster) => ClusterCaps {
+                read_only: settings.read_only,
+                production: settings.production,
+                ..cluster.caps.clone()
+            },
+            None => cluster_info::caps(None, None, &settings),
         }
     }
 
@@ -2224,6 +2231,27 @@ mod tests {
             assert_eq!(badge.name.as_ref(), "Production");
             assert!(!badge.connected);
             assert!(m.caps(&prod).production);
+        });
+    }
+
+    #[gpui::test]
+    fn safety_flags_survive_a_disconnect(cx: &mut TestAppContext) {
+        let (_dir, manager) = setup(cx);
+        let broken = manager.read_with(cx, |m, _| m.all_contexts()[3].id.clone());
+        manager.update(cx, |m, cx| {
+            m.update_context_settings(&broken, cx, |s| {
+                s.production = true;
+                s.read_only = true;
+            });
+            m.activate(&broken, cx);
+        });
+        cx.run_until_parked();
+        manager.update(cx, |m, cx| m.disconnect(&broken, cx));
+        cx.run_until_parked();
+        manager.read_with(cx, |m, _| {
+            assert!(m.cluster(&broken).is_some(), "the connection entry exists");
+            let caps = m.caps(&broken);
+            assert!(caps.production && caps.read_only, "{caps:?}");
         });
     }
 
