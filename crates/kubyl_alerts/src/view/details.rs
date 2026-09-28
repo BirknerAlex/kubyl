@@ -24,7 +24,7 @@ use crate::model::{Alert, AlertState, Rule, Target};
 #[derive(Default)]
 pub(crate) struct DetailsState {
     /// The alert these are for.
-    for_alert: Option<String>,
+    for_alert: Option<(ClusterId, String)>,
     target: TargetCheck,
     timeline: Timeline,
     description_open: bool,
@@ -167,11 +167,12 @@ fn object_status(object: &Value) -> Option<String> {
 impl AlertsView {
     /// Starts the target check and the timeline for the selected alert (once).
     fn load_details(&mut self, entry: &Entry, cx: &mut Context<Self>) {
-        if self.details_state.for_alert.as_ref() == Some(&entry.alert.fingerprint) {
+        let key = (entry.cluster.clone(), entry.alert.fingerprint.clone());
+        if self.details_state.for_alert.as_ref() == Some(&key) {
             return;
         }
         self.details_state = DetailsState {
-            for_alert: Some(entry.alert.fingerprint.clone()),
+            for_alert: Some(key),
             ..Default::default()
         };
         let client = kubyl_kube::ConnectionManager::try_global(cx)
@@ -187,7 +188,7 @@ impl AlertsView {
                 let request = http::Request::get(path).body(Vec::new()).ok()?;
                 Some(client.request::<Value>(request).await)
             });
-            let fingerprint = entry.alert.fingerprint.clone();
+            let fingerprint = (entry.cluster.clone(), entry.alert.fingerprint.clone());
             cx.spawn(async move |this, cx| {
                 let result = task.await;
                 this.update(cx, |this, cx| {
@@ -217,7 +218,7 @@ impl AlertsView {
         self.details_state.timeline = Timeline::Loading;
         let name = entry.alert.name.replace('\\', "\\\\").replace('"', "\\\"");
         let labels = entry.alert.labels.clone();
-        let fingerprint = entry.alert.fingerprint.clone();
+        let fingerprint = (entry.cluster.clone(), entry.alert.fingerprint.clone());
         let task = spawn_kube(cx, async move {
             let end = (Timestamp::now().as_second() as f64 / TIMELINE_STEP).floor() * TIMELINE_STEP;
             let start = end - TIMELINE_SPAN;
@@ -766,9 +767,10 @@ impl AlertsView {
                     let by = self
                         .alerts
                         .iter()
-                        .find(|a| &a.fingerprint == fingerprint)
-                        .cloned();
-                    let select = fingerprint.clone();
+                        .zip(&self.alert_clusters)
+                        .find(|(a, c)| &a.fingerprint == fingerprint && **c == cluster)
+                        .map(|(a, _)| a.clone());
+                    let select = (cluster.clone(), fingerprint.clone());
                     section = section.child(
                         h_flex()
                             .gap(u(6.0))

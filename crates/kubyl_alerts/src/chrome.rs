@@ -373,7 +373,7 @@ fn alert_line(
                 Some(&open),
                 Pending {
                     tab: Some(Tab::Alerts),
-                    select: Some(fingerprint.clone()),
+                    select: Some((open.clone(), fingerprint.clone())),
                     ..Default::default()
                 },
                 window,
