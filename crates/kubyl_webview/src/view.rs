@@ -927,7 +927,8 @@ impl WebViewTab {
 
     fn proceed(&mut self, cert: &CertInfo, window: &mut Window, cx: &mut Context<Self>) {
         self.accepted.borrow_mut().push(cert.sha256);
-        if let Some(key) = self.key.clone() {
+        // Private mode leaves nothing behind: the choice lasts for this view only.
+        if let Some(key) = self.key.clone().filter(|_| !self.private) {
             let sha = cert.sha256;
             store::update(cx, |state| state.accept(key, &sha));
         }
