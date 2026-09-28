@@ -251,13 +251,13 @@ pub fn aggregate<'a>(
         // A node talking to itself counts the flow once.
         for i in [Some(a), (a != b).then_some(b)].into_iter().flatten() {
             nodes[i].flows += 1;
-            nodes[i].bytes += bytes;
+            nodes[i].bytes = nodes[i].bytes.saturating_add(bytes);
             nodes[i].blocked += u64::from(blocked);
         }
         let edge = edges.entry((a, b)).or_default();
         edge.flows += 1;
-        edge.bytes += bytes;
-        edge.packets += flow.packets.unwrap_or(0);
+        edge.bytes = edge.bytes.saturating_add(bytes);
+        edge.packets = edge.packets.saturating_add(flow.packets.unwrap_or(0));
         match flow.verdict {
             Verdict::Dropped => edge.dropped += 1,
             Verdict::NoReply => edge.no_reply += 1,
@@ -388,7 +388,7 @@ fn fold(topology: &mut Topology, limit: usize) {
             nodes.len() - 1
         });
         nodes[at].flows += node.flows;
-        nodes[at].bytes += node.bytes;
+        nodes[at].bytes = nodes[at].bytes.saturating_add(node.bytes);
         nodes[at].blocked += node.blocked;
         remap[i] = at;
     }
@@ -398,8 +398,8 @@ fn fold(topology: &mut Topology, limit: usize) {
         match merged.get_mut(&key) {
             Some(existing) => {
                 existing.flows += edge.flows;
-                existing.bytes += edge.bytes;
-                existing.packets += edge.packets;
+                existing.bytes = existing.bytes.saturating_add(edge.bytes);
+                existing.packets = existing.packets.saturating_add(edge.packets);
                 existing.forwarded += edge.forwarded;
                 existing.dropped += edge.dropped;
                 existing.no_reply += edge.no_reply;
@@ -477,6 +477,21 @@ mod tests {
             };
         }
         flow
+    }
+
+    #[test]
+    fn huge_byte_counts_saturate() {
+        let mut big = flow(
+            pod("storefront", "shopper"),
+            pod("payments", "checkout-api"),
+            Verdict::Forwarded,
+        );
+        big.bytes = Some(u64::MAX);
+        big.packets = Some(u64::MAX);
+        let flows = vec![big.clone(), big];
+        let topology = aggregate(&flows, Zoom::Workloads, NODE_LIMIT);
+        assert_eq!(topology.edges[0].bytes, u64::MAX);
+        assert_eq!(topology.edges[0].packets, u64::MAX);
     }
 
     #[test]

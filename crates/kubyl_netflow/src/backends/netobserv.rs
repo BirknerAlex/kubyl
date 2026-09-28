@@ -595,7 +595,7 @@ fn tcp_flags(record: &Value) -> Vec<String> {
 /// One Loki record (stream labels and JSON line).
 pub fn map_record(labels: &BTreeMap<String, String>, record: &Value) -> Option<Flow> {
     let end = number(record, "TimeFlowEndMs")
-        .or_else(|| number(record, "TimeReceived").map(|s| s * 1000))?;
+        .or_else(|| number(record, "TimeReceived").and_then(|s| s.checked_mul(1000)))?;
     let time = Timestamp::from_millisecond(i64::try_from(end).ok()?).ok()?;
     let mut flow = Flow::new(time);
     flow.start = number(record, "TimeFlowStartMs")
@@ -786,6 +786,12 @@ mod tests {
         assert_eq!(advance(&mut cursor, &mut boundary, page).len(), 2);
         assert_eq!(cursor, 12);
         assert_eq!(boundary, [4].into());
+    }
+
+    #[test]
+    fn overflowing_timestamps_are_skipped() {
+        let record = serde_json::json!({ "TimeReceived": u64::MAX });
+        assert!(map_record(&BTreeMap::new(), &record).is_none());
     }
 
     #[test]
