@@ -896,7 +896,9 @@ impl AlertsService {
         state.error = output.error.map(SharedString::from);
         state.checked_at = Some(output.now);
         state.heartbeat = merged.heartbeat;
-        state.silences = Arc::new(output.silences);
+        if output.silences_ok {
+            state.silences = Arc::new(output.silences);
+        }
 
         // Transitions.
         let now = output.now;
@@ -1465,6 +1467,8 @@ struct FetchOutput {
     /// Per Alertmanager: its receivers when read this time, or its error.
     sources: Vec<Result<Option<Vec<String>>, String>>,
     silences: Vec<Silence>,
+    /// False when a silences read failed: keep the previous list (`error` says why).
+    silences_ok: bool,
     rules: Option<Result<Vec<RuleGroup>, String>>,
     /// `None`: nothing answered (keep the last data).
     merged: Option<merge::Merged>,
@@ -1522,14 +1526,20 @@ async fn fetch(input: FetchInput) -> FetchOutput {
     let mut silences: Vec<Silence> = Vec::new();
     let mut sources = Vec::new();
     let mut am_ok = false;
+    let mut silences_ok = true;
     for (conn, (alerts, silence_list, receivers)) in input.conns.iter().zip(am) {
         let label = conn.label();
         match alerts {
             Ok(body) => {
                 am_ok = true;
                 am_alerts.extend(model::parse_am_alerts(&body, &label, &parse));
-                if let Ok(body) = silence_list {
-                    silences.extend(model::parse_silences(&body, &label));
+                match silence_list {
+                    Ok(body) => silences.extend(model::parse_silences(&body, &label)),
+                    Err(err) => {
+                        silences_ok = false;
+                        let message = client::explain(&conn.target, via_name(conn), &err);
+                        errors.push(format!("{label}: silences: {message}"));
+                    }
                 }
                 sources.push(Ok(receivers.ok().map(|b| model::parse_receivers(&b))));
             }
@@ -1582,6 +1592,7 @@ async fn fetch(input: FetchInput) -> FetchOutput {
     FetchOutput {
         sources,
         silences,
+        silences_ok,
         rules,
         merged,
         error: (!errors.is_empty()).then(|| errors.join("; ")),
@@ -1726,6 +1737,7 @@ mod tests {
         FetchOutput {
             sources: Vec::new(),
             silences: Vec::new(),
+            silences_ok: true,
             rules: None,
             merged: Some(merge::Merged {
                 alerts,
@@ -1870,6 +1882,34 @@ mod tests {
         );
         state.refetch_at = None;
         assert!(!state.fetch_wanted(Duration::from_secs(60)));
+    }
+
+    #[gpui::test]
+    fn a_failed_silences_read_keeps_the_previous_list(cx: &mut TestAppContext) {
+        let (_dir, service) = setup(cx, serde_json::json!({}));
+        let cluster = ClusterId::new("c");
+        service.update(cx, |s, cx| {
+            s.insert_for_test(&cluster, Vec::new(), cx);
+            let generation = s.clusters[&cluster].generation;
+            let silence = Silence {
+                id: "s1".into(),
+                matchers: Vec::new(),
+                starts_at: None,
+                ends_at: None,
+                created_by: String::new(),
+                comment: String::new(),
+                state: "active".into(),
+                source: "am".into(),
+            };
+            s.clusters.get_mut(&cluster).unwrap().silences = Arc::new(vec![silence]);
+            let mut failed = output(Vec::new());
+            failed.silences_ok = false;
+            failed.error = Some("silences: denied".into());
+            s.fetched(&cluster, generation, failed, cx);
+            let state = &s.clusters[&cluster];
+            assert_eq!(state.silences.len(), 1);
+            assert!(state.error.is_some());
+        });
     }
 
     #[test]
