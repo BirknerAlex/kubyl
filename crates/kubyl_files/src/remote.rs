@@ -609,6 +609,7 @@ pub async fn exec_stream(
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     fn run_write_script(dir: &std::path::Path, target: &str, data: &[u8], len: usize) -> bool {
         use std::io::Write as _;
         use std::process::{Command, Stdio};
