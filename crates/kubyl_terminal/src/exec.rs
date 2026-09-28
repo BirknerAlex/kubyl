@@ -423,13 +423,36 @@ pub fn node_shell_command() -> Vec<String> {
 }
 
 /// Creates a node-shell pod on `node` and waits until it runs. Returns its name.
+///
+/// The work runs on its own Tokio task: the caller's task is aborted when its tab closes, and
+/// an abort between the API accepting the pod and the guard existing would leak a privileged
+/// pod. If nobody is left to receive the result, the guard is dropped here and deletes it.
 pub async fn create_node_shell(
     client: &kube::Client,
     namespace: &str,
     node: &str,
     image: &str,
 ) -> anyhow::Result<NodeShellPod> {
+    let (tx, rx) = futures::channel::oneshot::channel();
+    let (client, namespace) = (client.clone(), namespace.to_string());
+    let (node, image) = (node.to_string(), image.to_string());
+    kubyl_core::runtime::handle().spawn(async move {
+        let result = create_node_shell_pod(&client, &namespace, &node, &image).await;
+        // A receiver that is gone drops the pod guard along with the result.
+        tx.send(result).ok();
+    });
+    rx.await
+        .map_err(|_| anyhow::anyhow!("creating the node-shell pod was interrupted"))?
+}
+
+async fn create_node_shell_pod(
+    client: &kube::Client,
+    namespace: &str,
+    node: &str,
+    image: &str,
+) -> anyhow::Result<NodeShellPod> {
     let api: Api<Pod> = Api::namespaced(client.clone(), namespace);
+    sweep_finished_node_shells(&api).await;
     let pod: Pod = serde_json::from_value(node_shell_pod(node, image))?;
     let created = api
         .create(&PostParams::default(), &pod)
@@ -448,6 +471,32 @@ pub async fn create_node_shell(
     };
     wait_running(&api, pod.name(), "shell", Duration::from_secs(180)).await?;
     Ok(pod)
+}
+
+/// Whether a pod phase means the shell is over (and the pod is only a leftover).
+fn node_shell_finished(phase: Option<&str>) -> bool {
+    matches!(phase, Some("Succeeded" | "Failed"))
+}
+
+/// Deletes finished node-shell pods left behind by earlier sessions (a crash, a lost
+/// connection). Running ones may belong to another Kubyl window, so they stay: they end with
+/// their session or at their 12-hour deadline.
+async fn sweep_finished_node_shells(api: &Api<Pod>) {
+    let params = kube::api::ListParams::default().labels(NODE_SHELL_LABEL);
+    let Ok(list) = api.list(&params).await else {
+        return;
+    };
+    for pod in list {
+        let phase = pod.status.as_ref().and_then(|s| s.phase.as_deref());
+        if let Some(name) = pod.metadata.name.as_deref()
+            && node_shell_finished(phase)
+            && let Err(err) = api
+                .delete(name, &DeleteParams::default().grace_period(0))
+                .await
+        {
+            tracing::debug!(pod = name, "couldn't sweep a node-shell pod: {err}");
+        }
+    }
 }
 
 /// A node-shell pod that is deleted when dropped, until [`NodeShellPod::keep`] hands it over.
@@ -500,6 +549,15 @@ pub async fn delete_pod(client: &kube::Client, namespace: &str, name: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_finished_node_shells_are_swept() {
+        assert!(node_shell_finished(Some("Succeeded")));
+        assert!(node_shell_finished(Some("Failed")));
+        assert!(!node_shell_finished(Some("Running")));
+        assert!(!node_shell_finished(Some("Pending")));
+        assert!(!node_shell_finished(None));
+    }
 
     #[test]
     fn pod_info_picks_the_annotated_or_first_container() {
