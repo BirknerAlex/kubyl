@@ -178,6 +178,32 @@ fn part_path(dir: &Path, name: &str) -> PathBuf {
     dir.join(format!(".{name}.kubyl-part"))
 }
 
+/// The file that records which remote file (size and mtime) a partial download belongs to.
+fn signature_path(part: &Path) -> PathBuf {
+    let mut name = part.as_os_str().to_owned();
+    name.push(".sig");
+    PathBuf::from(name)
+}
+
+/// Whether a partial download may be resumed: it must have been started from the same remote
+/// file, else the old bytes would be stitched onto a changed file.
+fn can_resume(stored: Option<&str>, current: &str) -> bool {
+    !current.is_empty() && stored.is_some_and(|s| s == current)
+}
+
+/// Size and mtime of the remote file (size alone where `stat -c` is missing).
+async fn remote_signature(job: &TransferJob) -> String {
+    let script = "stat -c '%s %Y' -- \"$1\" 2>/dev/null || wc -c < \"$1\"";
+    match job
+        .target
+        .exec(sh(script, [job.target.real(&job.remote)]), None)
+        .await
+    {
+        Ok(output) if output.success => String::from_utf8_lossy(&output.stdout).trim().to_string(),
+        _ => String::new(),
+    }
+}
+
 /// Moves a finished download into place, replacing what's there (the conflict was decided
 /// before the transfer started).
 fn finish(part: &Path, dest: &Path) -> std::io::Result<()> {
@@ -210,6 +236,7 @@ async fn download_file(job: &TransferJob, progress: &ProgressTx) -> anyhow::Resu
         }
     }
     finish(&part, &dest).with_context(|| format!("moving the download to {}", dest.display()))?;
+    tokio::fs::remove_file(signature_path(&part)).await.ok();
     Ok(())
 }
 
@@ -278,10 +305,18 @@ async fn download_chunks(
     progress: &ProgressTx,
 ) -> anyhow::Result<()> {
     let chunk = job.chunk_size.max(64 * 1024);
-    let existing = tokio::fs::metadata(part)
-        .await
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let sig_path = signature_path(part);
+    let signature = remote_signature(job).await;
+    let stored = tokio::fs::read_to_string(&sig_path).await.ok();
+    let existing = if can_resume(stored.as_deref(), &signature) {
+        tokio::fs::metadata(part)
+            .await
+            .map(|m| m.len())
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    tokio::fs::write(&sig_path, &signature).await?;
     let mut index = existing / chunk;
     let resume_at = index * chunk;
     let file = tokio::fs::OpenOptions::new()
@@ -604,6 +639,16 @@ mod tests {
         let mut text = String::new();
         reader.read_to_string(&mut text).unwrap();
         assert_eq!(text, "hello world");
+    }
+
+    #[test]
+    fn partial_downloads_resume_only_for_the_same_remote_file() {
+        assert!(can_resume(Some("100 1700"), "100 1700"));
+        assert!(!can_resume(Some("100 1700"), "100 1701"));
+        assert!(!can_resume(None, "100 1700"));
+        assert!(!can_resume(Some(""), ""));
+        let part = part_path(Path::new("/d"), "a.bin");
+        assert_eq!(signature_path(&part), Path::new("/d/.a.bin.kubyl-part.sig"));
     }
 
     #[tokio::test]
