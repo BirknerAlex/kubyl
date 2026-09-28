@@ -618,6 +618,14 @@ impl ArgoCd {
                 })
                 .await
                 .map_err(|e| e.to_string())?;
+                // Signed out (or reconnected) while the sign-in was under way: store and trust
+                // nothing.
+                if !this
+                    .update(cx, |this, _| this.session_mut(&id).is_some())
+                    .unwrap_or(false)
+                {
+                    return Err("The sign-in was cancelled.".to_string());
+                }
                 let token_key = settings::token_key(&key, &install.namespace, &service);
                 let renewable = session.as_ref().is_some_and(|s| s.refresh_token.is_some());
                 match &session {
@@ -677,7 +685,11 @@ impl ArgoCd {
     /// Signs out: ends the session on the server (the token is revoked, so a web view's copy
     /// of it stops working too), forgets the token, stops the forward; Kubernetes mode stays.
     pub fn sign_out(&mut self, cluster: &ClusterId, forget_install: bool, cx: &mut Context<Self>) {
-        let session = self.clusters.get_mut(cluster).and_then(|c| c.api.take());
+        let session = self.clusters.get_mut(cluster).and_then(|c| {
+            // A sign-in still under way is cancelled, or it would store its token afterwards.
+            c._sign_in = None;
+            c.api.take()
+        });
         if let Some(session) = &session
             && let (Some(key), Some(server)) =
                 (ContextKey::of(cluster, cx), &session.install.server)
