@@ -473,7 +473,7 @@ impl ReleaseView {
             &self.namespace,
             self.revision().unwrap_or(latest),
             latest,
-            crate::view::helm_context(&self.cluster, cx).as_deref(),
+            crate::view::helm_target(&self.cluster, cx).as_ref(),
         )
     }
 

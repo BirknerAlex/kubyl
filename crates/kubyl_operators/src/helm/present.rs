@@ -319,19 +319,31 @@ fn quote(arg: &str) -> String {
     }
 }
 
+/// The kubeconfig and context a cluster comes from, so a copied command hits the same cluster
+/// even when the file isn't in the user's default kubeconfig.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KubeTarget {
+    pub context: String,
+    pub kubeconfig: std::path::PathBuf,
+}
+
 /// The commands the release tab offers: Kubyl shows releases read-only, so rollback,
-/// uninstall and friends go through the user's `helm`. `context` is the kubeconfig context.
+/// uninstall and friends go through the user's `helm`. `target` is the kubeconfig and context.
 pub fn commands(
     name: &str,
     namespace: &str,
     revision: u32,
     latest: u32,
-    context: Option<&str>,
+    target: Option<&KubeTarget>,
 ) -> Vec<Command> {
     let tail = {
         let mut tail = format!(" -n {}", quote(namespace));
-        if let Some(context) = context {
-            tail.push_str(&format!(" --kube-context {}", quote(context)));
+        if let Some(target) = target {
+            tail.push_str(&format!(
+                " --kubeconfig {} --kube-context {}",
+                quote(&target.kubeconfig.to_string_lossy()),
+                quote(&target.context)
+            ));
         }
         tail
     };
@@ -465,11 +477,17 @@ mod tests {
 
     #[test]
     fn helm_commands_quote_their_arguments() {
-        let commands = commands("shop db", "shop", 3, 5, Some("kind-kubyl-dev"));
+        let target = KubeTarget {
+            context: "kind-kubyl-dev".into(),
+            kubeconfig: "/home/me/my configs/dev.yaml".into(),
+        };
+        let commands = commands("shop db", "shop", 3, 5, Some(&target));
         assert_eq!(
             commands[0].command,
-            "helm rollback 'shop db' 3 -n shop --kube-context kind-kubyl-dev"
+            "helm rollback 'shop db' 3 -n shop --kubeconfig '/home/me/my configs/dev.yaml' --kube-context kind-kubyl-dev"
         );
+        // Every command that reaches the cluster names its kubeconfig.
+        assert!(commands.iter().all(|c| c.command.contains("--kubeconfig ")));
         assert!(
             commands
                 .iter()
