@@ -12,7 +12,7 @@ use kube::api::{
 use kube::{Api, Client};
 use serde_json::json;
 
-use super::model::{Approval, GROUP, InstallMode, OperatorGroup, Subscription};
+use super::model::{Approval, Csv, GROUP, InstallMode, OperatorGroup, OwnedCrd, Subscription};
 
 /// The field manager of Kubyl's writes.
 pub const FIELD_MANAGER: &str = "kubyl";
@@ -330,6 +330,28 @@ pub struct UninstallSpec {
     pub crds: Vec<(String, ApiResource, bool)>,
 }
 
+/// The CRDs of `owned` that another installed CSV (not `own`, no OLM copy, not on its way out)
+/// also owns, with that CSV's name: deleting them would wipe the other install's resources.
+pub fn shared_crds(
+    owned: &[OwnedCrd],
+    own: Option<(&str, &str)>,
+    csvs: &[std::sync::Arc<Csv>],
+) -> std::collections::BTreeMap<String, String> {
+    let mut shared = std::collections::BTreeMap::new();
+    for csv in csvs {
+        let is_own = own.is_some_and(|(ns, name)| csv.namespace == ns && csv.name == name);
+        if is_own || csv.copied || csv.deleting || csv.phase == "Replacing" {
+            continue;
+        }
+        for crd in owned {
+            if csv.owned.iter().any(|o| o.name == crd.name) {
+                shared.entry(crd.name.clone()).or_insert_with(|| csv.key());
+            }
+        }
+    }
+    shared
+}
+
 /// How long an uninstall waits for instances to go (their finalizers need the operator).
 pub const INSTANCE_WAIT: Duration = Duration::from_secs(120);
 
@@ -455,6 +477,40 @@ mod tests {
         OperatorGroup::parse(&json!({"metadata": {"name": name, "namespace": ns},
             "spec": if targets.is_empty() { json!({}) } else { json!({"targetNamespaces": targets}) }}))
         .unwrap()
+    }
+
+    fn csv(ns: &str, name: &str, crds: &[&str], extra: serde_json::Value) -> Arc<Csv> {
+        let mut object = json!({
+            "metadata": {"name": name, "namespace": ns},
+            "spec": {"customresourcedefinitions": {"owned": crds.iter()
+                .map(|c| json!({"name": c, "version": "v1", "kind": "K"})).collect::<Vec<_>>()}},
+        });
+        object
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().cloned().unwrap_or_default());
+        Arc::new(Csv::parse(&object).unwrap())
+    }
+
+    #[test]
+    fn crds_of_another_install_are_shared() {
+        let mine = csv("a", "op.v1", &["foos.x.io", "bars.x.io"], json!({}));
+        let owned = mine.owned.clone();
+        let other = csv("b", "op.v1", &["foos.x.io"], json!({}));
+        let copy = csv(
+            "c",
+            "op.v1",
+            &["bars.x.io"],
+            json!({"metadata": {"name": "op.v1", "namespace": "c",
+                "labels": {"olm.copiedFrom": "a"}}}),
+        );
+        let all = vec![mine, other, copy];
+        let shared = shared_crds(&owned, Some(("a", "op.v1")), &all);
+        // `bars` is only owned by our own CSV and an OLM copy of it.
+        assert_eq!(shared.len(), 1);
+        assert_eq!(shared["foos.x.io"], "b/op.v1");
+        // Without a CSV of our own, every owner counts.
+        assert_eq!(shared_crds(&owned, None, &all).len(), 2);
     }
 
     fn choice(target: Target) -> InstallChoice {
