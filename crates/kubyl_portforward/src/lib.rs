@@ -455,6 +455,7 @@ pub fn start_target_forward(target: ResourceRef, choice: ForwardChoice, cx: &mut
                 resolve::workload_selector(select_client, &ns, &resource, &name).await
             });
             let cluster = target.cluster.clone();
+            let spec_cluster = cluster.clone();
             let base = spec(
                 ForwardKind::Workload {
                     label_selector: String::new(),
@@ -464,6 +465,12 @@ pub fn start_target_forward(target: ResourceRef, choice: ForwardChoice, cx: &mut
             );
             cx.spawn(async move |cx| match task.await {
                 Ok(label_selector) => cx.update(|cx| {
+                    // The cluster may have disconnected or reconnected (new client) meanwhile.
+                    let manager = ConnectionManager::global(cx);
+                    let Some(client) = manager.read(cx).client(&spec_cluster) else {
+                        error(cx, "The cluster isn't connected.");
+                        return;
+                    };
                     let spec = ForwardSpec {
                         kind: ForwardKind::Workload { label_selector },
                         ..base
