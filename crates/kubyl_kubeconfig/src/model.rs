@@ -982,7 +982,9 @@ impl ExecSpec {
     /// is given for that program and not just for the text.
     pub fn in_file(mut self, file: &std::path::Path) -> Self {
         let path = std::path::Path::new(&self.command);
-        if path.is_relative() && self.command.contains(['/', '\\']) {
+        // `/usr/bin/aws` has no drive letter, so Windows calls it relative; it is rooted anyway.
+        let rooted = self.command.starts_with(['/', '\\']);
+        if path.is_relative() && !rooted && self.command.contains(['/', '\\']) {
             self.resolved = Some(resolve_path(&self.command, file.parent()));
         }
         self
