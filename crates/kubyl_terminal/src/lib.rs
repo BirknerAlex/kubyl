@@ -263,11 +263,11 @@ pub(crate) fn node_shell(target: ResourceRef, cx: &mut App) {
     let mut spec = ConfirmSpec::new(format!("Open a shell on node {node}?"), "Start Node Shell");
     spec.lines = vec![
         format!(
-            "Creates a privileged pod in {} (host PID, network and IPC) on {node}",
+            "Creates a privileged pod in {} (host PID, network and IPC) on {node},",
             settings.node_shell_namespace
         )
         .into(),
-        "and runs a root shell in the node's namespaces with nsenter.".into(),
+        "mounting the node's root filesystem at /host -- run `chroot /host` to use it.".into(),
     ];
     spec.note =
         Some("The pod is deleted when the shell closes, and after 12 hours at the latest.".into());

@@ -31,7 +31,9 @@ pub struct TerminalSettings {
     pub open_in: OpenIn,
     /// Image of ephemeral debug containers (`kubectl debug`).
     pub debug_image: String,
-    /// Image of node-shell pods; needs `nsenter` (busybox and alpine have it).
+    /// Image of node-shell pods. The node's root filesystem is mounted at `/host`
+    /// (`chroot /host` to use it); defaults to `netshoot`, which bundles common debugging
+    /// tools (`curl`, `dig`, `tcpdump`, `iproute2`…).
     pub node_shell_image: String,
     /// Namespace node-shell pods are created in (it must allow privileged pods).
     pub node_shell_namespace: String,
@@ -46,7 +48,7 @@ impl Default for TerminalSettings {
             option_as_meta: !cfg!(target_os = "macos"),
             open_in: OpenIn::Panel,
             debug_image: "busybox:1.37".into(),
-            node_shell_image: "busybox:1.37".into(),
+            node_shell_image: "nicolaka/netshoot:v0.16".into(),
             node_shell_namespace: "kube-system".into(),
         }
     }

@@ -437,7 +437,7 @@ impl TerminalView {
                                     old.delete();
                                 }
                                 this.container = Some("shell".into());
-                                this.command = Some("nsenter".into());
+                                this.command = Some("shell".into());
                             });
                             if recorded.is_err() {
                                 return;
