@@ -529,6 +529,19 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn rotated_secret_renders_the_same_text_but_new_originals() {
+        let secret = |value: &str| json!({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": "s"}, "data": {"k": value}});
+        let (old_text, old) = render(&secret("b2xk"), RenderOptions::default());
+        let (new_text, new) = render(&secret("bmV3"), RenderOptions::default());
+        // The masked text can't tell them apart, so the view must swap in the new originals.
+        assert_eq!(old_text, new_text);
+        assert_ne!(old, new);
+        let mut object = secret(MASK);
+        restore_secret(&mut object, new.as_ref());
+        assert_eq!(object["data"]["k"], "bmV3");
+    }
+
     fn secret() -> Value {
         json!({
             "apiVersion": "v1",

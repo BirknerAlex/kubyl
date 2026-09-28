@@ -602,8 +602,10 @@ impl YamlEditor {
             }
         } else if diff::diff(&self.live_text, &text, 0).is_empty() {
             // Only server-managed fields changed (status, resourceVersion).
+            // A rotated Secret value renders as the same mask, so take the new originals too.
             self.live = Some(object);
             self.live_text = text;
+            self.secret = secret;
         } else {
             self.pending = Some((text, secret, object));
         }
@@ -688,10 +690,11 @@ impl YamlEditor {
     }
 
     pub(crate) fn keep_mine(&mut self, cx: &mut Context<Self>) {
-        if let Some((text, _, object)) = self.pending.take() {
+        if let Some((text, secret, object)) = self.pending.take() {
             self.live = Some(object);
             self.live_text = text.clone();
             self.base_text = text;
+            self.secret = secret;
             self.schedule_analysis(cx);
             cx.notify();
         }
