@@ -427,7 +427,12 @@ pub const EXPIRY_MARGIN: Duration = Duration::from_secs(5 * 60);
 /// `now` when it doesn't say.
 pub fn fresh_until(expires: Option<Timestamp>, fallback: Duration, now: Timestamp) -> Timestamp {
     match expires {
-        Some(at) => at - EXPIRY_MARGIN,
+        // A credential living less than the margin (short SSO or assumed-role sessions) is
+        // used for the first half of what's left, not "expired" on arrival.
+        Some(at) => {
+            let left = at.duration_since(now).as_secs().max(0).unsigned_abs();
+            at - EXPIRY_MARGIN.min(Duration::from_secs(left / 2))
+        }
         None => now + fallback,
     }
 }
@@ -1073,6 +1078,20 @@ users:
             fresh_until(None, Duration::from_secs(60), now),
             "2026-09-26T12:01:00Z".parse::<Timestamp>().unwrap()
         );
+    }
+
+    /// A credential that lives less than the margin is still cached for part of its life, so
+    /// the CLI doesn't run on every read.
+    #[test]
+    fn short_lived_credentials_are_cached() {
+        let now: Timestamp = "2026-09-26T12:00:00Z".parse().unwrap();
+        let short: Timestamp = "2026-09-26T12:04:00Z".parse().unwrap();
+        let until = fresh_until(Some(short), Duration::from_secs(60), now);
+        assert_eq!(until, "2026-09-26T12:02:00Z".parse::<Timestamp>().unwrap());
+        assert!(until > now && until < short);
+        // Already expired (or clock skew): never in the future of `expires`.
+        let past: Timestamp = "2026-09-26T11:59:00Z".parse().unwrap();
+        assert!(fresh_until(Some(past), Duration::from_secs(60), now) <= now);
     }
 
     #[tokio::test]
