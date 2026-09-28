@@ -532,7 +532,7 @@ fn delete(force: bool, cx: &mut App) {
 }
 
 fn scale(cx: &mut App) {
-    let Some((items, _)) = targets(cx, "Workload: Scale…", true) else {
+    let Some((items, caps)) = targets(cx, "Workload: Scale…", true) else {
         return;
     };
     let current = items
@@ -542,6 +542,8 @@ fn scale(cx: &mut App) {
     let mut spec = ConfirmSpec::new(format!("Scale {}", describe_targets(&items)), "Scale");
     spec.lines = items.iter().map(line).collect();
     spec.number = Some(current.unwrap_or(1));
+    // The replica count is only known on confirm, so PROD always types (even for scale-to-0).
+    spec.typed = typed_confirmation(&caps, &items, "scale");
     with_window(cx, move |window, cx| {
         dialogs::confirm(
             spec,
@@ -943,6 +945,34 @@ mod tests {
         assert!(!yaml[0].contains("MIIEvQ"), "{}", yaml[0]);
         assert!(yaml[0].contains("key: ••••••••"), "{}", yaml[0]);
         assert!(yaml[1].contains("key: value"));
+    }
+
+    #[test]
+    fn typed_confirmation_on_production_only() {
+        let item = |name: &str| Selected {
+            target: ResourceRef::object(
+                ClusterId::new("c"),
+                Gvr::new("apps", "v1", "deployments"),
+                Some("web".into()),
+                name.into(),
+            ),
+            kind: "Deployment".into(),
+            object: None,
+            store: None,
+        };
+        let prod = ClusterCaps {
+            production: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            typed_confirmation(&prod, &[item("api")], "scale").as_deref(),
+            Some("api")
+        );
+        assert_eq!(
+            typed_confirmation(&prod, &[item("a"), item("b")], "scale").as_deref(),
+            Some("scale 2")
+        );
+        assert!(typed_confirmation(&ClusterCaps::default(), &[item("api")], "scale").is_none());
     }
 
     #[test]
