@@ -206,16 +206,9 @@ impl FlowProvider for NetObserv {
                     };
                     let (records, full) =
                         fetch(&transport, &label, &logql, start, end, "forward").await?;
-                    for (ns, flow, hash) in records {
-                        // Records at the cursor were sent last time.
-                        if ns == cursor && boundary.contains(&hash) {
-                            continue;
-                        }
-                        if ns > cursor {
-                            cursor = ns;
-                            boundary.clear();
-                        }
-                        boundary.insert(hash);
+                    let fresh = advance(&mut cursor, &mut boundary, records);
+                    let stalled = fresh.is_empty();
+                    for flow in fresh {
                         if batcher.push(flow).await.is_err() {
                             return Ok(());
                         }
@@ -225,6 +218,12 @@ impl FlowProvider for NetObserv {
                     }
                     if !full {
                         break;
+                    }
+                    if stalled {
+                        // A full page of records we already sent (the limit or more share one
+                        // timestamp): step past it instead of asking for the same page forever.
+                        cursor = cursor.saturating_add(1);
+                        boundary.clear();
                     }
                 }
             }
@@ -270,6 +269,28 @@ impl FlowProvider for NetObserv {
             Ok(Some(topology))
         })
     }
+}
+
+/// The records not sent yet, moving `cursor` and the hashes `boundary` seen at it forward.
+fn advance(
+    cursor: &mut u64,
+    boundary: &mut HashSet<u64>,
+    records: Vec<(u64, Flow, u64)>,
+) -> Vec<Flow> {
+    let mut fresh = Vec::new();
+    for (ns, flow, hash) in records {
+        // Records at the cursor were sent last time.
+        if ns == *cursor && boundary.contains(&hash) {
+            continue;
+        }
+        if ns > *cursor {
+            *cursor = ns;
+            boundary.clear();
+        }
+        boundary.insert(hash);
+        fresh.push(flow);
+    }
+    fresh
 }
 
 fn nanos(time: Timestamp) -> u64 {
@@ -735,6 +756,29 @@ fn metric_flow(labels: &BTreeMap<String, String>, bytes: f64) -> Flow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn advance_skips_sent_records_and_reports_a_stalled_page() {
+        let mut cursor = 10;
+        let mut boundary: HashSet<u64> = [1, 2].into();
+        // A full page of records that were all sent last time: nothing fresh, so the poll
+        // loop knows to step past the cursor.
+        let page = vec![
+            (10, Flow::new(Timestamp::UNIX_EPOCH), 1),
+            (10, Flow::new(Timestamp::UNIX_EPOCH), 2),
+        ];
+        assert!(advance(&mut cursor, &mut boundary, page).is_empty());
+        assert_eq!(cursor, 10);
+        // A new record at the same timestamp and a later one both count.
+        let page = vec![
+            (10, Flow::new(Timestamp::UNIX_EPOCH), 2),
+            (10, Flow::new(Timestamp::UNIX_EPOCH), 3),
+            (12, Flow::new(Timestamp::UNIX_EPOCH), 4),
+        ];
+        assert_eq!(advance(&mut cursor, &mut boundary, page).len(), 2);
+        assert_eq!(cursor, 12);
+        assert_eq!(boundary, [4].into());
+    }
 
     fn labels(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs
