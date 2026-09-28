@@ -726,6 +726,7 @@ impl ResourceListView {
                 }
                 rows.push(rows::Row {
                     source: ix,
+                    cluster: source.spec.cluster.clone(),
                     key: key.clone(),
                     object: object.clone(),
                 });
