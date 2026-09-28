@@ -477,9 +477,9 @@ pub fn plan(status: &Status, scope: &Scope, target: &str, cluster: &str) -> Resu
             }
             let conditional = found.kind == TargetKind::Conditional;
             let mut update = json!({"version": found.version, "force": false});
-            if let Some(image) = &found.image {
-                update["image"] = json!(image);
-            }
+            // A merge patch keeps what it doesn't name: without an image of its own, null drops
+            // the one of an earlier request, which would pair the new version with a stale image.
+            update["image"] = found.image.as_ref().map_or(Value::Null, |i| json!(i));
             let oc = format!(
                 "oc adm upgrade --to {}{}",
                 found.version,
@@ -955,6 +955,15 @@ mod tests {
                 .unwrap()
                 .contains("@sha256:1212")
         );
+        // No release image known for the target: the patch clears a stale one (merge patch).
+        let mut no_image = status.clone();
+        for target in &mut no_image.targets {
+            target.image = None;
+        }
+        let update_no_image = plan(&no_image, &Scope::ControlPlane, "4.17.12", "ocp").unwrap();
+        let desired = &update_no_image.request["patch"]["spec"]["desiredUpdate"];
+        assert!(desired.as_object().unwrap().contains_key("image"));
+        assert!(desired["image"].is_null());
         assert!(update.changes[0].contains("oc adm upgrade --to 4.17.12"));
         assert!(update.risks.is_empty());
         assert!(update.irreversible);
