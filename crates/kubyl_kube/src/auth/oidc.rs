@@ -25,14 +25,15 @@ use jiff::Timestamp;
 use kube::config::ExecConfig;
 use openidconnect::core::{
     CoreAuthDisplay, CoreAuthenticationFlow, CoreClaimName, CoreClaimType, CoreClient,
-    CoreClientAuthMethod, CoreDeviceAuthorizationResponse, CoreGrantType, CoreJsonWebKey,
-    CoreJweContentEncryptionAlgorithm, CoreJweKeyManagementAlgorithm, CoreResponseMode,
-    CoreResponseType, CoreSubjectIdentifierType, CoreTokenResponse,
+    CoreClientAuthMethod, CoreDeviceAuthorizationResponse, CoreErrorResponseType, CoreGrantType,
+    CoreJsonWebKey, CoreJweContentEncryptionAlgorithm, CoreJweKeyManagementAlgorithm,
+    CoreResponseMode, CoreResponseType, CoreSubjectIdentifierType, CoreTokenResponse,
 };
 use openidconnect::{
     AdditionalProviderMetadata, AuthorizationCode, ClientId, ClientSecret, CsrfToken,
     DeviceAuthorizationUrl, IssuerUrl, Nonce, OAuth2TokenResponse as _, PkceCodeChallenge,
-    ProviderMetadata, RedirectUrl, RefreshToken, Scope, TokenResponse as _, reqwest,
+    ProviderMetadata, RedirectUrl, RefreshToken, RequestTokenError, Scope, StandardErrorResponse,
+    TokenResponse as _, reqwest,
 };
 use parking_lot::Mutex;
 use secrecy::{ExposeSecret as _, SecretString};
@@ -261,6 +262,24 @@ type Metadata = ProviderMetadata<
     CoreSubjectIdentifierType,
 >;
 
+/// A failed token refresh. `rejected`: the IdP said the refresh token is no good.
+struct RefreshFailure {
+    error: AuthError,
+    rejected: bool,
+}
+
+/// Whether the IdP answered `invalid_grant` (expired, revoked or reused refresh token), as
+/// opposed to a network error, a 5xx or an unparsable answer.
+fn is_invalid_grant<RE: std::error::Error + 'static>(
+    err: &RequestTokenError<RE, StandardErrorResponse<CoreErrorResponseType>>,
+) -> bool {
+    matches!(
+        err,
+        RequestTokenError::ServerResponse(response)
+            if matches!(response.error(), CoreErrorResponseType::InvalidGrant)
+    )
+}
+
 fn fail(context: &str, err: impl std::fmt::Display) -> AuthError {
     AuthError::Failed(format!("{context}: {err}"))
 }
@@ -307,11 +326,16 @@ impl OidcAuth {
                 self.accept(&mut tokens, response, expires_at).await?;
                 tokens.valid_id_token().ok_or(AuthError::SignInRequired)
             }
-            Err(err) => {
+            Err(failure) => {
+                let err = &failure.error;
                 tracing::info!(issuer = %self.params.issuer, "OIDC refresh failed: {err}");
-                // The refresh token is expired or revoked; a new sign-in replaces it.
-                tokens.refresh_token = None;
-                Err(AuthError::SignInRequired)
+                if failure.rejected {
+                    // The refresh token is expired or revoked; a new sign-in replaces it.
+                    tokens.refresh_token = None;
+                    return Err(AuthError::SignInRequired);
+                }
+                // A network or IdP outage says nothing about the token: keep it for the retry.
+                Err(failure.error)
             }
         }
     }
@@ -427,18 +451,28 @@ impl OidcAuth {
             .map(|s| ClientSecret::new(s.expose_secret().to_string()))
     }
 
-    async fn refresh(&self, refresh_token: &SecretString) -> Result<CoreTokenResponse, AuthError> {
-        let http = self.http_client()?;
-        let metadata = self.metadata(&http).await?;
+    async fn refresh(
+        &self,
+        refresh_token: &SecretString,
+    ) -> Result<CoreTokenResponse, RefreshFailure> {
+        let other = |error| RefreshFailure {
+            error,
+            rejected: false,
+        };
+        let http = self.http_client().map_err(other)?;
+        let metadata = self.metadata(&http).await.map_err(other)?;
         let client =
             CoreClient::from_provider_metadata(metadata, self.client_id(), self.client_secret());
         let refresh_token = RefreshToken::new(refresh_token.expose_secret().to_string());
         client
             .exchange_refresh_token(&refresh_token)
-            .map_err(|err| fail("the IdP has no token endpoint", err))?
+            .map_err(|err| other(fail("the IdP has no token endpoint", err)))?
             .request_async(&http)
             .await
-            .map_err(|err| fail("token refresh failed", chain(&err)))
+            .map_err(|err| RefreshFailure {
+                rejected: is_invalid_grant(&err),
+                error: fail("token refresh failed", chain(&err)),
+            })
     }
 
     /// Stores a token response: keeps the (possibly rotated) refresh token and writes both
@@ -854,6 +888,23 @@ mod tests {
             stream.read_to_string(&mut response).await.ok();
         }
         assert_eq!(server.await.unwrap().ok().unwrap(), "c0de");
+    }
+
+    #[test]
+    fn only_invalid_grant_rejects_the_refresh_token() {
+        type Error =
+            RequestTokenError<std::io::Error, StandardErrorResponse<CoreErrorResponseType>>;
+        let server = |kind| Error::ServerResponse(StandardErrorResponse::new(kind, None, None));
+        assert!(is_invalid_grant(&server(
+            CoreErrorResponseType::InvalidGrant
+        )));
+        assert!(!is_invalid_grant(&server(
+            CoreErrorResponseType::InvalidClient
+        )));
+        assert!(!is_invalid_grant(&Error::Other("503".into())));
+        assert!(!is_invalid_grant(&Error::Request(std::io::Error::other(
+            "connection refused"
+        ))));
     }
 
     #[test]
