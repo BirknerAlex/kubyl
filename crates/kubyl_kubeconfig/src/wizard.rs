@@ -624,7 +624,8 @@ impl Wizard {
             allow_exec: true,
         };
         let global = Kubeconfigs::global(cx);
-        match global.read(cx).needs_consent(&doc, None, &context) {
+        let file = self.target_path(cx);
+        match global.read(cx).needs_consent(&doc, None, &context, &file) {
             None => {
                 self.tested = Some(doc);
                 global.update(cx, |g, cx| g.test(key, input, cx));

@@ -589,9 +589,10 @@ impl KubeconfigEditor {
         let key = TestKey::new(self.doc_key(), context.clone());
         let doc = self.doc.clone();
         let global = Kubeconfigs::global(cx);
-        let needs = global
-            .read(cx)
-            .needs_consent(&doc, self.saved_and_loaded(cx), &context);
+        let needs =
+            global
+                .read(cx)
+                .needs_consent(&doc, self.saved_and_loaded(cx), &context, &self.path);
         let input = Input {
             doc,
             context: context.clone(),
@@ -622,7 +623,11 @@ impl KubeconfigEditor {
         let contexts = doc.names(Kind::Context);
         let mut ask: Vec<(Vec<String>, crate::model::ExecSpec)> = Vec::new();
         for context in &contexts {
-            if let Some(spec) = global.read(cx).needs_consent(&doc, saved.as_ref(), context) {
+            if let Some(spec) =
+                global
+                    .read(cx)
+                    .needs_consent(&doc, saved.as_ref(), context, &self.path)
+            {
                 match ask.iter_mut().find(|(_, s)| *s == spec) {
                     Some((names, _)) => names.push(context.clone()),
                     None => ask.push((vec![context.clone()], spec)),
