@@ -40,6 +40,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::catalog;
 use crate::favorites::{self, Favorites};
+use crate::rbac::{RBAC_RETRY, RbacRequests};
 pub use rows::{Row, RowId, SortKey, natural_cmp};
 
 actions!(
@@ -219,7 +220,7 @@ pub struct ResourceListView {
     resize: Option<Resize>,
     scroll: UniformListScrollHandle,
     focus: FocusHandle,
-    rbac_requested: HashSet<AccessQuery>,
+    rbac_requested: RbacRequests,
     /// The first row was selected automatically once.
     auto_selected: bool,
     _ticker: Task<()>,
@@ -385,7 +386,7 @@ impl ResourceListView {
             resize: None,
             scroll: UniformListScrollHandle::new(),
             focus,
-            rbac_requested: HashSet::new(),
+            rbac_requested: RbacRequests::default(),
             auto_selected: false,
             _ticker: ticker,
             _subscriptions: subscriptions,
@@ -546,19 +547,30 @@ impl ResourceListView {
         }
     }
 
-    /// Asks the API server (once) whether `query` is allowed, then re-syncs.
+    /// Asks the API server (once per connection, and again after a failed check) whether
+    /// `query` is allowed, then re-syncs.
     fn request_access(&mut self, cluster: ClusterId, query: AccessQuery, cx: &mut Context<Self>) {
-        if !self.rbac_requested.insert(query.clone()) {
+        if !self.rbac_requested.first(&cluster, &query) {
             return;
         }
         let Some(manager) = ConnectionManager::try_global(cx) else {
             return;
         };
-        let task = manager.update(cx, |m, cx| m.can_i(&cluster, query, cx));
+        let task = manager.update(cx, |m, cx| m.can_i(&cluster, query.clone(), cx));
         cx.spawn(async move |this, cx| {
-            if task.await.is_some() {
-                this.update(cx, |_, cx| cx.notify()).ok();
+            let answered = task.await.is_some();
+            if !answered {
+                // The check failed or the cluster was down: retry after a pause.
+                cx.background_executor().timer(RBAC_RETRY).await;
             }
+            this.update(cx, |this, cx| {
+                if answered {
+                    cx.notify();
+                } else {
+                    this.rbac_requested.forget(&cluster, &query);
+                }
+            })
+            .ok();
         })
         .detach();
     }
@@ -1040,6 +1052,10 @@ impl ResourceListView {
             }
             _ => return,
         };
+        // A reconnect starts with an empty access cache: ask again.
+        if matches!(event, ConnectionEvent::StateChanged(_)) {
+            self.rbac_requested.reset(cluster);
+        }
         let relevant = match &self.mode {
             Mode::Cluster(id) => id == cluster,
             Mode::Favorites => self.sources.iter().any(|s| &s.spec.cluster == cluster),
