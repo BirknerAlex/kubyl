@@ -6,7 +6,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
-use crate::paths::write_atomic;
+use crate::paths::WriteTicket;
 
 pub(crate) const STATE_FILE: &str = "state.json";
 const SAVE_DELAY: Duration = Duration::from_millis(500);
@@ -63,7 +63,7 @@ impl State {
         let state = cx.global_mut::<Self>();
         if std::mem::take(&mut state.dirty) {
             let contents = serde_json::to_vec_pretty(&state.raw).expect("state serialize");
-            if let Err(err) = write_atomic(&state.path, &contents) {
+            if let Err(err) = WriteTicket::new().write(&state.path, &contents) {
                 tracing::error!("failed to write {}: {err}", state.path.display());
             }
         }
@@ -76,7 +76,7 @@ impl State {
         }
         cx.spawn(async move |cx| {
             cx.background_executor().timer(SAVE_DELAY).await;
-            let Some((path, contents)) = cx.update(|cx| {
+            let Some((path, contents, ticket)) = cx.update(|cx| {
                 let state = cx.global_mut::<Self>();
                 // Already written by `flush`.
                 if !std::mem::take(&mut state.dirty) {
@@ -85,13 +85,14 @@ impl State {
                 Some((
                     state.path.clone(),
                     serde_json::to_vec_pretty(&state.raw).expect("state serialize"),
+                    WriteTicket::new(),
                 ))
             }) else {
                 return;
             };
             cx.background_executor()
                 .spawn(async move {
-                    if let Err(err) = write_atomic(&path, &contents) {
+                    if let Err(err) = ticket.write(&path, &contents) {
                         tracing::error!("failed to write {}: {err}", path.display());
                     }
                 })

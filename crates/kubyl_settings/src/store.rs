@@ -12,7 +12,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
-use crate::paths::write_atomic;
+use crate::paths::{WriteTicket, write_atomic};
 
 pub(crate) const SETTINGS_FILE: &str = "settings.json";
 pub(crate) const SCHEMA_FILE: &str = "settings.schema.json";
@@ -127,9 +127,10 @@ impl Settings {
             return;
         }
         let path = settings.path.clone();
+        let ticket = WriteTicket::new();
         cx.background_executor()
             .spawn(async move {
-                if let Err(err) = write_atomic(&path, &contents) {
+                if let Err(err) = ticket.write(&path, &contents) {
                     tracing::error!("failed to write {}: {err}", path.display());
                 }
             })
