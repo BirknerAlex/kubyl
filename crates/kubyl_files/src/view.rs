@@ -1000,26 +1000,38 @@ impl FilesView {
                 size: if is_dir { 0 } else { size },
             })
             .collect();
-        let taken: HashSet<String> = if dir == self.local_dir {
-            self.local.entries.iter().map(|e| e.name.clone()).collect()
-        } else {
-            std::fs::read_dir(&dir)
-                .map(|items| {
-                    items
-                        .filter_map(Result::ok)
-                        .map(|i| i.file_name().to_string_lossy().into_owned())
-                        .collect()
-                })
-                .unwrap_or_default()
-        };
-        self.plan(
-            items,
-            taken,
-            dir.display().to_string(),
-            keep_both,
-            window,
-            cx,
-        );
+        if dir == self.local_dir {
+            let taken = self.local.entries.iter().map(|e| e.name.clone()).collect();
+            self.plan(
+                items,
+                taken,
+                dir.display().to_string(),
+                keep_both,
+                window,
+                cx,
+            );
+            return;
+        }
+        // Listing another folder can block (network drives): not on the UI thread.
+        let listing = cx.background_executor().spawn({
+            let dir = dir.clone();
+            async move { folder_names(&dir) }
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let taken = listing.await;
+            this.update_in(cx, |this, window, cx| {
+                this.plan(
+                    items,
+                    taken,
+                    dir.display().to_string(),
+                    keep_both,
+                    window,
+                    cx,
+                );
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn plan(
@@ -1205,19 +1217,18 @@ impl FilesView {
     fn drop_paths(&mut self, paths: &ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
         self.drop_target = None;
         let keep_both = window.modifiers().alt;
-        let paths = paths
-            .paths()
-            .iter()
-            .map(|p| {
-                let meta = std::fs::metadata(p).ok();
-                (
-                    p.clone(),
-                    meta.as_ref().is_some_and(|m| m.is_dir()),
-                    meta.map(|m| m.len()).unwrap_or(0),
-                )
+        let paths = paths.paths().to_vec();
+        let stats = cx
+            .background_executor()
+            .spawn(async move { stat_paths(paths) });
+        cx.spawn_in(window, async move |this, cx| {
+            let paths = stats.await;
+            this.update_in(cx, |this, window, cx| {
+                this.upload(paths, keep_both, window, cx);
             })
-            .collect();
-        self.upload(paths, keep_both, window, cx);
+            .ok();
+        })
+        .detach();
     }
 
     fn upload_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1231,18 +1242,11 @@ impl FilesView {
             let Ok(Ok(Some(paths))) = paths.await else {
                 return;
             };
+            let paths = cx
+                .background_executor()
+                .spawn(async move { stat_paths(paths) })
+                .await;
             this.update_in(cx, |this, window, cx| {
-                let paths = paths
-                    .into_iter()
-                    .map(|p| {
-                        let meta = std::fs::metadata(&p).ok();
-                        (
-                            p,
-                            meta.as_ref().is_some_and(|m| m.is_dir()),
-                            meta.map(|m| m.len()).unwrap_or(0),
-                        )
-                    })
-                    .collect();
                 this.upload(paths, false, window, cx);
             })
             .ok();
@@ -1530,13 +1534,30 @@ impl FilesView {
                     Side::Local => {
                         let from = this.local_dir.join(&old);
                         let to = this.local_dir.join(&name);
-                        if to.exists() {
-                            Self::notify_error(cx, format!("{name} already exists."));
-                        } else if let Err(err) = std::fs::rename(from, to) {
-                            Self::notify_error(cx, format!("Rename failed: {err}"));
-                        }
-                        this.local.cursor = Some(name);
-                        this.refresh(Side::Local, cx);
+                        this.local.cursor = Some(name.clone());
+                        let renamed = cx.background_executor().spawn(async move {
+                            if to.exists() {
+                                return Err(None);
+                            }
+                            std::fs::rename(from, to).map_err(Some)
+                        });
+                        cx.spawn(async move |this, cx| {
+                            let result = renamed.await;
+                            this.update(cx, |this, cx| {
+                                match result {
+                                    Err(None) => {
+                                        Self::notify_error(cx, format!("{name} already exists."))
+                                    }
+                                    Err(Some(err)) => {
+                                        Self::notify_error(cx, format!("Rename failed: {err}"))
+                                    }
+                                    Ok(()) => {}
+                                }
+                                this.refresh(Side::Local, cx);
+                            })
+                            .ok();
+                        })
+                        .detach();
                     }
                     Side::Pod => {
                         let from = entry::join(&this.pod_dir, &old);
@@ -1577,11 +1598,22 @@ impl FilesView {
                 }
                 weak.update(cx, |this, cx| match side {
                     Side::Local => {
-                        if let Err(err) = std::fs::create_dir(this.local_dir.join(&name)) {
-                            Self::notify_error(cx, format!("New folder failed: {err}"));
-                        }
+                        let path = this.local_dir.join(&name);
                         this.local.cursor = Some(name);
-                        this.refresh(Side::Local, cx);
+                        let created = cx
+                            .background_executor()
+                            .spawn(async move { std::fs::create_dir(path) });
+                        cx.spawn(async move |this, cx| {
+                            let result = created.await;
+                            this.update(cx, |this, cx| {
+                                if let Err(err) = result {
+                                    Self::notify_error(cx, format!("New folder failed: {err}"));
+                                }
+                                this.refresh(Side::Local, cx);
+                            })
+                            .ok();
+                        })
+                        .detach();
                     }
                     Side::Pod => {
                         let path = entry::join(&this.pod_dir, &name);
@@ -3473,9 +3505,52 @@ pub fn open(target: ResourceRef, window: &mut Window, cx: &mut App) {
     );
 }
 
+/// `(path, is_dir, size)` for each local path (blocking: call from a background task).
+fn stat_paths(paths: Vec<PathBuf>) -> Vec<(PathBuf, bool, u64)> {
+    paths
+        .into_iter()
+        .map(|p| {
+            let meta = std::fs::metadata(&p).ok();
+            let is_dir = meta.as_ref().is_some_and(|m| m.is_dir());
+            let size = meta.map(|m| m.len()).unwrap_or(0);
+            (p, is_dir, size)
+        })
+        .collect()
+}
+
+/// The names in a local folder (blocking: call from a background task).
+fn folder_names(dir: &Path) -> HashSet<String> {
+    std::fs::read_dir(dir)
+        .map(|items| {
+            items
+                .filter_map(Result::ok)
+                .map(|i| i.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_helpers_report_files_and_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("certs")).unwrap();
+        std::fs::write(dir.path().join("a.yaml"), b"a: 1\n").unwrap();
+        let stats = stat_paths(vec![
+            dir.path().join("a.yaml"),
+            dir.path().join("certs"),
+            dir.path().join("gone"),
+        ]);
+        assert_eq!((stats[0].1, stats[0].2), (false, 5));
+        assert!(stats[1].1);
+        assert_eq!((stats[2].1, stats[2].2), (false, 0));
+        let names = folder_names(dir.path());
+        assert!(names.contains("a.yaml") && names.contains("certs") && names.len() == 2);
+        assert!(folder_names(&dir.path().join("gone")).is_empty());
+    }
 
     #[test]
     fn short_pod_names() {
