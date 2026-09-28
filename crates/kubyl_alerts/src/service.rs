@@ -1551,7 +1551,7 @@ async fn fetch(input: FetchInput) -> FetchOutput {
     };
     let now = Timestamp::now();
     let prom_ok = matches!(prom_alerts, Some(Ok(_)));
-    let merged = if am_ok || prom_ok {
+    let merged = if can_merge(input.conns.len(), am_ok, prom_ok) {
         let options = MergeOptions {
             heartbeat_alerts: &input.settings.heartbeat_alerts,
             hidden_alerts: &input.settings.hidden_alerts,
@@ -1562,7 +1562,7 @@ async fn fetch(input: FetchInput) -> FetchOutput {
             _ => None,
         };
         Some(merge::merge(
-            (!input.conns.is_empty() && am_ok).then_some(am_alerts.as_slice()),
+            (!input.conns.is_empty()).then_some(am_alerts.as_slice()),
             prom_list,
             current_rules,
             input.prometheus_alertmanagers,
@@ -1581,6 +1581,13 @@ async fn fetch(input: FetchInput) -> FetchOutput {
         error: (!errors.is_empty()).then(|| errors.join("; ")),
         now,
     }
+}
+
+/// Whether a read is complete enough to replace the last data. With Alertmanagers configured
+/// and none answering, a Prometheus-only merge would drop their alerts (a resolved/started
+/// notification storm) and show silenced ones as firing: keep the previous state instead.
+fn can_merge(alertmanagers: usize, am_ok: bool, prom_ok: bool) -> bool {
+    if alertmanagers > 0 { am_ok } else { prom_ok }
 }
 
 fn via_name(conn: &AmConn) -> &'static str {
@@ -1840,6 +1847,14 @@ mod tests {
             );
             assert!(s.clusters[&cluster].alerts.is_empty());
         });
+    }
+
+    #[test]
+    fn an_alertmanager_outage_keeps_the_previous_state() {
+        assert!(!can_merge(2, false, true), "Prometheus alone is not enough");
+        assert!(can_merge(2, true, false));
+        assert!(can_merge(0, false, true));
+        assert!(!can_merge(0, false, false));
     }
 
     #[gpui::test]
