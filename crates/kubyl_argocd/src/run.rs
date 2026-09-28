@@ -48,6 +48,20 @@ impl Op {
         }
     }
 
+    /// Whether the UI asks first: Terminate and switching a sync policy on (auto-sync, prune and
+    /// self-heal can delete or overwrite live resources). Switching one off is harmless.
+    pub fn needs_confirm(&self) -> bool {
+        matches!(
+            self,
+            Op::Terminate
+                | Op::Policy(
+                    PolicyChange::AutoSync(true)
+                        | PolicyChange::Prune(true)
+                        | PolicyChange::SelfHeal(true)
+                )
+        )
+    }
+
     /// The Kubernetes verb Kubernetes mode needs.
     fn verb(&self) -> &'static str {
         match self {
@@ -285,6 +299,17 @@ async fn run_kubernetes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn risky_ops_need_confirmation() {
+        assert!(Op::Terminate.needs_confirm());
+        assert!(Op::Policy(PolicyChange::AutoSync(true)).needs_confirm());
+        assert!(Op::Policy(PolicyChange::Prune(true)).needs_confirm());
+        assert!(Op::Policy(PolicyChange::SelfHeal(true)).needs_confirm());
+        assert!(!Op::Policy(PolicyChange::AutoSync(false)).needs_confirm());
+        assert!(!Op::Policy(PolicyChange::Prune(false)).needs_confirm());
+        assert!(!Op::Refresh { hard: true }.needs_confirm());
+    }
 
     #[test]
     fn labels_and_messages() {

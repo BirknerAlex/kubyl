@@ -182,11 +182,13 @@ pub(crate) fn init(cx: &mut App) {
             dialogs::open_rollback(target, None, window, cx)
         })
     });
-    cx.on_action(|_: &Terminate, cx| run_on_selection(Op::Terminate, cx));
+    cx.on_action(|_: &Terminate, cx| {
+        with_app(cx, |target, window, cx| {
+            dialogs::run_confirmed(target, Op::Terminate, window, cx)
+        })
+    });
     cx.on_action(|_: &ToggleAutoSync, cx| {
-        if let Some(target) = selected_app(cx) {
-            toggle_auto_sync(target, cx);
-        }
+        with_app(cx, toggle_auto_sync);
     });
     cx.on_action(|_: &Delete, cx| with_app(cx, dialogs::open_delete));
     cx.on_action(|_: &OpenApplication, cx| {
@@ -281,15 +283,17 @@ fn run_on_selection(op: Op, cx: &mut App) {
     }
 }
 
-/// Turns auto-sync on or off for `target` (from its loaded object).
-pub fn toggle_auto_sync(target: ResourceRef, cx: &mut App) {
+/// Turns auto-sync on or off for `target` (from its loaded object); turning it on asks first.
+pub fn toggle_auto_sync(target: ResourceRef, window: &mut Window, cx: &mut App) {
     let Some(app) = run::app_target(&target) else {
         return;
     };
     let current = crate::apps::find_app(&target.cluster, &target.gvr, &app, cx)
         .map(|a| a.policy().auto_sync());
     match current {
-        Some(on) => run::run(target, Op::Policy(PolicyChange::AutoSync(!on)), cx).detach(),
+        Some(on) => {
+            dialogs::run_confirmed(target, Op::Policy(PolicyChange::AutoSync(!on)), window, cx)
+        }
         None => {
             NotificationCenter::push(cx, Notification::error("The application isn't loaded yet."))
         }
