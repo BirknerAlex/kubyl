@@ -1695,11 +1695,20 @@ impl FilesView {
             );
             return;
         }
-        let temp = self
-            .preview_dir
-            .get_or_insert_with(|| tempfile::tempdir().expect("temp dir"))
-            .path()
-            .to_path_buf();
+        if self.preview_dir.is_none() {
+            match tempfile::tempdir() {
+                Ok(dir) => self.preview_dir = Some(dir),
+                Err(err) => {
+                    tracing::warn!(%err, "no temp folder for previews");
+                    Self::notify_error(cx, format!("Can't preview: no temp folder ({err})."));
+                    self.set_preview(PreviewContent::Error(format!("no temp folder: {err}")), cx);
+                    return;
+                }
+            }
+        }
+        let Some(temp) = self.preview_dir.as_ref().map(|d| d.path().to_path_buf()) else {
+            return;
+        };
         let task: Task<anyhow::Result<PreviewContent>> = match side {
             Side::Local => {
                 let path = PathBuf::from(&path);
