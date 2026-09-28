@@ -160,13 +160,9 @@ impl SelfUpdate {
             // Archive extraction and (on macOS) a `codesign --verify` subprocess are
             // synchronous; run them on the blocking pool so they don't stall this runtime's
             // worker threads, which also carry Kubernetes API calls.
-            tokio::task::spawn_blocking(move || crate::apply::apply(&bytes))
+            run_blocking(move || crate::apply::apply(&bytes))
                 .await
-                .expect("apply task panicked")
-                .map_err(|err| {
-                    tracing::error!(error = %err, "self-update apply failed");
-                    err
-                })?;
+                .inspect_err(|err| tracing::error!(error = %err, "self-update apply failed"))?;
             Ok::<(), ApplyOrFetch>(())
         });
         cx.spawn(async move |this, cx| {
@@ -195,8 +191,26 @@ impl SelfUpdate {
     }
 }
 
+/// Runs `work` on the blocking pool. A panic in it becomes an error (shown as a failed update)
+/// instead of being re-raised into the caller.
+async fn run_blocking<T, E>(
+    work: impl FnOnce() -> Result<T, E> + Send + 'static,
+) -> Result<T, ApplyOrFetch>
+where
+    T: Send + 'static,
+    E: Send + 'static,
+    ApplyOrFetch: From<E>,
+{
+    match tokio::task::spawn_blocking(work).await {
+        Ok(result) => result.map_err(ApplyOrFetch::from),
+        Err(err) => Err(ApplyOrFetch::Panicked(err.to_string())),
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 enum ApplyOrFetch {
+    #[error("the update task failed: {0}")]
+    Panicked(String),
     #[error(transparent)]
     Fetch(#[from] FetchError),
     #[error(transparent)]
@@ -217,6 +231,19 @@ mod tests {
             notes_url: "https://example.com".into(),
             platforms: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn a_panic_while_applying_is_an_error_not_a_crash() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let result = runtime.block_on(run_blocking(|| -> Result<(), crate::apply::ApplyError> {
+            panic!("boom")
+        }));
+        assert!(matches!(result, Err(ApplyOrFetch::Panicked(_))));
+        let ok = runtime.block_on(run_blocking(|| Ok::<_, crate::apply::ApplyError>(3)));
+        assert!(matches!(ok, Ok(3)));
     }
 
     #[gpui::test]
