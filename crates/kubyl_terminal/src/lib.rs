@@ -252,8 +252,14 @@ fn debug_container(target: ResourceRef, cx: &mut App) {
 /// Shows the node-shell confirmation (creates a privileged pod, PROD asks for the typed node
 /// name) and, once confirmed, calls `on_confirm`. Shared by the `Node: Shell…` action and
 /// [`view::TerminalView`]'s unconfirmed node shell (the Details view's Terminal sub-tab).
+///
+/// `namespace` is the one the pod will actually be created in (the caller's already-resolved
+/// value, not re-read from live settings here): settings can change between opening the tab and
+/// confirming, and the dialog must show exactly what `start` uses, not a value that may have
+/// since drifted.
 pub(crate) fn confirm_node_shell(
     target: ResourceRef,
+    namespace: &str,
     on_confirm: impl Fn(dialogs::ConfirmResult, &mut Window, &mut App) + 'static,
     window: &mut Window,
     cx: &mut App,
@@ -266,14 +272,10 @@ pub(crate) fn confirm_node_shell(
         return;
     }
     let production = manager.read(cx).caps(&target.cluster).production;
-    let settings = Settings::get::<TerminalSettings>(cx).clone();
     let mut spec = ConfirmSpec::new(format!("Open a shell on node {node}?"), "Start Node Shell");
     spec.lines = vec![
-        format!(
-            "Creates a privileged pod in {} (host PID, network and IPC) on {node},",
-            settings.node_shell_namespace
-        )
-        .into(),
+        format!("Creates a privileged pod in {namespace} (host PID, network and IPC) on {node},")
+            .into(),
         "mounting the node's root filesystem at /host -- run `chroot /host` to use it.".into(),
     ];
     spec.note =
@@ -287,8 +289,10 @@ pub(crate) fn confirm_node_shell(
 pub(crate) fn node_shell(target: ResourceRef, cx: &mut App) {
     with_window(cx, move |window, cx| {
         let settings = Settings::get::<TerminalSettings>(cx).clone();
+        let namespace = settings.node_shell_namespace.clone();
         confirm_node_shell(
             target.clone(),
+            &namespace,
             move |_, _, cx| {
                 open(
                     TerminalSpec {

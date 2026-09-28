@@ -691,12 +691,18 @@ impl TerminalView {
     }
 
     fn reconnect(&mut self, cx: &mut Context<Self>) {
-        // A fresh node shell always confirms first (`start_node_shell`), never through the
-        // generic reconnect affordance (the Enter key, the header's reconnect button).
+        // A node shell always confirms first (`start_node_shell`), never through the generic
+        // reconnect affordance (the Enter key, the header's reconnect button): every privileged
+        // pod, including a replacement for one that ended, needs its own confirmation.
         if matches!(
             self.status,
             Status::Connected | Status::Starting(_) | Status::NeedsConfirmation
         ) {
+            return;
+        }
+        if matches!(self.spec.mode, SessionMode::NodeShell { .. }) {
+            self.status = Status::NeedsConfirmation;
+            cx.notify();
             return;
         }
         self._task = None;
@@ -994,9 +1000,16 @@ impl TerminalView {
     /// Confirms (creates a privileged pod, PROD asks for the typed node name), then connects.
     fn start_node_shell(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let target = self.spec.target.clone();
+        // The namespace `start` actually creates the pod in: settings may have changed since
+        // the tab opened, but the dialog must show what will really happen.
+        let SessionMode::NodeShell { namespace, .. } = &self.spec.mode else {
+            return;
+        };
+        let namespace = namespace.clone();
         let weak = cx.weak_entity();
         crate::confirm_node_shell(
             target,
+            &namespace,
             move |_, _, cx| {
                 weak.update(cx, |this, cx| {
                     this.status = Status::Starting("connecting…".into());

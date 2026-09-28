@@ -202,8 +202,12 @@ impl ClustersSection {
             }),
             // Rows and root markers other crates add.
             cx.observe_global::<catalog::ViewRows>(|_, cx| cx.notify()),
-            // User-created folders (created, renamed, membership dragged in or out).
-            cx.observe(&SidebarGroups::global(cx), |_, _, cx| cx.notify()),
+            // User-created folders (created, renamed, membership dragged in or out): expanding
+            // or collapsing one changes which resource rows are visible.
+            cx.observe(&SidebarGroups::global(cx), |this, _, cx| {
+                this.schedule_count_sync(cx);
+                cx.notify();
+            }),
         ];
         if let Some(manager) = ConnectionManager::try_global(cx) {
             subscriptions.push(
