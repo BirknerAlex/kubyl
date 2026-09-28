@@ -622,6 +622,34 @@ impl Updates {
         cx.notify();
     }
 
+    /// Sets a target's pre-flight run: running (`checks` None) or finished (GPUI tests).
+    #[cfg(test)]
+    pub(crate) fn set_preflight_for_test(
+        &mut self,
+        cluster: &ClusterId,
+        target: &str,
+        checks: Option<Vec<Check>>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(state) = self.clusters.get_mut(cluster) else {
+            return;
+        };
+        let Some(current) = state.status().map(|s| s.current.version.clone()) else {
+            return;
+        };
+        state.preflight.insert(
+            target.to_string(),
+            Preflight {
+                target: target.to_string(),
+                current,
+                started: Instant::now(),
+                finished: checks.is_some().then(Instant::now),
+                checks: checks.unwrap_or_default(),
+            },
+        );
+        cx.notify();
+    }
+
     /// Sets a cluster's provider without detection (GPUI tests).
     #[cfg(test)]
     pub(crate) fn set_provider_for_test(
