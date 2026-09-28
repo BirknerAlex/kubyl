@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
+use std::time::{Duration, Instant};
 
 use gpui::{
     AnyElement, App, Context, Focusable as _, FontWeight, IntoElement, SharedString, Window, div,
@@ -29,9 +30,25 @@ enum Loaded {
     Failed,
 }
 
-/// The `PrometheusRule` objects per cluster, read once when a rule's details need them.
+/// Rules move between objects: read the list again after this long.
+const RULES_TTL: Duration = Duration::from_secs(300);
+/// A failed read (RBAC, CRD not installed yet) is retried after this long.
+const RULES_RETRY: Duration = Duration::from_secs(30);
+
+/// The `PrometheusRule` objects per cluster, read when a rule's details need them (and again
+/// once they are old).
 #[derive(Default)]
-pub(crate) struct RuleObjects(HashMap<ClusterId, Loaded>);
+pub(crate) struct RuleObjects(HashMap<ClusterId, (Loaded, Instant)>);
+
+/// Whether a cache entry needs (re)reading.
+fn stale(entry: Option<&(Loaded, Instant)>) -> bool {
+    match entry {
+        None => true,
+        Some((Loaded::Loading, _)) => false,
+        Some((Loaded::Ready(_), at)) => at.elapsed() >= RULES_TTL,
+        Some((Loaded::Failed, at)) => at.elapsed() >= RULES_RETRY,
+    }
+}
 
 fn parse_rule_objects(list: &Value) -> RuleObjectList {
     list["items"]
@@ -99,13 +116,12 @@ impl RuleObjects {
         alert: &str,
         cx: &mut Context<AlertsView>,
     ) -> Option<(String, String)> {
+        if stale(self.0.get(cluster)) {
+            self.load(cluster, cx);
+        }
         match self.0.get(cluster) {
-            Some(Loaded::Ready(objects)) => find_in(objects, group, alert),
-            Some(Loaded::Loading | Loaded::Failed) => None,
-            None => {
-                self.load(cluster, cx);
-                None
-            }
+            Some((Loaded::Ready(objects), _)) => find_in(objects, group, alert),
+            _ => None,
         }
     }
 
@@ -115,7 +131,14 @@ impl RuleObjects {
         else {
             return;
         };
-        self.0.insert(cluster.clone(), Loaded::Loading);
+        // Old objects stay usable while they are read again.
+        match self.0.get_mut(cluster) {
+            Some((Loaded::Ready(_), at)) => *at = Instant::now(),
+            _ => {
+                self.0
+                    .insert(cluster.clone(), (Loaded::Loading, Instant::now()));
+            }
+        }
         let task = spawn_kube(cx, async move {
             let request = http::Request::get("/apis/monitoring.coreos.com/v1/prometheusrules")
                 .body(Vec::new())
@@ -127,13 +150,19 @@ impl RuleObjects {
         cx.spawn(async move |this, cx| {
             let objects = task.await;
             this.update(cx, |this, cx| {
-                this.rule_objects.0.insert(
-                    cluster,
-                    match objects {
-                        Some(objects) => Loaded::Ready(std::sync::Arc::new(objects)),
-                        None => Loaded::Failed,
-                    },
-                );
+                let entry = match objects {
+                    Some(objects) => Loaded::Ready(std::sync::Arc::new(objects)),
+                    // Keep the last good list when a re-read fails.
+                    None if matches!(
+                        this.rule_objects.0.get(&cluster),
+                        Some((Loaded::Ready(_), _))
+                    ) =>
+                    {
+                        return;
+                    }
+                    None => Loaded::Failed,
+                };
+                this.rule_objects.0.insert(cluster, (entry, Instant::now()));
                 cx.notify();
             })
             .ok();
@@ -769,6 +798,19 @@ fn rule_cell(rule: &Rule, column: &str, now: Timestamp, colors: &Colors) -> AnyE
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn rule_object_cache_expires() {
+        assert!(stale(None));
+        let now = Instant::now();
+        let old = now - RULES_TTL - Duration::from_secs(1);
+        let ready = Loaded::Ready(Default::default());
+        assert!(!stale(Some(&(ready.clone(), now))));
+        assert!(stale(Some(&(ready, old))));
+        assert!(!stale(Some(&(Loaded::Failed, now))));
+        assert!(stale(Some(&(Loaded::Failed, now - RULES_RETRY))));
+        assert!(!stale(Some(&(Loaded::Loading, old))));
+    }
 
     #[test]
     fn rule_objects_by_group_and_alert() {

@@ -139,15 +139,16 @@ struct Forward {
 impl Forward {
     fn url(&self) -> String {
         let scheme = if self.spec.https { "https" } else { "http" };
-        let host = match self.spec.bind_address.as_str() {
-            "0.0.0.0" | "::" | "" => "localhost",
-            other => other,
-        };
-        format!("{scheme}://{host}:{}", self.local_port)
+        format!("{scheme}://{}", self.local())
+    }
+
+    /// `host:port` to reach the forward from this machine (wildcard binds show `localhost`).
+    fn local(&self) -> String {
+        host_port(&display_host(&self.spec.bind_address), self.local_port)
     }
 
     fn address(&self) -> String {
-        format!("{}:{}", self.spec.bind_address, self.local_port)
+        host_port(&self.spec.bind_address, self.local_port)
     }
 
     /// `svc/ledger :5432 → :15432`.
@@ -184,6 +185,23 @@ impl Forward {
     }
 }
 
+/// The host a client on this machine uses for a bind address.
+fn display_host(bind: &str) -> String {
+    match bind {
+        "0.0.0.0" | "::" | "" => "localhost".into(),
+        other => other.into(),
+    }
+}
+
+/// `host:port`, with an IPv6 literal in brackets.
+fn host_port(host: &str, port: u16) -> String {
+    if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
 #[derive(Default)]
 pub struct PortForwardManager {
     forwards: HashMap<u64, Forward>,
@@ -209,6 +227,16 @@ impl PortForwardManager {
 
     /// Starts a forward and returns its id.
     pub fn start(client: kube::Client, spec: ForwardSpec, cx: &mut App) -> ForwardId {
+        Self::start_with(client, spec, false, cx)
+    }
+
+    /// [`Self::start`]; `fallback_any`: a taken `local_port` falls back to a free one.
+    pub fn start_with(
+        client: kube::Client,
+        spec: ForwardSpec,
+        fallback_any: bool,
+        cx: &mut App,
+    ) -> ForwardId {
         let manager = Self::global(cx);
         let id = manager.update(cx, |this, _| {
             let id = this.next_id;
@@ -236,6 +264,7 @@ impl PortForwardManager {
                         port,
                         bind_address,
                         local_port,
+                        fallback_any,
                         events_tx,
                     )
                     .await
@@ -346,6 +375,59 @@ impl PortForwardManager {
         }
     }
 
+    /// The clusters that have forwards.
+    pub fn clusters(&self) -> Vec<ClusterId> {
+        let mut clusters: Vec<ClusterId> = Vec::new();
+        for f in self.forwards.values() {
+            if !clusters.contains(&f.spec.cluster) {
+                clusters.push(f.spec.cluster.clone());
+            }
+        }
+        clusters
+    }
+
+    /// Stops the forwards whose cluster isn't connected any more (disconnected, reconnecting
+    /// with a new client, or removed from the kubeconfig): they hold the old client and would
+    /// keep a dead listener open. Saved auto-start forwards begin again when the cluster
+    /// reconnects. A temporary forward's owner is told, like after a stop from Active Sessions.
+    pub fn stop_disconnected(
+        &mut self,
+        connected: impl Fn(&ClusterId) -> bool,
+        cx: &mut Context<Self>,
+    ) {
+        let stale: Vec<u64> = self
+            .forwards
+            .iter()
+            .filter(|(_, f)| !connected(&f.spec.cluster))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in stale {
+            let Some(forward) = self.forwards.get(&id) else {
+                continue;
+            };
+            SessionRegistry::remove(cx, forward.session_id);
+            if forward.spec.ephemeral.is_none() {
+                NotificationCenter::push(
+                    cx,
+                    Notification::info(format!(
+                        "Port-forward {} stopped: the cluster disconnected.",
+                        forward.spec.target_label()
+                    )),
+                );
+            }
+            self.stopped_by_user(id, cx);
+        }
+    }
+
+    /// A cluster entry's id changed without reconnecting: its forwards follow.
+    pub fn rekey(&mut self, from: &ClusterId, to: &ClusterId) {
+        for forward in self.forwards.values_mut() {
+            if forward.spec.cluster == *from {
+                forward.spec.cluster = to.clone();
+            }
+        }
+    }
+
     /// A forward's state, or `None` once it stopped.
     pub fn info(&self, id: ForwardId) -> Option<ForwardInfo> {
         let forward = self.forwards.get(&id.0)?;
@@ -378,7 +460,7 @@ impl PortForwardManager {
                     id: *id,
                     target: forward.spec.target.clone(),
                     remote_port: forward.spec.remote_port,
-                    local: listening.then(|| format!("localhost:{}", forward.local_port)),
+                    local: listening.then(|| forward.local()),
                     url: (listening && forward.spec.http).then(|| forward.url()),
                 }
             })
@@ -656,6 +738,15 @@ pub fn human_bytes(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ipv6_hosts_are_bracketed() {
+        assert_eq!(host_port(&display_host("::1"), 80), "[::1]:80");
+        assert_eq!(host_port(&display_host("::"), 80), "localhost:80");
+        assert_eq!(host_port(&display_host("0.0.0.0"), 80), "localhost:80");
+        assert_eq!(host_port(&display_host("127.0.0.1"), 80), "127.0.0.1:80");
+        assert_eq!(host_port("fe80::1", 1), "[fe80::1]:1");
+    }
 
     #[test]
     fn human_bytes_scales_units() {

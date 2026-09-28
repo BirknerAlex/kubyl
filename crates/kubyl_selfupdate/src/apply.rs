@@ -158,6 +158,25 @@ fn stage_bundle_from_dmg(archive_bytes: &[u8], staging: &Path) -> Result<PathBuf
     Ok(dest)
 }
 
+/// Apple Team ID Kubyl releases are signed with (`packaging/macos/entitlements.plist`).
+#[cfg(any(target_os = "macos", test))]
+const TEAM_ID: &str = "7RJB3ZHA5M";
+#[cfg(any(target_os = "macos", test))]
+const BUNDLE_ID: &str = "io.github.birkneralex.Kubyl";
+
+/// The code-signing requirement a downloaded bundle must satisfy: a Developer ID Application
+/// certificate of our team, and our bundle identifier. `codesign --verify` alone accepts any
+/// validly signed bundle, including one signed by someone else.
+#[cfg(any(target_os = "macos", test))]
+fn signing_requirement() -> String {
+    format!(
+        "anchor apple generic and identifier \"{BUNDLE_ID}\" \
+         and certificate 1[field.1.2.840.113635.100.6.2.6] \
+         and certificate leaf[field.1.2.840.113635.100.6.1.13] \
+         and certificate leaf[subject.OU] = \"{TEAM_ID}\""
+    )
+}
+
 /// Refuses to install a bundle whose signature doesn't check out — a mid-transfer truncation
 /// or a `ditto` mishap should fail loudly here, not surface as "Kubyl won't launch" after the
 /// swap already happened.
@@ -165,6 +184,7 @@ fn stage_bundle_from_dmg(archive_bytes: &[u8], staging: &Path) -> Result<PathBuf
 fn verify_signature(bundle: &Path) -> Result<(), ApplyError> {
     let verify = std::process::Command::new("codesign")
         .args(["--verify", "--deep", "--strict"])
+        .arg(format!("-R={}", signing_requirement()))
         .arg(bundle)
         .output()?;
     if !verify.status.success() {
@@ -190,6 +210,28 @@ fn swap_bundle(staged: &Path, installed: &Path) -> Result<(), ApplyError> {
     }
     let _ = std::fs::remove_dir_all(&backup);
     Ok(())
+}
+
+#[cfg(test)]
+mod requirement_tests {
+    use super::*;
+
+    #[test]
+    fn requirement_pins_team_and_bundle_id() {
+        let req = signing_requirement();
+        assert!(req.contains("certificate leaf[subject.OU] = \"7RJB3ZHA5M\""));
+        assert!(req.contains("identifier \"io.github.birkneralex.Kubyl\""));
+        assert!(req.starts_with("anchor apple generic and"));
+        // One line of tokens: no stray line breaks or continuation backslashes.
+        assert!(!req.contains('\n') && !req.contains('\\'));
+    }
+
+    #[test]
+    fn team_id_matches_the_entitlements() {
+        let plist = include_str!("../../../packaging/macos/entitlements.plist");
+        assert!(plist.contains(&format!("<string>{TEAM_ID}</string>")));
+        assert!(plist.contains(&format!("{TEAM_ID}.{BUNDLE_ID}")));
+    }
 }
 
 #[cfg(all(test, target_os = "macos"))]

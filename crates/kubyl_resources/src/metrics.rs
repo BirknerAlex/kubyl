@@ -104,12 +104,16 @@ impl Metrics {
 }
 
 /// Sum of a resource's requests or limits over a pod's containers (`resource` = `cpu`/`memory`).
+/// A pod is unlimited (`None`) when any container lacks a limit, since the partial sum would
+/// understate what the pod may use.
 pub fn pod_resource(pod: &Value, kind: &str, resource: &str) -> Option<f64> {
-    let values: Vec<f64> = array_at(pod, "/spec/containers")
+    let containers = array_at(pod, "/spec/containers");
+    let values: Vec<f64> = containers
         .iter()
         .filter_map(|c| parse_quantity(str_at(c, &format!("/resources/{kind}/{resource}"))))
         .collect();
-    (!values.is_empty()).then(|| values.iter().sum())
+    let complete = kind != "limits" || values.len() == containers.len();
+    (!values.is_empty() && complete).then(|| values.iter().sum())
 }
 
 /// The CPU or memory cell (`column` = `cpu` or `memory`) of a pod or node, from the provider.
@@ -189,8 +193,8 @@ mod tests {
         json!({
             "metadata": {"name": name, "namespace": "default"},
             "spec": {"containers": [
-                {"name": "a", "resources": {"limits": {"cpu": "250m", "memory": "128Mi"}}},
-                {"name": "b", "resources": {"requests": {"cpu": "100m"}}}
+                {"name": "a", "resources": {"limits": {"cpu": "125m", "memory": "64Mi"}}},
+                {"name": "b", "resources": {"limits": {"cpu": "125m", "memory": "64Mi"}}}
             ]}
         })
     }
@@ -231,6 +235,21 @@ mod tests {
                 }
             );
         });
+    }
+
+    #[test]
+    fn pod_limits_are_none_when_any_container_is_unlimited() {
+        let pod = json!({"spec": {"containers": [
+            {"resources": {"limits": {"cpu": "1"}, "requests": {"cpu": "100m"}}},
+            {"resources": {"requests": {"cpu": "100m"}}},
+        ]}});
+        assert_eq!(pod_resource(&pod, "limits", "cpu"), None);
+        assert_eq!(pod_resource(&pod, "requests", "cpu"), Some(0.2));
+        let all = json!({"spec": {"containers": [
+            {"resources": {"limits": {"cpu": "1"}}},
+            {"resources": {"limits": {"cpu": "500m"}}},
+        ]}});
+        assert_eq!(pod_resource(&all, "limits", "cpu"), Some(1.5));
     }
 
     #[gpui::test]

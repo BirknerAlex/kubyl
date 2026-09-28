@@ -12,7 +12,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
-use crate::paths::write_atomic;
+use crate::paths::{WriteTicket, write_atomic};
 
 pub(crate) const SETTINGS_FILE: &str = "settings.json";
 pub(crate) const SCHEMA_FILE: &str = "settings.schema.json";
@@ -40,6 +40,9 @@ struct Entry {
 pub struct Settings {
     path: PathBuf,
     raw: Value,
+    /// The file on disk could not be read or parsed. `raw` does not reflect it, so writing it
+    /// back would destroy what the user has there; changes stay in memory until it is fixed.
+    unreadable: bool,
     entries: HashMap<TypeId, Entry>,
     _watcher: Option<notify::RecommendedWatcher>,
 }
@@ -115,10 +118,19 @@ impl Settings {
             }
             serde_json::to_vec_pretty(&settings.raw).expect("settings serialize")
         });
-        let path = cx.global::<Self>().path.clone();
+        let settings = cx.global::<Self>();
+        if settings.unreadable {
+            tracing::warn!(
+                "not saving to {}: it has errors; fix or delete it first",
+                settings.path.display()
+            );
+            return;
+        }
+        let path = settings.path.clone();
+        let ticket = WriteTicket::new();
         cx.background_executor()
             .spawn(async move {
-                if let Err(err) = write_atomic(&path, &contents) {
+                if let Err(err) = ticket.write(&path, &contents) {
                     tracing::error!("failed to write {}: {err}", path.display());
                 }
             })
@@ -146,13 +158,21 @@ impl Settings {
             .detach();
     }
 
-    /// Replaces the file contents and re-parses every section. Invalid JSON keeps the old values.
+    /// Replaces the file contents and re-parses every section. Invalid JSON keeps the old values
+    /// (and stops [`Settings::update`] from writing until the file is valid again).
     pub fn reload_from_str(cx: &mut App, contents: &str) {
         let raw: Value = match serde_json::from_str(contents) {
             Ok(raw @ Value::Object(_)) => raw,
-            Ok(_) => return report(cx, "settings.json must contain a JSON object".into()),
-            Err(err) => return report(cx, format!("settings.json is not valid JSON: {err}")),
+            Ok(_) => {
+                cx.global_mut::<Self>().unreadable = true;
+                return report(cx, "settings.json must contain a JSON object".into());
+            }
+            Err(err) => {
+                cx.global_mut::<Self>().unreadable = true;
+                return report(cx, format!("settings.json is not valid JSON: {err}"));
+            }
         };
+        cx.global_mut::<Self>().unreadable = false;
         if raw == cx.global::<Self>().raw {
             return;
         }
@@ -210,11 +230,14 @@ fn merge_section<T: SettingsSection>(raw: &mut Value, key: Option<&str>, value: 
     let root = raw.as_object_mut().expect("settings root is an object");
     let target = match key {
         None => root,
-        Some(key) => root
-            .entry(key)
-            .or_insert_with(|| Value::Object(Map::new()))
-            .as_object_mut()
-            .expect("settings section is an object"),
+        Some(key) => {
+            let section = root.entry(key).or_insert_with(|| Value::Object(Map::new()));
+            // `null`, `[]` etc. typed by hand: replace with an object.
+            if !section.is_object() {
+                *section = Value::Object(Map::new());
+            }
+            section.as_object_mut().expect("just made an object")
+        }
     };
     for (field, value) in new {
         if defaults.get(&field) == Some(&value) && !target.contains_key(&field) {
@@ -260,6 +283,7 @@ fn combined_schema<'a>(entries: impl Iterator<Item = &'a Entry>) -> Value {
 /// Loads settings.json from `dir`; with `watch`, reloads it when it changes on disk.
 pub(crate) fn init(cx: &mut App, dir: &Path, watch: bool) {
     let path = dir.join(SETTINGS_FILE);
+    let mut unreadable = false;
     let contents = match std::fs::read_to_string(&path) {
         Ok(contents) => contents,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -270,6 +294,7 @@ pub(crate) fn init(cx: &mut App, dir: &Path, watch: bool) {
         }
         Err(err) => {
             tracing::warn!("failed to read {}: {err}", path.display());
+            unreadable = true;
             DEFAULT_SETTINGS.to_string()
         }
     };
@@ -284,6 +309,15 @@ pub(crate) fn init(cx: &mut App, dir: &Path, watch: bool) {
             Some(format!("settings.json is not valid JSON: {err}")),
         ),
     };
+
+    if error.is_some() {
+        unreadable = true;
+        // Keep a copy in case the user's next edit replaces it.
+        let backup = path.with_file_name(format!("{SETTINGS_FILE}.bak"));
+        if let Err(err) = std::fs::copy(&path, &backup) {
+            tracing::warn!("failed to back up {}: {err}", path.display());
+        }
+    }
 
     let (tx, rx) = futures::channel::mpsc::unbounded();
     let watcher = if !watch {
@@ -305,6 +339,7 @@ pub(crate) fn init(cx: &mut App, dir: &Path, watch: bool) {
     cx.set_global(Settings {
         path: path.clone(),
         raw,
+        unreadable,
         entries: HashMap::new(),
         _watcher: watcher,
     });
@@ -427,6 +462,55 @@ mod tests {
             assert_eq!(Settings::get::<Flat>(cx).theme, "light");
             assert_eq!(NotificationCenter::global(cx).latest_id(), 1);
         });
+    }
+
+    #[gpui::test]
+    fn broken_file_is_backed_up_and_never_overwritten(cx: &mut gpui::TestAppContext) {
+        let broken = r#"{ "theme": "light", "logs": { "wrap_lines": tru"#;
+        let dir = setup(cx, broken);
+        cx.update(|cx| Settings::update::<Logs>(cx, |logs| logs.wrap_lines = true));
+        cx.run_until_parked();
+        let file = dir.path().join(SETTINGS_FILE);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), broken);
+        let backup = dir.path().join("settings.json.bak");
+        assert_eq!(std::fs::read_to_string(backup).unwrap(), broken);
+
+        // Once the user fixes the file, saving works again.
+        cx.update(|cx| Settings::reload_from_str(cx, r#"{ "theme": "light" }"#));
+        cx.update(|cx| Settings::update::<Logs>(cx, |logs| logs.wrap_lines = true));
+        cx.run_until_parked();
+        assert!(
+            std::fs::read_to_string(&file)
+                .unwrap()
+                .contains("wrap_lines")
+        );
+    }
+
+    #[gpui::test]
+    fn non_object_section_is_replaced_on_update(cx: &mut gpui::TestAppContext) {
+        for bad in ["null", "[]", "3", "\"x\""] {
+            let dir = setup(cx, &format!(r#"{{ "logs": {bad} }}"#));
+            cx.update(|cx| Settings::update::<Logs>(cx, |logs| logs.wrap_lines = true));
+            cx.run_until_parked();
+            let written: Value = serde_json::from_str(
+                &std::fs::read_to_string(dir.path().join(SETTINGS_FILE)).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                written,
+                serde_json::json!({ "logs": { "wrap_lines": true } })
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn invalid_reload_stops_writes(cx: &mut gpui::TestAppContext) {
+        let dir = setup(cx, r#"{ "theme": "light" }"#);
+        cx.update(|cx| Settings::reload_from_str(cx, r#"{ "theme": "#));
+        cx.update(|cx| Settings::update::<Logs>(cx, |logs| logs.wrap_lines = true));
+        cx.run_until_parked();
+        let written = std::fs::read_to_string(dir.path().join(SETTINGS_FILE)).unwrap();
+        assert_eq!(written, r#"{ "theme": "light" }"#);
     }
 
     #[gpui::test]

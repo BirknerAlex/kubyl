@@ -215,8 +215,9 @@ pub fn paste(text: &str, bracketed: bool) -> Vec<u8> {
         text.pop();
     }
     let mut out = if bracketed {
-        // A paste can't end the bracket early.
-        let text = text.replace("\x1b[201~", "");
+        // A paste can't end the bracket early. Removing only the marker would let
+        // `ESC[20 ESC[201~ 1~` rebuild it, so drop every ESC (and the one-character CSI).
+        let text = text.replace(['\x1b', '\u{9b}'], "");
         let mut out = Vec::with_capacity(text.len() + 13);
         out.extend_from_slice(b"\x1b[200~");
         out.extend_from_slice(text.as_bytes());
@@ -377,10 +378,24 @@ mod tests {
     }
 
     #[test]
+    fn bracketed_paste_cannot_forge_the_end_marker() {
+        for evil in ["a\x1b[201~b", "\x1b[20\x1b[201~1~ rm -rf ~", "\u{9b}201~"] {
+            let out = paste(evil, true);
+            let body = &out[6..out.len() - 6];
+            assert!(!body.contains(&0x1b), "{evil:?}");
+            assert!(
+                !String::from_utf8_lossy(body).contains("\u{9b}"),
+                "{evil:?}"
+            );
+            assert!(out.ends_with(b"\x1b[201~"));
+        }
+    }
+
+    #[test]
     fn paste_wraps_or_converts_newlines() {
         assert_eq!(paste("hi\nthere", true), b"\x1b[200~hi\rthere\x1b[201~");
         assert_eq!(paste("a\r\nb", false), b"a\rb");
-        assert_eq!(paste("x\x1b[201~y", true), b"\x1b[200~xy\x1b[201~");
+        assert_eq!(paste("x\x1b[201~y", true), b"\x1b[200~x[201~y\x1b[201~");
     }
 
     #[test]

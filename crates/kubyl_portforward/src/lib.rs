@@ -143,6 +143,7 @@ pub fn init(cx: &mut App) {
                     open_browser: false,
                     save: false,
                     auto_start: false,
+                    local_fallback: false,
                 },
                 cx,
             );
@@ -173,6 +174,26 @@ pub fn init(cx: &mut App) {
     // Saved forwards with auto-start begin when their cluster connects.
     if let Some(manager) = ConnectionManager::try_global(cx) {
         cx.subscribe(&manager, |manager, event: &ConnectionEvent, cx| {
+            // Forwards hold the client they started with: drop them when it goes away.
+            match event {
+                ConnectionEvent::Rekeyed { from, to } => {
+                    PortForwardManager::global(cx).update(cx, |m, _| m.rekey(from, to));
+                }
+                ConnectionEvent::StateChanged(_) | ConnectionEvent::ContextsChanged => {
+                    let connections = manager.read(cx);
+                    let stale: Vec<ClusterId> = PortForwardManager::global(cx)
+                        .read(cx)
+                        .clusters()
+                        .into_iter()
+                        .filter(|c| connections.client(c).is_none())
+                        .collect();
+                    if !stale.is_empty() {
+                        PortForwardManager::global(cx)
+                            .update(cx, |m, cx| m.stop_disconnected(|c| !stale.contains(c), cx));
+                    }
+                }
+                _ => {}
+            }
             let ConnectionEvent::StateChanged(cluster) = event else {
                 return;
             };
@@ -187,6 +208,10 @@ pub fn init(cx: &mut App) {
                 .cloned()
                 .collect();
             let forwards = PortForwardManager::global(cx);
+            // Auto-start stays quiet on a read-only cluster (no toast per saved forward).
+            if manager.read(cx).caps(cluster).read_only {
+                return;
+            }
             for forward in saved {
                 if !forwards.read(cx).is_running(&forward, cx) {
                     start_saved(&forward, cx);
@@ -255,9 +280,8 @@ fn forward_port(target: ResourceRef, port: u16, cx: &mut App) {
         NotificationCenter::push(cx, Notification::info(message));
         return;
     }
-    let local_port = preferred_local_port(port)
-        .filter(|&local| std::net::TcpListener::bind(("127.0.0.1", local)).is_ok())
-        .unwrap_or(0);
+    // Binding happens off the UI thread; a taken port falls back to a free one there.
+    let local_port = preferred_local_port(port).unwrap_or(0);
     let (http, https) = resolve::http_kind(port, None, None);
     start_target_forward(
         target,
@@ -270,6 +294,7 @@ fn forward_port(target: ResourceRef, port: u16, cx: &mut App) {
             open_browser: false,
             save: false,
             auto_start: false,
+            local_fallback: true,
         },
         cx,
     );
@@ -366,6 +391,7 @@ pub fn start_saved(saved: &SavedForward, cx: &mut App) {
             open_browser: false,
             save: false,
             auto_start: saved.auto_start,
+            local_fallback: false,
         },
         cx,
     );
@@ -374,10 +400,14 @@ pub fn start_saved(saved: &SavedForward, cx: &mut App) {
 /// Starts a forward to `target` with the dialog's choices (resolving a workload's selector
 /// first), and saves it when asked.
 pub fn start_target_forward(target: ResourceRef, choice: ForwardChoice, cx: &mut App) {
-    let Some(client) = ConnectionManager::global(cx)
-        .read(cx)
-        .client(&target.cluster)
-    else {
+    // Saved and auto-start forwards come through here too, not just the guarded actions.
+    let manager = ConnectionManager::global(cx);
+    if manager.read(cx).caps(&target.cluster).read_only {
+        let name = manager.read(cx).display_name(&target.cluster);
+        error(cx, format!("{name} is read-only."));
+        return;
+    }
+    let Some(client) = manager.read(cx).client(&target.cluster) else {
         error(cx, "The cluster isn't connected.");
         return;
     };
@@ -400,6 +430,7 @@ pub fn start_target_forward(target: ResourceRef, choice: ForwardChoice, cx: &mut
         ephemeral: None,
     };
     let save = choice.save.then_some(choice.auto_start);
+    let fallback = choice.local_fallback;
     match target.gvr.resource.as_str() {
         "pods" => {
             let spec = spec(
@@ -407,7 +438,7 @@ pub fn start_target_forward(target: ResourceRef, choice: ForwardChoice, cx: &mut
                 RemotePort::Container(choice.remote_port),
                 target.cluster.clone(),
             );
-            start_and_save(client, spec, save, cx);
+            start_and_save(client, spec, save, fallback, cx);
         }
         "services" => {
             let spec = spec(
@@ -415,7 +446,7 @@ pub fn start_target_forward(target: ResourceRef, choice: ForwardChoice, cx: &mut
                 RemotePort::Service(choice.remote_port),
                 target.cluster.clone(),
             );
-            start_and_save(client, spec, save, cx);
+            start_and_save(client, spec, save, fallback, cx);
         }
         resource @ ("deployments" | "statefulsets" | "daemonsets") => {
             let (select_client, ns, resource) =
@@ -424,6 +455,7 @@ pub fn start_target_forward(target: ResourceRef, choice: ForwardChoice, cx: &mut
                 resolve::workload_selector(select_client, &ns, &resource, &name).await
             });
             let cluster = target.cluster.clone();
+            let spec_cluster = cluster.clone();
             let base = spec(
                 ForwardKind::Workload {
                     label_selector: String::new(),
@@ -433,11 +465,17 @@ pub fn start_target_forward(target: ResourceRef, choice: ForwardChoice, cx: &mut
             );
             cx.spawn(async move |cx| match task.await {
                 Ok(label_selector) => cx.update(|cx| {
+                    // The cluster may have disconnected or reconnected (new client) meanwhile.
+                    let manager = ConnectionManager::global(cx);
+                    let Some(client) = manager.read(cx).client(&spec_cluster) else {
+                        error(cx, "The cluster isn't connected.");
+                        return;
+                    };
                     let spec = ForwardSpec {
                         kind: ForwardKind::Workload { label_selector },
                         ..base
                     };
-                    start_and_save(client, spec, save, cx);
+                    start_and_save(client, spec, save, fallback, cx);
                 }),
                 Err(err) => cx.update(|cx| error(cx, format!("Port-forward failed: {err:#}"))),
             })
@@ -452,6 +490,7 @@ fn start_and_save(
     client: kube::Client,
     spec: ForwardSpec,
     save: Option<bool>,
+    fallback: bool,
     cx: &mut App,
 ) -> ForwardId {
     if let Some(auto_start) = save {
@@ -459,7 +498,7 @@ fn start_and_save(
         saved.auto_start = auto_start;
         SavedForwards::global(cx).update(cx, |this, cx| this.update_state(cx, |s| s.upsert(saved)));
     }
-    PortForwardManager::start(client, spec, cx)
+    PortForwardManager::start_with(client, spec, fallback, cx)
 }
 
 /// Starts a forward with an already resolved spec (other crates, tests).

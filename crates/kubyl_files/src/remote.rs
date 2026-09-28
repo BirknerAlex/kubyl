@@ -137,6 +137,11 @@ pub fn exit_code(status: &Status) -> Option<i32> {
         .ok()
 }
 
+/// Stores stdin (`$2` bytes) in a temporary file next to `$1` first and copies it over `$1`
+/// only when it arrived complete, so a dropped connection can't leave a truncated file. The
+/// copy (not `mv`) keeps the file's mode, owner, symlink and bind mount.
+const WRITE_SCRIPT: &str = r#"tmp="$1.kubyl-tmp.$$"; if cat > "$tmp" && [ "$(wc -c < "$tmp")" -eq "$2" ]; then cat "$tmp" > "$1"; rc=$?; else echo "the upload was incomplete" >&2; rc=1; fi; rm -f "$tmp"; exit $rc"#;
+
 /// Runs `command` and collects its output. `stdin` is written and closed first.
 pub async fn exec_capture(
     api: &Api<Pod>,
@@ -151,10 +156,12 @@ pub async fn exec_capture(
         .stdout(true)
         .stderr(true);
     let mut process = api.exec(pod, command, &params).await?;
+    let mut stdin_error = None;
     if let Some(bytes) = stdin
         && let Some(mut writer) = process.stdin()
     {
-        writer.write_all(&bytes).await.ok();
+        // A command that exits early stops reading: its own error is the useful one.
+        stdin_error = writer.write_all(&bytes).await.err();
         writer.shutdown().await.ok();
     }
     let mut stdout = Vec::new();
@@ -178,13 +185,17 @@ pub async fn exec_capture(
     };
     // No status means the stream ended before the command finished (the API always sends one),
     // so partial output isn't mistaken for a result.
-    let success = status
+    let mut success = status
         .as_ref()
         .is_some_and(|s| s.status.as_deref() == Some("Success"));
-    let message = match &status {
+    let mut message = match &status {
         Some(status) => status.message.clone(),
         None => Some("the connection closed before the command finished".into()),
     };
+    if success && let Some(err) = stdin_error {
+        success = false;
+        message = Some(format!("writing to the command failed: {err}"));
+    }
     Ok(ExecOutput {
         stdout,
         stderr: String::from_utf8_lossy(&stderr).into_owned(),
@@ -341,8 +352,9 @@ impl RemoteTarget {
 
     /// Overwrites a file with `bytes`, keeping its mode.
     pub async fn write(&self, path: &str, bytes: Vec<u8>) -> anyhow::Result<()> {
+        let len = bytes.len().to_string();
         let output = self
-            .exec(sh("cat > \"$1\"", [self.real(path)]), Some(bytes))
+            .exec(sh(WRITE_SCRIPT, [self.real(path), len]), Some(bytes))
             .await?;
         if output.success {
             Ok(())
@@ -596,6 +608,36 @@ pub async fn exec_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn run_write_script(dir: &std::path::Path, target: &str, data: &[u8], len: usize) -> bool {
+        use std::io::Write as _;
+        use std::process::{Command, Stdio};
+        let mut child = Command::new("sh")
+            .args(["-c", WRITE_SCRIPT, "sh"])
+            .arg(dir.join(target))
+            .arg(len.to_string())
+            .stdin(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(data).unwrap();
+        child.wait().unwrap().success()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_script_keeps_the_file_unless_the_upload_is_complete() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("app.conf");
+        std::fs::write(&file, "old").unwrap();
+        assert!(!run_write_script(dir.path(), "app.conf", b"new", 10));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "old");
+        assert!(run_write_script(dir.path(), "app.conf", b"new!", 4));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "new!");
+        let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
+        assert_eq!(left.len(), 1, "temp file left behind");
+    }
 
     #[test]
     fn parses_capabilities() {

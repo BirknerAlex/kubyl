@@ -901,7 +901,12 @@ impl FlowService {
             ConnectionEvent::Rekeyed { from, to } => {
                 if let Some(state) = self.clusters.remove(from) {
                     // The backend holds the old connection's client: build it again.
-                    self.clusters.insert(to.clone(), state);
+                    // A state already under the new id is replaced: its forward must not leak.
+                    if let Some(old) = self.clusters.insert(to.clone(), state)
+                        && let Some(forward) = old.forward
+                    {
+                        PortForwardManager::global(cx).update(cx, |m, cx| m.stop(forward, cx));
+                    }
                     self.reset(to, cx);
                     self.redetect(to, cx);
                 }
@@ -1306,6 +1311,9 @@ async fn connect(
                     })
                     .await
                 }
+                LokiTarget::External(url) => LokiAccess::Missing(format!(
+                    "No single flows: the FlowCollector points at Loki {url}, outside the cluster. Set the Loki URL in Kubyl's NetObserv settings to read it from here."
+                )),
                 LokiTarget::LokiStack { namespace, name } => LokiAccess::Missing(format!(
                     "No single flows: NetObserv stores them in the LokiStack {namespace}/{name}, whose gateway needs your token, and the API server's service proxy doesn't pass it on. The topology comes from NetObserv's metrics."
                 )),

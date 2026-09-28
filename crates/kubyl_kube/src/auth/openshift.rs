@@ -297,19 +297,12 @@ impl OpenShiftAuth {
                 return Ok(None);
             }
         };
-        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(AuthError::Failed(
-                "the API server rejected the token (401 Unauthorized)".into(),
-            ));
-        }
+        let status = response.status();
         let body: serde_json::Value = match response.bytes().await {
             Ok(body) => serde_json::from_slice(&body).unwrap_or_default(),
             Err(_) => serde_json::Value::Null,
         };
-        Ok(body
-            .pointer("/metadata/name")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string))
+        token_verdict(status, &body)
     }
 
     /// Keeps a token (memory and keychain).
@@ -654,9 +647,57 @@ fn chain(err: &(dyn std::error::Error + 'static)) -> String {
     message
 }
 
+/// What the answer of `users/~` says about a new token: the user, nothing (unreachable or an
+/// unexpected answer; the next connect shows that) or a rejection. A token the API server
+/// doesn't know is a 401, or a 403 naming `system:anonymous` when it treats the request as
+/// unauthenticated.
+fn token_verdict(
+    status: reqwest::StatusCode,
+    body: &serde_json::Value,
+) -> Result<Option<String>, AuthError> {
+    let anonymous = status == reqwest::StatusCode::FORBIDDEN
+        && body["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("system:anonymous"));
+    if status == reqwest::StatusCode::UNAUTHORIZED || anonymous {
+        return Err(AuthError::Failed(format!(
+            "the API server rejected the token ({status})"
+        )));
+    }
+    if !status.is_success() {
+        return Ok(None);
+    }
+    Ok(body
+        .pointer("/metadata/name")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string))
+}
+
 #[cfg(test)]
 mod tests {
+    use reqwest::StatusCode;
+    use serde_json::json;
+
     use super::*;
+
+    #[test]
+    fn token_verdicts() {
+        let user = json!({"metadata": {"name": "alice"}});
+        assert_eq!(
+            token_verdict(StatusCode::OK, &user).unwrap().as_deref(),
+            Some("alice")
+        );
+        assert!(token_verdict(StatusCode::UNAUTHORIZED, &json!({})).is_err());
+        let anonymous = json!({"message": "users.user.openshift.io \"~\" is forbidden: User \"system:anonymous\" cannot get resource"});
+        assert!(token_verdict(StatusCode::FORBIDDEN, &anonymous).is_err());
+        // A named user without that permission, or a broken API server, say nothing about the token.
+        let named = json!({"message": "User \"alice\" cannot get resource"});
+        assert_eq!(token_verdict(StatusCode::FORBIDDEN, &named).unwrap(), None);
+        assert_eq!(
+            token_verdict(StatusCode::BAD_GATEWAY, &json!({})).unwrap(),
+            None
+        );
+    }
 
     fn params(user: &str) -> OpenShiftParams {
         OpenShiftParams {

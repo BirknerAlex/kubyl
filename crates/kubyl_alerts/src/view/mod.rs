@@ -62,7 +62,8 @@ pub struct Pending {
     pub tab: Option<Tab>,
     pub query: Option<String>,
     pub object: Option<rows::ObjectFilter>,
-    pub select: Option<String>,
+    /// The cluster and fingerprint of the alert (fingerprints are only unique per Alertmanager).
+    pub select: Option<(ClusterId, String)>,
 }
 
 #[derive(Default)]
@@ -133,6 +134,18 @@ pub(crate) struct Entry {
     pub alert: Alert,
 }
 
+/// Index of the alert with this (cluster, fingerprint) among index-aligned `alerts`/`clusters`.
+fn position_of(
+    alerts: &[Alert],
+    clusters: &[ClusterId],
+    key: &(ClusterId, String),
+) -> Option<usize> {
+    alerts
+        .iter()
+        .zip(clusters)
+        .position(|(a, c)| c == &key.0 && a.fingerprint == key.1)
+}
+
 /// A silence with its cluster.
 #[derive(Clone)]
 pub(crate) struct SilenceEntry {
@@ -157,8 +170,8 @@ pub struct AlertsView {
     revisions: Vec<(ClusterId, u64)>,
     /// Alertmanagers behind the shown alerts (a SOURCE column for more than one).
     pub(crate) sources: usize,
-    /// Fingerprint of the selected alert.
-    pub(crate) selected: Option<String>,
+    /// Cluster and fingerprint of the selected alert.
+    pub(crate) selected: Option<(ClusterId, String)>,
     pub(crate) details_open: bool,
     pub(crate) filter_input: Entity<InputState>,
     pub(crate) silence_filter: Entity<InputState>,
@@ -404,11 +417,7 @@ impl AlertsView {
             self.resolved_open,
         );
         if self.selected.is_none() {
-            self.selected = self
-                .rows
-                .iter()
-                .find_map(|r| rows::alert_of(r, &self.alerts, &self.resolved))
-                .map(|a| a.fingerprint.clone());
+            self.selected = self.rows.iter().find_map(|r| self.key_of_row(r));
         }
         cx.notify();
     }
@@ -445,31 +454,42 @@ impl AlertsView {
 
     // ----- Selection -----
 
+    /// The selection key (cluster, fingerprint) of an alert row.
+    fn key_of_row(&self, row: &Row) -> Option<(ClusterId, String)> {
+        let Row::Alert {
+            index, resolved, ..
+        } = row
+        else {
+            return None;
+        };
+        let (alerts, clusters) = if *resolved {
+            (&self.resolved, &self.resolved_clusters)
+        } else {
+            (&self.alerts, &self.alert_clusters)
+        };
+        Some((
+            clusters.get(*index)?.clone(),
+            alerts.get(*index)?.fingerprint.clone(),
+        ))
+    }
+
     pub(crate) fn selected_index(&self) -> Option<usize> {
-        let fingerprint = self.selected.as_ref()?;
-        self.rows.iter().position(|r| {
-            rows::alert_of(r, &self.alerts, &self.resolved)
-                .is_some_and(|a| &a.fingerprint == fingerprint)
-        })
+        let key = self.selected.as_ref()?;
+        self.rows
+            .iter()
+            .position(|r| self.key_of_row(r).as_ref() == Some(key))
     }
 
     /// The selected alert and its cluster.
     pub(crate) fn selected_entry(&self) -> Option<Entry> {
-        let fingerprint = self.selected.as_ref()?;
-        if let Some(i) = self
-            .alerts
-            .iter()
-            .position(|a| &a.fingerprint == fingerprint)
-        {
+        let key = self.selected.as_ref()?;
+        if let Some(i) = position_of(&self.alerts, &self.alert_clusters, key) {
             return Some(Entry {
                 cluster: self.alert_clusters[i].clone(),
                 alert: self.alerts[i].clone(),
             });
         }
-        let i = self
-            .resolved
-            .iter()
-            .position(|a| &a.fingerprint == fingerprint)?;
+        let i = position_of(&self.resolved, &self.resolved_clusters, key)?;
         Some(Entry {
             cluster: self.resolved_clusters[i].clone(),
             alert: self.resolved[i].clone(),
@@ -477,12 +497,8 @@ impl AlertsView {
     }
 
     pub(crate) fn select_row(&mut self, index: usize, cx: &mut Context<Self>) {
-        if let Some(alert) = self
-            .rows
-            .get(index)
-            .and_then(|r| rows::alert_of(r, &self.alerts, &self.resolved))
-        {
-            self.selected = Some(alert.fingerprint.clone());
+        if let Some(key) = self.rows.get(index).and_then(|r| self.key_of_row(r)) {
+            self.selected = Some(key);
             self.scroll.scroll_to_item(index, ScrollStrategy::Nearest);
             self.details_state = details::DetailsState::default();
         }
@@ -1033,6 +1049,19 @@ mod tests {
         }
     }
 
+    #[test]
+    fn selection_is_keyed_by_cluster_and_fingerprint() {
+        let a = ClusterId::new("a");
+        let b = ClusterId::new("b");
+        // The same alert (same fingerprint) firing in two clusters.
+        let alerts = vec![alert(1), alert(1), alert(2)];
+        let clusters = vec![a.clone(), b.clone(), b.clone()];
+        let key = |c: &ClusterId, fp: &str| (c.clone(), fp.to_string());
+        assert_eq!(position_of(&alerts, &clusters, &key(&a, "fp1")), Some(0));
+        assert_eq!(position_of(&alerts, &clusters, &key(&b, "fp1")), Some(1));
+        assert_eq!(position_of(&alerts, &clusters, &key(&a, "fp2")), None);
+    }
+
     #[gpui::test]
     fn five_thousand_alerts_keep_the_selection(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
@@ -1090,7 +1119,7 @@ mod tests {
         cx.run_until_parked();
         view.update(cx, |view, _| {
             assert_eq!(view.rows.len(), 5200);
-            assert_eq!(view.selected.as_deref(), Some("fp2500"));
+            assert_eq!(view.selected.as_ref().map(|k| k.1.as_str()), Some("fp2500"));
             let index = view.selected_index().unwrap();
             let shown = rows::alert_of(&view.rows[index], &view.alerts, &view.resolved).unwrap();
             assert_eq!(shown.fingerprint, "fp2500");

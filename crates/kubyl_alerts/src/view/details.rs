@@ -24,7 +24,7 @@ use crate::model::{Alert, AlertState, Rule, Target};
 #[derive(Default)]
 pub(crate) struct DetailsState {
     /// The alert these are for.
-    for_alert: Option<String>,
+    for_alert: Option<(ClusterId, String)>,
     target: TargetCheck,
     timeline: Timeline,
     description_open: bool,
@@ -117,17 +117,36 @@ pub(crate) fn rule_of(alert: &Alert, groups: &[crate::model::RuleGroup]) -> Opti
         .cloned()
 }
 
-/// The API path of a target object.
-pub(crate) fn object_path(target: &Target) -> String {
+/// One URL path segment, percent-encoded (label values are arbitrary text).
+fn segment(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+/// The API path of a target object. `None` for a namespaced kind without a namespace (the
+/// alert's labels do not say where it is: nothing to check).
+pub(crate) fn object_path(target: &Target) -> Option<String> {
     let (group, version, resource) = target.kind.gvr();
     let base = if group.is_empty() {
         format!("/api/{version}")
     } else {
         format!("/apis/{group}/{version}")
     };
+    let name = segment(&target.name);
     match (&target.namespace, target.kind.namespaced()) {
-        (Some(ns), true) => format!("{base}/namespaces/{ns}/{resource}/{}", target.name),
-        _ => format!("{base}/{resource}/{}", target.name),
+        (Some(ns), true) => Some(format!(
+            "{base}/namespaces/{}/{resource}/{name}",
+            segment(ns)
+        )),
+        (None, true) => None,
+        _ => Some(format!("{base}/{resource}/{name}")),
     }
 }
 
@@ -167,11 +186,12 @@ fn object_status(object: &Value) -> Option<String> {
 impl AlertsView {
     /// Starts the target check and the timeline for the selected alert (once).
     fn load_details(&mut self, entry: &Entry, cx: &mut Context<Self>) {
-        if self.details_state.for_alert.as_ref() == Some(&entry.alert.fingerprint) {
+        let key = (entry.cluster.clone(), entry.alert.fingerprint.clone());
+        if self.details_state.for_alert.as_ref() == Some(&key) {
             return;
         }
         self.details_state = DetailsState {
-            for_alert: Some(entry.alert.fingerprint.clone()),
+            for_alert: Some(key),
             ..Default::default()
         };
         let client = kubyl_kube::ConnectionManager::try_global(cx)
@@ -179,15 +199,16 @@ impl AlertsView {
         let Some(client) = client else {
             return;
         };
-        if let Some(target) = entry.alert.target.clone() {
+        if let Some(target) = entry.alert.target.clone()
+            && let Some(path) = object_path(&target)
+        {
             self.details_state.target = TargetCheck::Checking;
-            let path = object_path(&target);
             let client = client.clone();
             let task = spawn_kube(cx, async move {
                 let request = http::Request::get(path).body(Vec::new()).ok()?;
                 Some(client.request::<Value>(request).await)
             });
-            let fingerprint = entry.alert.fingerprint.clone();
+            let fingerprint = (entry.cluster.clone(), entry.alert.fingerprint.clone());
             cx.spawn(async move |this, cx| {
                 let result = task.await;
                 this.update(cx, |this, cx| {
@@ -217,7 +238,7 @@ impl AlertsView {
         self.details_state.timeline = Timeline::Loading;
         let name = entry.alert.name.replace('\\', "\\\\").replace('"', "\\\"");
         let labels = entry.alert.labels.clone();
-        let fingerprint = entry.alert.fingerprint.clone();
+        let fingerprint = (entry.cluster.clone(), entry.alert.fingerprint.clone());
         let task = spawn_kube(cx, async move {
             let end = (Timestamp::now().as_second() as f64 / TIMELINE_STEP).floor() * TIMELINE_STEP;
             let start = end - TIMELINE_SPAN;
@@ -766,9 +787,10 @@ impl AlertsView {
                     let by = self
                         .alerts
                         .iter()
-                        .find(|a| &a.fingerprint == fingerprint)
-                        .cloned();
-                    let select = fingerprint.clone();
+                        .zip(&self.alert_clusters)
+                        .find(|(a, c)| &a.fingerprint == fingerprint && **c == cluster)
+                        .map(|(a, _)| a.clone());
+                    let select = (cluster.clone(), fingerprint.clone());
                     section = section.child(
                         h_flex()
                             .gap(u(6.0))
@@ -1174,14 +1196,30 @@ mod tests {
             name: "gw-1".into(),
             container: None,
         };
-        assert_eq!(object_path(&pod), "/api/v1/namespaces/payments/pods/gw-1");
+        assert_eq!(
+            object_path(&pod).as_deref(),
+            Some("/api/v1/namespaces/payments/pods/gw-1")
+        );
+        let odd = Target {
+            name: "a/b c".into(),
+            ..pod.clone()
+        };
+        assert_eq!(
+            object_path(&odd).as_deref(),
+            Some("/api/v1/namespaces/payments/pods/a%2Fb%20c")
+        );
+        let lost = Target {
+            namespace: None,
+            ..pod.clone()
+        };
+        assert_eq!(object_path(&lost), None, "namespaced without a namespace");
         let node = Target {
             kind: crate::model::TargetKind::Node,
             namespace: None,
             name: "n1".into(),
             container: None,
         };
-        assert_eq!(object_path(&node), "/api/v1/nodes/n1");
+        assert_eq!(object_path(&node).as_deref(), Some("/api/v1/nodes/n1"));
         assert_eq!(eval_time(0.0042), "4ms");
     }
 }

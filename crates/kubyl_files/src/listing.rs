@@ -10,7 +10,7 @@
 
 use jiff::Timestamp;
 
-use crate::entry::{Entry, EntryKind};
+use crate::entry::{Entry, EntryKind, is_safe_name};
 
 /// How to list directories in a container, from the capability probe.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,7 +50,9 @@ pub fn command(method: ListingMethod, dir: &str) -> Vec<String> {
     ]
 }
 
-/// Parses the output of `method`.
+/// Parses the output of `method`. Names that are not a single path component are dropped: they
+/// can only come from a newline in a file name faking a line, and would escape the folder they
+/// are joined onto.
 pub fn parse(method: ListingMethod, output: &[u8]) -> Vec<Entry> {
     let text = String::from_utf8_lossy(output);
     match method {
@@ -101,6 +103,9 @@ pub fn parse_find(text: &str) -> Vec<Entry> {
                 return None;
             };
             let kind = find_kind(kind);
+            if !is_safe_name(name) {
+                return None;
+            }
             Some(Entry {
                 name: name.to_string(),
                 kind,
@@ -136,6 +141,9 @@ pub fn parse_stat(text: &str) -> Vec<Entry> {
                 return None;
             };
             let kind = stat_kind(kind);
+            if !is_safe_name(name) {
+                return None;
+            }
             Some(Entry {
                 name: name.to_string(),
                 kind,
@@ -196,7 +204,7 @@ pub fn parse_ls(text: &str) -> Vec<Entry> {
     text.lines()
         .filter(|l| !l.starts_with("total "))
         .filter_map(|line| parse_ls_line(line, now))
-        .filter(|e| e.name != "." && e.name != "..")
+        .filter(|e| is_safe_name(&e.name))
         .collect()
 }
 
@@ -338,6 +346,24 @@ lrwxrwxrwx 1 root root  12 2024-09-25 10:42:17.000000000 +0000 current -> releas
         assert_eq!(entries[1].kind, EntryKind::Symlink);
         assert_eq!(entries[1].name, "current");
         assert_eq!(entries[1].link_target.as_deref(), Some("releases/v2"));
+    }
+
+    #[test]
+    fn drops_names_that_escape_the_folder() {
+        // A file named "a\ndrwxr-xr-x … x/.." makes `ls` print a second, fake line.
+        let out = "-rw-r--r-- 1 app app 1 2024-09-25 10:42:17.000000000 +0000 a\n\
+drwxr-xr-x 2 app app 4096 2024-09-25 10:42:17.000000000 +0000 x/..\n\
+-rw-r--r-- 1 app app 1 2024-09-25 10:42:17.000000000 +0000 ../../etc/passwd\n\
+-rw-r--r-- 1 app app 1 2024-09-25 10:42:17.000000000 +0000 ok.txt\n";
+        let names: Vec<_> = parse_ls(out).into_iter().map(|e| e.name).collect();
+        assert_eq!(names, ["a", "ok.txt"]);
+        // find and stat records with a slash or dot-dot name (e.g. from a tampered stream).
+        let find = "f\tf\t1\t644\ta\ta\t1.0\t\t..\0f\tf\t1\t644\ta\ta\t1.0\t\tx/y\0\
+                    f\tf\t1\t644\ta\ta\t1.0\t\tfine\0";
+        assert_eq!(parse_find(find).len(), 1);
+        let stat =
+            "regular file\t1\t644\ta\ta\t1\t0\t\t..\0regular file\t1\t644\ta\ta\t1\t0\t\tfine\0";
+        assert_eq!(parse_stat(stat).len(), 1);
     }
 
     #[test]

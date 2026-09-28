@@ -204,6 +204,15 @@ async fn run_program(
         .await
         .ok()
         .flatten();
+    // Arguments come from the kubeconfig's exec plugin (profile, role ARN, region, tenant) and
+    // may end up on a `cmd /C` line on Windows, where quoting can't neutralize `%VAR%`, `^` or
+    // `&`. Real names never hold these characters.
+    if args.iter().any(|arg| cmd_unsafe(arg)) {
+        return Err(CliError::Io(
+            "an argument contains characters that aren't allowed (& | < > ^ % \" ! or parentheses)"
+                .into(),
+        ));
+    }
     let mut cmd = command(program, path.as_ref());
     cmd.args(args);
     if let Some(path) = &path {
@@ -242,6 +251,13 @@ async fn run_program(
         });
     }
     Ok(output.stdout)
+}
+
+/// Whether `arg` holds a character that `cmd.exe` interprets even inside quotes.
+fn cmd_unsafe(arg: &str) -> bool {
+    arg.chars().any(|c| {
+        c.is_control() || matches!(c, '&' | '|' | '<' | '>' | '^' | '%' | '"' | '!' | '(' | ')')
+    })
 }
 
 /// The command to run, resolved against the login shell's `PATH` like exec plugins are. On
@@ -411,7 +427,12 @@ pub const EXPIRY_MARGIN: Duration = Duration::from_secs(5 * 60);
 /// `now` when it doesn't say.
 pub fn fresh_until(expires: Option<Timestamp>, fallback: Duration, now: Timestamp) -> Timestamp {
     match expires {
-        Some(at) => at - EXPIRY_MARGIN,
+        // A credential living less than the margin (short SSO or assumed-role sessions) is
+        // used for the first half of what's left, not "expired" on arrival.
+        Some(at) => {
+            let left = at.duration_since(now).as_secs().max(0).unsigned_abs();
+            at - EXPIRY_MARGIN.min(Duration::from_secs(left / 2))
+        }
         None => now + fallback,
     }
 }
@@ -1059,6 +1080,20 @@ users:
         );
     }
 
+    /// A credential that lives less than the margin is still cached for part of its life, so
+    /// the CLI doesn't run on every read.
+    #[test]
+    fn short_lived_credentials_are_cached() {
+        let now: Timestamp = "2026-09-26T12:00:00Z".parse().unwrap();
+        let short: Timestamp = "2026-09-26T12:04:00Z".parse().unwrap();
+        let until = fresh_until(Some(short), Duration::from_secs(60), now);
+        assert_eq!(until, "2026-09-26T12:02:00Z".parse::<Timestamp>().unwrap());
+        assert!(until > now && until < short);
+        // Already expired (or clock skew): never in the future of `expires`.
+        let past: Timestamp = "2026-09-26T11:59:00Z".parse().unwrap();
+        assert!(fresh_until(Some(past), Duration::from_secs(60), now) <= now);
+    }
+
     #[tokio::test]
     async fn cache_fetches_once_and_clears() {
         let cache: Cache<u32> = Cache::default();
@@ -1249,5 +1284,35 @@ users:
             matches!(&error, ProviderError::Unavailable(m) if m.contains("AWS CLI") && m.contains("getting-started-install")),
             "{error:?}"
         );
+    }
+
+    #[test]
+    fn cmd_metacharacters_are_refused() {
+        for bad in [
+            "a&calc", "p|q", "%PATH%", "x^y", "a\"b", "a\nb", "a>b", "(x)", "!x",
+        ] {
+            assert!(cmd_unsafe(bad), "{bad:?}");
+        }
+        for ok in [
+            "prod",
+            "arn:aws:iam::123456789012:role/my-role_1",
+            "eu-west-1",
+            "a1b2-c3.example.com",
+            "my profile",
+        ] {
+            assert!(!cmd_unsafe(ok), "{ok:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn arguments_with_metacharacters_never_spawn() {
+        let error = run_program(
+            "kubyl-no-such-cli",
+            &["--profile", "x&calc"],
+            &CliEnv::default(),
+            Duration::from_secs(5),
+        )
+        .await;
+        assert!(matches!(error, Err(CliError::Io(_))), "{error:?}");
     }
 }

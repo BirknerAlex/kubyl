@@ -201,6 +201,13 @@ pub struct ClusterAlerts {
 }
 
 impl ClusterAlerts {
+    /// Whether to read now. Never while a read is in flight (an older read finishing last
+    /// would overwrite a newer one): a pending `refetch_at` waits for it.
+    fn fetch_wanted(&self, every: Duration) -> bool {
+        let refetch = self.refetch_at.is_some_and(|t| t <= Instant::now());
+        !self.fetch.in_flight && (refetch || self.fetch.due(every))
+    }
+
     fn new(generation: u64) -> Self {
         Self {
             phase: Phase::Unknown,
@@ -503,6 +510,8 @@ impl AlertsService {
 
     fn drop_cluster(&mut self, cluster: &ClusterId, cx: &mut Context<Self>) {
         if let Some(old) = self.clusters.remove(cluster) {
+            // Results of tasks started for the dropped state must not apply to a reconnect.
+            self.generation += 1;
             stop_forwards(old.forwards, cx);
             self.notices.remove(cluster);
             crate::changed(cx);
@@ -529,8 +538,11 @@ impl AlertsService {
                 }
             }
             ConnectionEvent::Rekeyed { from, to } => {
-                if let Some(state) = self.clusters.remove(from) {
-                    self.clusters.insert(to.clone(), state);
+                // Discovery and reads in flight report under the old id and are dropped: start
+                // the new id over (new generation), or `discovering`/`in_flight` stay set.
+                if let Some(old) = self.clusters.remove(from) {
+                    stop_forwards(old.forwards, cx);
+                    self.reset(to, cx);
                 }
                 if let Some(t) = self.demand.borrow_mut().remove(from) {
                     self.demand.borrow_mut().insert(to.clone(), t);
@@ -539,6 +551,7 @@ impl AlertsService {
                     self.notices.insert(to.clone(), n);
                 }
                 cx.notify();
+                self.tick(cx);
             }
             ConnectionEvent::ContextsChanged => {
                 // Production/read-only flags or settings keys may have changed.
@@ -623,8 +636,7 @@ impl AlertsService {
             let Some(state) = self.clusters.get_mut(&cluster) else {
                 continue;
             };
-            let refetch = state.refetch_at.is_some_and(|t| t <= Instant::now());
-            if state.phase == Phase::Ready && (refetch || state.fetch.due(every)) {
+            if state.phase == Phase::Ready && state.fetch_wanted(every) {
                 state.refetch_at = None;
                 self.fetch(&cluster, client, cx);
             }
@@ -781,7 +793,7 @@ impl AlertsService {
             .map(|p| format!("Prometheus {}", p.target().label()));
         state.prom = prom;
         state.nodes = Arc::new(nodes);
-        state.forwards = forwards;
+        let previous = std::mem::replace(&mut state.forwards, forwards);
         state.phase = if state.sources.is_empty() && state.prom.is_none() {
             Phase::NoSource
         } else {
@@ -790,6 +802,7 @@ impl AlertsService {
         state.fetch = Fetch::default();
         state.rules_fetch = Fetch::default();
         state.revision += 1;
+        stop_forwards(previous, cx);
         tracing::info!(
             cluster = %cluster,
             alertmanagers = state.sources.len(),
@@ -883,7 +896,9 @@ impl AlertsService {
         state.error = output.error.map(SharedString::from);
         state.checked_at = Some(output.now);
         state.heartbeat = merged.heartbeat;
-        state.silences = Arc::new(output.silences);
+        if output.silences_ok {
+            state.silences = Arc::new(output.silences);
+        }
 
         // Transitions.
         let now = output.now;
@@ -1452,6 +1467,8 @@ struct FetchOutput {
     /// Per Alertmanager: its receivers when read this time, or its error.
     sources: Vec<Result<Option<Vec<String>>, String>>,
     silences: Vec<Silence>,
+    /// False when a silences read failed: keep the previous list (`error` says why).
+    silences_ok: bool,
     rules: Option<Result<Vec<RuleGroup>, String>>,
     /// `None`: nothing answered (keep the last data).
     merged: Option<merge::Merged>,
@@ -1509,14 +1526,20 @@ async fn fetch(input: FetchInput) -> FetchOutput {
     let mut silences: Vec<Silence> = Vec::new();
     let mut sources = Vec::new();
     let mut am_ok = false;
+    let mut silences_ok = true;
     for (conn, (alerts, silence_list, receivers)) in input.conns.iter().zip(am) {
         let label = conn.label();
         match alerts {
             Ok(body) => {
                 am_ok = true;
                 am_alerts.extend(model::parse_am_alerts(&body, &label, &parse));
-                if let Ok(body) = silence_list {
-                    silences.extend(model::parse_silences(&body, &label));
+                match silence_list {
+                    Ok(body) => silences.extend(model::parse_silences(&body, &label)),
+                    Err(err) => {
+                        silences_ok = false;
+                        let message = client::explain(&conn.target, via_name(conn), &err);
+                        errors.push(format!("{label}: silences: {message}"));
+                    }
                 }
                 sources.push(Ok(receivers.ok().map(|b| model::parse_receivers(&b))));
             }
@@ -1544,7 +1567,7 @@ async fn fetch(input: FetchInput) -> FetchOutput {
     };
     let now = Timestamp::now();
     let prom_ok = matches!(prom_alerts, Some(Ok(_)));
-    let merged = if am_ok || prom_ok {
+    let merged = if can_merge(input.conns.len(), am_ok, prom_ok) {
         let options = MergeOptions {
             heartbeat_alerts: &input.settings.heartbeat_alerts,
             hidden_alerts: &input.settings.hidden_alerts,
@@ -1555,7 +1578,7 @@ async fn fetch(input: FetchInput) -> FetchOutput {
             _ => None,
         };
         Some(merge::merge(
-            (!input.conns.is_empty() && am_ok).then_some(am_alerts.as_slice()),
+            (!input.conns.is_empty()).then_some(am_alerts.as_slice()),
             prom_list,
             current_rules,
             input.prometheus_alertmanagers,
@@ -1569,11 +1592,19 @@ async fn fetch(input: FetchInput) -> FetchOutput {
     FetchOutput {
         sources,
         silences,
+        silences_ok,
         rules,
         merged,
         error: (!errors.is_empty()).then(|| errors.join("; ")),
         now,
     }
+}
+
+/// Whether a read is complete enough to replace the last data. With Alertmanagers configured
+/// and none answering, a Prometheus-only merge would drop their alerts (a resolved/started
+/// notification storm) and show silenced ones as firing: keep the previous state instead.
+fn can_merge(alertmanagers: usize, am_ok: bool, prom_ok: bool) -> bool {
+    if alertmanagers > 0 { am_ok } else { prom_ok }
 }
 
 fn via_name(conn: &AmConn) -> &'static str {
@@ -1706,6 +1737,7 @@ mod tests {
         FetchOutput {
             sources: Vec::new(),
             silences: Vec::new(),
+            silences_ok: true,
             rules: None,
             merged: Some(merge::Merged {
                 alerts,
@@ -1812,6 +1844,106 @@ mod tests {
             let generation = s.clusters[&cluster].generation;
             s.fetched(&cluster, generation + 1, output(Vec::new()), cx);
             assert_eq!(s.clusters[&cluster].alerts.len(), 1);
+        });
+    }
+
+    #[gpui::test]
+    fn results_from_before_a_drop_do_not_apply_after_reconnect(cx: &mut TestAppContext) {
+        let (_dir, service) = setup(cx, serde_json::json!({}));
+        let cluster = ClusterId::new("c");
+        service.update(cx, |s, cx| {
+            s.insert_for_test(&cluster, Vec::new(), cx);
+            let stale = s.clusters[&cluster].generation;
+            s.drop_cluster(&cluster, cx);
+            s.insert_for_test(&cluster, Vec::new(), cx);
+            assert_ne!(s.clusters[&cluster].generation, stale);
+            s.fetched(
+                &cluster,
+                stale,
+                output(vec![firing("Stale", Severity::Critical)]),
+                cx,
+            );
+            assert!(s.clusters[&cluster].alerts.is_empty());
+        });
+    }
+
+    #[test]
+    fn a_pending_refetch_waits_for_the_read_in_flight() {
+        let mut state = ClusterAlerts::new(0);
+        state.refetch_at = Some(Instant::now());
+        assert!(state.fetch_wanted(Duration::from_secs(60)));
+        state.fetch.in_flight = true;
+        assert!(!state.fetch_wanted(Duration::from_secs(60)));
+        state.fetch.in_flight = false;
+        state.fetch.last = Some(Instant::now());
+        assert!(
+            state.fetch_wanted(Duration::from_secs(60)),
+            "refetch is due"
+        );
+        state.refetch_at = None;
+        assert!(!state.fetch_wanted(Duration::from_secs(60)));
+    }
+
+    #[gpui::test]
+    fn a_failed_silences_read_keeps_the_previous_list(cx: &mut TestAppContext) {
+        let (_dir, service) = setup(cx, serde_json::json!({}));
+        let cluster = ClusterId::new("c");
+        service.update(cx, |s, cx| {
+            s.insert_for_test(&cluster, Vec::new(), cx);
+            let generation = s.clusters[&cluster].generation;
+            let silence = Silence {
+                id: "s1".into(),
+                matchers: Vec::new(),
+                starts_at: None,
+                ends_at: None,
+                created_by: String::new(),
+                comment: String::new(),
+                state: "active".into(),
+                source: "am".into(),
+            };
+            s.clusters.get_mut(&cluster).unwrap().silences = Arc::new(vec![silence]);
+            let mut failed = output(Vec::new());
+            failed.silences_ok = false;
+            failed.error = Some("silences: denied".into());
+            s.fetched(&cluster, generation, failed, cx);
+            let state = &s.clusters[&cluster];
+            assert_eq!(state.silences.len(), 1);
+            assert!(state.error.is_some());
+        });
+    }
+
+    #[test]
+    fn an_alertmanager_outage_keeps_the_previous_state() {
+        assert!(!can_merge(2, false, true), "Prometheus alone is not enough");
+        assert!(can_merge(2, true, false));
+        assert!(can_merge(0, false, true));
+        assert!(!can_merge(0, false, false));
+    }
+
+    #[gpui::test]
+    fn a_rekeyed_cluster_starts_over(cx: &mut TestAppContext) {
+        let (_dir, service) = setup(cx, serde_json::json!({}));
+        let from = ClusterId::new("old");
+        let to = ClusterId::new("new");
+        service.update(cx, |s, cx| {
+            s.insert_for_test(&from, vec![firing("A", Severity::Critical)], cx);
+            let state = s.clusters.get_mut(&from).unwrap();
+            state.discovering = true;
+            state.fetch.in_flight = true;
+            let old_generation = state.generation;
+            s.connection_event(
+                &ConnectionEvent::Rekeyed {
+                    from: from.clone(),
+                    to: to.clone(),
+                },
+                cx,
+            );
+            assert!(!s.clusters.contains_key(&from));
+            let state = &s.clusters[&to];
+            // Nothing stays stuck waiting for a task that reports under the old id.
+            assert!(!state.discovering && !state.fetch.in_flight);
+            assert_eq!(state.phase, Phase::Unknown);
+            assert!(state.generation > old_generation);
         });
     }
 

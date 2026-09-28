@@ -210,7 +210,11 @@ impl AppView {
                 if now != connected {
                     connected = now;
                     this.api_tree = None;
+                    this.api_error = None;
                     this.diffs = None;
+                    // Requests of the old session must not land in the new one.
+                    this._api_task = None;
+                    this._diff_task = None;
                     this.sync_live_stores(cx);
                     this.fetch_api(cx);
                 }
@@ -732,6 +736,11 @@ impl AppView {
         run::run(self.target.clone(), op, cx).detach();
     }
 
+    /// Like `run`, asking first for the ops that need it.
+    fn run_confirmed(&self, op: Op, window: &mut Window, cx: &mut App) {
+        dialogs::run_confirmed(self.target.clone(), op, window, cx);
+    }
+
     fn open_controller_logs(&self, window: &mut Window, cx: &mut App) {
         let Some(app) = &self.app else {
             return;
@@ -872,7 +881,6 @@ impl AppView {
             .label("Argo CD UI")
             .on_click(move |_, window, cx| actions::open_argo_ui(&ui_cluster, window, cx));
         let more = {
-            let weak = weak.clone();
             let target = self.target.clone();
             let running = app.operation_in_progress();
             let auto_on = policy.auto_sync();
@@ -885,8 +893,8 @@ impl AppView {
                     if writable {
                         let rollback = target.clone();
                         let delete = target.clone();
-                        let toggle = weak.clone();
-                        let terminate = weak.clone();
+                        let toggle = target.clone();
+                        let terminate = target.clone();
                         menu = menu
                             .item(
                                 PopupMenuItem::new("Rollback…").on_click(move |_, window, cx| {
@@ -896,10 +904,13 @@ impl AppView {
                             .item(
                                 PopupMenuItem::new("Terminate Operation")
                                     .disabled(!running)
-                                    .on_click(move |_, _, cx| {
-                                        terminate
-                                            .update(cx, |this, cx| this.run(Op::Terminate, cx))
-                                            .ok();
+                                    .on_click(move |_, window, cx| {
+                                        dialogs::run_confirmed(
+                                            terminate.clone(),
+                                            Op::Terminate,
+                                            window,
+                                            cx,
+                                        )
                                     }),
                             )
                             .item(
@@ -908,15 +919,13 @@ impl AppView {
                                 } else {
                                     "Enable Auto-Sync"
                                 })
-                                .on_click(move |_, _, cx| {
-                                    toggle
-                                        .update(cx, |this, cx| {
-                                            this.run(
-                                                Op::Policy(PolicyChange::AutoSync(!auto_on)),
-                                                cx,
-                                            )
-                                        })
-                                        .ok();
+                                .on_click(move |_, window, cx| {
+                                    dialogs::run_confirmed(
+                                        toggle.clone(),
+                                        Op::Policy(PolicyChange::AutoSync(!auto_on)),
+                                        window,
+                                        cx,
+                                    )
                                 }),
                             )
                             .separator()
@@ -1183,9 +1192,11 @@ impl AppView {
                     on,
                     enabled,
                     &colors,
-                    move |_, _, cx| {
-                        weak.update(cx, |this, cx| this.run(Op::Policy(change(!on)), cx))
-                            .ok();
+                    move |_, window, cx| {
+                        weak.update(cx, |this, cx| {
+                            this.run_confirmed(Op::Policy(change(!on)), window, cx)
+                        })
+                        .ok();
                     },
                 ))
         };
@@ -1375,7 +1386,9 @@ impl AppView {
                         .danger()
                         .icon(IconName::Square)
                         .label("Terminate")
-                        .on_click(cx.listener(|this, _, _, cx| this.run(Op::Terminate, cx))),
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.run_confirmed(Op::Terminate, window, cx)
+                        })),
                 ),
             );
         }
@@ -2548,13 +2561,13 @@ impl Render for AppView {
             .on_action(cx.listener(|this, _: &actions::HardRefresh, _, cx| {
                 this.run(Op::Refresh { hard: true }, cx)
             }))
-            .on_action(
-                cx.listener(|this, _: &actions::Terminate, _, cx| this.run(Op::Terminate, cx)),
-            )
+            .on_action(cx.listener(|this, _: &actions::Terminate, window, cx| {
+                this.run_confirmed(Op::Terminate, window, cx)
+            }))
             .on_action({
                 let target = target.clone();
-                move |_: &actions::ToggleAutoSync, _, cx| {
-                    actions::toggle_auto_sync(target.clone(), cx)
+                move |_: &actions::ToggleAutoSync, window, cx| {
+                    actions::toggle_auto_sync(target.clone(), window, cx)
                 }
             })
             .on_action(cx.listener(|this, _: &actions::Rollback, window, cx| {

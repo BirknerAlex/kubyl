@@ -278,10 +278,39 @@ pub fn tile(
         .into_any_element()
 }
 
-/// A tile from a CSV's inline icon (base64).
+/// Most decoded CSV icons kept.
+const CSV_ICONS_MAX: usize = 256;
+
+thread_local! {
+    /// Decoded CSV icons by content hash (`None`: undecodable), so a frame never decodes again.
+    static CSV_ICONS: std::cell::RefCell<std::collections::HashMap<u64, Option<Arc<Image>>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// A tile from a CSV's inline icon (base64), decoded once per distinct icon.
 pub fn csv_icon(icon: &Option<(String, String)>) -> Option<Arc<Image>> {
-    use base64::Engine as _;
+    use std::hash::{Hash as _, Hasher as _};
     let (mediatype, data) = icon.as_ref()?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    mediatype.hash(&mut hasher);
+    data.hash(&mut hasher);
+    let key = hasher.finish();
+    CSV_ICONS.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(hit) = cache.get(&key) {
+            return hit.clone();
+        }
+        let decoded = decode_csv_icon(mediatype, data);
+        if cache.len() >= CSV_ICONS_MAX {
+            cache.clear();
+        }
+        cache.insert(key, decoded.clone());
+        decoded
+    })
+}
+
+fn decode_csv_icon(mediatype: &str, data: &str) -> Option<Arc<Image>> {
+    use base64::Engine as _;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(data.trim())
         .ok()?;
@@ -421,4 +450,19 @@ pub fn toggle_chip(
         .cursor_pointer()
         .child(kubyl_ui::Chip::new(label).selected(on))
         .on_click(on_click)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn csv_icon_is_decoded_once() {
+        let icon = Some(("image/svg+xml".to_string(), "PHN2Zy8+".to_string()));
+        let first = csv_icon(&icon).expect("decodes");
+        let second = csv_icon(&icon.clone()).expect("cached");
+        assert!(Arc::ptr_eq(&first, &second));
+        assert!(csv_icon(&Some(("text/plain".into(), "PHN2Zy8+".into()))).is_none());
+        assert!(csv_icon(&None).is_none());
+    }
 }

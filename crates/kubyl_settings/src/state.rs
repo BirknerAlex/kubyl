@@ -6,10 +6,12 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
-use crate::paths::write_atomic;
+use crate::paths::{WriteTicket, wait_for_writes};
 
 pub(crate) const STATE_FILE: &str = "state.json";
 const SAVE_DELAY: Duration = Duration::from_millis(500);
+/// How long quitting waits for writes still running in the background.
+const QUIT_WAIT: Duration = Duration::from_secs(5);
 
 /// A typed part of `state.json`, stored under [`StateSection::KEY`].
 pub trait StateSection: Serialize + DeserializeOwned + Default + 'static {
@@ -63,7 +65,7 @@ impl State {
         let state = cx.global_mut::<Self>();
         if std::mem::take(&mut state.dirty) {
             let contents = serde_json::to_vec_pretty(&state.raw).expect("state serialize");
-            if let Err(err) = write_atomic(&state.path, &contents) {
+            if let Err(err) = WriteTicket::new().write(&state.path, &contents) {
                 tracing::error!("failed to write {}: {err}", state.path.display());
             }
         }
@@ -76,7 +78,7 @@ impl State {
         }
         cx.spawn(async move |cx| {
             cx.background_executor().timer(SAVE_DELAY).await;
-            let Some((path, contents)) = cx.update(|cx| {
+            let Some((path, contents, ticket)) = cx.update(|cx| {
                 let state = cx.global_mut::<Self>();
                 // Already written by `flush`.
                 if !std::mem::take(&mut state.dirty) {
@@ -85,13 +87,14 @@ impl State {
                 Some((
                     state.path.clone(),
                     serde_json::to_vec_pretty(&state.raw).expect("state serialize"),
+                    WriteTicket::new(),
                 ))
             }) else {
                 return;
             };
             cx.background_executor()
                 .spawn(async move {
-                    if let Err(err) = write_atomic(&path, &contents) {
+                    if let Err(err) = ticket.write(&path, &contents) {
                         tracing::error!("failed to write {}: {err}", path.display());
                     }
                 })
@@ -120,7 +123,9 @@ pub(crate) fn init(cx: &mut App, dir: &Path) {
     });
     cx.on_app_quit(|cx| {
         State::flush(cx);
-        async {}
+        // A debounced save or a Settings::update may still be in flight on the executor.
+        cx.background_executor()
+            .spawn(async { wait_for_writes(QUIT_WAIT) })
     })
     .detach();
 }

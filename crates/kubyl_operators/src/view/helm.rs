@@ -47,15 +47,14 @@ pub fn status_tone(status: &str) -> Tone {
     }
 }
 
-/// The kubeconfig context name of a cluster, for `helm --kube-context`.
-pub fn context_name(cluster: &ClusterId, cx: &App) -> Option<String> {
-    Some(
-        ConnectionManager::try_global(cx)?
-            .read(cx)
-            .context(cluster)?
-            .context
-            .clone(),
-    )
+/// The kubeconfig file and context of a cluster, for `helm --kubeconfig --kube-context`.
+pub fn kube_target(cluster: &ClusterId, cx: &App) -> Option<present::KubeTarget> {
+    let manager = ConnectionManager::try_global(cx)?.read(cx);
+    let info = manager.context(cluster)?;
+    Some(present::KubeTarget {
+        context: info.context.clone(),
+        kubeconfig: info.file.clone(),
+    })
 }
 
 impl OperatorsView {
@@ -676,7 +675,7 @@ impl OperatorsView {
             &row.namespace,
             latest,
             latest,
-            context_name(&self.cluster, cx).as_deref(),
+            kube_target(&self.cluster, cx).as_ref(),
         );
         crate::dialogs::open_helm_commands(
             format!("helm commands for {}", row.name),

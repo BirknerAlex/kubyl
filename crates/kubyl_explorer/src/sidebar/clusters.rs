@@ -25,6 +25,7 @@ use kubyl_ui::{
 
 use crate::catalog::{self, CUSTOM, RowBadge, TreeKind, ViewEntry, ViewRow};
 use crate::groups::SidebarGroups;
+use crate::rbac::{RBAC_RETRY, RbacRequests};
 use crate::settings::{ClusterOrder, ExplorerSettings, TreeState};
 
 actions!(
@@ -178,7 +179,7 @@ pub struct ClustersSection {
     selected: Option<String>,
     filter: Option<Entity<InputState>>,
     counts: HashMap<StoreKey, StoreHandle>,
-    rbac_requested: HashSet<(ClusterId, AccessQuery)>,
+    rbac_requested: RbacRequests,
     /// Expanded roots already connected at startup (a later manual disconnect sticks).
     started: HashSet<ClusterId>,
     focus: FocusHandle,
@@ -212,6 +213,10 @@ impl ClustersSection {
         if let Some(manager) = ConnectionManager::try_global(cx) {
             subscriptions.push(
                 cx.subscribe(&manager, |this, _, event: &ConnectionEvent, cx| {
+                    // A reconnect starts with an empty access cache: ask again.
+                    if let ConnectionEvent::StateChanged(id) = event {
+                        this.rbac_requested.reset(id);
+                    }
                     if matches!(
                         event,
                         ConnectionEvent::ContextsChanged | ConnectionEvent::Rekeyed { .. }
@@ -241,7 +246,7 @@ impl ClustersSection {
             selected: None,
             filter: None,
             counts: HashMap::new(),
-            rbac_requested: HashSet::new(),
+            rbac_requested: RbacRequests::default(),
             started: HashSet::new(),
             focus: cx.focus_handle(),
             _count_observers: Vec::new(),
@@ -349,12 +354,23 @@ impl ClustersSection {
         match manager.read(cx).cached_can_i(cluster, &query) {
             Some(allowed) => allowed,
             None => {
-                if self.rbac_requested.insert((cluster.clone(), query.clone())) {
-                    let task = manager.update(cx, |m, cx| m.can_i(cluster, query, cx));
+                if self.rbac_requested.first(cluster, &query) {
+                    let task = manager.update(cx, |m, cx| m.can_i(cluster, query.clone(), cx));
+                    let cluster = cluster.clone();
                     cx.spawn(async move |this, cx| {
-                        if task.await.is_some() {
-                            this.update(cx, |_, cx| cx.notify()).ok();
+                        let answered = task.await.is_some();
+                        if !answered {
+                            // The check failed or the cluster was down: retry after a pause.
+                            cx.background_executor().timer(RBAC_RETRY).await;
                         }
+                        this.update(cx, |this, cx| {
+                            if answered {
+                                cx.notify();
+                            } else {
+                                this.rbac_requested.forget(&cluster, &query);
+                            }
+                        })
+                        .ok();
                     })
                     .detach();
                 }

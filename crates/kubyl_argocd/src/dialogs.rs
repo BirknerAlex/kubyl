@@ -25,7 +25,7 @@ use secrecy::SecretString;
 use crate::detect::Install;
 use crate::links;
 use crate::model::{Application, HistoryEntry, Project, ResourceKey, SyncStatus, short_revision};
-use crate::ops::{self, Cascade, SyncRequest, SyncResource};
+use crate::ops::{self, Cascade, PolicyChange, SyncRequest, SyncResource};
 use crate::run::{self, Op};
 use crate::settings;
 use crate::state::{self, ApiState, ArgoCd, Credentials};
@@ -1407,6 +1407,200 @@ impl Render for DeleteDialog {
     }
 }
 
+// ----- Confirm (Terminate, policy switches) -----
+
+/// Whether the typed confirmation lets the action through: always off production, the app's
+/// name on it.
+fn confirmation_ok(production: bool, typed: &str, name: &str) -> bool {
+    !production || typed.trim() == name
+}
+
+/// Runs `op`, asking first when it `needs_confirm`: a dialog, with the app's name to type on
+/// production clusters.
+pub fn run_confirmed(target: ResourceRef, op: Op, window: &mut Window, cx: &mut App) {
+    if !op.needs_confirm() {
+        run::run(target, op, cx).detach();
+        return;
+    }
+    let Some(app) = guard(&target, cx) else {
+        return;
+    };
+    let view = cx.new(|cx| ConfirmDialog::new(target, app, op, window, cx));
+    let focus = view.read(cx).focus.clone();
+    open(view, 500.0, Some(focus), window, cx);
+}
+
+struct ConfirmDialog {
+    target: ResourceRef,
+    app: Application,
+    op: Op,
+    production: bool,
+    typed: Entity<InputState>,
+    error: Option<String>,
+    busy: bool,
+    focus: FocusHandle,
+    _task: Option<Task<()>>,
+    _subscriptions: Vec<Subscription>,
+}
+
+impl ConfirmDialog {
+    fn new(
+        target: ResourceRef,
+        app: Application,
+        op: Op,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let production = production(&target.cluster, cx);
+        let typed = cx.new(|cx| InputState::new(window, cx).placeholder(app.name().to_string()));
+        let subscriptions =
+            vec![
+                cx.subscribe_in(&typed, window, |this, _, event: &InputEvent, window, cx| {
+                    match event {
+                        InputEvent::PressEnter { .. } => this.submit(window, cx),
+                        InputEvent::Change => cx.notify(),
+                        _ => {}
+                    }
+                }),
+            ];
+        Self {
+            target,
+            app,
+            op,
+            production,
+            typed,
+            error: None,
+            busy: false,
+            focus: cx.focus_handle(),
+            _task: None,
+            _subscriptions: subscriptions,
+        }
+    }
+
+    fn ready(&self, cx: &App) -> bool {
+        !self.busy
+            && confirmation_ok(
+                self.production,
+                &self.typed.read(cx).value(),
+                self.app.name(),
+            )
+    }
+
+    fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.ready(cx) {
+            if !self.busy {
+                self.error = Some("Type the application's name to confirm.".into());
+                cx.notify();
+            }
+            return;
+        }
+        self.busy = true;
+        self.error = None;
+        let task = run::run(self.target.clone(), self.op.clone(), cx);
+        self._task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            this.update_in(cx, |this, window, cx| {
+                this.busy = false;
+                match result {
+                    Ok(()) => window.close_dialog(cx),
+                    Err(err) => this.error = Some(err),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+}
+
+impl Focusable for ConfirmDialog {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+impl Render for ConfirmDialog {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = cx.colors().clone();
+        let name = self.app.name().to_string();
+        let label = self.op.label();
+        let (icon, detail) = match &self.op {
+            Op::Terminate => (
+                IconName::Square,
+                "Stops the running operation; a half-finished sync can leave the app out of sync.",
+            ),
+            Op::Policy(PolicyChange::Prune(_)) => (
+                IconName::Trash,
+                "Automated syncs will delete live resources that are no longer in Git.",
+            ),
+            Op::Policy(PolicyChange::SelfHeal(_)) => (
+                IconName::RotateCcw,
+                "Argo CD will revert manual changes to the live resources.",
+            ),
+            _ => (
+                IconName::RotateCcw,
+                "Argo CD will sync this application automatically whenever it drifts from Git.",
+            ),
+        };
+        let typed = self.production.then(|| {
+            v_flex()
+                .gap(u(6.0))
+                .child(
+                    h_flex()
+                        .gap(u(6.0))
+                        .text_size(u(12.0))
+                        .text_color(colors.text_muted)
+                        .child("This is a production cluster. Type")
+                        .child(
+                            div()
+                                .font_family(fonts::MONO)
+                                .text_color(colors.text)
+                                .child(name.clone()),
+                        )
+                        .child("to confirm."),
+                )
+                .child(field("Confirmation", &self.typed, true, &colors))
+        });
+        let submit = Button::new("argo-confirm-submit")
+            .danger()
+            .label(label)
+            .disabled(!self.ready(cx))
+            .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx)));
+        v_flex()
+            .track_focus(&self.focus)
+            .text_color(colors.text)
+            .text_size(u(13.0))
+            .child(header(
+                icon,
+                format!("{label}: {name}"),
+                self.production.then(|| ProdBadge.into_any_element()),
+                &colors,
+            ))
+            .child(
+                v_flex()
+                    .p(u(16.0))
+                    .gap(u(10.0))
+                    .child(
+                        div()
+                            .text_size(u(12.0))
+                            .text_color(colors.text_muted)
+                            .child(detail),
+                    )
+                    .children(typed)
+                    .children(error_line(&self.error, &colors)),
+            )
+            .child(footer(
+                Some(mode_note(
+                    &self.target.cluster,
+                    "Kubernetes mode: patches the Application",
+                    cx,
+                )),
+                vec![cancel_button(), submit.into_any_element()],
+                &colors,
+            ))
+    }
+}
+
 // ----- Sign in (API mode) -----
 
 /// Opens the API-mode sign-in for a cluster: it shows which install (namespace, Service, URL)
@@ -1868,5 +2062,18 @@ impl Render for SignInDialog {
                 vec![cancel_button(), submit.into_any_element()],
                 &colors,
             ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn production_needs_the_typed_name() {
+        assert!(confirmation_ok(false, "", "guestbook"));
+        assert!(!confirmation_ok(true, "", "guestbook"));
+        assert!(!confirmation_ok(true, "guest", "guestbook"));
+        assert!(confirmation_ok(true, "  guestbook ", "guestbook"));
     }
 }

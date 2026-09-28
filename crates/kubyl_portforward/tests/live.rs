@@ -155,6 +155,7 @@ async fn service_forward_survives_a_pod_restart() {
         RemotePort::Service(Some(80)),
         "127.0.0.1".into(),
         0,
+        false,
         events_tx,
     ));
     let port = loop {
@@ -215,6 +216,7 @@ async fn get_through_service(
         RemotePort::Service(Some(port)),
         "127.0.0.1".into(),
         0,
+        false,
         events_tx,
     ));
     let local = tokio::time::timeout(Duration::from_secs(20), async {

@@ -79,6 +79,36 @@ pub struct SaToken {
     pub created: Vec<String>,
 }
 
+/// Whether an existing binding is the one we would create: same role, and it names this
+/// service account. A binding of the same name that isn't (made by someone else) is not reused.
+fn binding_matches(
+    existing: &RoleRef,
+    subjects: Option<&[Subject]>,
+    want: &RoleRef,
+    sa: &Subject,
+) -> bool {
+    existing.api_group == want.api_group
+        && existing.kind == want.kind
+        && existing.name == want.name
+        && subjects.is_some_and(|subjects| {
+            subjects
+                .iter()
+                .any(|s| s.kind == sa.kind && s.name == sa.name && s.namespace == sa.namespace)
+        })
+}
+
+/// Whether `secret` is a token Secret of the service account `name`. The token controller
+/// fills any Secret of that type with the token of the account in the annotation.
+fn is_token_secret_of(secret: &Secret, name: &str) -> bool {
+    secret.type_.as_deref() == Some("kubernetes.io/service-account-token")
+        && secret
+            .metadata
+            .annotations
+            .as_ref()
+            .and_then(|a| a.get("kubernetes.io/service-account.name"))
+            .is_some_and(|n| n == name)
+}
+
 /// Creates (if asked) the service account, grants it, and gets a token. Runs on Tokio.
 pub async fn service_account_token(
     client: Client,
@@ -142,15 +172,26 @@ pub async fn service_account_token(
                     kind: "ClusterRole".into(),
                     name: role.into(),
                 },
-                subjects: Some(vec![subject]),
+                subjects: Some(vec![subject.clone()]),
             };
             let api: Api<RoleBinding> = Api::namespaced(client.clone(), namespace);
-            if api
+            let existing = api
                 .get_opt(&format!("{name}-{role}"))
                 .await
-                .map_err(describe)?
-                .is_none()
+                .map_err(describe)?;
+            if let Some(existing) = &existing
+                && !binding_matches(
+                    &existing.role_ref,
+                    existing.subjects.as_deref(),
+                    &binding.role_ref,
+                    &subject,
+                )
             {
+                return Err(format!(
+                    "the RoleBinding {namespace}/{name}-{role} exists but isn't a grant of {role} to {name}; delete it or pick another name"
+                ));
+            }
+            if existing.is_none() {
                 api.create(&PostParams::default(), &binding)
                     .await
                     .map_err(describe)?;
@@ -171,15 +212,23 @@ pub async fn service_account_token(
                     kind: "ClusterRole".into(),
                     name: "cluster-admin".into(),
                 },
-                subjects: Some(vec![subject]),
+                subjects: Some(vec![subject.clone()]),
             };
             let api: Api<ClusterRoleBinding> = Api::all(client.clone());
-            if api
-                .get_opt(&binding_name)
-                .await
-                .map_err(describe)?
-                .is_none()
+            let existing = api.get_opt(&binding_name).await.map_err(describe)?;
+            if let Some(existing) = &existing
+                && !binding_matches(
+                    &existing.role_ref,
+                    existing.subjects.as_deref(),
+                    &binding.role_ref,
+                    &subject,
+                )
             {
+                return Err(format!(
+                    "the ClusterRoleBinding {binding_name} exists but isn't a grant of cluster-admin to {namespace}/{name}; delete it or pick another name"
+                ));
+            }
+            if existing.is_none() {
                 api.create(&PostParams::default(), &binding)
                     .await
                     .map_err(describe)?;
@@ -210,12 +259,15 @@ pub async fn service_account_token(
         TokenKind::Secret => {
             let secrets: Api<Secret> = Api::namespaced(client, namespace);
             let secret_name = format!("{name}-token");
-            if secrets
-                .get_opt(&secret_name)
-                .await
-                .map_err(describe)?
-                .is_none()
+            let existing = secrets.get_opt(&secret_name).await.map_err(describe)?;
+            if let Some(existing) = &existing
+                && !is_token_secret_of(existing, name)
             {
+                return Err(format!(
+                    "the Secret {namespace}/{secret_name} exists but isn't a token Secret of {name}; delete it or pick another name"
+                ));
+            }
+            if existing.is_none() {
                 let secret = Secret {
                     metadata: ObjectMeta {
                         name: Some(secret_name.clone()),
@@ -242,6 +294,11 @@ pub async fn service_account_token(
             // The token controller fills the Secret in.
             for _ in 0..20 {
                 let secret = secrets.get(&secret_name).await.map_err(describe)?;
+                if !is_token_secret_of(&secret, name) {
+                    return Err(format!(
+                        "the Secret {namespace}/{secret_name} isn't a token Secret of {name}"
+                    ));
+                }
                 if let Some(token) = secret.data.as_ref().and_then(|d| d.get("token")) {
                     let token =
                         String::from_utf8(token.0.clone()).map_err(|_| "the token isn't text")?;
@@ -1075,6 +1132,90 @@ impl Render for CloudView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn role_ref(name: &str) -> RoleRef {
+        RoleRef {
+            api_group: Some("rbac.authorization.k8s.io".into()),
+            kind: "ClusterRole".into(),
+            name: name.into(),
+        }
+    }
+
+    fn sa(namespace: &str, name: &str) -> Subject {
+        Subject {
+            kind: "ServiceAccount".into(),
+            name: name.into(),
+            namespace: Some(namespace.into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn an_existing_binding_must_grant_the_same_role_to_the_account() {
+        let want = role_ref("view");
+        let ours = sa("ns", "bot");
+        assert!(binding_matches(
+            &want,
+            Some(std::slice::from_ref(&ours)),
+            &want,
+            &ours
+        ));
+        // Another role, another account, another namespace, no subjects.
+        assert!(!binding_matches(
+            &role_ref("admin"),
+            Some(std::slice::from_ref(&ours)),
+            &want,
+            &ours
+        ));
+        assert!(!binding_matches(
+            &want,
+            Some(&[sa("ns", "other")]),
+            &want,
+            &ours
+        ));
+        assert!(!binding_matches(
+            &want,
+            Some(&[sa("kube-system", "bot")]),
+            &want,
+            &ours
+        ));
+        assert!(!binding_matches(&want, None, &want, &ours));
+        // Extra subjects don't matter as long as ours is there.
+        assert!(binding_matches(
+            &want,
+            Some(&[sa("x", "y"), ours.clone()]),
+            &want,
+            &ours
+        ));
+    }
+
+    #[test]
+    fn only_a_token_secret_of_the_account_is_trusted() {
+        let secret = |type_: Option<&str>, account: Option<&str>| Secret {
+            metadata: ObjectMeta {
+                annotations: account.map(|a| {
+                    [(
+                        "kubernetes.io/service-account.name".to_string(),
+                        a.to_string(),
+                    )]
+                    .into()
+                }),
+                ..Default::default()
+            },
+            type_: type_.map(String::from),
+            ..Default::default()
+        };
+        let token = Some("kubernetes.io/service-account-token");
+        assert!(is_token_secret_of(&secret(token, Some("bot")), "bot"));
+        assert!(!is_token_secret_of(&secret(token, Some("admin")), "bot"));
+        assert!(!is_token_secret_of(&secret(token, None), "bot"));
+        // An Opaque Secret with the annotation and a `token` key is not filled by the controller.
+        assert!(!is_token_secret_of(
+            &secret(Some("Opaque"), Some("bot")),
+            "bot"
+        ));
+        assert!(!is_token_secret_of(&secret(None, Some("bot")), "bot"));
+    }
 
     #[test]
     fn service_account_kubeconfigs_make_relative_paths_absolute() {

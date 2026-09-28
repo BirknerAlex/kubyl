@@ -12,10 +12,12 @@
 //! token and renew themselves when the token expires or the server rejects it.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use gpui::{App, AppContext as _, AsyncApp, Context, Entity, Global, Subscription, Task};
+use gpui::{
+    App, AppContext as _, AsyncApp, Context, Entity, Global, Subscription, Task, WeakEntity,
+};
 use kube::discovery::ApiResource;
 use kubyl_core::{
     ArgoCdCaps, ClusterId, Gvr, Notification, NotificationCenter, ResourceRef, spawn_kube,
@@ -396,7 +398,7 @@ impl ArgoCd {
         let id = cluster.clone();
         session._task = Some(cx.spawn(async move |this, cx| {
             let result = async {
-                let (api, forward) = open_transport(&id, &install, cx).await?;
+                let (api, forward) = open_transport(&id, &install, &this, cx).await?;
                 this.update(cx, |this, _| {
                     if let Some(session) = this.session_mut(&id) {
                         session.forward = forward;
@@ -566,7 +568,7 @@ impl ArgoCd {
             let result = async {
                 let (api, forward) = match reuse {
                     Some(reused) => reused,
-                    None => open_transport(&id, &install, cx).await?,
+                    None => open_transport(&id, &install, &this, cx).await?,
                 };
                 this.update(cx, |this, _| {
                     if let Some(session) = this.session_mut(&id) {
@@ -618,6 +620,14 @@ impl ArgoCd {
                 })
                 .await
                 .map_err(|e| e.to_string())?;
+                // Signed out (or reconnected) while the sign-in was under way: store and trust
+                // nothing.
+                if !this
+                    .update(cx, |this, _| this.session_mut(&id).is_some())
+                    .unwrap_or(false)
+                {
+                    return Err("The sign-in was cancelled.".to_string());
+                }
                 let token_key = settings::token_key(&key, &install.namespace, &service);
                 let renewable = session.as_ref().is_some_and(|s| s.refresh_token.is_some());
                 match &session {
@@ -677,7 +687,11 @@ impl ArgoCd {
     /// Signs out: ends the session on the server (the token is revoked, so a web view's copy
     /// of it stops working too), forgets the token, stops the forward; Kubernetes mode stays.
     pub fn sign_out(&mut self, cluster: &ClusterId, forget_install: bool, cx: &mut Context<Self>) {
-        let session = self.clusters.get_mut(cluster).and_then(|c| c.api.take());
+        let session = self.clusters.get_mut(cluster).and_then(|c| {
+            // A sign-in still under way is cancelled, or it would store its token afterwards.
+            c._sign_in = None;
+            c.api.take()
+        });
         if let Some(session) = &session
             && let (Some(key), Some(server)) =
                 (ContextKey::of(cluster, cx), &session.install.server)
@@ -740,8 +754,11 @@ impl ArgoCd {
     }
 
     /// The user stopped API mode's forward in Active Sessions.
-    fn forward_stopped(&mut self, cluster: &ClusterId, cx: &mut Context<Self>) {
-        if let Some(session) = self.session_mut(cluster) {
+    fn forward_stopped(&mut self, cluster: &ClusterId, id: ForwardId, cx: &mut Context<Self>) {
+        // A leftover forward of an earlier session says nothing about the current one.
+        if let Some(session) = self.session_mut(cluster)
+            && session.forward == Some(id)
+        {
             session.forward = None;
             session.api = None;
             session.state =
@@ -852,6 +869,7 @@ async fn write_token(cx: &mut AsyncApp, key: String, token: SecretString) -> Res
 async fn open_transport(
     cluster: &ClusterId,
     install: &Install,
+    this: &WeakEntity<ArgoCd>,
     cx: &mut AsyncApp,
 ) -> Result<(ArgoApi, Option<ForwardId>), String> {
     let (client, setting) = cx.update(|cx| {
@@ -898,8 +916,30 @@ async fn open_transport(
         }
     }
     // A temporary loopback forward, shown in Active Sessions.
-    let spec = forward_spec(cluster, install, &server.name, port, https);
+    let started = Arc::new(OnceLock::new());
+    let spec = forward_spec(cluster, install, &server.name, port, https, started.clone());
     let id = cx.update(|cx| PortForwardManager::start(client, spec, cx));
+    started.set(id).ok();
+    // Recorded at once: a sign-out, reconnect or cancelled task then stops it with its session
+    // instead of leaking it.
+    let recorded = this
+        .update(cx, |this, cx| match this.session_mut(cluster) {
+            Some(session) if session.forward.is_none() => {
+                session.forward = Some(id);
+                true
+            }
+            _ => {
+                stop_forward(Some(id), cx);
+                false
+            }
+        })
+        .unwrap_or_else(|_| {
+            cx.update(|cx| stop_forward(Some(id), cx));
+            false
+        });
+    if !recorded {
+        return Err("The session ended while connecting.".into());
+    }
     let start = Instant::now();
     let local_port = loop {
         let info = cx.update(|cx| PortForwardManager::global(cx).read(cx).info(id));
@@ -911,7 +951,7 @@ async fn open_transport(
                 state: ForwardState::Failed(err) | ForwardState::Reconnecting(err),
                 ..
             }) if start.elapsed() > Duration::from_secs(5) => {
-                cx.update(|cx| stop_forward(Some(id), cx));
+                release_forward(this, cluster, id, cx);
                 return Err(match proxy_error {
                     Some(proxy) => format!("{proxy}; port-forward: {err}"),
                     None => err,
@@ -921,7 +961,7 @@ async fn open_transport(
             _ => {}
         }
         if start.elapsed() > FORWARD_TIMEOUT {
-            cx.update(|cx| stop_forward(Some(id), cx));
+            release_forward(this, cluster, id, cx);
             return Err("the port-forward to argocd-server didn't start".into());
         }
         cx.background_executor()
@@ -937,18 +977,40 @@ async fn open_transport(
     })
     .await;
     if let Err(err) = probe {
-        cx.update(|cx| stop_forward(Some(id), cx));
+        release_forward(this, cluster, id, cx);
         return Err(err.to_string());
     }
     Ok((api, Some(id)))
 }
 
+/// Stops a forward `open_transport` gave up on, and forgets it in its session.
+fn release_forward(
+    this: &WeakEntity<ArgoCd>,
+    cluster: &ClusterId,
+    id: ForwardId,
+    cx: &mut AsyncApp,
+) {
+    let done = this.update(cx, |this, cx| {
+        if let Some(session) = this.session_mut(cluster)
+            && session.forward == Some(id)
+        {
+            session.forward = None;
+        }
+        stop_forward(Some(id), cx);
+    });
+    if done.is_err() {
+        cx.update(|cx| stop_forward(Some(id), cx));
+    }
+}
+
+/// `started` holds the forward's id once it has one (the spec is built before the start).
 fn forward_spec(
     cluster: &ClusterId,
     install: &Install,
     service: &str,
     port: u16,
     https: bool,
+    started: Arc<OnceLock<ForwardId>>,
 ) -> ForwardSpec {
     let stop_cluster = cluster.clone();
     ForwardSpec {
@@ -975,9 +1037,11 @@ fn forward_spec(
             title: format!("Argo CD API · svc/{service}:{port}"),
             buttons: Vec::new(),
             on_stop: Arc::new(move |cx| {
-                if let Some(argo) = ArgoCd::try_global(cx) {
+                if let Some(argo) = ArgoCd::try_global(cx)
+                    && let Some(&id) = started.get()
+                {
                     let cluster = stop_cluster.clone();
-                    argo.update(cx, |this, cx| this.forward_stopped(&cluster, cx));
+                    argo.update(cx, |this, cx| this.forward_stopped(&cluster, id, cx));
                 }
             }),
         }),

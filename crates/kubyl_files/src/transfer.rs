@@ -93,6 +93,8 @@ const RETRIES: u32 = 5;
 
 /// Runs `job` to completion.
 pub async fn run(job: TransferJob, progress: ProgressTx) -> anyhow::Result<Verification> {
+    // Names come from the container; never join one that could leave the destination folder.
+    local_child(&job.local, &job.dest_name)?;
     match (job.direction, job.is_dir) {
         (Direction::Download, true) => download_dir(&job, &progress).await?,
         (Direction::Download, false) => download_file(&job, &progress).await?,
@@ -111,7 +113,7 @@ pub async fn run(job: TransferJob, progress: ProgressTx) -> anyhow::Result<Verif
 
 /// A `Read` over chunks sent from the async side (tar extraction runs on a blocking thread).
 struct ChannelReader {
-    rx: std::sync::mpsc::Receiver<Vec<u8>>,
+    rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
     buf: Vec<u8>,
     pos: usize,
 }
@@ -119,18 +121,40 @@ struct ChannelReader {
 impl Read for ChannelReader {
     fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
         while self.pos >= self.buf.len() {
-            match self.rx.recv() {
-                Ok(chunk) => {
+            match self.rx.blocking_recv() {
+                Some(chunk) => {
                     self.buf = chunk;
                     self.pos = 0;
                 }
-                Err(_) => return Ok(0),
+                None => return Ok(0),
             }
         }
         let n = out.len().min(self.buf.len() - self.pos);
         out[..n].copy_from_slice(&self.buf[self.pos..self.pos + n]);
         self.pos += n;
         Ok(n)
+    }
+}
+
+/// Forwards `stdout` to the extractor. When the extractor stops early (a local write error) the
+/// rest is still read and dropped, so the remote `tar` isn't left blocked on a full pipe and the
+/// job can end with the extraction error. Dropping `tx` on return ends the archive stream.
+async fn pump<R: tokio::io::AsyncRead + Unpin>(
+    stdout: &mut R,
+    tx: tokio::sync::mpsc::Sender<Vec<u8>>,
+    mut on_bytes: impl FnMut(u64),
+) -> std::io::Result<()> {
+    let mut buf = vec![0u8; 1 << 16];
+    let mut open = true;
+    loop {
+        let n = stdout.read(&mut buf).await?;
+        if n == 0 {
+            return Ok(());
+        }
+        on_bytes(n as u64);
+        if open && tx.send(buf[..n].to_vec()).await.is_err() {
+            open = false;
+        }
     }
 }
 
@@ -152,8 +176,44 @@ impl Write for ChannelWriter {
     }
 }
 
+/// `dir/name` for a name that is a single path component, so the result is a direct child of
+/// `dir` (and `remove_dir_all` on it can never touch `dir` or its parents).
+fn local_child(dir: &Path, name: &str) -> anyhow::Result<PathBuf> {
+    anyhow::ensure!(
+        crate::entry::is_safe_name(name),
+        "refusing the unsafe file name {name:?}"
+    );
+    Ok(dir.join(name))
+}
+
 fn part_path(dir: &Path, name: &str) -> PathBuf {
     dir.join(format!(".{name}.kubyl-part"))
+}
+
+/// The file that records which remote file (size and mtime) a partial download belongs to.
+fn signature_path(part: &Path) -> PathBuf {
+    let mut name = part.as_os_str().to_owned();
+    name.push(".sig");
+    PathBuf::from(name)
+}
+
+/// Whether a partial download may be resumed: it must have been started from the same remote
+/// file, else the old bytes would be stitched onto a changed file.
+fn can_resume(stored: Option<&str>, current: &str) -> bool {
+    !current.is_empty() && stored.is_some_and(|s| s == current)
+}
+
+/// Size and mtime of the remote file (size alone where `stat -c` is missing).
+async fn remote_signature(job: &TransferJob) -> String {
+    let script = "stat -c '%s %Y' -- \"$1\" 2>/dev/null || wc -c < \"$1\"";
+    match job
+        .target
+        .exec(sh(script, [job.target.real(&job.remote)]), None)
+        .await
+    {
+        Ok(output) if output.success => String::from_utf8_lossy(&output.stdout).trim().to_string(),
+        _ => String::new(),
+    }
 }
 
 /// Moves a finished download into place, replacing what's there (the conflict was decided
@@ -170,7 +230,7 @@ async fn download_file(job: &TransferJob, progress: &ProgressTx) -> anyhow::Resu
     remote::require(caps, "Downloading", caps.cat || caps.dd, "cat or dd")?;
     tokio::fs::create_dir_all(&job.local).await?;
     let part = part_path(&job.local, &job.dest_name);
-    let dest = job.local.join(&job.dest_name);
+    let dest = local_child(&job.local, &job.dest_name)?;
     if caps.dd && job.size > job.chunk_size {
         download_chunks(job, &part, progress).await?;
     } else {
@@ -188,6 +248,7 @@ async fn download_file(job: &TransferJob, progress: &ProgressTx) -> anyhow::Resu
         }
     }
     finish(&part, &dest).with_context(|| format!("moving the download to {}", dest.display()))?;
+    tokio::fs::remove_file(signature_path(&part)).await.ok();
     Ok(())
 }
 
@@ -256,10 +317,18 @@ async fn download_chunks(
     progress: &ProgressTx,
 ) -> anyhow::Result<()> {
     let chunk = job.chunk_size.max(64 * 1024);
-    let existing = tokio::fs::metadata(part)
-        .await
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let sig_path = signature_path(part);
+    let signature = remote_signature(job).await;
+    let stored = tokio::fs::read_to_string(&sig_path).await.ok();
+    let existing = if can_resume(stored.as_deref(), &signature) {
+        tokio::fs::metadata(part)
+            .await
+            .map(|m| m.len())
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    tokio::fs::write(&sig_path, &signature).await?;
     let mut index = existing / chunk;
     let resume_at = index * chunk;
     let file = tokio::fs::OpenOptions::new()
@@ -343,7 +412,7 @@ async fn download_dir(job: &TransferJob, progress: &ProgressTx) -> anyhow::Resul
         .ok_or_else(|| anyhow::anyhow!("no output stream"))?;
     let mut stderr = process.stderr();
 
-    let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(16);
+    let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
     let extract_into = staging.clone();
     let extract = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
         let reader = ChannelReader {
@@ -357,22 +426,7 @@ async fn download_dir(job: &TransferJob, progress: &ProgressTx) -> anyhow::Resul
         archive.set_overwrite(true);
         archive.unpack(&extract_into)
     });
-    let mut buf = vec![0u8; 1 << 16];
-    let read_result: anyhow::Result<()> = async {
-        loop {
-            let n = stdout.read(&mut buf).await?;
-            if n == 0 {
-                break;
-            }
-            report(progress, n as u64);
-            if tx.send(buf[..n].to_vec()).is_err() {
-                break;
-            }
-        }
-        Ok(())
-    }
-    .await;
-    drop(tx);
+    let read_result = pump(&mut stdout, tx, |n| report(progress, n)).await;
     let extracted = extract.await.context("extracting")?;
     let mut err_text = String::new();
     if let Some(stderr) = stderr.as_mut() {
@@ -382,7 +436,7 @@ async fn download_dir(job: &TransferJob, progress: &ProgressTx) -> anyhow::Resul
     check_status(status, &err_text).await?;
     extracted.context("extracting the archive")?;
 
-    let dest = job.local.join(&job.dest_name);
+    let dest = local_child(&job.local, &job.dest_name)?;
     let unpacked = staging.join(&name);
     if dest.exists() {
         if dest.is_dir() {
@@ -476,12 +530,16 @@ async fn upload(job: &TransferJob, progress: &ProgressTx) -> anyhow::Result<()> 
     check_status(status, &err_text).await
 }
 
-/// `cat > dir/name` for a single file (images without tar).
+/// `cat > dir/name` for a single file (images without tar), through a temporary name so a
+/// failed upload doesn't replace an existing file with a partial one.
 async fn upload_cat(job: &TransferJob, progress: &ProgressTx) -> anyhow::Result<()> {
     let dest = crate::entry::join(&job.remote, &job.dest_name);
     let mut process = remote::exec_stream(
         &job.target,
-        sh("cat > \"$1\"", [job.target.real(&dest)]),
+        sh(
+            "tmp=\"$1.kubyl-part\"; cat > \"$tmp\" && mv -f -- \"$tmp\" \"$1\"; rc=$?; rm -f \"$tmp\"; exit $rc",
+            [job.target.real(&dest)],
+        ),
         true,
     )
     .await?;
@@ -580,10 +638,19 @@ mod tests {
     use std::collections::HashMap;
 
     #[test]
+    fn local_child_is_a_direct_child() {
+        let dir = Path::new("/tmp/downloads");
+        assert_eq!(local_child(dir, "a.txt").unwrap(), dir.join("a.txt"));
+        for bad in ["..", ".", "", "x/..", "../x", "a/b"] {
+            assert!(local_child(dir, bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
     fn channel_reader_and_writer_move_bytes() {
-        let (tx, rx) = std::sync::mpsc::sync_channel(4);
-        tx.send(b"hello ".to_vec()).unwrap();
-        tx.send(b"world".to_vec()).unwrap();
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        tx.try_send(b"hello ".to_vec()).unwrap();
+        tx.try_send(b"world".to_vec()).unwrap();
         drop(tx);
         let mut reader = ChannelReader {
             rx,
@@ -593,6 +660,26 @@ mod tests {
         let mut text = String::new();
         reader.read_to_string(&mut text).unwrap();
         assert_eq!(text, "hello world");
+    }
+
+    #[test]
+    fn partial_downloads_resume_only_for_the_same_remote_file() {
+        assert!(can_resume(Some("100 1700"), "100 1700"));
+        assert!(!can_resume(Some("100 1700"), "100 1701"));
+        assert!(!can_resume(None, "100 1700"));
+        assert!(!can_resume(Some(""), ""));
+        let part = part_path(Path::new("/d"), "a.bin");
+        assert_eq!(signature_path(&part), Path::new("/d/.a.bin.kubyl-part.sig"));
+    }
+
+    #[tokio::test]
+    async fn pump_keeps_draining_after_the_extractor_stops() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
+        drop(rx);
+        let mut data: &[u8] = &vec![7u8; 1 << 20];
+        let mut seen = 0;
+        pump(&mut data, tx, |n| seen += n).await.unwrap();
+        assert_eq!(seen, 1 << 20);
     }
 
     #[test]
@@ -609,7 +696,7 @@ mod tests {
             builder.append_dir_all("certs (1)", &source).unwrap();
             builder.into_inner().unwrap().flush().unwrap();
         });
-        let (sync_tx, sync_rx) = std::sync::mpsc::sync_channel(64);
+        let (sync_tx, sync_rx) = tokio::sync::mpsc::channel(64);
         let target = out.path().to_path_buf();
         let extractor = std::thread::spawn(move || {
             let mut archive = tar::Archive::new(ChannelReader {
@@ -620,7 +707,7 @@ mod tests {
             archive.unpack(&target).unwrap();
         });
         while let Some(chunk) = rx.blocking_recv() {
-            sync_tx.send(chunk).unwrap();
+            sync_tx.blocking_send(chunk).unwrap();
         }
         drop(sync_tx);
         builder.join().unwrap();

@@ -650,7 +650,7 @@ fn empty_path(
         let options: Vec<String> = crate::version::Version::parse(&base)
             .map(|v| {
                 (1..=2)
-                    .map(|d| format!("{}.{}", v.major, v.minor + d))
+                    .map(|d| format!("{}.{}", v.major, v.minor.saturating_add(d)))
                     .collect()
             })
             .unwrap_or_default();
@@ -1399,12 +1399,18 @@ pub fn pools_card(
             .into_any_element(),
             _ => div().into_any_element(),
         };
-        let action: AnyElement = if can_write && pool.updatable {
+        let plan_target_ok =
+            pool.kind != PoolKind::Plan || target.is_some_and(|t| status.target(t).is_some());
+        let action: AnyElement = if can_write && pool.updatable && plan_target_ok {
             let id = pool.id.clone();
             let pool_version = pool.version.clone().unwrap_or_default();
             // A cloud node pool follows its control plane; Plans move to the selected version.
             let default_target = match pool.kind {
                 PoolKind::NodePool => Some(status.current.version.clone()),
+                // Plans only move to a version the channel list offers.
+                PoolKind::Plan => target
+                    .filter(|t| status.target(t).is_some())
+                    .map(str::to_string),
                 _ => target.map(str::to_string),
             };
             let name = pool.name.clone();

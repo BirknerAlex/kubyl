@@ -43,6 +43,7 @@ Each phase file is written so one Claude Code session can own it from start to f
 | 14 | [Alerts: Alertmanager, silences, alerting rules](14-alerts.md) | 02, 05, 07 (08 optional) | `kubyl_alerts` (new) | 16 · Alerts |
 | 15 | [Polish: connection dots, one entry per cluster and user, ConfigMap data](15-sidebar-details-polish.md) | 01, 02, 03 (part 3 after 11) | none (small commits in `kubyl_explorer`, `kubyl_kube`, `kubyl_palette`) | 17 · Cluster status and ConfigMap data |
 | 16 | [Network flows: Cilium/Hubble, NetObserv, Calico/Whisker](16-network-flows.md) | 02, 05, 07 | `kubyl_netflow` (new) | 18 · Network flows |
+| 17 | [Code-review fixes: 96 findings, all fixed](17-review-fixes.md) | all | per work package | none |
 
 ```
 00 ─▶ 01 ─▶ 02 ─┬─▶ 03

@@ -1481,6 +1481,8 @@ struct UninstallDialog {
     with_crds: bool,
     /// The owned CRDs with a metadata watch of their instances.
     crds: Vec<(OwnedCrd, Option<ServedCrd>)>,
+    /// Owned CRDs another installed CSV owns too (name to that CSV): never deleted.
+    shared: std::collections::BTreeMap<String, String>,
     typed: Entity<InputState>,
     error: Option<String>,
     focus: FocusHandle,
@@ -1510,17 +1512,31 @@ impl UninstallDialog {
             ];
         let discovery =
             ConnectionManager::try_global(cx).and_then(|m| m.read(cx).discovery(&cluster));
-        let crds = operator
+        let owned = operator
             .csv
             .as_ref()
             .map(|csv| csv.owned.clone())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        let shared = Olm::global(cx)
+            .and_then(|olm| olm.read(cx).snapshot(&cluster, cx))
+            .map(|snapshot| {
+                let own = operator
+                    .csv
+                    .as_ref()
+                    .map(|c| (c.namespace.as_str(), c.name.as_str()));
+                ops::shared_crds(&owned, own, &snapshot.csvs)
+            })
+            .unwrap_or_default();
+        let crds = owned
             .into_iter()
             .map(|crd| {
-                let served = discovery.as_ref().and_then(|d| {
-                    kubyl_explorer::catalog::find(d, crd.group(), crd.plural())
-                        .map(|info| (info.gvr.clone(), info.namespaced))
-                });
+                let served = discovery
+                    .as_ref()
+                    .filter(|_| !shared.contains_key(&crd.name))
+                    .and_then(|d| {
+                        kubyl_explorer::catalog::find(d, crd.group(), crd.plural())
+                            .map(|info| (info.gvr.clone(), info.namespaced))
+                    });
                 let watch = served.map(|(gvr, namespaced)| {
                     let handle = ResourceStores::acquire(
                         cx,
@@ -1537,6 +1553,7 @@ impl UninstallDialog {
             operator,
             with_crds: false,
             crds,
+            shared,
             typed,
             error: None,
             focus: cx.focus_handle(),
@@ -1561,6 +1578,13 @@ impl UninstallDialog {
     }
 
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Enter bypasses the disabled button: an uninstall is already running.
+        if Olm::global(cx).is_some_and(|o| {
+            o.read(cx)
+                .is_busy(&format!("uninstall:{}", self.operator.key))
+        }) {
+            return;
+        }
         if !self.typed_ok(cx) {
             self.error = Some("Type the operator's name to confirm.".into());
             cx.notify();
@@ -1677,7 +1701,12 @@ impl Render for UninstallDialog {
             ));
         }
         if self.with_crds {
-            for (crd, _) in &self.crds {
+            for (crd, _) in self
+                .crds
+                .iter()
+                // Only CRDs submit() deletes: served ones (the rest are kept, see the rows above).
+                .filter(|(crd, watch)| watch.is_some() && !self.shared.contains_key(&crd.name))
+            {
                 lines.push(line(
                     IconName::Trash,
                     colors.red,
@@ -1710,7 +1739,10 @@ impl Render for UninstallDialog {
                             },
                         }
                     }
-                    None => "not served".into(),
+                    None => match self.shared.get(&crd.name) {
+                        Some(other) => format!("kept, also used by {other}"),
+                        None => "not served".into(),
+                    },
                 };
                 h_flex()
                     .gap(u(8.0))

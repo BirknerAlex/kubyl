@@ -219,17 +219,25 @@ impl Kubeconfigs {
 
     /// The exec plugin of `context` when running it needs the user's OK: it isn't the one the
     /// saved, loaded file has (`saved`), and the user didn't agree to it in this session.
-    /// `interactiveMode` doesn't matter.
-    pub fn needs_consent(&self, doc: &Doc, saved: Option<&Doc>, context: &str) -> Option<ExecSpec> {
+    /// `interactiveMode` doesn't matter. `file` is where `doc` lives (or will): a relative
+    /// command counts as the program it points to there.
+    pub fn needs_consent(
+        &self,
+        doc: &Doc,
+        saved: Option<&Doc>,
+        context: &str,
+        file: &std::path::Path,
+    ) -> Option<ExecSpec> {
         let (user, spec) = model::exec_of(doc, context)?;
         let saved_spec = saved
             .and_then(|s| s.body(model::Kind::User, &user))
             .and_then(|body| body.get("exec"))
             .and_then(ExecSpec::read);
-        if saved_spec.as_ref() == Some(&spec) || self.consents.contains(&spec.consent_key()) {
+        if saved_spec.as_ref() == Some(&spec) {
             return None;
         }
-        Some(spec)
+        let spec = spec.in_file(file);
+        (!self.consents.contains(&spec.consent_key())).then_some(spec)
     }
 
     pub fn consent(&mut self, spec: &ExecSpec) {
@@ -355,18 +363,53 @@ mod tests {
         .unwrap();
         let mut state = Kubeconfigs::default();
         // Saved and unchanged: phase 01 runs it anyway.
-        assert!(state.needs_consent(&saved, Some(&saved), "c").is_none());
+        let file = std::path::Path::new("/a/config");
+        assert!(
+            state
+                .needs_consent(&saved, Some(&saved), "c", file)
+                .is_none()
+        );
         // Edited args: consent.
         let mut edited = saved.clone();
         let body = edited.body_mut(model::Kind::User, "u").unwrap();
         body["exec"]["args"] = serde_json::json!(["eks", "get-token", "--profile", "evil"]);
-        let spec = state.needs_consent(&edited, Some(&saved), "c").unwrap();
+        let spec = state
+            .needs_consent(&edited, Some(&saved), "c", file)
+            .unwrap();
         assert_eq!(spec.args.len(), 4);
         // A new document (wizard, import): consent.
-        assert!(state.needs_consent(&saved, None, "c").is_some());
+        assert!(state.needs_consent(&saved, None, "c", file).is_some());
         state.consent(&spec);
-        assert!(state.needs_consent(&edited, Some(&saved), "c").is_none());
+        assert!(
+            state
+                .needs_consent(&edited, Some(&saved), "c", file)
+                .is_none()
+        );
         // No exec plugin: nothing to ask.
-        assert!(state.needs_consent(&Doc::empty(), None, "c").is_none());
+        assert!(
+            state
+                .needs_consent(&Doc::empty(), None, "c", file)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn consent_for_a_relative_command_is_per_folder() {
+        let doc = Doc::parse(
+            "contexts:\n- name: c\n  context: {cluster: x, user: u}\nusers:\n- name: u\n  user:\n    exec: {command: ./login, apiVersion: client.authentication.k8s.io/v1beta1}\n",
+        )
+        .unwrap();
+        let mut state = Kubeconfigs::default();
+        let a = std::path::Path::new("/a/config");
+        let b = std::path::Path::new("/b/config");
+        let spec = state.needs_consent(&doc, None, "c", a).unwrap();
+        state.consent(&spec);
+        assert!(state.needs_consent(&doc, None, "c", a).is_none());
+        // The same text next to another file runs another program.
+        let other = state.needs_consent(&doc, None, "c", b).unwrap();
+        assert_eq!(
+            other.resolved.as_deref(),
+            Some(std::path::Path::new("/b/./login"))
+        );
     }
 }

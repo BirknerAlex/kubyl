@@ -30,7 +30,7 @@ use crate::service::{Availability, Olm, OlmLease, Snapshot};
 use crate::widgets;
 
 pub(crate) use helm::HelmResources;
-pub(crate) use helm::{context_name as helm_context, status_tone as helm_status_tone};
+pub(crate) use helm::{kube_target as helm_target, status_tone as helm_status_tone};
 pub(crate) use installed::Instances;
 
 /// `ViewKind::Custom` of the Helm Releases sidebar row: it opens the Operators tab on its Helm

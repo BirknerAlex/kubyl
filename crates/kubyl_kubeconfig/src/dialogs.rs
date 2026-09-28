@@ -260,7 +260,7 @@ impl Render for ConsentView {
                 })
                 .collect::<Vec<_>>()
                 .join(" ");
-            let rows = vec![
+            let mut rows = vec![
                 ("command", spec.command.clone()),
                 (
                     "args",
@@ -281,6 +281,9 @@ impl Render for ConsentView {
                     },
                 ),
             ];
+            if let Some(path) = &spec.resolved {
+                rows.insert(1, ("runs", path.display().to_string()));
+            }
             body = body.child(
                 v_flex()
                     .gap(u(6.0))

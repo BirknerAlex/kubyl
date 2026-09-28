@@ -21,6 +21,8 @@ pub enum FetchError {
     ChecksumMismatch,
     #[error("this build's platform isn't in the update manifest")]
     NoArtifactForPlatform,
+    #[error("the signed manifest is for the {found:?} channel, not {expected:?}")]
+    WrongChannel { expected: Channel, found: Channel },
 }
 
 fn client() -> reqwest::Client {
@@ -34,10 +36,50 @@ fn client() -> reqwest::Client {
         .expect("the reqwest client builder never fails with these options")
 }
 
-/// Downloads and verifies `channel`'s manifest. `Ok` only ever wraps a manifest whose
-/// signature checked out against Kubyl's embedded release key.
+/// The manifest channels to try for `requested`, in order. CI publishes only the stable
+/// manifest today, so Preview falls back to it while no `updates-preview.json` exists.
+fn manifest_candidates(requested: Channel) -> &'static [Channel] {
+    match requested {
+        Channel::Stable => &[Channel::Stable],
+        Channel::Preview => &[Channel::Preview, Channel::Stable],
+    }
+}
+
+/// A verified manifest must be the one published for the channel it was fetched from: a stale
+/// or misplaced (but validly signed) manifest of another channel is refused.
+fn check_channel(
+    manifest: UpdateManifest,
+    expected: Channel,
+) -> Result<UpdateManifest, FetchError> {
+    if manifest.channel != expected {
+        return Err(FetchError::WrongChannel {
+            expected,
+            found: manifest.channel,
+        });
+    }
+    Ok(manifest)
+}
+
+/// Downloads and verifies the manifest for `channel` (see [`manifest_candidates`]). `Ok` only
+/// ever wraps a manifest whose signature checked out against Kubyl's embedded release key.
 pub async fn fetch_manifest(channel: Channel) -> Result<UpdateManifest, FetchError> {
     let http = client();
+    let candidates = manifest_candidates(channel);
+    for (ix, candidate) in candidates.iter().enumerate() {
+        match fetch_signed(&http, *candidate).await {
+            Err(FetchError::Network(err))
+                if err.status() == Some(reqwest::StatusCode::NOT_FOUND)
+                    && ix + 1 < candidates.len() => {}
+            result => return result,
+        }
+    }
+    unreachable!("manifest_candidates is never empty and the last candidate returns")
+}
+
+async fn fetch_signed(
+    http: &reqwest::Client,
+    channel: Channel,
+) -> Result<UpdateManifest, FetchError> {
     let manifest_bytes = http
         .get(format!("{RELEASES_BASE}/{}", channel.manifest_file()))
         .send()
@@ -52,7 +94,7 @@ pub async fn fetch_manifest(channel: Channel) -> Result<UpdateManifest, FetchErr
         .error_for_status()?
         .text()
         .await?;
-    Ok(verify::verify(&manifest_bytes, &signature_text)?)
+    check_channel(verify::verify(&manifest_bytes, &signature_text)?, channel)
 }
 
 /// Downloads this build's platform artifact from `manifest` and checks it against the sha256
@@ -87,6 +129,36 @@ mod hex {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn manifest(channel: Channel) -> UpdateManifest {
+        UpdateManifest {
+            version: "1.0.0".parse().unwrap(),
+            channel,
+            notes_url: String::new(),
+            platforms: Default::default(),
+        }
+    }
+
+    #[test]
+    fn a_manifest_of_another_channel_is_refused() {
+        assert!(check_channel(manifest(Channel::Stable), Channel::Stable).is_ok());
+        assert!(matches!(
+            check_channel(manifest(Channel::Stable), Channel::Preview),
+            Err(FetchError::WrongChannel {
+                expected: Channel::Preview,
+                found: Channel::Stable
+            })
+        ));
+    }
+
+    #[test]
+    fn preview_falls_back_to_stable_but_not_the_other_way() {
+        assert_eq!(manifest_candidates(Channel::Stable), [Channel::Stable]);
+        assert_eq!(
+            manifest_candidates(Channel::Preview),
+            [Channel::Preview, Channel::Stable]
+        );
+    }
 
     #[test]
     fn hex_encodes_like_sha256sum() {

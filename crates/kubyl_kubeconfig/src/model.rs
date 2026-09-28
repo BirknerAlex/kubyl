@@ -915,6 +915,10 @@ pub struct ExecSpec {
     pub api_version: String,
     pub interactive_mode: String,
     pub provide_cluster_info: bool,
+    /// What a relative `command` (one with a path separator) resolves to: the same text runs a
+    /// different program in another folder. `None` for a bare name (looked up in PATH), an
+    /// absolute path, or until [`ExecSpec::in_file`] is called.
+    pub resolved: Option<std::path::PathBuf>,
 }
 
 impl ExecSpec {
@@ -970,7 +974,20 @@ impl ExecSpec {
                 .get("provideClusterInfo")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+            resolved: None,
         })
+    }
+
+    /// Records where a relative command of a plugin in the kubeconfig `file` points, so consent
+    /// is given for that program and not just for the text.
+    pub fn in_file(mut self, file: &std::path::Path) -> Self {
+        let path = std::path::Path::new(&self.command);
+        // `/usr/bin/aws` has no drive letter, so Windows calls it relative; it is rooted anyway.
+        let rooted = self.command.starts_with(['/', '\\']);
+        if path.is_relative() && !rooted && self.command.contains(['/', '\\']) {
+            self.resolved = Some(resolve_path(&self.command, file.parent()));
+        }
+        self
     }
 
     /// A stable id for consent (never stored; env values are part of it).
@@ -1191,6 +1208,31 @@ extensions:
         let mut changed = exec.clone();
         changed.args.push("--x".into());
         assert_ne!(exec.consent_key(), changed.consent_key());
+        // The same relative command in another folder is another program.
+        let mut relative = exec.clone();
+        relative.command = "./bin/login".into();
+        let here = relative.clone().in_file(std::path::Path::new("/a/config"));
+        let there = relative.clone().in_file(std::path::Path::new("/b/config"));
+        assert_eq!(
+            here.resolved.as_deref(),
+            Some(std::path::Path::new("/a/./bin/login"))
+        );
+        assert_ne!(here.consent_key(), there.consent_key());
+        // Bare names and absolute paths don't depend on the file.
+        assert!(
+            exec.clone()
+                .in_file(std::path::Path::new("/a/config"))
+                .resolved
+                .is_none()
+        );
+        let mut absolute = exec.clone();
+        absolute.command = "/usr/bin/aws".into();
+        assert!(
+            absolute
+                .in_file(std::path::Path::new("/a/config"))
+                .resolved
+                .is_none()
+        );
         assert!(Doc::parse("clusters: 3\n").is_err());
     }
 }

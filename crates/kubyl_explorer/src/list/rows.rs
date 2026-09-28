@@ -3,24 +3,27 @@
 use std::cmp::Ordering;
 use std::sync::Arc;
 
-use kubyl_core::CellValue;
+use kubyl_core::{CellValue, ClusterId};
 use kubyl_resources::ObjectKey;
 use serde_json::Value;
 
-/// Identifies a row across updates: the source (store) index and the object key.
-pub type RowId = (usize, ObjectKey);
+/// Identifies a row across updates: the source (store) index, its cluster and the object key.
+/// The cluster keeps a rebuilt source list from moving the selection to another cluster's
+/// object with the same key.
+pub type RowId = (usize, ClusterId, ObjectKey);
 
 /// One visible row.
 #[derive(Clone, Debug)]
 pub struct Row {
     pub source: usize,
+    pub cluster: ClusterId,
     pub key: ObjectKey,
     pub object: Arc<Value>,
 }
 
 impl Row {
     pub fn id(&self) -> RowId {
-        (self.source, self.key.clone())
+        (self.source, self.cluster.clone(), self.key.clone())
     }
 }
 
@@ -166,7 +169,7 @@ pub fn keep_selection(
 ) -> Option<usize> {
     let selected = selected?;
     rows.iter()
-        .position(|r| r.source == selected.0 && r.key == selected.1)
+        .position(|r| r.source == selected.0 && r.cluster == selected.1 && r.key == selected.2)
         .or_else(|| {
             old_index
                 .filter(|_| !rows.is_empty())
@@ -212,25 +215,22 @@ mod tests {
 
     #[test]
     fn selection_follows_the_row_or_its_position() {
-        let row = |name: &str| Row {
+        let row_in = |cluster: &str, name: &str| Row {
             source: 0,
+            cluster: ClusterId::new(cluster),
             key: name.into(),
             object: Arc::new(Value::Null),
         };
+        let row = |name: &str| row_in("c1", name);
         let rows = vec![row("a"), row("c")];
-        assert_eq!(
-            keep_selection(&rows, Some(&(0, "c".into())), Some(2)),
-            Some(1)
-        );
-        assert_eq!(
-            keep_selection(&rows, Some(&(0, "b".into())), Some(1)),
-            Some(1)
-        );
-        assert_eq!(
-            keep_selection(&rows, Some(&(0, "z".into())), Some(9)),
-            Some(1)
-        );
-        assert_eq!(keep_selection(&[], Some(&(0, "z".into())), Some(1)), None);
+        let id = |name: &str| (0, ClusterId::new("c1"), name.into());
+        assert_eq!(keep_selection(&rows, Some(&id("c")), Some(2)), Some(1));
+        assert_eq!(keep_selection(&rows, Some(&id("b")), Some(1)), Some(1));
+        assert_eq!(keep_selection(&rows, Some(&id("z")), Some(9)), Some(1));
+        assert_eq!(keep_selection(&[], Some(&id("z")), Some(1)), None);
         assert_eq!(keep_selection(&rows, None, None), None);
+        // The same key in another cluster is a different row.
+        let other = vec![row_in("c2", "a"), row_in("c2", "c")];
+        assert_eq!(keep_selection(&other, Some(&id("c")), Some(0)), Some(0));
     }
 }
