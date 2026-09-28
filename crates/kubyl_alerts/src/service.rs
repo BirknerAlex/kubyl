@@ -201,6 +201,13 @@ pub struct ClusterAlerts {
 }
 
 impl ClusterAlerts {
+    /// Whether to read now. Never while a read is in flight (an older read finishing last
+    /// would overwrite a newer one): a pending `refetch_at` waits for it.
+    fn fetch_wanted(&self, every: Duration) -> bool {
+        let refetch = self.refetch_at.is_some_and(|t| t <= Instant::now());
+        !self.fetch.in_flight && (refetch || self.fetch.due(every))
+    }
+
     fn new(generation: u64) -> Self {
         Self {
             phase: Phase::Unknown,
@@ -629,8 +636,7 @@ impl AlertsService {
             let Some(state) = self.clusters.get_mut(&cluster) else {
                 continue;
             };
-            let refetch = state.refetch_at.is_some_and(|t| t <= Instant::now());
-            if state.phase == Phase::Ready && (refetch || state.fetch.due(every)) {
+            if state.phase == Phase::Ready && state.fetch_wanted(every) {
                 state.refetch_at = None;
                 self.fetch(&cluster, client, cx);
             }
@@ -1847,6 +1853,23 @@ mod tests {
             );
             assert!(s.clusters[&cluster].alerts.is_empty());
         });
+    }
+
+    #[test]
+    fn a_pending_refetch_waits_for_the_read_in_flight() {
+        let mut state = ClusterAlerts::new(0);
+        state.refetch_at = Some(Instant::now());
+        assert!(state.fetch_wanted(Duration::from_secs(60)));
+        state.fetch.in_flight = true;
+        assert!(!state.fetch_wanted(Duration::from_secs(60)));
+        state.fetch.in_flight = false;
+        state.fetch.last = Some(Instant::now());
+        assert!(
+            state.fetch_wanted(Duration::from_secs(60)),
+            "refetch is due"
+        );
+        state.refetch_at = None;
+        assert!(!state.fetch_wanted(Duration::from_secs(60)));
     }
 
     #[test]
