@@ -49,6 +49,27 @@ pub(crate) fn fill_between(
 ) {
     let mut builder = PathBuilder::fill();
     let mut any = false;
+    for run in fill_runs(top, bottom.len()) {
+        builder.move_to(top[run.start].unwrap_or_default());
+        for p in top[run.start + 1..run.end].iter().flatten() {
+            builder.line_to(*p);
+        }
+        for p in bottom[run.clone()].iter().rev() {
+            builder.line_to(*p);
+        }
+        builder.close();
+        any = true;
+    }
+    if any && let Ok(path) = builder.build() {
+        window.paint_path(path, color);
+    }
+}
+
+/// The index ranges of `top` to fill: runs of two or more consecutive points that `bottom` (of
+/// `bottom_len` points) also covers, so a series longer than its baseline can't index past it.
+fn fill_runs(top: &[Option<Point<Pixels>>], bottom_len: usize) -> Vec<std::ops::Range<usize>> {
+    let top = &top[..top.len().min(bottom_len)];
+    let mut runs = Vec::new();
     let mut start = 0;
     while start < top.len() {
         if top[start].is_none() {
@@ -60,21 +81,11 @@ pub(crate) fn fill_between(
             end += 1;
         }
         if end - start >= 2 {
-            builder.move_to(top[start].unwrap_or_default());
-            for p in top[start + 1..end].iter().flatten() {
-                builder.line_to(*p);
-            }
-            for p in bottom[start..end].iter().rev() {
-                builder.line_to(*p);
-            }
-            builder.close();
-            any = true;
+            runs.push(start..end);
         }
         start = end;
     }
-    if any && let Ok(path) = builder.build() {
-        window.paint_path(path, color);
-    }
+    runs
 }
 
 /// Runs of consecutive points.
@@ -116,6 +127,17 @@ pub(crate) fn y_at(bounds: &Bounds<Pixels>, value: f64, min: f64, max: f64, pad:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fills_stay_within_the_baseline() {
+        let p = |x: f32| Some(point(px(x), px(0.0)));
+        let top = [p(0.0), p(1.0), None, p(3.0), p(4.0), p(5.0)];
+        assert_eq!(fill_runs(&top, 6), vec![0..2, 3..6]);
+        // A series longer than `times` (the baseline): no run reaches past it.
+        assert_eq!(fill_runs(&top, 4), vec![0..2]);
+        assert!(fill_runs(&top, 1).is_empty());
+        assert!(fill_runs(&top, 0).is_empty());
+    }
 
     #[test]
     fn splits_at_gaps() {
