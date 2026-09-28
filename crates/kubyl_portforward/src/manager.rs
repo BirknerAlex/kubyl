@@ -139,15 +139,16 @@ struct Forward {
 impl Forward {
     fn url(&self) -> String {
         let scheme = if self.spec.https { "https" } else { "http" };
-        let host = match self.spec.bind_address.as_str() {
-            "0.0.0.0" | "::" | "" => "localhost",
-            other => other,
-        };
-        format!("{scheme}://{host}:{}", self.local_port)
+        format!("{scheme}://{}", self.local())
+    }
+
+    /// `host:port` to reach the forward from this machine (wildcard binds show `localhost`).
+    fn local(&self) -> String {
+        host_port(&display_host(&self.spec.bind_address), self.local_port)
     }
 
     fn address(&self) -> String {
-        format!("{}:{}", self.spec.bind_address, self.local_port)
+        host_port(&self.spec.bind_address, self.local_port)
     }
 
     /// `svc/ledger :5432 → :15432`.
@@ -181,6 +182,23 @@ impl Forward {
                 (status, Tone::Good)
             }
         }
+    }
+}
+
+/// The host a client on this machine uses for a bind address.
+fn display_host(bind: &str) -> String {
+    match bind {
+        "0.0.0.0" | "::" | "" => "localhost".into(),
+        other => other.into(),
+    }
+}
+
+/// `host:port`, with an IPv6 literal in brackets.
+fn host_port(host: &str, port: u16) -> String {
+    if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
     }
 }
 
@@ -431,7 +449,7 @@ impl PortForwardManager {
                     id: *id,
                     target: forward.spec.target.clone(),
                     remote_port: forward.spec.remote_port,
-                    local: listening.then(|| format!("localhost:{}", forward.local_port)),
+                    local: listening.then(|| forward.local()),
                     url: (listening && forward.spec.http).then(|| forward.url()),
                 }
             })
@@ -709,6 +727,15 @@ pub fn human_bytes(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ipv6_hosts_are_bracketed() {
+        assert_eq!(host_port(&display_host("::1"), 80), "[::1]:80");
+        assert_eq!(host_port(&display_host("::"), 80), "localhost:80");
+        assert_eq!(host_port(&display_host("0.0.0.0"), 80), "localhost:80");
+        assert_eq!(host_port(&display_host("127.0.0.1"), 80), "127.0.0.1:80");
+        assert_eq!(host_port("fe80::1", 1), "[fe80::1]:1");
+    }
 
     #[test]
     fn human_bytes_scales_units() {
