@@ -1315,6 +1315,9 @@ impl FilesView {
         };
         let (verify, chunk_size) = self.transfer_settings(cx);
         for entry in &drag.entries {
+            if entry::safe_local_name(&entry.name).is_none() {
+                continue;
+            }
             let remote = entry::join(&drag.pod_dir, &entry.name);
             let fingerprint = (entry.size, entry.modified);
             if self
@@ -1718,8 +1721,10 @@ impl FilesView {
                 let name = entry.name.clone();
                 let task = kubyl_core::spawn_kube(cx, async move {
                     if image {
+                        let name = entry::safe_local_name(&name)
+                            .ok_or_else(|| anyhow::anyhow!("unsafe file name"))?;
                         let bytes = remote.read(&path).await?;
-                        let file = temp.join(&name);
+                        let file = temp.join(name);
                         tokio::fs::write(&file, bytes).await?;
                         return Ok(PreviewContent::Image(file));
                     }

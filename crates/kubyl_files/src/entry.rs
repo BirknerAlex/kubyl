@@ -140,6 +140,14 @@ pub fn file_name(path: &str) -> &str {
     trimmed.rsplit('/').next().unwrap_or(trimmed)
 }
 
+/// `name` when it is safe to use as one component under a local folder: no separators, not
+/// `.`/`..`, no NUL. Names come from the container, where a tab or newline in a file name can
+/// fake `../../x`.
+pub fn safe_local_name(name: &str) -> Option<&str> {
+    let bad = name.is_empty() || name == "." || name == ".." || name.contains(['/', '\\', '\0']);
+    (!bad).then_some(name)
+}
+
 /// Normalizes a POSIX path: collapses `//`, resolves `.` and `..`, keeps it absolute.
 pub fn normalize(path: &str) -> String {
     let mut parts: Vec<&str> = Vec::new();
@@ -221,6 +229,15 @@ mod tests {
         assert_eq!(normalize("/.."), "/");
         let crumbs = crumbs("/app/config");
         assert_eq!(crumbs[2], ("config".into(), "/app/config".into()));
+    }
+
+    #[test]
+    fn safe_local_names() {
+        assert_eq!(safe_local_name("a.txt"), Some("a.txt"));
+        assert_eq!(safe_local_name(".env"), Some(".env"));
+        for bad in ["", ".", "..", "../../x", "a/b", "a\\b", "a\0b"] {
+            assert_eq!(safe_local_name(bad), None, "{bad:?}");
+        }
     }
 
     #[test]
