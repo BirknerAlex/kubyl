@@ -202,19 +202,33 @@ fn control_byte(key: &str, shift: bool) -> Option<u8> {
 /// The bytes for pasted text: wrapped in `ESC [200~ … ESC [201~` when the program enabled
 /// bracketed paste (so shells don't run each line), otherwise with newlines as carriage
 /// returns, like a typed Enter.
+///
+/// A trailing newline is sent as a real Enter *after* the closing bracket, not as the bracket's
+/// last byte: readline-based shells (bash, zsh) only submit a bracketed-pasted line once they
+/// see a `\r` outside bracketed-paste mode, so a `\r` immediately before `ESC[201~` never runs
+/// it -- the shell is left showing the pasted text highlighted and pending forever, as if
+/// nothing happened, until the user presses Enter themselves. Verified against a real bash PTY.
 pub fn paste(text: &str, bracketed: bool) -> Vec<u8> {
-    let text = text.replace("\r\n", "\r").replace('\n', "\r");
-    if bracketed {
+    let mut text = text.replace("\r\n", "\r").replace('\n', "\r");
+    let trailing_enter = text.ends_with('\r');
+    if trailing_enter {
+        text.pop();
+    }
+    let mut out = if bracketed {
         // A paste can't end the bracket early.
         let text = text.replace("\x1b[201~", "");
-        let mut out = Vec::with_capacity(text.len() + 12);
+        let mut out = Vec::with_capacity(text.len() + 13);
         out.extend_from_slice(b"\x1b[200~");
         out.extend_from_slice(text.as_bytes());
         out.extend_from_slice(b"\x1b[201~");
         out
     } else {
         text.into_bytes()
+    };
+    if trailing_enter {
+        out.push(b'\r');
     }
+    out
 }
 
 /// A mouse event to report to a program that enabled mouse mode.
@@ -367,6 +381,18 @@ mod tests {
         assert_eq!(paste("hi\nthere", true), b"\x1b[200~hi\rthere\x1b[201~");
         assert_eq!(paste("a\r\nb", false), b"a\rb");
         assert_eq!(paste("x\x1b[201~y", true), b"\x1b[200~xy\x1b[201~");
+    }
+
+    #[test]
+    fn paste_sends_a_trailing_newline_as_a_real_enter_after_the_bracket() {
+        // A `\r` as the bracket's last byte never submits in a real shell (verified against a
+        // live bash PTY): it must come after `ESC[201~`, like a separate Enter keypress.
+        assert_eq!(paste("echo hi\n", true), b"\x1b[200~echo hi\x1b[201~\r");
+        assert_eq!(paste("echo hi\r\n", true), b"\x1b[200~echo hi\x1b[201~\r");
+        // Unbracketed paste has no bracket to trap it in, so it stays inline (unchanged).
+        assert_eq!(paste("echo hi\n", false), b"echo hi\r");
+        // No trailing newline: last line stays pending for the user to review, as before.
+        assert_eq!(paste("echo hi", true), b"\x1b[200~echo hi\x1b[201~");
     }
 
     #[test]

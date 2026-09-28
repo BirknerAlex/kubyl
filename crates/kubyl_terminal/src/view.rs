@@ -714,6 +714,7 @@ impl TerminalView {
         };
         let bracketed = self.grid.modes().bracketed_paste;
         self.grid.scroll_to_bottom();
+        self.grid.clear_selection();
         self.send(input::paste(&text, bracketed));
         cx.notify();
     }
