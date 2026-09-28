@@ -209,6 +209,8 @@ mod tests {
         assert_eq!(mode & 0o077, 0);
     }
 
+    // Unix only: there the private mkdir fails without its parent, while Windows creates it.
+    #[cfg(unix)]
     #[test]
     fn unusable_fallback_never_returns_an_unverified_dir() {
         let base = tempfile::tempdir().unwrap();
