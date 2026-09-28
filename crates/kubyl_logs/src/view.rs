@@ -322,6 +322,26 @@ struct PodChip {
     gone: bool,
 }
 
+/// Most chips of deleted pods kept; with pod churn (rollouts, CronJobs) older ones drop off.
+const MAX_GONE_CHIPS: usize = 20;
+
+/// Drops the oldest gone chips beyond [`MAX_GONE_CHIPS`].
+fn prune_gone_chips(pods: &mut Vec<PodChip>) {
+    let mut excess = pods
+        .iter()
+        .filter(|p| p.gone)
+        .count()
+        .saturating_sub(MAX_GONE_CHIPS);
+    pods.retain(|p| {
+        if p.gone && excess > 0 {
+            excess -= 1;
+            false
+        } else {
+            true
+        }
+    });
+}
+
 /// Lines per second over the last few seconds.
 #[derive(Default)]
 struct RateMeter {
@@ -874,6 +894,7 @@ impl LogsView {
                     if let Some(chip) = self.pods.iter_mut().find(|p| p.name == pod) {
                         chip.gone = true;
                     }
+                    prune_gone_chips(&mut self.pods);
                     self.reconnecting.retain(|(p, _)| p != &pod);
                     self.push_marker(pod.clone(), format!("── {pod} deleted ──"));
                     force_session = true;
@@ -2723,6 +2744,26 @@ mod tests {
                 assert_eq!(view.row_count(), 7);
             })
             .unwrap();
+    }
+
+    #[test]
+    fn gone_pod_chips_are_bounded() {
+        let mut pods: Vec<PodChip> = (0..MAX_GONE_CHIPS + 5)
+            .map(|i| PodChip {
+                name: format!("old-{i}").into(),
+                color_index: 0,
+                gone: true,
+            })
+            .collect();
+        pods.push(PodChip {
+            name: "live".into(),
+            color_index: 0,
+            gone: false,
+        });
+        prune_gone_chips(&mut pods);
+        assert_eq!(pods.len(), MAX_GONE_CHIPS + 1);
+        assert_eq!(pods[0].name.as_ref(), "old-5");
+        assert!(pods.iter().any(|p| p.name.as_ref() == "live"));
     }
 
     #[gpui::test]

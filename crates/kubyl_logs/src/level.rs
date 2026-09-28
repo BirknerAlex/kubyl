@@ -75,6 +75,8 @@ impl LogLevel {
 /// usually come first; words later belong to the message.
 const PREFIX_WORDS: usize = 12;
 const PREFIX_BYTES: usize = 200;
+/// Larger JSON lines are not parsed for a level (the parse runs on the UI thread).
+const MAX_JSON_BYTES: usize = 16 * 1024;
 
 /// Detects the level of one raw log line (without the pod/container prefix Kubyl adds).
 pub fn detect_level(line: &str) -> LogLevel {
@@ -83,6 +85,7 @@ pub fn detect_level(line: &str) -> LogLevel {
     // JSON: {"level":"info", ...}, {"severity":"ERROR", ...}, {"level":50, ...}. Only the top
     // level, so this stays cheap on high-volume streams.
     if trimmed.starts_with('{')
+        && trimmed.len() <= MAX_JSON_BYTES
         && let Ok(Value::Object(map)) = serde_json::from_str::<Value>(trimmed)
     {
         for key in [
@@ -239,6 +242,13 @@ mod tests {
             detect_level(r#"{"@timestamp":"2026","log.level":"warn","message":"x"}"#),
             LogLevel::Warn
         );
+    }
+
+    #[test]
+    fn huge_json_lines_are_not_parsed() {
+        let pad = "x".repeat(MAX_JSON_BYTES);
+        let line = format!(r#"{{"level":"error","msg":"{pad}"}}"#);
+        assert_eq!(detect_level(&line), LogLevel::Unknown);
     }
 
     #[test]

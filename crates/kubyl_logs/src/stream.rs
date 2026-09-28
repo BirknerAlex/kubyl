@@ -611,6 +611,51 @@ impl Resume {
     }
 }
 
+/// Longest line text kept; the rest of a longer line is dropped (a runaway line must not
+/// exhaust memory or stall the UI).
+const MAX_LINE_BYTES: usize = 64 * 1024;
+/// Cap on one non-follow fetch (backlog or full download), enforced by the API server.
+const MAX_FETCH_BYTES: i64 = 64 * 1024 * 1024;
+
+/// Cuts `text` to at most `max` bytes on a char boundary, marking the cut.
+fn truncate_text(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        return text.to_string();
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{} … [line truncated]", &text[..end])
+}
+
+/// Reads up to and including the next `\n` into `buf`, keeping at most `max` bytes of it and
+/// discarding the rest of an overlong line. Returns the bytes consumed (0 at EOF).
+async fn read_line_capped<R: futures::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    buf: &mut Vec<u8>,
+    max: usize,
+) -> std::io::Result<usize> {
+    let mut consumed = 0;
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            return Ok(consumed);
+        }
+        let (used, done) = match available.iter().position(|b| *b == b'\n') {
+            Some(i) => (i + 1, true),
+            None => (available.len(), false),
+        };
+        let room = max.saturating_sub(buf.len());
+        buf.extend_from_slice(&available[..used.min(room)]);
+        reader.consume_unpin(used);
+        consumed += used;
+        if done {
+            return Ok(consumed);
+        }
+    }
+}
+
 fn parse_line(pod: &str, container: &str, bytes: &[u8]) -> RawLine {
     let text = String::from_utf8_lossy(bytes);
     let text = text.trim_end_matches(['\n', '\r']);
@@ -619,7 +664,7 @@ fn parse_line(pod: &str, container: &str, bytes: &[u8]) -> RawLine {
         pod: pod.to_string(),
         container: container.to_string(),
         timestamp,
-        text: text.to_string(),
+        text: truncate_text(text, MAX_LINE_BYTES),
     }
 }
 
@@ -630,6 +675,7 @@ fn params(container: &str, options: &LogOptions, follow: bool) -> LogParams {
         timestamps: true,
         previous: options.previous,
         tail_lines: options.tail_lines,
+        limit_bytes: (!follow).then_some(MAX_FETCH_BYTES),
         since_seconds: match options.since {
             Since::Seconds(s) => Some(s),
             _ => None,
@@ -738,7 +784,7 @@ async fn container_task(
                 let mut seen_at_last = 0;
                 loop {
                     buf.clear();
-                    match stream.read_until(b'\n', &mut buf).await {
+                    match read_line_capped(&mut stream, &mut buf, MAX_LINE_BYTES + 64).await {
                         Ok(0) => break,
                         Ok(_) => {
                             let line = parse_line(&pod, &container, &buf);
@@ -839,6 +885,28 @@ mod tests {
             timestamp: ts.map(|t| t.parse().unwrap()),
             text: text.into(),
         }
+    }
+
+    #[test]
+    fn truncates_long_lines_on_a_char_boundary() {
+        let long = "é".repeat(MAX_LINE_BYTES);
+        let raw = parse_line("p", "c", long.as_bytes());
+        assert!(raw.text.len() < MAX_LINE_BYTES + 32);
+        assert!(raw.text.ends_with("[line truncated]"));
+        assert_eq!(parse_line("p", "c", b"short\n").text, "short");
+    }
+
+    #[test]
+    fn capped_reader_drops_the_tail_of_a_long_line() {
+        let data = format!("{}\nnext\n", "x".repeat(1000));
+        let mut reader = futures::io::BufReader::with_capacity(16, data.as_bytes());
+        let mut buf = Vec::new();
+        let n = futures::executor::block_on(read_line_capped(&mut reader, &mut buf, 100)).unwrap();
+        assert_eq!(n, 1001);
+        assert_eq!(buf.len(), 100);
+        buf.clear();
+        futures::executor::block_on(read_line_capped(&mut reader, &mut buf, 100)).unwrap();
+        assert_eq!(buf, b"next\n");
     }
 
     #[test]
