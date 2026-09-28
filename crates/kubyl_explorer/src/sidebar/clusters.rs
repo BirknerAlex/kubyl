@@ -73,6 +73,7 @@ enum Item {
         cluster: ClusterId,
         text: SharedString,
         sign_in: bool,
+        depth: usize,
     },
     Group {
         cluster: ClusterId,
@@ -98,6 +99,7 @@ enum Item {
     Row {
         cluster: ClusterId,
         row: ViewRow,
+        depth: usize,
     },
 }
 
@@ -114,7 +116,7 @@ impl Item {
                 None => format!("kind|{cluster}|{}", kind.gvr),
             },
             Item::View { cluster, entry, .. } => format!("view|{cluster}|{}", entry.id),
-            Item::Row { cluster, row } => format!("row|{cluster}|{}", row.id),
+            Item::Row { cluster, row, .. } => format!("row|{cluster}|{}", row.id),
         }
     }
 
@@ -433,6 +435,7 @@ impl ClustersSection {
                     cluster: cluster.clone(),
                     text: "Discovering API…".into(),
                     sign_in: false,
+                    depth: d(1),
                 });
                 return;
             }
@@ -450,6 +453,7 @@ impl ClustersSection {
                     cluster: cluster.clone(),
                     text: text.into(),
                     sign_in,
+                    depth: d(1),
                 });
                 return;
             }
@@ -471,6 +475,7 @@ impl ClustersSection {
                     items.push(Item::Row {
                         cluster: cluster.clone(),
                         row: row.clone(),
+                        depth: d(1),
                     });
                 }
                 continue;
@@ -741,7 +746,23 @@ impl ClustersSection {
         else {
             return;
         };
-        if self.selected.as_deref().and_then(|s| s.split('|').nth(1)) == Some(cluster.as_str()) {
+        // A cluster inside a collapsed folder must be expanded into view even when it was
+        // already selected (the folder may have been collapsed again since).
+        let groups = SidebarGroups::global(cx);
+        let folder_id = groups
+            .read(cx)
+            .group_of(cluster.as_str())
+            .map(|g| g.id.clone());
+        let expanded_folder = match &folder_id {
+            Some(folder_id) if groups.read(cx).is_collapsed(folder_id) => {
+                groups.update(cx, |g, cx| g.toggle_collapsed(folder_id, cx));
+                true
+            }
+            _ => false,
+        };
+        if !expanded_folder
+            && self.selected.as_deref().and_then(|s| s.split('|').nth(1)) == Some(cluster.as_str())
+        {
             return;
         }
         if !self.is_expanded_root(&cluster) {
@@ -798,7 +819,7 @@ impl ClustersSection {
                     cx,
                 );
             }
-            Item::Row { cluster, row } => {
+            Item::Row { cluster, row, .. } => {
                 Self::activate_cluster(cluster, cx);
                 window.dispatch_action(
                     Box::new(OpenView(ViewRequest::for_resource(
@@ -969,8 +990,13 @@ impl ClustersSection {
                         .build(window, cx)
                     })
             }
-            Item::Status { text, sign_in, .. } => TreeRow::new(id, text.clone())
-                .depth(1)
+            Item::Status {
+                text,
+                sign_in,
+                depth,
+                ..
+            } => TreeRow::new(id, text.clone())
+                .depth(*depth)
                 .muted_label(true)
                 .icon(if *sign_in {
                     IconName::Key
@@ -1025,9 +1051,13 @@ impl ClustersSection {
                 .depth(*depth)
                 .icon(entry.icon)
                 .selected(selected),
-            Item::Row { cluster, row } => {
+            Item::Row {
+                cluster,
+                row,
+                depth,
+            } => {
                 let tree_row = TreeRow::new(id, row.label)
-                    .depth(1)
+                    .depth(*depth)
                     .icon(row.icon)
                     .selected(selected);
                 match row.badge.as_ref().and_then(|badge| badge(cluster, cx)) {

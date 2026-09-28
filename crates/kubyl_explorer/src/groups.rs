@@ -136,20 +136,37 @@ impl SidebarGroups {
         if manager.is_loading() {
             return;
         }
-        let mut changed = false;
-        for group in &mut self.state.groups {
-            for member in &mut group.members {
-                let resolved = manager.resolve(&ClusterId::new(member.clone())).to_string();
-                if &resolved != member {
-                    *member = resolved;
-                    changed = true;
-                }
-            }
-        }
+        let changed = resolve_members(&mut self.state.groups, |member| {
+            manager
+                .resolve(&ClusterId::new(member.to_string()))
+                .to_string()
+        });
         if changed {
             self.changed(cx);
         }
     }
+}
+
+/// Re-keys every member through `resolve` and drops any id that then duplicates one already
+/// seen (two contexts, one in each of two groups, can resolve to the same cluster once they're
+/// grouped into a single entry: the cluster keeps its first group). Returns whether anything
+/// changed.
+fn resolve_members(groups: &mut [SidebarGroup], resolve: impl Fn(&str) -> String) -> bool {
+    let mut changed = false;
+    let mut seen = std::collections::HashSet::new();
+    for group in groups.iter_mut() {
+        for member in &mut group.members {
+            let resolved = resolve(member);
+            if &resolved != member {
+                *member = resolved;
+                changed = true;
+            }
+        }
+        let before = group.members.len();
+        group.members.retain(|m| seen.insert(m.clone()));
+        changed |= group.members.len() != before;
+    }
+    changed
 }
 
 /// Removes `cluster` from every group. Returns whether anything changed.
@@ -235,5 +252,42 @@ mod tests {
         assert!(remove_member(&mut groups, "a"));
         assert_eq!(groups[0].members, vec!["b"]);
         assert!(!remove_member(&mut groups, "a"));
+    }
+
+    #[test]
+    fn resolve_members_dedupes_within_a_group() {
+        // "a" and "b" both resolve to "merged" once their contexts are grouped into one entry.
+        let mut groups = vec![group("prod", &["a", "b", "c"])];
+        let resolved = |m: &str| {
+            if m == "b" {
+                "a".to_string()
+            } else {
+                m.to_string()
+            }
+        };
+        assert!(resolve_members(&mut groups, resolved));
+        assert_eq!(groups[0].members, vec!["a", "c"]);
+    }
+
+    #[test]
+    fn resolve_members_dedupes_across_groups_keeping_the_first() {
+        let mut groups = vec![group("prod", &["a"]), group("staging", &["b"])];
+        let resolved = |m: &str| {
+            if m == "b" {
+                "a".to_string()
+            } else {
+                m.to_string()
+            }
+        };
+        assert!(resolve_members(&mut groups, resolved));
+        assert_eq!(groups[0].members, vec!["a"]);
+        assert!(groups[1].members.is_empty());
+    }
+
+    #[test]
+    fn resolve_members_is_a_no_op_when_nothing_resolves_differently() {
+        let mut groups = vec![group("prod", &["a", "b"])];
+        assert!(!resolve_members(&mut groups, |m| m.to_string()));
+        assert_eq!(groups[0].members, vec!["a", "b"]);
     }
 }
