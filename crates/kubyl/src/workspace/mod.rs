@@ -8,7 +8,8 @@ mod sidebar;
 
 use gpui::{
     AnyElement, AnyView, App, Context, Entity, ExternalPaths, FocusHandle, Focusable, IntoElement,
-    Pixels, Render, SharedString, Subscription, WeakEntity, Window, actions, div, prelude::*, px,
+    MouseButton, NavigationDirection, Pixels, Render, SharedString, Subscription, WeakEntity,
+    Window, actions, div, prelude::*, px,
 };
 use gpui_component::resizable::{ResizableState, h_resizable, resizable_panel, v_resizable};
 use kubyl_core::actions::{ActivateDockPanel, OpenSettings, OpenView, ShowNotifications};
@@ -624,6 +625,26 @@ impl Render for Workspace {
             .on_drop(|paths: &ExternalPaths, _, cx| {
                 kubyl_kube::ui::add_paths(paths.paths().to_vec(), cx)
             })
+            // A mouse's back/forward buttons step through the active pane's tab history, like a
+            // web browser.
+            .on_mouse_down(
+                MouseButton::Navigate(NavigationDirection::Back),
+                cx.listener(|this, _, window, cx| {
+                    let pane = this.active_pane.clone();
+                    pane.update(cx, |pane, cx| {
+                        pane.navigate(-1, window, cx);
+                    });
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Navigate(NavigationDirection::Forward),
+                cx.listener(|this, _, window, cx| {
+                    let pane = this.active_pane.clone();
+                    pane.update(cx, |pane, cx| {
+                        pane.navigate(1, window, cx);
+                    });
+                }),
+            )
             .on_action(cx.listener(|this, _: &About, _, cx| {
                 this.overlay = Some(Overlay::About);
                 cx.notify();

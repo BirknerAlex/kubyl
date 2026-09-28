@@ -145,6 +145,7 @@ impl ClustersSection {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut subscriptions = vec![
             cx.observe_global::<ActiveContext>(|this, cx| {
+                this.sync_active_cluster(cx);
                 this.schedule_count_sync(cx);
                 cx.notify();
             }),
@@ -635,6 +636,28 @@ impl ClustersSection {
         self.save(cx);
         self.schedule_count_sync(cx);
         cx.notify();
+    }
+
+    /// Expands and highlights the cluster that just became active (title bar switcher, command
+    /// palette…), unless the sidebar's own click already put it there: a switch made outside the
+    /// sidebar shouldn't leave a stale cluster looking selected in the tree.
+    fn sync_active_cluster(&mut self, cx: &mut Context<Self>) {
+        let Some(cluster) = ActiveContext::global(cx)
+            .cluster
+            .as_ref()
+            .map(|b| b.id.clone())
+        else {
+            return;
+        };
+        if self.selected.as_deref().and_then(|s| s.split('|').nth(1)) == Some(cluster.as_str()) {
+            return;
+        }
+        if !self.is_expanded_root(&cluster) {
+            self.state.roots.insert(cluster.to_string());
+            self.save(cx);
+        }
+        self.connect_expanded(cx);
+        self.selected = Some(Item::Root(cluster).id());
     }
 
     /// Makes `cluster` the title-bar cluster unless it already is.
