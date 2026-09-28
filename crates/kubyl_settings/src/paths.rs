@@ -6,13 +6,66 @@ use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
 /// `$KUBYL_CONFIG_DIR`, or `<platform config dir>/kubyl`.
+///
+/// Without a platform config dir (no `HOME`) this is a private per-user directory in the temp
+/// dir, never a shared, predictable path that another user could pre-create or read.
 pub fn config_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("KUBYL_CONFIG_DIR") {
         return PathBuf::from(dir);
     }
-    dirs::config_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("kubyl")
+    match dirs::config_dir() {
+        Some(dir) => dir.join("kubyl"),
+        None => private_dir_in(&std::env::temp_dir()),
+    }
+}
+
+/// A directory under `base` that only the current user can use: `kubyl-<user>` when that is
+/// ours and mode 0700, else a fresh `kubyl-<user>-<pid>` created with mode 0700.
+fn private_dir_in(base: &Path) -> PathBuf {
+    let user = ["USER", "USERNAME", "LOGNAME"]
+        .iter()
+        .find_map(|var| std::env::var(var).ok())
+        .unwrap_or_default();
+    let user: String = user
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        .collect();
+    let name = format!("kubyl-{user}");
+    let dir = base.join(&name);
+    if create_private(&dir, true) {
+        return dir;
+    }
+    let dir = base.join(format!("{name}-{}", std::process::id()));
+    if !create_private(&dir, false) {
+        tracing::warn!(
+            "could not create a private config dir in {}",
+            base.display()
+        );
+    }
+    dir
+}
+
+/// Creates `dir` with mode 0700. With `reuse`, an existing directory is accepted when we own it
+/// (only the owner can chmod it) and it is not accessible to others.
+fn create_private(dir: &Path, reuse: bool) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
+        match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+            Ok(()) => true,
+            Err(err) if reuse && err.kind() == std::io::ErrorKind::AlreadyExists => {
+                std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).is_ok()
+                    && std::fs::symlink_metadata(dir)
+                        .is_ok_and(|m| m.is_dir() && m.permissions().mode() & 0o077 == 0)
+            }
+            Err(_) => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = reuse;
+        std::fs::create_dir_all(dir).is_ok()
+    }
 }
 
 /// Writes `contents` to `path` atomically (temp file + rename), creating parent directories.
@@ -128,6 +181,22 @@ mod tests {
         newer.write(&path, b"new").unwrap();
         older.write(&path, b"old").unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"new");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fallback_dir_is_private() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let base = tempfile::tempdir().unwrap();
+        let dir = private_dir_in(base.path());
+        assert!(dir.starts_with(base.path()));
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0);
+        // A pre-existing, world-accessible dir of ours is tightened and reused.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(private_dir_in(base.path()), dir);
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0);
     }
 
     #[test]
