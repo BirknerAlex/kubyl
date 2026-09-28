@@ -473,6 +473,7 @@ where
     Fut: std::future::Future<Output = Result<(), String>> + Send + 'static,
 {
     let label = describe_targets(&items);
+    let total = items.len();
     let jobs: Vec<_> = items
         .iter()
         .filter_map(|item| {
@@ -484,6 +485,7 @@ where
         error(cx, "Not connected.");
         return;
     }
+    let skipped = total - jobs.len();
     let op = Arc::new(op);
     let task = spawn_kube(cx, async move {
         let mut errors = Vec::new();
@@ -496,15 +498,30 @@ where
     });
     cx.spawn(async move |cx| {
         let errors = task.await;
-        cx.update(|cx| {
-            if errors.is_empty() {
-                success(cx, format!("{verb} {label}"));
-            } else {
-                error(cx, errors.join("\n"));
-            }
+        cx.update(|cx| match run_report(verb, &label, &errors, skipped) {
+            Ok(message) => success(cx, message),
+            Err(message) => error(cx, message),
         });
     })
     .detach();
+}
+
+/// The toast for a finished [`run_each`]: `Ok` only when every item was done. `skipped` items
+/// had no connected cluster and were never tried.
+fn run_report(
+    verb: &str,
+    label: &str,
+    errors: &[String],
+    skipped: usize,
+) -> Result<String, String> {
+    if errors.is_empty() && skipped == 0 {
+        return Ok(format!("{verb} {label}"));
+    }
+    let mut lines = errors.to_vec();
+    if skipped > 0 {
+        lines.push(format!("{skipped} skipped: not connected"));
+    }
+    Err(lines.join("\n"))
 }
 
 /// Typed confirmation on PROD: the object's name, or `delete N` for several.
@@ -591,7 +608,7 @@ fn delete(force: bool, cx: &mut App) {
 }
 
 fn scale(cx: &mut App) {
-    let Some((items, _)) = targets(cx, "Workload: Scale…", true) else {
+    let Some((items, caps)) = targets(cx, "Workload: Scale…", true) else {
         return;
     };
     let current = items
@@ -601,6 +618,8 @@ fn scale(cx: &mut App) {
     let mut spec = ConfirmSpec::new(format!("Scale {}", describe_targets(&items)), "Scale");
     spec.lines = selection_lines(cx, &items);
     spec.number = Some(current.unwrap_or(1));
+    // The replica count is only known on confirm, so PROD always types (even for scale-to-0).
+    spec.typed = typed_confirmation(&caps, &items, "scale");
     with_window(cx, move |window, cx| {
         dialogs::confirm(
             spec,
@@ -751,16 +770,36 @@ fn cordon(unschedulable: bool, cx: &mut App) {
     } else {
         "Node: Uncordon"
     };
-    let Some((items, _)) = targets(cx, name, true) else {
+    let Some((items, caps)) = targets(cx, name, true) else {
         return;
     };
-    let verb = if unschedulable {
-        "Cordoned"
+    let (verb, done) = if unschedulable {
+        ("Cordon", "Cordoned")
     } else {
-        "Uncordoned"
+        ("Uncordon", "Uncordoned")
     };
-    run_each(items, verb, cx, move |client, _, target| {
-        ops::cordon(client, target.name.unwrap_or_default(), unschedulable)
+    let mut spec = ConfirmSpec::new(format!("{verb} {}?", describe_targets(&items)), verb);
+    spec.lines = items.iter().map(line).collect();
+    spec.note = Some(
+        if unschedulable {
+            "No new pods are scheduled on the node; running pods stay."
+        } else {
+            "The node accepts new pods again."
+        }
+        .into(),
+    );
+    spec.typed = typed_confirmation(&caps, &items, &verb.to_lowercase());
+    with_window(cx, move |window, cx| {
+        dialogs::confirm(
+            spec,
+            move |_, _, cx| {
+                run_each(items.clone(), done, cx, move |client, _, target| {
+                    ops::cordon(client, target.name.unwrap_or_default(), unschedulable)
+                });
+            },
+            window,
+            cx,
+        )
     });
 }
 
@@ -935,9 +974,7 @@ fn copy_yaml(cx: &mut App) {
                 cx.write_to_clipboard(ClipboardItem::new_string(yaml.join("---\n")));
                 let mut message = format!("Copied YAML of {} object(s)", yaml.len());
                 if masked > 0 {
-                    message.push_str(
-                        " with the Route TLS key masked (reveal it in the details to copy it)",
-                    );
+                    message.push_str(" with Secret data and Route TLS keys masked");
                 }
                 NotificationCenter::push(cx, Notification::info(message));
             }
@@ -947,14 +984,41 @@ fn copy_yaml(cx: &mut App) {
     .detach();
 }
 
-/// The objects as YAML for the clipboard, and how many had an inline Route key masked: a
-/// private key is only copied by an explicit action (the details' copy button).
+/// Placeholder for masked values, the same text the YAML editor and details show.
+const MASK: &str = "••••••••";
+
+/// Masks the `data`/`stringData` values of a core Secret and kubectl's last-applied copy of
+/// them. Returns whether it is a Secret.
+fn mask_secret(object: &mut serde_json::Value) -> bool {
+    use serde_json::Value;
+    if object["kind"].as_str() != Some("Secret") || object["apiVersion"].as_str() != Some("v1") {
+        return false;
+    }
+    for field in ["data", "stringData"] {
+        if let Some(map) = object.get_mut(field).and_then(Value::as_object_mut) {
+            for value in map.values_mut() {
+                *value = Value::String(MASK.into());
+            }
+        }
+    }
+    if let Some(annotation) = object
+        .pointer_mut("/metadata/annotations")
+        .and_then(Value::as_object_mut)
+        .and_then(|a| a.get_mut("kubectl.kubernetes.io/last-applied-configuration"))
+    {
+        *annotation = Value::String(MASK.into());
+    }
+    true
+}
+
+/// The objects as YAML for the clipboard, and how many had Secret data or an inline Route key
+/// masked: secrets are only copied by an explicit action (the details' reveal).
 fn copyable_yaml(objects: Vec<serde_json::Value>) -> (Vec<String>, usize) {
     let mut masked = 0;
     let yaml = objects
         .into_iter()
         .map(|mut object| {
-            if kubyl_resources::route::mask_inline_key(&mut object) {
+            if mask_secret(&mut object) | kubyl_resources::route::mask_inline_key(&mut object) {
                 masked += 1;
             }
             format::to_yaml(&object)
@@ -1002,6 +1066,63 @@ mod tests {
         assert!(!yaml[0].contains("MIIEvQ"), "{}", yaml[0]);
         assert!(yaml[0].contains("key: ••••••••"), "{}", yaml[0]);
         assert!(yaml[1].contains("key: value"));
+    }
+
+    #[test]
+    fn run_report_names_skipped_and_failed_items() {
+        assert_eq!(
+            run_report("Scaled", "2 deployments", &[], 0),
+            Ok("Scaled 2 deployments".into())
+        );
+        let partial = run_report("Scaled", "3 deployments", &["api: boom".into()], 1);
+        assert_eq!(partial, Err("api: boom\n1 skipped: not connected".into()));
+        assert_eq!(
+            run_report("Scaled", "2 deployments", &[], 1),
+            Err("1 skipped: not connected".into())
+        );
+    }
+
+    #[test]
+    fn copied_yaml_masks_secret_data() {
+        let secret = serde_json::json!({"apiVersion": "v1", "kind": "Secret",
+            "metadata": {"name": "s", "annotations": {
+                "kubectl.kubernetes.io/last-applied-configuration": "{\"data\":{\"pw\":\"c2VjcmV0\"}}"}},
+            "type": "Opaque", "data": {"pw": "c2VjcmV0"}, "stringData": {"tok": "plain-token"}});
+        let (yaml, masked) = copyable_yaml(vec![secret]);
+        assert_eq!(masked, 1);
+        for leak in ["c2VjcmV0", "plain-token"] {
+            assert!(!yaml[0].contains(leak), "{}", yaml[0]);
+        }
+        assert!(yaml[0].contains("pw: ••••••••"), "{}", yaml[0]);
+        assert!(yaml[0].contains("name: s"));
+    }
+
+    #[test]
+    fn typed_confirmation_on_production_only() {
+        let item = |name: &str| Selected {
+            target: ResourceRef::object(
+                ClusterId::new("c"),
+                Gvr::new("apps", "v1", "deployments"),
+                Some("web".into()),
+                name.into(),
+            ),
+            kind: "Deployment".into(),
+            object: None,
+            store: None,
+        };
+        let prod = ClusterCaps {
+            production: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            typed_confirmation(&prod, &[item("api")], "scale").as_deref(),
+            Some("api")
+        );
+        assert_eq!(
+            typed_confirmation(&prod, &[item("a"), item("b")], "scale").as_deref(),
+            Some("scale 2")
+        );
+        assert!(typed_confirmation(&ClusterCaps::default(), &[item("api")], "scale").is_none());
     }
 
     #[test]

@@ -18,6 +18,7 @@ pub mod favorites;
 pub mod groups;
 pub mod list;
 pub mod namespaces;
+mod rbac;
 pub mod settings;
 pub mod sidebar;
 

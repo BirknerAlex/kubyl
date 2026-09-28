@@ -243,6 +243,8 @@ pub struct ConnectionManager {
     active: Option<ClusterId>,
     restored: bool,
     loading: bool,
+    /// Bumped by every [`Self::reload`]; only the latest load's result is applied.
+    reload_generation: u64,
     watch_files: bool,
     watcher: Option<notify::RecommendedWatcher>,
     watched: Vec<PathBuf>,
@@ -303,6 +305,7 @@ impl ConnectionManager {
             active: None,
             restored: false,
             loading: false,
+            reload_generation: 0,
             watch_files,
             watcher: None,
             watched: Vec::new(),
@@ -447,17 +450,35 @@ impl ConnectionManager {
             &self.pasted_dir,
         );
         self.loading = true;
+        self.reload_generation += 1;
+        let generation = self.reload_generation;
         let load = cx
             .background_executor()
             .spawn(async move { (kubeconfig::load(&specs), specs) });
         self._tasks.push(cx.spawn(async move |this, cx| {
             let (loaded, specs) = load.await;
-            this.update(cx, |this, cx| this.apply_loaded(loaded, &specs, cx))
-                .ok();
+            this.update(cx, |this, cx| {
+                this.finish_reload(generation, loaded, &specs, cx)
+            })
+            .ok();
         }));
         // Finished loads stay in the list until the next reload; keep it short.
         if self._tasks.len() > 8 {
             self._tasks.drain(..self._tasks.len() - 4);
+        }
+    }
+
+    /// Applies a finished load unless a newer reload started since (its result is coming and
+    /// would be overwritten by this stale one).
+    fn finish_reload(
+        &mut self,
+        generation: u64,
+        loaded: Loaded,
+        specs: &[SourceSpec],
+        cx: &mut Context<Self>,
+    ) {
+        if generation == self.reload_generation {
+            self.apply_loaded(loaded, specs, cx);
         }
     }
 
@@ -471,7 +492,7 @@ impl ConnectionManager {
         self.loaded = loaded;
         self.apply_entries(cx);
         if self.watch_files {
-            self.update_watcher(specs);
+            self.update_watcher(specs, cx);
         }
         if !self.restored {
             self.restored = true;
@@ -878,69 +899,32 @@ impl ConnectionManager {
     }
 
     /// Watches the parent folders of source files (editors replace files by renaming, which
-    /// ends a watch on the file itself) and folder sources.
-    fn update_watcher(&mut self, specs: &[SourceSpec]) {
-        use notify::Watcher as _;
-        let mut dirs: Vec<PathBuf> = Vec::new();
-        let mut relevant: HashSet<PathBuf> = HashSet::new();
-        // Events carry canonical paths (on macOS `/tmp/x` is reported as `/private/tmp/x`).
-        let mut relevant_path = |path: &Path| {
-            relevant.insert(path.to_path_buf());
-            if let Ok(canonical) = std::fs::canonicalize(path) {
-                relevant.insert(canonical);
-            } else if let (Some(parent), Some(name)) = (path.parent(), path.file_name())
-                && let Ok(parent) = std::fs::canonicalize(parent)
-            {
-                relevant.insert(parent.join(name));
-            }
-        };
-        for spec in specs {
-            if spec.is_dir {
-                std::fs::create_dir_all(&spec.path).ok();
-                relevant_path(&spec.path);
-                dirs.push(spec.path.clone());
-            } else {
-                for file in &spec.files {
-                    relevant_path(file);
-                    if let Some(parent) = file.parent() {
-                        dirs.push(parent.to_path_buf());
-                    }
-                }
-            }
-        }
-        dirs.sort();
-        dirs.dedup();
-        dirs.retain(|d| d.is_dir());
-        if dirs == self.watched && self.watcher.is_some() {
-            return;
-        }
+    /// ends a watch on the file itself) and folder sources. The file system work runs in the
+    /// background.
+    fn update_watcher(&mut self, specs: &[SourceSpec], cx: &mut Context<Self>) {
         let Some(tx) = self.file_events.clone() else {
             return;
         };
-        let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-            let Ok(event) = event else { return };
-            if event.kind.is_access() {
+        let specs = specs.to_vec();
+        let watched = self.watched.clone();
+        let watching = self.watcher.is_some();
+        let generation = self.reload_generation;
+        let task = cx
+            .background_executor()
+            .spawn(async move { build_watcher(&specs, &watched, watching, tx) });
+        self._tasks.push(cx.spawn(async move |this, cx| {
+            let Some((watcher, dirs)) = task.await else {
                 return;
-            }
-            let hit = event.paths.iter().any(|p| {
-                relevant.contains(p) || p.parent().is_some_and(|parent| relevant.contains(parent))
-            });
-            if hit {
-                tx.unbounded_send(()).ok();
-            }
-        });
-        match watcher {
-            Ok(mut watcher) => {
-                for dir in &dirs {
-                    if let Err(err) = watcher.watch(dir, notify::RecursiveMode::NonRecursive) {
-                        tracing::warn!("not watching {}: {err}", dir.display());
-                    }
+            };
+            this.update(cx, |this, _| {
+                // A newer reload plans its own watcher.
+                if this.reload_generation == generation {
+                    this.watcher = Some(watcher);
+                    this.watched = dirs;
                 }
-                self.watcher = Some(watcher);
-                self.watched = dirs;
-            }
-            Err(err) => tracing::warn!("kubeconfig hot reload is off: {err}"),
-        }
+            })
+            .ok();
+        }));
     }
 
     // ----- Connections -----
@@ -985,11 +969,18 @@ impl ConnectionManager {
             .unwrap_or_default()
     }
 
-    /// Capabilities, including the user's production and read-only flags.
+    /// Capabilities, including the user's production and read-only flags. Those flags come from
+    /// the settings, so they also hold while the cluster is disconnected (a reset connection
+    /// starts with default caps).
     pub fn caps(&self, id: &ClusterId) -> ClusterCaps {
+        let settings = self.context_settings(id);
         match self.clusters.get(&self.key(id)) {
-            Some(cluster) => cluster.caps.clone(),
-            None => cluster_info::caps(None, None, &self.context_settings(id)),
+            Some(cluster) => ClusterCaps {
+                read_only: settings.read_only,
+                production: settings.production,
+                ..cluster.caps.clone()
+            },
+            None => cluster_info::caps(None, None, &settings),
         }
     }
 
@@ -2048,6 +2039,83 @@ fn separated_group(entry: &ContextInfo) -> Option<&ClusterId> {
         .filter(|g| !entry.is_group() && *g != &entry.id)
 }
 
+/// The folders to watch for `specs`, and the paths whose events matter. Touches the file
+/// system (creates folder sources, canonicalizes), so keep it off the UI thread.
+fn watch_plan(specs: &[SourceSpec]) -> (Vec<PathBuf>, HashSet<PathBuf>) {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    let mut relevant: HashSet<PathBuf> = HashSet::new();
+    // Events carry canonical paths (on macOS `/tmp/x` is reported as `/private/tmp/x`).
+    let mut relevant_path = |path: &Path| {
+        relevant.insert(path.to_path_buf());
+        if let Ok(canonical) = std::fs::canonicalize(path) {
+            relevant.insert(canonical);
+        } else if let (Some(parent), Some(name)) = (path.parent(), path.file_name())
+            && let Ok(parent) = std::fs::canonicalize(parent)
+        {
+            relevant.insert(parent.join(name));
+        }
+    };
+    for spec in specs {
+        if spec.is_dir {
+            std::fs::create_dir_all(&spec.path).ok();
+            relevant_path(&spec.path);
+            dirs.push(spec.path.clone());
+        } else {
+            for file in &spec.files {
+                relevant_path(file);
+                if let Some(parent) = file.parent() {
+                    dirs.push(parent.to_path_buf());
+                }
+            }
+        }
+    }
+    dirs.sort();
+    dirs.dedup();
+    dirs.retain(|d| d.is_dir());
+    (dirs, relevant)
+}
+
+/// A file watcher for `specs` that pings `tx` on changes, or `None` when `watched` is already
+/// watched by a running watcher (`watching`) or the watcher can't start.
+fn build_watcher(
+    specs: &[SourceSpec],
+    watched: &[PathBuf],
+    watching: bool,
+    tx: mpsc::UnboundedSender<()>,
+) -> Option<(notify::RecommendedWatcher, Vec<PathBuf>)> {
+    use notify::Watcher as _;
+    let (dirs, relevant) = watch_plan(specs);
+    if dirs == watched && watching {
+        return None;
+    }
+    let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        let Ok(event) = event else { return };
+        if event.kind.is_access() {
+            return;
+        }
+        let hit = event.paths.iter().any(|p| {
+            relevant.contains(p) || p.parent().is_some_and(|parent| relevant.contains(parent))
+        });
+        if hit {
+            tx.unbounded_send(()).ok();
+        }
+    });
+    match watcher {
+        Ok(mut watcher) => {
+            for dir in &dirs {
+                if let Err(err) = watcher.watch(dir, notify::RecursiveMode::NonRecursive) {
+                    tracing::warn!("not watching {}: {err}", dir.display());
+                }
+            }
+            Some((watcher, dirs))
+        }
+        Err(err) => {
+            tracing::warn!("kubeconfig hot reload is off: {err}");
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2102,6 +2170,46 @@ mod tests {
         });
     }
 
+    #[test]
+    fn watch_plan_covers_parents_and_folder_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("kube/config");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let folder = dir.path().join("pasted");
+        let spec = |path: &Path, files: Vec<PathBuf>, is_dir| SourceSpec {
+            kind: crate::kubeconfig::SourceKind::Env,
+            path: path.to_path_buf(),
+            files,
+            is_dir,
+        };
+        let (dirs, relevant) = watch_plan(&[
+            spec(&file, vec![file.clone()], false),
+            spec(&folder, Vec::new(), true),
+        ]);
+        // The folder source is created so it can be watched.
+        assert_eq!(
+            dirs,
+            vec![file.parent().unwrap().to_path_buf(), folder.clone()]
+        );
+        assert!(relevant.contains(&file) && relevant.contains(&folder));
+    }
+
+    #[gpui::test]
+    fn stale_reload_results_are_ignored(cx: &mut TestAppContext) {
+        let (_dir, manager) = setup(cx);
+        let before = manager.read_with(cx, |m, _| m.contexts().count());
+        assert!(before > 0);
+        manager.update(cx, |m, cx| {
+            m.reload_generation += 1;
+            let generation = m.reload_generation;
+            // A result of an older reload arrives after a newer one started.
+            m.finish_reload(generation - 1, Loaded::default(), &[], cx);
+            assert_eq!(m.contexts().count(), before);
+            m.finish_reload(generation, Loaded::default(), &[], cx);
+            assert_eq!(m.contexts().count(), 0);
+        });
+    }
+
     #[gpui::test]
     fn overrides_hide_contexts_and_drive_the_badge(cx: &mut TestAppContext) {
         let (_dir, manager) = setup(cx);
@@ -2123,6 +2231,27 @@ mod tests {
             assert_eq!(badge.name.as_ref(), "Production");
             assert!(!badge.connected);
             assert!(m.caps(&prod).production);
+        });
+    }
+
+    #[gpui::test]
+    fn safety_flags_survive_a_disconnect(cx: &mut TestAppContext) {
+        let (_dir, manager) = setup(cx);
+        let broken = manager.read_with(cx, |m, _| m.all_contexts()[3].id.clone());
+        manager.update(cx, |m, cx| {
+            m.update_context_settings(&broken, cx, |s| {
+                s.production = true;
+                s.read_only = true;
+            });
+            m.activate(&broken, cx);
+        });
+        cx.run_until_parked();
+        manager.update(cx, |m, cx| m.disconnect(&broken, cx));
+        cx.run_until_parked();
+        manager.read_with(cx, |m, _| {
+            assert!(m.cluster(&broken).is_some(), "the connection entry exists");
+            let caps = m.caps(&broken);
+            assert!(caps.production && caps.read_only, "{caps:?}");
         });
     }
 

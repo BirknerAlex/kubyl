@@ -82,11 +82,11 @@ pub fn set(key: &str, secret: &SecretString) -> Result<(), String> {
         Backend::Keyring => entry(key)
             .and_then(|entry| entry.set_password(secret.expose_secret()))
             .map_err(|e| e.to_string()),
-        Backend::File(path) => {
-            let mut map = read_file(path);
+        Backend::File(path) => update_file(path, |map| {
             map.insert(key.to_string(), secret.expose_secret().to_string());
-            write_file(path, &map).map_err(|e| e.to_string())
-        }
+            true
+        })
+        .map_err(|e| e.to_string()),
         Backend::Memory(map) => {
             map.lock()
                 .insert(key.to_string(), secret.expose_secret().to_string());
@@ -106,11 +106,7 @@ pub fn delete(key: &str) -> Result<(), String> {
             }
         }
         Backend::File(path) => {
-            let mut map = read_file(path);
-            if map.remove(key).is_some() {
-                write_file(path, &map).map_err(|e| e.to_string())?;
-            }
-            Ok(())
+            update_file(path, |map| map.remove(key).is_some()).map_err(|e| e.to_string())
         }
         Backend::Memory(map) => {
             map.lock().remove(key);
@@ -185,6 +181,22 @@ mod keychain {
     }
 }
 
+/// Reads the file, applies `change` and writes it back if `change` returned true. Serialized,
+/// so concurrent writers (the token stores of several clusters) don't lose each other's
+/// entries.
+fn update_file(
+    path: &PathBuf,
+    change: impl FnOnce(&mut BTreeMap<String, String>) -> bool,
+) -> std::io::Result<()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    let _guard = LOCK.lock();
+    let mut map = read_file(path);
+    if change(&mut map) {
+        write_file(path, &map)?;
+    }
+    Ok(())
+}
+
 fn read_file(path: &PathBuf) -> BTreeMap<String, String> {
     std::fs::read(path)
         .ok()
@@ -227,5 +239,35 @@ mod tests {
         assert!(keychain::profiled(&exe));
         // `cargo run` / `cargo test` binaries in target/.
         assert!(!keychain::protected());
+    }
+}
+
+#[cfg(test)]
+mod file_tests {
+    use super::*;
+
+    #[test]
+    fn concurrent_file_writes_keep_every_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dev-credentials.json");
+        let threads: Vec<_> = (0..16)
+            .map(|i| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    update_file(&path, |map| {
+                        map.insert(format!("key{i}"), format!("value{i}"));
+                        true
+                    })
+                    .unwrap();
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert_eq!(read_file(&path).len(), 16);
+        update_file(&path, |map| map.remove("key3").is_some()).unwrap();
+        assert!(!read_file(&path).contains_key("key3"));
+        assert_eq!(read_file(&path).len(), 15);
     }
 }

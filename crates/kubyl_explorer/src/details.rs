@@ -261,7 +261,10 @@ impl DetailsContent {
             self.revealed.clear();
             self.reset_data();
             self.scale_pending = None;
-            self.scale_task = None;
+            // A scale that is waiting to be sent or running still goes out for the old target.
+            if let Some(task) = self.scale_task.take() {
+                task.detach();
+            }
             // Fall back to Summary if the new target doesn't offer the sub-tab that was open
             // (e.g. navigating from a Pod's Terminal tab to a ConfigMap).
             let mode_valid = match (&target, self.mode) {
@@ -2228,7 +2231,7 @@ impl DetailsContent {
             return;
         }
         if next > 0 {
-            self.request_scale(next, cx);
+            self.request_scale_for(target, next, cx);
             return;
         }
         let production = ConnectionManager::try_global(cx)
@@ -2251,8 +2254,10 @@ impl DetailsContent {
         let weak = cx.weak_entity();
         dialogs::confirm(
             spec,
+            // The details may show another object by the time this is confirmed.
             move |_, _, cx| {
-                weak.update(cx, |this, cx| this.request_scale(0, cx)).ok();
+                weak.update(cx, |this, cx| this.request_scale_for(target.clone(), 0, cx))
+                    .ok();
             },
             window,
             cx,
@@ -2261,18 +2266,18 @@ impl DetailsContent {
 
     /// Shows `replicas` right away and sends it after [`SCALE_DEBOUNCE`], so a few quick clicks
     /// become one request.
-    fn request_scale(&mut self, replicas: i64, cx: &mut Context<Self>) {
-        let Some(target) = self.target.clone() else {
-            return;
-        };
-        self.scale_pending = Some(PendingScale { replicas });
+    fn request_scale_for(&mut self, target: Target, replicas: i64, cx: &mut Context<Self>) {
+        let current = self.target.as_ref() == Some(&target);
+        if current {
+            self.scale_pending = Some(PendingScale { replicas });
+        }
         let reference = ResourceRef::object(
             target.cluster.clone(),
             target.gvr.clone(),
             target.namespace.clone(),
             target.name.clone(),
         );
-        self.scale_task = Some(cx.spawn(async move |this, cx| {
+        let task = cx.spawn(async move |this, cx| {
             cx.background_executor().timer(SCALE_DEBOUNCE).await;
             let job = cx.update(|cx| {
                 let (client, resource) = crate::actions::client_and_resource(cx, &reference)?;
@@ -2288,7 +2293,9 @@ impl DetailsContent {
             };
             this.update(cx, |this, cx| {
                 if let Err(err) = result {
-                    this.scale_pending = None;
+                    if this.target.as_ref() == Some(&target) {
+                        this.scale_pending = None;
+                    }
                     NotificationCenter::push(
                         cx,
                         Notification::error(format!("Scaling {} failed: {err}", target.name)),
@@ -2297,7 +2304,13 @@ impl DetailsContent {
                 cx.notify();
             })
             .ok();
-        }));
+        });
+        // Another object's scale outlives the change of target, but isn't tracked.
+        if current {
+            self.scale_task = Some(task);
+        } else {
+            task.detach();
+        }
         cx.notify();
     }
 
