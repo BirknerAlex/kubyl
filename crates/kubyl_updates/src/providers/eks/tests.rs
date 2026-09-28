@@ -976,3 +976,29 @@ fn a_region_that_could_redirect_the_endpoint_is_refused() {
         "{err:?}"
     );
 }
+
+/// A long history doesn't hide a running update behind the first 30, and a describe that
+/// fails is reported instead of dropped.
+#[tokio::test]
+async fn describes_every_update_and_keeps_errors() {
+    let c = "/clusters/prod-eu-west-1";
+    let ids: Vec<String> = (0..45).map(|i| format!("upd-{i:02}")).collect();
+    let mut routes: Vec<mock::Route> = Vec::new();
+    for (i, id) in ids.iter().enumerate() {
+        if i == 10 {
+            continue; // no route: the describe fails
+        }
+        let status = if i == 44 { "InProgress" } else { "Successful" };
+        let body = json!({"update": {"id": id, "status": status, "type": "VersionUpdate",
+            "params": [{"type": "Version", "value": "1.31"}],
+            "createdAt": 1725148800.0 + i as f64, "errors": []}});
+        routes.push(("GET", format!("{c}/updates/{id}"), 200, body.to_string()));
+    }
+    let (base, _) = mock::serve(routes).await;
+    let provider = test_provider(base);
+    let (_, api) = provider.inner.api().await.unwrap();
+    let (updates, error) = provider.inner.updates(&api, &ids, None).await;
+    assert_eq!(updates.len(), 44);
+    assert!(updates.iter().any(|u| u.id == "upd-44" && u.running()));
+    assert!(error.is_some());
+}
