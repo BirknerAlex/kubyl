@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Condvar, Mutex};
+use std::time::Duration;
 
 /// `$KUBYL_CONFIG_DIR`, or `<platform config dir>/kubyl`.
 pub fn config_dir() -> PathBuf {
@@ -42,16 +43,19 @@ pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> 
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
 static LAST_WRITTEN: Mutex<Option<HashMap<PathBuf, u64>>> = Mutex::new(None);
+/// Number of live tickets: writes scheduled but not finished.
+static PENDING: (Mutex<usize>, Condvar) = (Mutex::new(0), Condvar::new());
 
 /// A write scheduled on the executor. Create it on the thread that produces the contents and
 /// move it into the task: tasks can run out of order, and the ticket keeps an older snapshot
-/// from replacing a newer one.
+/// from replacing a newer one. [`wait_for_writes`] waits until all tickets are dropped.
 pub(crate) struct WriteTicket {
     seq: u64,
 }
 
 impl WriteTicket {
     pub(crate) fn new() -> Self {
+        *PENDING.0.lock().unwrap_or_else(|e| e.into_inner()) += 1;
         Self {
             seq: SEQ.fetch_add(1, Ordering::SeqCst),
         }
@@ -69,6 +73,22 @@ impl WriteTicket {
         last.insert(path.to_path_buf(), self.seq);
         Ok(())
     }
+}
+
+impl Drop for WriteTicket {
+    fn drop(&mut self) {
+        let mut pending = PENDING.0.lock().unwrap_or_else(|e| e.into_inner());
+        *pending = pending.saturating_sub(1);
+        PENDING.1.notify_all();
+    }
+}
+
+/// Blocks (up to `timeout`) until every scheduled write is done. Call off the UI thread.
+pub(crate) fn wait_for_writes(timeout: Duration) {
+    let pending = PENDING.0.lock().unwrap_or_else(|e| e.into_inner());
+    let _ = PENDING
+        .1
+        .wait_timeout_while(pending, timeout, |pending| *pending > 0);
 }
 
 #[cfg(test)]
@@ -108,5 +128,23 @@ mod tests {
         newer.write(&path, b"new").unwrap();
         older.write(&path, b"old").unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"new");
+    }
+
+    #[test]
+    fn waits_for_scheduled_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.json");
+        let ticket = WriteTicket::new();
+        let handle = {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(100));
+                ticket.write(&path, b"done").unwrap();
+            })
+        };
+        // Other tests' tickets may be live too; they finish quickly.
+        wait_for_writes(Duration::from_secs(10));
+        assert_eq!(std::fs::read(&path).unwrap(), b"done");
+        handle.join().unwrap();
     }
 }

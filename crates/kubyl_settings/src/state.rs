@@ -6,10 +6,12 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
-use crate::paths::WriteTicket;
+use crate::paths::{WriteTicket, wait_for_writes};
 
 pub(crate) const STATE_FILE: &str = "state.json";
 const SAVE_DELAY: Duration = Duration::from_millis(500);
+/// How long quitting waits for writes still running in the background.
+const QUIT_WAIT: Duration = Duration::from_secs(5);
 
 /// A typed part of `state.json`, stored under [`StateSection::KEY`].
 pub trait StateSection: Serialize + DeserializeOwned + Default + 'static {
@@ -121,7 +123,9 @@ pub(crate) fn init(cx: &mut App, dir: &Path) {
     });
     cx.on_app_quit(|cx| {
         State::flush(cx);
-        async {}
+        // A debounced save or a Settings::update may still be in flight on the executor.
+        cx.background_executor()
+            .spawn(async { wait_for_writes(QUIT_WAIT) })
     })
     .detach();
 }
