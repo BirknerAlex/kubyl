@@ -182,6 +182,19 @@ impl NodePod {
             exec::delete_pod(&self.client, &self.namespace, &self.name).await;
         });
     }
+
+    /// Deletes the pod and waits for it (bounded), for app quit.
+    async fn delete_and_wait(self) {
+        let done = kubyl_core::runtime::handle().spawn(async move {
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                exec::delete_pod(&self.client, &self.namespace, &self.name),
+            )
+            .await
+            .ok();
+        });
+        done.await.ok();
+    }
 }
 
 pub struct TerminalView {
@@ -301,6 +314,16 @@ impl TerminalView {
             }
         });
         this._subscriptions.push(release);
+        // Quitting the app doesn't release views: a privileged node-shell pod must still go.
+        let quit = cx.on_app_quit(|this, _| {
+            let pod = this.node_pod.take();
+            async move {
+                if let Some(pod) = pod {
+                    pod.delete_and_wait().await;
+                }
+            }
+        });
+        this._subscriptions.push(quit);
         let has_target = this
             .spec
             .target
@@ -612,6 +635,9 @@ impl TerminalView {
                 }
                 Ok(Err(message)) => {
                     this.update(cx, |this, cx| {
+                        if let Some(pod) = this.node_pod.take() {
+                            pod.delete();
+                        }
                         this.set_status(Status::Failed(message.into()), cx)
                     })
                     .ok();
@@ -619,6 +645,9 @@ impl TerminalView {
                 }
                 Err(_) => {
                     this.update(cx, |this, cx| {
+                        if let Some(pod) = this.node_pod.take() {
+                            pod.delete();
+                        }
                         this.set_status(Status::Ended("disconnected".into()), cx)
                     })
                     .ok();
