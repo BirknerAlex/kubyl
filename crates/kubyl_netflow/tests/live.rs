@@ -91,6 +91,7 @@ async fn forward(client: &Client, namespace: &str, service: &str, port: u16) -> 
             RemotePort::Service(Some(port)),
             "127.0.0.1".into(),
             0,
+            false,
             tx,
         )
         .await
