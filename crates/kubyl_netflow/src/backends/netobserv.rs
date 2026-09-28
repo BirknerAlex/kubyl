@@ -391,13 +391,21 @@ pub fn pushdown(filter: &FlowFilter) -> FlowFilter {
     filter.subset(pushable)
 }
 
+/// `value` as regex text inside a double-quoted LogQL string: the string's own escaping applies
+/// on top of the regex's, so a regex `\.` is written `\\.`, a literal backslash `\\\\`.
 fn regex_escape(value: &str) -> String {
     let mut out = String::new();
     for c in value.chars() {
-        if "\\.+*?()|[]{}^$".contains(c) {
-            out.push_str("\\\\");
+        match c {
+            '\\' => out.push_str("\\\\\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            c if ".+*?()|[]{}^$".contains(c) => {
+                out.push_str("\\\\");
+                out.push(c);
+            }
+            c => out.push(c),
         }
-        out.push(c);
     }
     out
 }
@@ -778,6 +786,18 @@ mod tests {
         assert_eq!(advance(&mut cursor, &mut boundary, page).len(), 2);
         assert_eq!(cursor, 12);
         assert_eq!(boundary, [4].into());
+    }
+
+    #[test]
+    fn regex_values_survive_the_logql_string() {
+        assert_eq!(regex_escape("a.b"), r"a\\.b");
+        assert_eq!(regex_escape(r"a\b"), r"a\\\\b");
+        assert_eq!(regex_escape(r#"a"b"#), r#"a\"b"#);
+        assert_eq!(regex_escape("a\nb"), r"a\nb");
+        assert_eq!(
+            matcher("l", &["x.y".into(), "z".into()]),
+            r#"l=~"^(x\\.y|z)$""#
+        );
     }
 
     fn labels(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
