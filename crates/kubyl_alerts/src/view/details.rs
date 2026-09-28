@@ -117,17 +117,36 @@ pub(crate) fn rule_of(alert: &Alert, groups: &[crate::model::RuleGroup]) -> Opti
         .cloned()
 }
 
-/// The API path of a target object.
-pub(crate) fn object_path(target: &Target) -> String {
+/// One URL path segment, percent-encoded (label values are arbitrary text).
+fn segment(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+/// The API path of a target object. `None` for a namespaced kind without a namespace (the
+/// alert's labels do not say where it is: nothing to check).
+pub(crate) fn object_path(target: &Target) -> Option<String> {
     let (group, version, resource) = target.kind.gvr();
     let base = if group.is_empty() {
         format!("/api/{version}")
     } else {
         format!("/apis/{group}/{version}")
     };
+    let name = segment(&target.name);
     match (&target.namespace, target.kind.namespaced()) {
-        (Some(ns), true) => format!("{base}/namespaces/{ns}/{resource}/{}", target.name),
-        _ => format!("{base}/{resource}/{}", target.name),
+        (Some(ns), true) => Some(format!(
+            "{base}/namespaces/{}/{resource}/{name}",
+            segment(ns)
+        )),
+        (None, true) => None,
+        _ => Some(format!("{base}/{resource}/{name}")),
     }
 }
 
@@ -180,9 +199,10 @@ impl AlertsView {
         let Some(client) = client else {
             return;
         };
-        if let Some(target) = entry.alert.target.clone() {
+        if let Some(target) = entry.alert.target.clone()
+            && let Some(path) = object_path(&target)
+        {
             self.details_state.target = TargetCheck::Checking;
-            let path = object_path(&target);
             let client = client.clone();
             let task = spawn_kube(cx, async move {
                 let request = http::Request::get(path).body(Vec::new()).ok()?;
@@ -1176,14 +1196,30 @@ mod tests {
             name: "gw-1".into(),
             container: None,
         };
-        assert_eq!(object_path(&pod), "/api/v1/namespaces/payments/pods/gw-1");
+        assert_eq!(
+            object_path(&pod).as_deref(),
+            Some("/api/v1/namespaces/payments/pods/gw-1")
+        );
+        let odd = Target {
+            name: "a/b c".into(),
+            ..pod.clone()
+        };
+        assert_eq!(
+            object_path(&odd).as_deref(),
+            Some("/api/v1/namespaces/payments/pods/a%2Fb%20c")
+        );
+        let lost = Target {
+            namespace: None,
+            ..pod.clone()
+        };
+        assert_eq!(object_path(&lost), None, "namespaced without a namespace");
         let node = Target {
             kind: crate::model::TargetKind::Node,
             namespace: None,
             name: "n1".into(),
             container: None,
         };
-        assert_eq!(object_path(&node), "/api/v1/nodes/n1");
+        assert_eq!(object_path(&node).as_deref(), Some("/api/v1/nodes/n1"));
         assert_eq!(eval_time(0.0042), "4ms");
     }
 }

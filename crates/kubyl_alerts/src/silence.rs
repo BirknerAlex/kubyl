@@ -458,8 +458,41 @@ fn expire(cluster: &ClusterId, silence: &Silence, cx: &mut App) {
     .detach();
 }
 
+/// Undo of a new silence: expires it, and says so when that fails.
+fn undo_create(cluster: &ClusterId, source: &str, id: &str, cx: &mut App) {
+    if read_only(cluster, cx) {
+        NotificationCenter::push(
+            cx,
+            Notification::error("This cluster is read-only in Kubyl."),
+        );
+        return;
+    }
+    let Some(service) = AlertsService::global(cx) else {
+        return;
+    };
+    let task = service.update(cx, |s, cx| s.expire_silence(cluster, source, id, cx));
+    cx.spawn(async move |cx| {
+        if let Err(err) = task.await {
+            cx.update(|cx| {
+                NotificationCenter::push(
+                    cx,
+                    Notification::error(format!("Undoing the silence failed: {err}")),
+                )
+            });
+        }
+    })
+    .detach();
+}
+
 /// Undo of expire: the same silence again until its old end (at least an hour).
 fn recreate_now(cluster: &ClusterId, silence: &Silence, cx: &mut App) {
+    if read_only(cluster, cx) {
+        NotificationCenter::push(
+            cx,
+            Notification::error("This cluster is read-only in Kubyl."),
+        );
+        return;
+    }
     let now = Timestamp::now();
     let ends = silence.ends_at.filter(|t| *t > now).unwrap_or_else(|| {
         now.checked_add(jiff::SignedDuration::from_hours(1))
@@ -513,23 +546,15 @@ fn post(
                         let undo_source = source.clone().unwrap_or_default();
                         let undo_id = id.clone();
                         toast = toast.action("Undo", move |_, cx| {
-                            if let Some(service) = AlertsService::global(cx) {
-                                let cluster = undo_cluster.clone();
-                                let source = if undo_source.is_empty() {
-                                    alertmanagers(&cluster, cx)
-                                        .first()
-                                        .map(|(l, _)| l.clone())
-                                        .unwrap_or_default()
-                                } else {
-                                    undo_source.clone()
-                                };
-                                let id = undo_id.clone();
-                                service
-                                    .update(cx, |s, cx| {
-                                        s.expire_silence(&cluster, &source, &id, cx)
-                                    })
-                                    .detach();
-                            }
+                            let source = if undo_source.is_empty() {
+                                alertmanagers(&undo_cluster, cx)
+                                    .first()
+                                    .map(|(l, _)| l.clone())
+                                    .unwrap_or_default()
+                            } else {
+                                undo_source.clone()
+                            };
+                            undo_create(&undo_cluster, &source, &undo_id, cx);
                         });
                     }
                     NotificationCenter::push(cx, toast);
