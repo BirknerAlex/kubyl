@@ -106,6 +106,9 @@ pub struct KubeconfigEditor {
     pub(crate) focus: FocusHandle,
     validate_task: Option<Task<()>>,
     reveal_task: Option<Task<()>>,
+    /// The current file read. A new load replaces (and drops) the previous one, so finished
+    /// loads don't pile up.
+    load_task: Option<Task<()>>,
     _tasks: Vec<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -173,6 +176,7 @@ impl KubeconfigEditor {
             focus: cx.focus_handle(),
             validate_task: None,
             reveal_task: None,
+            load_task: None,
             _tasks: Vec::new(),
             _subscriptions: subscriptions,
         };
@@ -236,7 +240,7 @@ impl KubeconfigEditor {
         let read = cx
             .background_executor()
             .spawn(async move { files::read(&path) });
-        self._tasks.push(cx.spawn_in(window, async move |this, cx| {
+        self.load_task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = read.await;
             this.update_in(cx, |this, window, cx| {
                 this.loading = false;
