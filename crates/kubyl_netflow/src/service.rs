@@ -1306,6 +1306,9 @@ async fn connect(
                     })
                     .await
                 }
+                LokiTarget::External(url) => LokiAccess::Missing(format!(
+                    "No single flows: the FlowCollector points at Loki {url}, outside the cluster. Set the Loki URL in Kubyl's NetObserv settings to read it from here."
+                )),
                 LokiTarget::LokiStack { namespace, name } => LokiAccess::Missing(format!(
                     "No single flows: NetObserv stores them in the LokiStack {namespace}/{name}, whose gateway needs your token, and the API server's service proxy doesn't pass it on. The topology comes from NetObserv's metrics."
                 )),
