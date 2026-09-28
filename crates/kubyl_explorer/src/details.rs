@@ -127,9 +127,11 @@ fn logs_applicable(resource: &str) -> bool {
     )
 }
 
-/// Mirrors `kubyl_terminal`'s `ShowShell` availability: pods on a non-read-only cluster.
+/// Mirrors `kubyl_terminal`'s `ShowShell`/`NodeShell` availability: pods and nodes on a
+/// non-read-only cluster (a node shell here waits for its own "Start Node Shell" confirmation
+/// instead of the `Node: Shell…` action's dialog).
 fn terminal_applicable(resource: &str, caps: &ClusterCaps) -> bool {
-    resource == "pods" && !caps.read_only
+    matches!(resource, "pods" | "nodes") && !caps.read_only
 }
 
 /// Mirrors `kubyl_files`'s "Pod: Browse Files": pods on a non-read-only cluster.
@@ -2689,6 +2691,8 @@ mod tests {
         };
         assert!(terminal_applicable("pods", &writable));
         assert!(!terminal_applicable("pods", &read_only));
+        assert!(terminal_applicable("nodes", &writable));
+        assert!(!terminal_applicable("nodes", &read_only));
         assert!(!terminal_applicable("deployments", &writable));
         assert!(files_applicable("pods", &writable));
         assert!(!files_applicable("pods", &read_only));

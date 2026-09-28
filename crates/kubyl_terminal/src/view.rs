@@ -27,7 +27,9 @@ use kubyl_core::{
 };
 use kubyl_kube::{ConnectionEvent, ConnectionManager};
 use kubyl_logs::sessions::{SessionId, SessionKind, SessionRegistry};
-use kubyl_ui::{ActiveColors, Colors, Icon, IconButton, IconName, fonts, h_flex, u};
+use kubyl_ui::{
+    ActiveColors, Button, Colors, Icon, IconButton, IconName, fonts, h_flex, u, v_flex,
+};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
@@ -147,6 +149,10 @@ impl TerminalSpec {
 
 #[derive(Clone, Debug, PartialEq)]
 enum Status {
+    /// A node shell opened without going through the confirming `Node: Shell…` action (the
+    /// Details view's Terminal sub-tab): waits for an explicit "Start Node Shell" click before
+    /// creating the privileged pod.
+    NeedsConfirmation,
     NotConnected,
     Starting(SharedString),
     Connected,
@@ -212,7 +218,9 @@ pub struct TerminalView {
 }
 
 impl TerminalView {
-    /// A plain exec shell for a restored or `OpenView` editor tab.
+    /// A plain exec shell for a restored or `OpenView` editor tab; a node shell (unconfirmed --
+    /// waits for "Start Node Shell") for a Node target, e.g. the Details view's Terminal
+    /// sub-tab.
     pub fn from_request(target: Option<ResourceRef>, cx: &mut Context<Self>) -> Self {
         let target = target.unwrap_or_else(|| {
             ResourceRef::object(
@@ -222,10 +230,38 @@ impl TerminalView {
                 String::new(),
             )
         });
+        if target.gvr.resource == "nodes" {
+            return Self::new_unconfirmed_node_shell(target, cx);
+        }
         Self::new(TerminalSpec::exec(target), true, cx)
     }
 
     pub fn new(spec: TerminalSpec, restorable: bool, cx: &mut Context<Self>) -> Self {
+        Self::build(spec, restorable, true, cx)
+    }
+
+    /// A node shell that waits for the user to confirm (the `Node: Shell…` action confirms
+    /// before ever constructing the view; this path -- opened directly, without that prompt --
+    /// confirms from inside the tab instead).
+    fn new_unconfirmed_node_shell(target: ResourceRef, cx: &mut Context<Self>) -> Self {
+        let settings = kubyl_settings::Settings::get::<TerminalSettings>(cx).clone();
+        let spec = TerminalSpec {
+            target,
+            container: None,
+            mode: SessionMode::NodeShell {
+                image: settings.node_shell_image,
+                namespace: settings.node_shell_namespace,
+            },
+        };
+        Self::build(spec, false, false, cx)
+    }
+
+    fn build(
+        spec: TerminalSpec,
+        restorable: bool,
+        auto_start: bool,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let settings = kubyl_settings::Settings::get::<TerminalSettings>(cx).clone();
         let (columns, rows) = (80, 24);
         let mut this = Self {
@@ -265,16 +301,18 @@ impl TerminalView {
             }
         });
         this._subscriptions.push(release);
-        if this
+        let has_target = this
             .spec
             .target
             .name
             .as_deref()
-            .is_some_and(|n| !n.is_empty())
-        {
+            .is_some_and(|n| !n.is_empty());
+        if !has_target {
+            this.status = Status::Failed("nothing to connect to".into());
+        } else if auto_start {
             this.start(cx);
         } else {
-            this.status = Status::Failed("nothing to connect to".into());
+            this.status = Status::NeedsConfirmation;
         }
         this
     }
@@ -314,6 +352,7 @@ impl TerminalView {
 
     fn status_label(&self) -> (SharedString, Tone) {
         match &self.status {
+            Status::NeedsConfirmation => ("waiting to start".into(), Tone::Muted),
             Status::NotConnected => ("not connected".into(), Tone::Muted),
             Status::Starting(step) => (step.clone(), Tone::Info),
             Status::Connected => {
@@ -437,7 +476,7 @@ impl TerminalView {
                                     old.delete();
                                 }
                                 this.container = Some("shell".into());
-                                this.command = Some("nsenter".into());
+                                this.command = Some("shell".into());
                             });
                             if recorded.is_err() {
                                 return;
@@ -652,7 +691,18 @@ impl TerminalView {
     }
 
     fn reconnect(&mut self, cx: &mut Context<Self>) {
-        if matches!(self.status, Status::Connected | Status::Starting(_)) {
+        // A node shell always confirms first (`start_node_shell`), never through the generic
+        // reconnect affordance (the Enter key, the header's reconnect button): every privileged
+        // pod, including a replacement for one that ended, needs its own confirmation.
+        if matches!(
+            self.status,
+            Status::Connected | Status::Starting(_) | Status::NeedsConfirmation
+        ) {
+            return;
+        }
+        if matches!(self.spec.mode, SessionMode::NodeShell { .. }) {
+            self.status = Status::NeedsConfirmation;
+            cx.notify();
             return;
         }
         self._task = None;
@@ -714,6 +764,7 @@ impl TerminalView {
         };
         let bracketed = self.grid.modes().bracketed_paste;
         self.grid.scroll_to_bottom();
+        self.grid.clear_selection();
         self.send(input::paste(&text, bracketed));
         cx.notify();
     }
@@ -910,6 +961,65 @@ impl TerminalView {
         }
         self.grid.scroll(lines);
         cx.notify();
+    }
+
+    /// Shown instead of the grid while `Status::NeedsConfirmation`: an unconfirmed node shell
+    /// (the Details view's Terminal sub-tab), waiting for the user to start it.
+    fn render_needs_confirmation(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let colors = cx.colors().clone();
+        let node = self.spec.target.name.clone().unwrap_or_default();
+        v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .gap(u(10.0))
+            .p(u(24.0))
+            .child(
+                Icon::new(IconName::Server)
+                    .size(28.0)
+                    .color(colors.text_dim),
+            )
+            .child(
+                div()
+                    .max_w(u(360.0))
+                    .text_color(colors.text_dim)
+                    .child(format!(
+                        "Start a shell on {node} in a privileged pod, with the node's root \
+                         filesystem mounted at /host."
+                    )),
+            )
+            .child(
+                Button::new("start-node-shell")
+                    .label("Start Node Shell")
+                    .primary()
+                    .on_click(cx.listener(|this, _, window, cx| this.start_node_shell(window, cx))),
+            )
+            .into_any_element()
+    }
+
+    /// Confirms (creates a privileged pod, PROD asks for the typed node name), then connects.
+    fn start_node_shell(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let target = self.spec.target.clone();
+        // The namespace `start` actually creates the pod in: settings may have changed since
+        // the tab opened, but the dialog must show what will really happen.
+        let SessionMode::NodeShell { namespace, .. } = &self.spec.mode else {
+            return;
+        };
+        let namespace = namespace.clone();
+        let weak = cx.weak_entity();
+        crate::confirm_node_shell(
+            target,
+            &namespace,
+            move |_, _, cx| {
+                weak.update(cx, |this, cx| {
+                    this.status = Status::Starting("connecting…".into());
+                    this.start(cx);
+                })
+                .ok();
+            },
+            window,
+            cx,
+        );
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -1464,7 +1574,9 @@ impl Render for TerminalView {
                 cx.listener(|this, event: &KeyDownEvent, _, cx| this.handle_key(event, cx)),
             )
             .child(header)
-            .child(
+            .child(if self.status == Status::NeedsConfirmation {
+                self.render_needs_confirmation(cx)
+            } else {
                 div()
                     .id("terminal-grid")
                     .relative()
@@ -1544,8 +1656,9 @@ impl Render for TerminalView {
                             },
                         )
                         .size_full(),
-                    ),
-            )
+                    )
+                    .into_any_element()
+            })
     }
 }
 

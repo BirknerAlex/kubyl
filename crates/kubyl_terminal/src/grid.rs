@@ -643,4 +643,30 @@ mod tests {
         assert_eq!(url, "https://a.b/c");
         assert_eq!(cols, 0..5);
     }
+
+    /// A real bash's echo of a bracketed paste with a trailing Enter sent separately (captured
+    /// from a live PTY: highlighted pending lines, a cursor-up redraw, then execution) renders
+    /// as the commands and their output, not garbled or missing text.
+    #[test]
+    fn bracketed_paste_echo_from_a_real_shell_renders_correctly() {
+        let mut grid = TerminalGrid::new(40, 10, 100);
+        grid.advance(b"\x1b[?2004hbash-5.2# ");
+        grid.advance(
+            b"\x1b[7mecho hello\x1b[27m\r\n\r\x1b[7mecho world\x1b[27m\x1b[Aecho hello\r\n\
+              \recho world\r\n\x1b[?2004l\rhello\r\nworld\r\n\x1b[?2004hbash-5.2# ",
+        );
+        let text = |row: usize| -> String {
+            grid.snapshot().rows[row]
+                .iter()
+                .map(|c| c.c)
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        };
+        assert_eq!(text(0), "bash-5.2# echo hello");
+        assert_eq!(text(1), "echo world");
+        assert_eq!(text(2), "hello");
+        assert_eq!(text(3), "world");
+        assert_eq!(text(4), "bash-5.2#");
+    }
 }

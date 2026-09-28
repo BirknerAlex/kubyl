@@ -24,6 +24,7 @@ use kubyl_ui::{
 };
 
 use crate::catalog::{self, CUSTOM, RowBadge, TreeKind, ViewEntry, ViewRow};
+use crate::groups::SidebarGroups;
 use crate::settings::{ClusterOrder, ExplorerSettings, TreeState};
 
 actions!(
@@ -61,11 +62,18 @@ pub(crate) fn bind_keys(cx: &mut App) {
 /// A row of the cluster tree.
 #[derive(Clone, Debug)]
 enum Item {
+    /// A user-created folder that groups cluster roots (`New Group` in the section header).
+    UserGroup {
+        id: String,
+        name: SharedString,
+        expanded: bool,
+    },
     Root(ClusterId),
     Status {
         cluster: ClusterId,
         text: SharedString,
         sign_in: bool,
+        depth: usize,
     },
     Group {
         cluster: ClusterId,
@@ -91,12 +99,14 @@ enum Item {
     Row {
         cluster: ClusterId,
         row: ViewRow,
+        depth: usize,
     },
 }
 
 impl Item {
     fn id(&self) -> String {
         match self {
+            Item::UserGroup { id, .. } => format!("user-group|{id}"),
             Item::Root(c) => format!("root|{c}"),
             Item::Status { cluster, .. } => format!("status|{cluster}"),
             Item::Group { cluster, id, .. } => format!("group|{cluster}|{id}"),
@@ -106,19 +116,54 @@ impl Item {
                 None => format!("kind|{cluster}|{}", kind.gvr),
             },
             Item::View { cluster, entry, .. } => format!("view|{cluster}|{}", entry.id),
-            Item::Row { cluster, row } => format!("row|{cluster}|{}", row.id),
+            Item::Row { cluster, row, .. } => format!("row|{cluster}|{}", row.id),
         }
     }
 
-    fn cluster(&self) -> &ClusterId {
+    /// `None` for a `UserGroup` header, which isn't itself scoped to a cluster.
+    fn cluster(&self) -> Option<&ClusterId> {
         match self {
-            Item::Root(c) => c,
+            Item::UserGroup { .. } => None,
+            Item::Root(c) => Some(c),
             Item::Status { cluster, .. }
             | Item::Group { cluster, .. }
             | Item::Kind { cluster, .. }
             | Item::View { cluster, .. }
-            | Item::Row { cluster, .. } => cluster,
+            | Item::Row { cluster, .. } => Some(cluster),
         }
+    }
+}
+
+/// Payload while a cluster root is dragged onto a sidebar folder.
+#[derive(Clone)]
+struct DraggedCluster {
+    cluster: ClusterId,
+    label: SharedString,
+}
+
+struct ClusterDragPreview {
+    label: SharedString,
+}
+
+impl Render for ClusterDragPreview {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = cx.colors();
+        h_flex()
+            .px(u(8.0))
+            .py(u(3.0))
+            .gap(u(6.0))
+            .rounded(u(4.0))
+            .bg(colors.elevated)
+            .border_1()
+            .border_color(colors.accent)
+            .text_size(u(12.0))
+            .text_color(colors.text)
+            .child(
+                Icon::new(IconName::ShipWheel)
+                    .size(12.0)
+                    .color(colors.accent),
+            )
+            .child(self.label.clone())
     }
 }
 
@@ -145,6 +190,7 @@ impl ClustersSection {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut subscriptions = vec![
             cx.observe_global::<ActiveContext>(|this, cx| {
+                this.sync_active_cluster(cx);
                 this.schedule_count_sync(cx);
                 cx.notify();
             }),
@@ -156,6 +202,12 @@ impl ClustersSection {
             }),
             // Rows and root markers other crates add.
             cx.observe_global::<catalog::ViewRows>(|_, cx| cx.notify()),
+            // User-created folders (created, renamed, membership dragged in or out): expanding
+            // or collapsing one changes which resource rows are visible.
+            cx.observe(&SidebarGroups::global(cx), |this, _, cx| {
+                this.schedule_count_sync(cx);
+                cx.notify();
+            }),
         ];
         if let Some(manager) = ConnectionManager::try_global(cx) {
             subscriptions.push(
@@ -313,209 +365,254 @@ impl ClustersSection {
 
     /// The flattened, visible tree.
     fn items(&mut self, cx: &mut Context<Self>) -> Vec<Item> {
-        let Some(manager) = ConnectionManager::try_global(cx) else {
+        if ConnectionManager::try_global(cx).is_none() {
             return Vec::new();
-        };
+        }
         let settings = Settings::get::<ExplorerSettings>(cx).clone();
         let query = self.filter_query(cx);
         let contexts = Self::roots(&settings, self.state.connected_only, cx);
+        let sidebar_groups = SidebarGroups::global(cx);
+        let (folders, grouped): (Vec<crate::settings::SidebarGroup>, HashSet<String>) = {
+            let g = sidebar_groups.read(cx);
+            let folders = g.groups().to_vec();
+            let grouped = folders
+                .iter()
+                .flat_map(|f| f.members.iter().cloned())
+                .collect();
+            (folders, grouped)
+        };
+        let mut items = Vec::new();
+        for folder in &folders {
+            let expanded = !sidebar_groups.read(cx).is_collapsed(&folder.id) || query.is_some();
+            items.push(Item::UserGroup {
+                id: folder.id.clone(),
+                name: folder.name.clone().into(),
+                expanded,
+            });
+            if !expanded {
+                continue;
+            }
+            for member in &folder.members {
+                let cluster = ClusterId::new(member.clone());
+                if !contexts.contains(&cluster) {
+                    continue;
+                }
+                self.push_cluster(&mut items, &cluster, 1, &settings, &query, cx);
+            }
+        }
+        for cluster in contexts
+            .into_iter()
+            .filter(|c| !grouped.contains(c.as_str()))
+        {
+            self.push_cluster(&mut items, &cluster, 0, &settings, &query, cx);
+        }
+        items
+    }
+
+    /// Appends `cluster`'s root and (while expanded) its resource tree to `items`, indented
+    /// `depth_offset` extra levels (1 while nested in a user-created folder).
+    fn push_cluster(
+        &mut self,
+        items: &mut Vec<Item>,
+        cluster: &ClusterId,
+        depth_offset: usize,
+        settings: &ExplorerSettings,
+        query: &Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let d = |n: usize| n + depth_offset;
+        let Some(manager) = ConnectionManager::try_global(cx) else {
+            return;
+        };
+        items.push(Item::Root(cluster.clone()));
+        if !self.is_expanded_root(cluster) {
+            return;
+        }
+        let (state, discovery, caps) = {
+            let m = manager.read(cx);
+            (m.state(cluster), m.discovery(cluster), m.caps(cluster))
+        };
+        let discovery = match (&state, discovery) {
+            (ConnectionState::Connected { .. }, Some(discovery)) => discovery,
+            (ConnectionState::Connected { .. }, None) => {
+                items.push(Item::Status {
+                    cluster: cluster.clone(),
+                    text: "Discovering API…".into(),
+                    sign_in: false,
+                    depth: d(1),
+                });
+                return;
+            }
+            (state, _) => {
+                let sign_in = matches!(state, ConnectionState::AuthRequired { sign_in: true, .. });
+                let text = match state {
+                    ConnectionState::Disconnected => "Not connected · click to connect".to_string(),
+                    ConnectionState::Connecting => "Connecting…".to_string(),
+                    ConnectionState::AuthRequired { sign_in: true, .. } => {
+                        "Sign-in required · click to sign in".into()
+                    }
+                    other => format!("{} · {}", other.label(), other.error().unwrap_or_default()),
+                };
+                items.push(Item::Status {
+                    cluster: cluster.clone(),
+                    text: text.into(),
+                    sign_in,
+                    depth: d(1),
+                });
+                return;
+            }
+        };
         let view_rows = catalog::view_rows(cx);
         let row_order: Vec<(&'static str, &'static str)> =
             view_rows.iter().map(|r| (r.id, r.after)).collect();
-        let mut items = Vec::new();
-        for cluster in contexts {
-            items.push(Item::Root(cluster.clone()));
-            if !self.is_expanded_root(&cluster) {
+        let matches = |label: &str| {
+            query
+                .as_ref()
+                .is_none_or(|q| label.to_lowercase().contains(q))
+        };
+        for group_id in
+            catalog::ordered_groups_with(&settings.group_order, &settings.hidden_groups, &row_order)
+        {
+            if let Some(row) = view_rows.iter().find(|r| r.id == group_id) {
+                let visible = row.visible.as_ref().is_none_or(|v| v(cluster, cx));
+                if visible && matches(row.label) {
+                    items.push(Item::Row {
+                        cluster: cluster.clone(),
+                        row: row.clone(),
+                        depth: d(1),
+                    });
+                }
                 continue;
             }
-            let (state, discovery, caps) = {
-                let m = manager.read(cx);
-                (m.state(&cluster), m.discovery(&cluster), m.caps(&cluster))
-            };
-            let discovery = match (&state, discovery) {
-                (ConnectionState::Connected { .. }, Some(discovery)) => discovery,
-                (ConnectionState::Connected { .. }, None) => {
-                    items.push(Item::Status {
-                        cluster: cluster.clone(),
-                        text: "Discovering API…".into(),
-                        sign_in: false,
-                    });
-                    continue;
-                }
-                (state, _) => {
-                    let sign_in =
-                        matches!(state, ConnectionState::AuthRequired { sign_in: true, .. });
-                    let text = match state {
-                        ConnectionState::Disconnected => {
-                            "Not connected · click to connect".to_string()
-                        }
-                        ConnectionState::Connecting => "Connecting…".to_string(),
-                        ConnectionState::AuthRequired { sign_in: true, .. } => {
-                            "Sign-in required · click to sign in".into()
-                        }
-                        other => {
-                            format!("{} · {}", other.label(), other.error().unwrap_or_default())
-                        }
-                    };
-                    items.push(Item::Status {
-                        cluster: cluster.clone(),
-                        text: text.into(),
-                        sign_in,
-                    });
-                    continue;
-                }
-            };
-            let matches = |label: &str| {
-                query
-                    .as_ref()
-                    .is_none_or(|q| label.to_lowercase().contains(q))
-            };
-            for group_id in catalog::ordered_groups_with(
-                &settings.group_order,
-                &settings.hidden_groups,
-                &row_order,
-            ) {
-                if let Some(row) = view_rows.iter().find(|r| r.id == group_id) {
-                    let visible = row.visible.as_ref().is_none_or(|v| v(&cluster, cx));
-                    if visible && matches(row.label) {
-                        items.push(Item::Row {
-                            cluster: cluster.clone(),
-                            row: row.clone(),
-                        });
-                    }
-                    continue;
-                }
-                if group_id == CUSTOM {
-                    let groups = catalog::custom_groups(&discovery);
-                    let mut children = Vec::new();
-                    for (api_group, kinds) in groups {
-                        let id = format!("custom:{api_group}");
-                        let visible: Vec<TreeKind> = kinds
-                            .into_iter()
-                            .filter(|k| matches(&k.label) || matches(&api_group))
-                            .filter(|k| self.allowed(&cluster, k, cx))
-                            .collect();
-                        if visible.is_empty() {
-                            continue;
-                        }
-                        let expanded = self.is_expanded_group(&cluster, &id) || query.is_some();
-                        children.push(Item::Group {
-                            cluster: cluster.clone(),
-                            id: id.clone(),
-                            label: api_group.into(),
-                            depth: 2,
-                            expanded,
-                            badge: None,
-                        });
-                        if expanded {
-                            children.extend(visible.into_iter().map(|kind| Item::Kind {
-                                cluster: cluster.clone(),
-                                kind,
-                                depth: 3,
-                            }));
-                        }
-                    }
-                    if !children.is_empty() {
-                        let expanded = self.is_expanded_group(&cluster, CUSTOM) || query.is_some();
-                        items.push(Item::Group {
-                            cluster: cluster.clone(),
-                            id: CUSTOM.into(),
-                            label: "Custom Resources".into(),
-                            depth: 1,
-                            expanded,
-                            badge: None,
-                        });
-                        if expanded {
-                            items.extend(children);
-                        }
-                    }
-                    continue;
-                }
-                let Some(def) = catalog::group(group_id) else {
-                    continue;
-                };
-                let kinds: Vec<TreeKind> = catalog::group_kinds(def, &discovery)
-                    .into_iter()
-                    .filter(|k| matches(&k.label))
-                    .filter(|k| self.allowed(&cluster, k, cx))
-                    .collect();
-                let views: Vec<ViewEntry> = (def.views)()
-                    .into_iter()
-                    .filter(|v| !v.needs_olm || caps.olm)
-                    .filter(|v| matches(v.label))
-                    .collect();
-                // Groups other crates add here (Argo CD under Administration), shown while the
-                // cluster serves their kinds.
-                let mut contributed = Vec::new();
-                for group in catalog::contributed_groups(def.id, cx) {
-                    let visible: Vec<TreeKind> = catalog::contributed_kinds(&group, &discovery)
+            if group_id == CUSTOM {
+                let groups = catalog::custom_groups(&discovery);
+                let mut children = Vec::new();
+                for (api_group, kinds) in groups {
+                    let id = format!("custom:{api_group}");
+                    let visible: Vec<TreeKind> = kinds
                         .into_iter()
-                        .filter(|k| matches(&k.label) || matches(group.label))
-                        .filter(|k| self.allowed(&cluster, k, cx))
+                        .filter(|k| matches(&k.label) || matches(&api_group))
+                        .filter(|k| self.allowed(cluster, k, cx))
                         .collect();
                     if visible.is_empty() {
                         continue;
                     }
-                    let id = format!("{}/{}", def.id, group.id);
-                    let expanded = self.is_expanded_group(&cluster, &id) || query.is_some();
-                    let badge = group.badge.as_ref().and_then(|badge| badge(&cluster, cx));
-                    contributed.push(Item::Group {
+                    let expanded = self.is_expanded_group(cluster, &id) || query.is_some();
+                    children.push(Item::Group {
                         cluster: cluster.clone(),
-                        id,
-                        label: group.label.into(),
-                        depth: 2,
+                        id: id.clone(),
+                        label: api_group.into(),
+                        depth: d(2),
                         expanded,
-                        badge,
+                        badge: None,
                     });
                     if expanded {
-                        contributed.extend(visible.into_iter().map(|kind| Item::Kind {
+                        children.extend(visible.into_iter().map(|kind| Item::Kind {
                             cluster: cluster.clone(),
                             kind,
-                            depth: 3,
+                            depth: d(3),
                         }));
                     }
                 }
-                if kinds.is_empty() && views.is_empty() && contributed.is_empty() {
+                if !children.is_empty() {
+                    let expanded = self.is_expanded_group(cluster, CUSTOM) || query.is_some();
+                    items.push(Item::Group {
+                        cluster: cluster.clone(),
+                        id: CUSTOM.into(),
+                        label: "Custom Resources".into(),
+                        depth: d(1),
+                        expanded,
+                        badge: None,
+                    });
+                    if expanded {
+                        items.extend(children);
+                    }
+                }
+                continue;
+            }
+            let Some(def) = catalog::group(group_id) else {
+                continue;
+            };
+            let kinds: Vec<TreeKind> = catalog::group_kinds(def, &discovery)
+                .into_iter()
+                .filter(|k| matches(&k.label))
+                .filter(|k| self.allowed(cluster, k, cx))
+                .collect();
+            let views: Vec<ViewEntry> = (def.views)()
+                .into_iter()
+                .filter(|v| !v.needs_olm || caps.olm)
+                .filter(|v| matches(v.label))
+                .collect();
+            // Groups other crates add here (Argo CD under Administration), shown while the
+            // cluster serves their kinds.
+            let mut contributed = Vec::new();
+            for group in catalog::contributed_groups(def.id, cx) {
+                let visible: Vec<TreeKind> = catalog::contributed_kinds(&group, &discovery)
+                    .into_iter()
+                    .filter(|k| matches(&k.label) || matches(group.label))
+                    .filter(|k| self.allowed(cluster, k, cx))
+                    .collect();
+                if visible.is_empty() {
                     continue;
                 }
-                if !def.collapsible {
-                    items.extend(views.into_iter().map(|entry| Item::View {
-                        cluster: cluster.clone(),
-                        entry,
-                        depth: 1,
-                    }));
-                    items.extend(kinds.into_iter().map(|kind| Item::Kind {
-                        cluster: cluster.clone(),
-                        kind,
-                        depth: 1,
-                    }));
-                    continue;
-                }
-                let expanded = self.is_expanded_group(&cluster, def.id) || query.is_some();
-                items.push(Item::Group {
+                let id = format!("{}/{}", def.id, group.id);
+                let expanded = self.is_expanded_group(cluster, &id) || query.is_some();
+                let badge = group.badge.as_ref().and_then(|badge| badge(cluster, cx));
+                contributed.push(Item::Group {
                     cluster: cluster.clone(),
-                    id: def.id.into(),
-                    label: def.label.into(),
-                    depth: 1,
+                    id,
+                    label: group.label.into(),
+                    depth: d(2),
                     expanded,
-                    badge: None,
+                    badge,
                 });
                 if expanded {
-                    items.extend(views.into_iter().map(|entry| Item::View {
-                        cluster: cluster.clone(),
-                        entry,
-                        depth: 2,
-                    }));
-                    items.extend(kinds.into_iter().map(|kind| Item::Kind {
+                    contributed.extend(visible.into_iter().map(|kind| Item::Kind {
                         cluster: cluster.clone(),
                         kind,
-                        depth: 2,
+                        depth: d(3),
                     }));
-                    items.extend(contributed);
                 }
             }
+            if kinds.is_empty() && views.is_empty() && contributed.is_empty() {
+                continue;
+            }
+            if !def.collapsible {
+                items.extend(views.into_iter().map(|entry| Item::View {
+                    cluster: cluster.clone(),
+                    entry,
+                    depth: d(1),
+                }));
+                items.extend(kinds.into_iter().map(|kind| Item::Kind {
+                    cluster: cluster.clone(),
+                    kind,
+                    depth: d(1),
+                }));
+                continue;
+            }
+            let expanded = self.is_expanded_group(cluster, def.id) || query.is_some();
+            items.push(Item::Group {
+                cluster: cluster.clone(),
+                id: def.id.into(),
+                label: def.label.into(),
+                depth: d(1),
+                expanded,
+                badge: None,
+            });
+            if expanded {
+                items.extend(views.into_iter().map(|entry| Item::View {
+                    cluster: cluster.clone(),
+                    entry,
+                    depth: d(2),
+                }));
+                items.extend(kinds.into_iter().map(|kind| Item::Kind {
+                    cluster: cluster.clone(),
+                    kind,
+                    depth: d(2),
+                }));
+                items.extend(contributed);
+            }
         }
-        items
     }
 
     /// The cluster roots in the configured order; with "connected only", the connected and
@@ -637,6 +734,49 @@ impl ClustersSection {
         cx.notify();
     }
 
+    fn toggle_user_group(&self, id: &str, cx: &mut App) {
+        let id = id.to_string();
+        SidebarGroups::global(cx).update(cx, |g, cx| g.toggle_collapsed(&id, cx));
+    }
+
+    /// Expands and highlights the cluster that just became active (title bar switcher, command
+    /// palette…), unless the sidebar's own click already put it there: a switch made outside the
+    /// sidebar shouldn't leave a stale cluster looking selected in the tree.
+    fn sync_active_cluster(&mut self, cx: &mut Context<Self>) {
+        let Some(cluster) = ActiveContext::global(cx)
+            .cluster
+            .as_ref()
+            .map(|b| b.id.clone())
+        else {
+            return;
+        };
+        // A cluster inside a collapsed folder must be expanded into view even when it was
+        // already selected (the folder may have been collapsed again since).
+        let groups = SidebarGroups::global(cx);
+        let folder_id = groups
+            .read(cx)
+            .group_of(cluster.as_str())
+            .map(|g| g.id.clone());
+        let expanded_folder = match &folder_id {
+            Some(folder_id) if groups.read(cx).is_collapsed(folder_id) => {
+                groups.update(cx, |g, cx| g.toggle_collapsed(folder_id, cx));
+                true
+            }
+            _ => false,
+        };
+        if !expanded_folder
+            && self.selected.as_deref().and_then(|s| s.split('|').nth(1)) == Some(cluster.as_str())
+        {
+            return;
+        }
+        if !self.is_expanded_root(&cluster) {
+            self.state.roots.insert(cluster.to_string());
+            self.save(cx);
+        }
+        self.connect_expanded(cx);
+        self.selected = Some(Item::Root(cluster).id());
+    }
+
     /// Makes `cluster` the title-bar cluster unless it already is.
     fn activate_cluster(cluster: &ClusterId, cx: &mut App) {
         let Some(manager) = ConnectionManager::try_global(cx) else {
@@ -651,6 +791,7 @@ impl ClustersSection {
     fn activate_item(&mut self, item: &Item, window: &mut Window, cx: &mut Context<Self>) {
         self.selected = Some(item.id());
         match item {
+            Item::UserGroup { id, .. } => self.toggle_user_group(id, cx),
             Item::Root(cluster) => self.toggle_root(cluster, cx),
             Item::Group { cluster, id, .. } => self.toggle_group(cluster, id, cx),
             Item::Status { cluster, .. } => {
@@ -682,7 +823,7 @@ impl ClustersSection {
                     cx,
                 );
             }
-            Item::Row { cluster, row } => {
+            Item::Row { cluster, row, .. } => {
                 Self::activate_cluster(cluster, cx);
                 window.dispatch_action(
                     Box::new(OpenView(ViewRequest::for_resource(
@@ -737,6 +878,10 @@ impl ClustersSection {
             return;
         };
         match &item {
+            Item::UserGroup { id, expanded, .. } if *expanded != expand => {
+                self.toggle_user_group(id, cx)
+            }
+            Item::UserGroup { .. } => {}
             Item::Root(cluster) if self.is_expanded_root(cluster) != expand => {
                 self.toggle_root(cluster, cx)
             }
@@ -748,8 +893,10 @@ impl ClustersSection {
             } if *expanded != expand => self.toggle_group(cluster, id, cx),
             // Collapse on a leaf goes to its root.
             _ if !expand => {
-                self.selected = Some(Item::Root(item.cluster().clone()).id());
-                cx.notify();
+                if let Some(cluster) = item.cluster() {
+                    self.selected = Some(Item::Root(cluster.clone()).id());
+                    cx.notify();
+                }
             }
             _ => {}
         }
@@ -790,6 +937,11 @@ impl ClustersSection {
         let selected = self.selected.as_deref() == Some(item.id().as_str());
         let id = SharedString::from(item.id());
         let row = match item {
+            Item::UserGroup { name, expanded, .. } => TreeRow::new(id, name.clone())
+                .expanded(Some(*expanded))
+                .icon(IconName::Folder)
+                .icon_color(colors.text_dim)
+                .selected(selected),
             Item::Root(cluster) => {
                 let manager = ConnectionManager::global(cx);
                 let (name, color, state, production) = {
@@ -801,8 +953,13 @@ impl ClustersSection {
                         m.context_settings(cluster).production,
                     )
                 };
+                let depth = SidebarGroups::global(cx)
+                    .read(cx)
+                    .group_of(cluster.as_str())
+                    .is_some() as usize;
                 let mut row = TreeRow::new(id, name)
                     .root(true)
+                    .depth(depth)
                     .expanded(Some(self.is_expanded_root(cluster)))
                     .icon(IconName::ShipWheel)
                     .icon_color(color)
@@ -837,8 +994,13 @@ impl ClustersSection {
                         .build(window, cx)
                     })
             }
-            Item::Status { text, sign_in, .. } => TreeRow::new(id, text.clone())
-                .depth(1)
+            Item::Status {
+                text,
+                sign_in,
+                depth,
+                ..
+            } => TreeRow::new(id, text.clone())
+                .depth(*depth)
                 .muted_label(true)
                 .icon(if *sign_in {
                     IconName::Key
@@ -893,9 +1055,13 @@ impl ClustersSection {
                 .depth(*depth)
                 .icon(entry.icon)
                 .selected(selected),
-            Item::Row { cluster, row } => {
+            Item::Row {
+                cluster,
+                row,
+                depth,
+            } => {
                 let tree_row = TreeRow::new(id, row.label)
-                    .depth(1)
+                    .depth(*depth)
                     .icon(row.icon)
                     .selected(selected);
                 match row.badge.as_ref().and_then(|badge| badge(cluster, cx)) {
@@ -917,99 +1083,256 @@ impl ClustersSection {
             }
         };
         let item_for_click = item.clone();
-        let root_menu = match item {
-            Item::Root(cluster) => Some(cluster.clone()),
-            _ => None,
+        enum Wrap {
+            Root(ClusterId),
+            UserGroup(String, SharedString),
+            None,
+        }
+        let wrap = match item {
+            Item::Root(cluster) => Wrap::Root(cluster.clone()),
+            Item::UserGroup { id, name, .. } => Wrap::UserGroup(id.clone(), name.clone()),
+            _ => Wrap::None,
         };
         let row = row.on_click(cx.listener(move |this, _, window, cx| {
             this.focus.focus(window, cx);
             this.activate_item(&item_for_click, window, cx);
         }));
-        match root_menu {
-            Some(cluster) => div()
-                .id(SharedString::from(format!("menu-{cluster}")))
-                .child(row)
-                .context_menu(move |menu, _, cx| {
-                    let connected = ConnectionManager::try_global(cx)
-                        .is_some_and(|m| m.read(cx).state(&cluster).is_connected());
-                    // A group can show its contexts separately; a context of such a group can
-                    // go back to one entry.
-                    // "Show as One Cluster" only while grouping is on (with it off, the click
-                    // would have no effect).
-                    let grouping_on =
-                        kubyl_settings::Settings::get::<kubyl_kube::settings::KubeSettings>(cx)
-                            .group_contexts;
-                    let grouping = ConnectionManager::try_global(cx).and_then(|m| {
-                        let entry = m.read(cx).context(&cluster)?;
-                        let group = entry.group.clone()?;
-                        (entry.is_group() || grouping_on).then_some((group, entry.is_group()))
-                    });
-                    let switch = cluster.clone();
-                    let toggle = cluster.clone();
-                    let favorite = cluster.clone();
-                    menu.item(
-                        gpui_component::menu::PopupMenuItem::new("Switch to Cluster").on_click(
-                            move |_, _, cx| {
-                                ConnectionManager::global(cx)
-                                    .update(cx, |m, cx| m.activate(&switch, cx));
-                            },
-                        ),
-                    )
-                    .item(
-                        gpui_component::menu::PopupMenuItem::new(if connected {
-                            "Disconnect"
-                        } else {
-                            "Connect"
-                        })
-                        .on_click(move |_, _, cx| {
-                            ConnectionManager::global(cx).update(cx, |m, cx| {
-                                if connected {
-                                    m.disconnect(&toggle, cx)
-                                } else {
-                                    m.connect_interactive(&toggle, cx)
-                                }
-                            });
-                        }),
-                    )
-                    .item(
-                        gpui_component::menu::PopupMenuItem::new(
-                            "Add Default Namespace to Favorites",
-                        )
-                        .on_click(move |_, _, cx| {
-                            let namespace = ConnectionManager::global(cx)
-                                .read(cx)
-                                .cluster(&favorite)
-                                .and_then(|c| c.default_namespace().map(String::from))
-                                .unwrap_or_else(|| "default".into());
-                            crate::actions::add_favorite(&favorite, &namespace, cx);
-                        }),
-                    )
-                    .when_some(grouping, |menu, (group, grouped)| {
+        match wrap {
+            Wrap::UserGroup(group_id, name) => {
+                let accent = colors.accent;
+                let drop_id = group_id.clone();
+                div()
+                    .id(SharedString::from(format!("user-group-{group_id}")))
+                    .child(row)
+                    .drag_over::<DraggedCluster>(move |style, _, _, _| {
+                        style.border_t_2().border_color(accent)
+                    })
+                    .on_drop(cx.listener(move |_, drag: &DraggedCluster, _, cx| {
+                        let cluster = drag.cluster.clone();
+                        SidebarGroups::global(cx).update(cx, |g, cx| {
+                            g.add_member(&drop_id, cluster.as_str(), None, cx)
+                        });
+                    }))
+                    .context_menu(move |menu, _, _| {
+                        let rename_id = group_id.clone();
+                        let rename_name = name.to_string();
+                        let delete_id = group_id.clone();
                         menu.item(
-                            gpui_component::menu::PopupMenuItem::new(if grouped {
-                                "Show Contexts Separately"
-                            } else {
-                                "Show as One Cluster"
-                            })
-                            .on_click(move |_, _, cx| {
-                                ConnectionManager::global(cx)
-                                    .update(cx, |m, cx| m.set_group_separate(&group, grouped, cx));
-                            }),
+                            gpui_component::menu::PopupMenuItem::new("Rename…").on_click(
+                                move |_, window, cx| {
+                                    let rename_id = rename_id.clone();
+                                    crate::dialogs::prompt_text(
+                                        "Rename group".into(),
+                                        "Name",
+                                        rename_name.clone(),
+                                        move |text, _, cx| {
+                                            let text = text.trim();
+                                            if !text.is_empty() {
+                                                SidebarGroups::global(cx).update(cx, |g, cx| {
+                                                    g.rename(&rename_id, text.to_string(), cx)
+                                                });
+                                            }
+                                        },
+                                        window,
+                                        cx,
+                                    );
+                                },
+                            ),
+                        )
+                        .item(
+                            gpui_component::menu::PopupMenuItem::new("Delete Group").on_click(
+                                move |_, _, cx| {
+                                    SidebarGroups::global(cx)
+                                        .update(cx, |g, cx| g.delete(&delete_id, cx));
+                                },
+                            ),
                         )
                     })
-                    .separator()
-                    .menu(
-                        "Clusters & Kubeconfigs…",
-                        Box::new(kubyl_kube::ui::OpenClusters),
+                    .into_any_element()
+            }
+            Wrap::Root(cluster) => {
+                let drag_cluster = cluster.clone();
+                let drag_label: SharedString = ConnectionManager::global(cx)
+                    .read(cx)
+                    .display_name(&cluster);
+                div()
+                    .id(SharedString::from(format!("menu-{cluster}")))
+                    .child(row)
+                    .on_drag(
+                        DraggedCluster {
+                            cluster: drag_cluster,
+                            label: drag_label,
+                        },
+                        |drag, _, _, cx| {
+                            cx.new(|_| ClusterDragPreview {
+                                label: drag.label.clone(),
+                            })
+                        },
                     )
-                })
-                .into_any_element(),
-            None => row.into_any_element(),
+                    .context_menu(move |menu, _, cx| {
+                        let connected = ConnectionManager::try_global(cx)
+                            .is_some_and(|m| m.read(cx).state(&cluster).is_connected());
+                        // A group can show its contexts separately; a context of such a group can
+                        // go back to one entry.
+                        // "Show as One Cluster" only while grouping is on (with it off, the click
+                        // would have no effect).
+                        let grouping_on =
+                            kubyl_settings::Settings::get::<kubyl_kube::settings::KubeSettings>(cx)
+                                .group_contexts;
+                        let grouping = ConnectionManager::try_global(cx).and_then(|m| {
+                            let entry = m.read(cx).context(&cluster)?;
+                            let group = entry.group.clone()?;
+                            (entry.is_group() || grouping_on).then_some((group, entry.is_group()))
+                        });
+                        let switch = cluster.clone();
+                        let toggle = cluster.clone();
+                        let favorite = cluster.clone();
+                        menu.item(
+                            gpui_component::menu::PopupMenuItem::new("Switch to Cluster").on_click(
+                                move |_, _, cx| {
+                                    ConnectionManager::global(cx)
+                                        .update(cx, |m, cx| m.activate(&switch, cx));
+                                },
+                            ),
+                        )
+                        .item(
+                            gpui_component::menu::PopupMenuItem::new(if connected {
+                                "Disconnect"
+                            } else {
+                                "Connect"
+                            })
+                            .on_click(move |_, _, cx| {
+                                ConnectionManager::global(cx).update(cx, |m, cx| {
+                                    if connected {
+                                        m.disconnect(&toggle, cx)
+                                    } else {
+                                        m.connect_interactive(&toggle, cx)
+                                    }
+                                });
+                            }),
+                        )
+                        .item(
+                            gpui_component::menu::PopupMenuItem::new(
+                                "Add Default Namespace to Favorites",
+                            )
+                            .on_click(move |_, _, cx| {
+                                let namespace = ConnectionManager::global(cx)
+                                    .read(cx)
+                                    .cluster(&favorite)
+                                    .and_then(|c| c.default_namespace().map(String::from))
+                                    .unwrap_or_else(|| "default".into());
+                                crate::actions::add_favorite(&favorite, &namespace, cx);
+                            }),
+                        )
+                        .when_some(grouping, |menu, (group, grouped)| {
+                            menu.item(
+                                gpui_component::menu::PopupMenuItem::new(if grouped {
+                                    "Show Contexts Separately"
+                                } else {
+                                    "Show as One Cluster"
+                                })
+                                .on_click(move |_, _, cx| {
+                                    ConnectionManager::global(cx).update(cx, |m, cx| {
+                                        m.set_group_separate(&group, grouped, cx)
+                                    });
+                                }),
+                            )
+                        })
+                        .separator()
+                        .map(|mut menu| {
+                            let groups = SidebarGroups::global(cx);
+                            let current = groups
+                                .read(cx)
+                                .group_of(cluster.as_str())
+                                .map(|g| g.id.clone());
+                            let folders = groups.read(cx).groups().to_vec();
+                            for folder in folders {
+                                if Some(&folder.id) == current.as_ref() {
+                                    continue;
+                                }
+                                let target = folder.id.clone();
+                                let target_cluster = cluster.clone();
+                                menu = menu.item(
+                                    gpui_component::menu::PopupMenuItem::new(format!(
+                                        "Move to \"{}\"",
+                                        folder.name
+                                    ))
+                                    .on_click(
+                                        move |_, _, cx| {
+                                            SidebarGroups::global(cx).update(cx, |g, cx| {
+                                                g.add_member(
+                                                    &target,
+                                                    target_cluster.as_str(),
+                                                    None,
+                                                    cx,
+                                                )
+                                            });
+                                        },
+                                    ),
+                                );
+                            }
+                            if current.is_some() {
+                                let target_cluster = cluster.clone();
+                                menu = menu.item(
+                                    gpui_component::menu::PopupMenuItem::new("Remove from Group")
+                                        .on_click(move |_, _, cx| {
+                                            SidebarGroups::global(cx).update(cx, |g, cx| {
+                                                g.remove_member(target_cluster.as_str(), cx)
+                                            });
+                                        }),
+                                );
+                            }
+                            menu
+                        })
+                        .separator()
+                        .menu(
+                            "Clusters & Kubeconfigs…",
+                            Box::new(kubyl_kube::ui::OpenClusters),
+                        )
+                    })
+                    .into_any_element()
+            }
+            Wrap::None => row.into_any_element(),
         }
     }
 }
 
 impl ClustersSection {
+    /// `+` in the section header: creates a new drag-and-drop folder (e.g. "Prod", "Staging").
+    fn new_group_button(&self, colors: &Colors) -> impl IntoElement {
+        let hover = colors.hover;
+        h_flex()
+            .id("new-group")
+            .size(u(16.0))
+            .items_center()
+            .justify_center()
+            .rounded(u(3.0))
+            .text_color(colors.text_faint)
+            .hover(move |s| s.bg(hover))
+            .child(Icon::new(IconName::Plus).size(11.0))
+            .tooltip(|window, cx| {
+                gpui_component::tooltip::Tooltip::new("New group").build(window, cx)
+            })
+            .on_click(|_, window, cx| {
+                cx.stop_propagation();
+                crate::dialogs::prompt_text(
+                    "New group".into(),
+                    "Name (e.g. Prod, Staging)",
+                    String::new(),
+                    |name, _, cx| {
+                        let name = name.trim().to_string();
+                        if !name.is_empty() {
+                            SidebarGroups::global(cx).update(cx, |g, cx| {
+                                g.create(name, cx);
+                            });
+                        }
+                    },
+                    window,
+                    cx,
+                );
+            })
+    }
+
     /// `● 4 of 9` in the section header: shows only connected clusters while on.
     fn connected_toggle(&self, colors: &Colors, cx: &mut Context<Self>) -> impl IntoElement {
         let (connected, total) = ConnectionManager::try_global(cx)
@@ -1268,6 +1591,7 @@ impl Render for ClustersSection {
             .child(
                 SectionHeader::new("clusters", "Clusters")
                     .collapsed(collapsed)
+                    .end_child(self.new_group_button(&colors))
                     .end_child(self.connected_toggle(&colors, cx))
                     .on_toggle(cx.listener(|this, _, _, cx| {
                         if !this.state.collapsed_sections.remove("clusters") {

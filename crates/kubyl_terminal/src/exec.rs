@@ -371,8 +371,9 @@ pub async fn create_debug_container(
 /// Label on node-shell pods, so leftovers are easy to find.
 pub const NODE_SHELL_LABEL: &str = "kubyl.dev/node-shell";
 
-/// The privileged pod that runs a node shell: host PID/network/IPC namespaces, pinned to the
-/// node, tolerating every taint, deleted after at most 12 hours even if Kubyl never cleans up.
+/// The privileged pod that runs a node shell: host PID/network/IPC namespaces, the node's root
+/// filesystem mounted at `/host`, pinned to the node, tolerating every taint, deleted after at
+/// most 12 hours even if Kubyl never cleans up. Matches `kubectl debug node/<name>`.
 pub fn node_shell_pod(node: &str, image: &str) -> serde_json::Value {
     serde_json::json!({
         "apiVersion": "v1",
@@ -400,27 +401,21 @@ pub fn node_shell_pod(node: &str, image: &str) -> serde_json::Value {
                 "command": ["sh", "-c", "sleep 43200"],
                 "securityContext": {"privileged": true},
                 "resources": {"requests": {"cpu": "10m", "memory": "16Mi"}},
+                "volumeMounts": [{"name": "host", "mountPath": "/host"}],
             }],
+            "volumes": [{"name": "host", "hostPath": {"path": "/", "type": "Directory"}}],
         },
     })
 }
 
-/// The command a node shell runs in its pod: enters PID 1's (the host's) namespaces and starts
-/// a login shell there.
+/// The command a node shell runs in its pod: a login shell with the node's root filesystem
+/// mounted at `/host` (`chroot /host` to use it, as `kubectl debug node` describes).
 pub fn node_shell_command() -> Vec<String> {
     [
-        "nsenter",
-        "--target",
-        "1",
-        "--mount",
-        "--uts",
-        "--ipc",
-        "--net",
-        "--pid",
-        "--",
         "sh",
         "-c",
-        "if [ -x /bin/bash ]; then exec /bin/bash -l; else exec /bin/sh -l; fi",
+        "echo 'Node filesystem mounted at /host -- run: chroot /host'; \
+         if [ -x /bin/bash ]; then exec /bin/bash -l; else exec /bin/sh -l; fi",
     ]
     .into_iter()
     .map(String::from)
@@ -564,7 +559,19 @@ mod tests {
             Some(true)
         );
         assert_eq!(spec.active_deadline_seconds, Some(43200));
-        assert_eq!(node_shell_command()[0], "nsenter");
+        let volume = spec
+            .volumes
+            .as_ref()
+            .and_then(|v| v.iter().find(|v| v.name == "host"))
+            .expect("a host volume");
+        assert_eq!(
+            volume.host_path.as_ref().map(|h| h.path.as_str()),
+            Some("/")
+        );
+        let mount = &spec.containers[0].volume_mounts.as_ref().unwrap()[0];
+        assert_eq!(mount.name, "host");
+        assert_eq!(mount.mount_path, "/host");
+        assert_eq!(node_shell_command()[0], "sh");
     }
 
     #[test]

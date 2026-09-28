@@ -15,6 +15,7 @@ pub mod catalog;
 pub mod details;
 pub mod dialogs;
 pub mod favorites;
+pub mod groups;
 pub mod list;
 pub mod namespaces;
 pub mod settings;
@@ -48,6 +49,7 @@ pub fn favorites_view_kind() -> ViewKind {
 pub fn init(cx: &mut App) {
     Settings::register::<settings::ExplorerSettings>(cx);
     favorites::Favorites::install(cx);
+    groups::SidebarGroups::install(cx);
     cx.default_global::<list::PendingFilter>();
     list::init(cx);
     actions::init(cx);
