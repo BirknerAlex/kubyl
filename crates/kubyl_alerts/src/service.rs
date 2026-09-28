@@ -503,6 +503,8 @@ impl AlertsService {
 
     fn drop_cluster(&mut self, cluster: &ClusterId, cx: &mut Context<Self>) {
         if let Some(old) = self.clusters.remove(cluster) {
+            // Results of tasks started for the dropped state must not apply to a reconnect.
+            self.generation += 1;
             stop_forwards(old.forwards, cx);
             self.notices.remove(cluster);
             crate::changed(cx);
@@ -785,7 +787,7 @@ impl AlertsService {
             .map(|p| format!("Prometheus {}", p.target().label()));
         state.prom = prom;
         state.nodes = Arc::new(nodes);
-        state.forwards = forwards;
+        let previous = std::mem::replace(&mut state.forwards, forwards);
         state.phase = if state.sources.is_empty() && state.prom.is_none() {
             Phase::NoSource
         } else {
@@ -794,6 +796,7 @@ impl AlertsService {
         state.fetch = Fetch::default();
         state.rules_fetch = Fetch::default();
         state.revision += 1;
+        stop_forwards(previous, cx);
         tracing::info!(
             cluster = %cluster,
             alertmanagers = state.sources.len(),
@@ -1816,6 +1819,26 @@ mod tests {
             let generation = s.clusters[&cluster].generation;
             s.fetched(&cluster, generation + 1, output(Vec::new()), cx);
             assert_eq!(s.clusters[&cluster].alerts.len(), 1);
+        });
+    }
+
+    #[gpui::test]
+    fn results_from_before_a_drop_do_not_apply_after_reconnect(cx: &mut TestAppContext) {
+        let (_dir, service) = setup(cx, serde_json::json!({}));
+        let cluster = ClusterId::new("c");
+        service.update(cx, |s, cx| {
+            s.insert_for_test(&cluster, Vec::new(), cx);
+            let stale = s.clusters[&cluster].generation;
+            s.drop_cluster(&cluster, cx);
+            s.insert_for_test(&cluster, Vec::new(), cx);
+            assert_ne!(s.clusters[&cluster].generation, stale);
+            s.fetched(
+                &cluster,
+                stale,
+                output(vec![firing("Stale", Severity::Critical)]),
+                cx,
+            );
+            assert!(s.clusters[&cluster].alerts.is_empty());
         });
     }
 
