@@ -755,6 +755,15 @@ impl WebViewTab {
         let minutes = WebViewSettings::get(cx).idle_stop_minutes;
         if minutes > 0 && self.last_seen.elapsed() > Duration::from_secs(u64::from(minutes) * 60) {
             tracing::debug!(target = %self.target, "idle in the background: stopping the forward");
+            // The page keeps running scripts and holds the forward's cookies, and another
+            // forward may take the port: park it on a blank page, and come back to this path.
+            if let Some(path) = self.current_url().and_then(|u| target::remembered_path(&u)) {
+                self.initial = path;
+            }
+            if let Some(embedded) = &self.embedded {
+                embedded.native.load_url("about:blank");
+            }
+            self.origin = None;
             self.set_phase(Phase::Idle);
             self.hold(false, cx);
             cx.notify();
