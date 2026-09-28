@@ -229,11 +229,14 @@ fn merge_section<T: SettingsSection>(raw: &mut Value, key: Option<&str>, value: 
     let root = raw.as_object_mut().expect("settings root is an object");
     let target = match key {
         None => root,
-        Some(key) => root
-            .entry(key)
-            .or_insert_with(|| Value::Object(Map::new()))
-            .as_object_mut()
-            .expect("settings section is an object"),
+        Some(key) => {
+            let section = root.entry(key).or_insert_with(|| Value::Object(Map::new()));
+            // `null`, `[]` etc. typed by hand: replace with an object.
+            if !section.is_object() {
+                *section = Value::Object(Map::new());
+            }
+            section.as_object_mut().expect("just made an object")
+        }
     };
     for (field, value) in new {
         if defaults.get(&field) == Some(&value) && !target.contains_key(&field) {
@@ -480,6 +483,23 @@ mod tests {
                 .unwrap()
                 .contains("wrap_lines")
         );
+    }
+
+    #[gpui::test]
+    fn non_object_section_is_replaced_on_update(cx: &mut gpui::TestAppContext) {
+        for bad in ["null", "[]", "3", "\"x\""] {
+            let dir = setup(cx, &format!(r#"{{ "logs": {bad} }}"#));
+            cx.update(|cx| Settings::update::<Logs>(cx, |logs| logs.wrap_lines = true));
+            cx.run_until_parked();
+            let written: Value = serde_json::from_str(
+                &std::fs::read_to_string(dir.path().join(SETTINGS_FILE)).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                written,
+                serde_json::json!({ "logs": { "wrap_lines": true } })
+            );
+        }
     }
 
     #[gpui::test]
