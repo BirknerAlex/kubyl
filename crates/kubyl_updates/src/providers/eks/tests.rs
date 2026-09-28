@@ -946,3 +946,33 @@ async fn denied_add_on_versions_make_one_note() {
         .count();
     assert_eq!(notes, 1, "{:?}", status.notes);
 }
+
+#[test]
+fn a_region_that_could_redirect_the_endpoint_is_refused() {
+    for ok in ["eu-west-1", "us-gov-east-1", "cn-north-1", "ap-southeast-2"] {
+        assert!(valid_region(ok), "{ok}");
+    }
+    for bad in [
+        "",
+        "evil.com/x#",
+        "eu-west-1.evil.com",
+        "eu-west-1@evil.com",
+        "eu-west",
+        "EU-WEST-1",
+        "eu-west-12",
+        "e-west-1",
+        "eu--west-1",
+    ] {
+        assert!(!valid_region(bad), "{bad}");
+    }
+    let hints = Hints {
+        region: Some("attacker.example/".into()),
+        cluster: Some("prod".into()),
+        ..Hints::default()
+    };
+    let err = resolve(None, &hints, "ctx", "cluster", "https://x.example").unwrap_err();
+    assert!(
+        matches!(&err, ProviderError::Other(m) if m.contains("valid AWS region")),
+        "{err:?}"
+    );
+}

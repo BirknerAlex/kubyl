@@ -197,6 +197,23 @@ impl EksTarget {
     }
 }
 
+/// Whether `region` looks like an AWS region (`^[a-z]{2}(-[a-z]+)+-\d$`), so it can be part of a
+/// host name.
+fn valid_region(region: &str) -> bool {
+    let parts: Vec<&str> = region.split('-').collect();
+    let [first, middle @ .., last] = parts.as_slice() else {
+        return false;
+    };
+    !middle.is_empty()
+        && first.len() == 2
+        && first.bytes().all(|b| b.is_ascii_lowercase())
+        && middle
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_lowercase()))
+        && last.len() == 1
+        && last.bytes().all(|b| b.is_ascii_digit())
+}
+
 /// Picks cluster, region and profile: settings first, then the exec plugin, the cluster ARN in
 /// the context or cluster entry name, and the API server's host.
 pub fn resolve(
@@ -230,6 +247,12 @@ pub fn resolve(
     };
     let cluster = cluster.ok_or_else(|| missing("cluster name"))?;
     let region = region.ok_or_else(|| missing("region"))?;
+    // The region becomes part of the host the signed requests go to.
+    if !valid_region(&region) {
+        return Err(ProviderError::Other(format!(
+            "\"{region}\" isn't a valid AWS region name (like eu-west-1)."
+        )));
+    }
     let china = from_server
         .as_ref()
         .is_some_and(|(_, d)| d == "amazonaws.com.cn")
