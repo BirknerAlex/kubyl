@@ -2,6 +2,12 @@
 
 All notable changes to Kubyl are documented here.
 
+## [0.3.3] - 2026-09-28
+
+### Miscellaneous
+
+- Update Flatpak manifest to v0.3.2 ([3d52b61](https://github.com/BirknerAlex/kubyl/commit/3d52b6122994c9632c560882b9edac409ec02bbe))
+
 ## [0.3.2] - 2026-09-27
 
 ### Bug Fixes
