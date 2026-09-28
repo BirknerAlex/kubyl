@@ -44,7 +44,11 @@ const DOCS_INSIGHTS: &str =
 /// Add-on versions change rarely: read them again after this long.
 const ADDON_VERSIONS_FOR: Duration = Duration::from_secs(60 * 60);
 /// Updates Kubyl describes per read at most (finished ones are remembered).
+/// Updates described at once; more are described in further rounds.
 const DESCRIBE_UPDATES: usize = 30;
+/// Rounds of [`DESCRIBE_UPDATES`] one read makes at most (the finished ones are cached, so
+/// the history fills in over the next reads).
+const DESCRIBE_ROUNDS: usize = 10;
 /// Support ending sooner than this is a warning.
 const SUPPORT_WARNING_DAYS: i64 = 90;
 
@@ -197,6 +201,23 @@ impl EksTarget {
     }
 }
 
+/// Whether `region` looks like an AWS region (`^[a-z]{2}(-[a-z]+)+-\d$`), so it can be part of a
+/// host name.
+fn valid_region(region: &str) -> bool {
+    let parts: Vec<&str> = region.split('-').collect();
+    let [first, middle @ .., last] = parts.as_slice() else {
+        return false;
+    };
+    !middle.is_empty()
+        && first.len() == 2
+        && first.bytes().all(|b| b.is_ascii_lowercase())
+        && middle
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_lowercase()))
+        && last.len() == 1
+        && last.bytes().all(|b| b.is_ascii_digit())
+}
+
 /// Picks cluster, region and profile: settings first, then the exec plugin, the cluster ARN in
 /// the context or cluster entry name, and the API server's host.
 pub fn resolve(
@@ -230,6 +251,12 @@ pub fn resolve(
     };
     let cluster = cluster.ok_or_else(|| missing("cluster name"))?;
     let region = region.ok_or_else(|| missing("region"))?;
+    // The region becomes part of the host the signed requests go to.
+    if !valid_region(&region) {
+        return Err(ProviderError::Other(format!(
+            "\"{region}\" isn't a valid AWS region name (like eu-west-1)."
+        )));
+    }
     let china = from_server
         .as_ref()
         .is_some_and(|(_, d)| d == "amazonaws.com.cn")
@@ -309,7 +336,7 @@ pub fn targets(
     };
     newer.sort_by_key(|v| std::cmp::Reverse(v.minor_key()));
     newer.dedup_by_key(|v| v.minor_key());
-    let next = format!("{}.{}", cur.major, cur.minor + 1);
+    let next = format!("{}.{}", cur.major, cur.minor.saturating_add(1));
     newer
         .iter()
         .map(|v| {
@@ -1234,8 +1261,14 @@ impl Inner {
     }
 
     /// Describes the updates in `ids` that aren't known to be finished; running ones come back
-    /// fresh every time.
-    async fn updates(&self, api: &Api, ids: &[String], nodegroup: Option<&str>) -> Vec<Update> {
+    /// fresh every time. Every unknown one is described (in rounds), so a running update isn't
+    /// cut off by a long history; the first error is returned beside what could be read.
+    async fn updates(
+        &self,
+        api: &Api,
+        ids: &[String],
+        nodegroup: Option<&str>,
+    ) -> (Vec<Update>, Option<ProviderError>) {
         let (mut known, unknown): (Vec<Update>, Vec<&String>) = {
             let finished = self.finished.lock().unwrap();
             let mut known = Vec::new();
@@ -1248,22 +1281,27 @@ impl Inner {
             }
             (known, unknown)
         };
-        let described = join_all(
-            unknown
-                .into_iter()
-                .take(DESCRIBE_UPDATES)
-                .map(|id| api.describe_update(id, nodegroup)),
-        )
-        .await;
-        let mut finished = self.finished.lock().unwrap();
-        for update in described.into_iter().flatten() {
-            if !update.running() {
-                finished.insert(update.id.clone(), update.clone());
+        let mut first_error = None;
+        for round in unknown.chunks(DESCRIBE_UPDATES).take(DESCRIBE_ROUNDS) {
+            let described =
+                join_all(round.iter().map(|id| api.describe_update(id, nodegroup))).await;
+            let mut finished = self.finished.lock().unwrap();
+            for result in described {
+                match result {
+                    Ok(update) => {
+                        if !update.running() {
+                            finished.insert(update.id.clone(), update.clone());
+                        }
+                        known.push(update);
+                    }
+                    Err(err) => {
+                        first_error.get_or_insert(err);
+                    }
+                }
             }
-            known.push(update);
         }
         known.sort_by_key(|u| std::cmp::Reverse(u.created()));
-        known
+        (known, first_error)
     }
 
     async fn snapshot(&self, api: &Api) -> Result<Snapshot, ProviderError> {
@@ -1321,10 +1359,18 @@ impl Inner {
                 None
             }
         };
-        let updates = updates.unwrap_or_else(|err| {
-            notes.push(note_for("the cluster's updates", &err));
-            Vec::new()
-        });
+        let updates = match updates {
+            Ok((updates, error)) => {
+                if let Some(err) = error {
+                    notes.push(note_for("some of the cluster's updates", &err));
+                }
+                updates
+            }
+            Err(err) => {
+                notes.push(note_for("the cluster's updates", &err));
+                Vec::new()
+            }
+        };
 
         let mut addon_versions = HashMap::new();
         // One note for however many add-ons failed, whatever the order of the results.
@@ -1361,6 +1407,7 @@ impl Inner {
             if let Some(update) = self
                 .updates(api, &ids, Some(&ng.nodegroup_name))
                 .await
+                .0
                 .into_iter()
                 .find(Update::running)
             {

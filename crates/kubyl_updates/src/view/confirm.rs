@@ -60,6 +60,8 @@ pub struct ConfirmDialog {
     provider: ProviderKind,
     plan: Plan,
     checks: Option<Vec<Check>>,
+    /// The pre-flight run of the target hasn't finished: its results aren't in yet.
+    running: bool,
     /// "I've read the pre-flight results" (needed when a check failed).
     read_ack: bool,
     /// One per risk of a conditional update.
@@ -81,7 +83,9 @@ impl ConfirmDialog {
     ) -> Self {
         let name = cluster_name(&cluster, cx);
         let typed = cx.new(|cx| InputState::new(window, cx).placeholder(name));
-        let subscriptions =
+        // The run may still be going: follow it until its results arrive.
+        let updates = Updates::global(cx);
+        let mut subscriptions =
             vec![
                 cx.subscribe_in(&typed, window, |this, _, event: &InputEvent, window, cx| {
                     match event {
@@ -94,19 +98,56 @@ impl ConfirmDialog {
                     }
                 }),
             ];
+        if let Some(updates) = &updates {
+            subscriptions.push(cx.observe(updates, |this, _, cx| {
+                this.sync_checks(cx);
+                cx.notify();
+            }));
+        }
         let accepted = vec![false; plan.risks.len()];
-        Self {
+        let mut this = Self {
             cluster,
             provider,
             plan,
             checks,
+            running: false,
             read_ack: false,
             accepted,
             typed,
             error: None,
             focus: cx.focus_handle(),
             _subscriptions: subscriptions,
+        };
+        this.sync_checks(cx);
+        this
+    }
+
+    /// Takes the live results of the target's pre-flight run. A change in what failed asks for
+    /// the acknowledgement again.
+    fn sync_checks(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.plan.scope, Scope::Channel(_)) {
+            return;
         }
+        let Some(updates) = Updates::global(cx) else {
+            return;
+        };
+        let Some(run) = updates
+            .read(cx)
+            .preflight(&self.cluster, &self.plan.to)
+            .cloned()
+        else {
+            return;
+        };
+        self.running = run.running();
+        let cluster = self.cluster.clone();
+        let target = self.plan.to.clone();
+        let checks = updates.update(cx, |updates, cx| updates.checks(&cluster, &target, cx));
+        let failed =
+            |checks: &Option<Vec<Check>>| checks.as_ref().map_or(0, |c| Counts::of(c).failed);
+        if failed(&checks) != failed(&self.checks) {
+            self.read_ack = false;
+        }
+        self.checks = checks;
     }
 
     fn initial_focus(&self, cx: &App) -> FocusHandle {
@@ -130,7 +171,9 @@ impl ConfirmDialog {
 
     /// What still blocks the button.
     fn missing(&self, cx: &App) -> Option<&'static str> {
-        if self.failed() && !self.read_ack {
+        if self.running {
+            Some("The pre-flight checks are still running.")
+        } else if self.failed() && !self.read_ack {
             Some("Confirm that you read the pre-flight results.")
         } else if self.accepted.iter().any(|a| !a) {
             Some("Accept each risk first.")
@@ -163,7 +206,15 @@ impl ConfirmDialog {
                 .into_any_element();
         };
         let counts = Counts::of(checks);
-        let mut block = v_flex().gap(u(4.0)).child(
+        let mut block = v_flex().gap(u(4.0));
+        if self.running {
+            block = block.child(
+                div()
+                    .text_color(colors.text_dim)
+                    .child("still running, so the results below are partial"),
+            );
+        }
+        let mut block = block.child(
             h_flex()
                 .gap(u(6.0))
                 .when(counts.failed > 0, |this| {
@@ -625,6 +676,63 @@ mod tests {
             dialog.accepted[0] = true;
             // Not a production cluster: no typed name.
             assert_eq!(dialog.missing(cx), None);
+        });
+    }
+
+    /// While the pre-flight run is going the button stays off; when its results arrive with a
+    /// failure, the acknowledgement is required again.
+    #[gpui::test]
+    fn waits_for_the_preflight_run(cx: &mut TestAppContext) {
+        let updates = crate::view::tests::setup(cx);
+        let cluster = ClusterId::new("ocp");
+        let status =
+            crate::openshift::parse_cluster_version(&crate::view::tests::cluster_version());
+        let plan = crate::openshift::plan(&status, &Scope::ControlPlane, "4.17.13", "ocp").unwrap();
+        let target = plan.to.clone();
+        updates.update(cx, |u, cx| {
+            u.insert_for_test(
+                &cluster,
+                crate::detect::Detected {
+                    kind: ProviderKind::OpenShift,
+                    reason: "test".into(),
+                },
+                status,
+                cx,
+            );
+            u.set_preflight_for_test(&cluster, &target, None, cx);
+        });
+        let slot: std::rc::Rc<std::cell::RefCell<Option<Entity<ConfirmDialog>>>> =
+            Default::default();
+        let (_root, cx) = cx.add_window_view({
+            let slot = slot.clone();
+            let cluster = cluster.clone();
+            move |window, cx| {
+                let view = cx.new(|cx| {
+                    ConfirmDialog::new(cluster, ProviderKind::OpenShift, plan, None, window, cx)
+                });
+                *slot.borrow_mut() = Some(view.clone());
+                gpui_component::Root::new(view, window, cx)
+            }
+        });
+        let dialog = slot.borrow().clone().unwrap();
+        cx.run_until_parked();
+        dialog.update_in(cx, |dialog, _, cx| {
+            dialog.accepted.iter_mut().for_each(|a| *a = true);
+            assert_eq!(
+                dialog.missing(cx),
+                Some("The pre-flight checks are still running.")
+            );
+        });
+        let failing = vec![Check::new("pdb", "PDB", CheckStatus::Fail, "blocks")];
+        updates.update(cx, |u, cx| {
+            u.set_preflight_for_test(&cluster, &target, Some(failing), cx)
+        });
+        cx.run_until_parked();
+        dialog.update_in(cx, |dialog, _, cx| {
+            assert_eq!(
+                dialog.missing(cx),
+                Some("Confirm that you read the pre-flight results.")
+            );
         });
     }
 }

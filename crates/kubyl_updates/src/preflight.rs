@@ -1225,7 +1225,7 @@ pub fn skew(
     if let Some(target) = target
         && provider != ProviderKind::OpenShift
         && target.0 == control.0
-        && target.1 > control.1 + 1
+        && target.1 > control.1.saturating_add(1)
     {
         worst = CheckStatus::Fail;
         details.push(Detail::new(
@@ -1235,7 +1235,7 @@ pub fn skew(
                 control.0,
                 control.1,
                 control.0,
-                control.1 + 1
+                control.1.saturating_add(1)
             ),
         ));
     }
@@ -1255,7 +1255,7 @@ pub fn skew(
             ));
         } else if let Some(target) = target
             && target.0 == minor.0
-            && target.1 > minor.1 + 3
+            && target.1 > minor.1.saturating_add(3)
         {
             worst = worst.min(CheckStatus::Fail);
             details.push(

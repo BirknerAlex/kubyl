@@ -74,13 +74,13 @@ impl UpdateProvider for ClusterApi {
                 ProviderError::from_kube(&e, "list", "machinedeployments.cluster.x-k8s.io")
             })?;
             let control_planes = match &versions.control_plane {
-                Some(v) => kube_api::get(
-                    &client,
-                    &format!("/apis/controlplane.cluster.x-k8s.io/{v}/kubeadmcontrolplanes"),
-                )
-                .await
-                .map(|l| items(&l).to_vec())
-                .unwrap_or_default(),
+                Some(v) => control_planes(
+                    kube_api::get(
+                        &client,
+                        &format!("/apis/controlplane.cluster.x-k8s.io/{v}/kubeadmcontrolplanes"),
+                    )
+                    .await,
+                )?,
                 None => Vec::new(),
             };
             Ok(status(
@@ -114,6 +114,21 @@ impl UpdateProvider for ClusterApi {
                 .map_err(|e| ProviderError::from_kube(&e, "patch", &resource))?;
             Ok(request["done"].as_str().unwrap_or("Done.").to_string())
         })
+    }
+}
+
+/// The KubeadmControlPlanes of a list answer. A kind the cluster stopped serving is empty; any
+/// other error fails the read, since without the control planes the workers-vs-control-plane
+/// check (and the pool versions) would silently be missing.
+fn control_planes(result: Result<Value, kube::Error>) -> Result<Vec<Value>, ProviderError> {
+    match result {
+        Ok(list) => Ok(items(&list).to_vec()),
+        Err(err) if kube_api::is_not_found(&err) => Ok(Vec::new()),
+        Err(err) => Err(ProviderError::from_kube(
+            &err,
+            "list",
+            "kubeadmcontrolplanes.controlplane.cluster.x-k8s.io",
+        )),
     }
 }
 
@@ -316,7 +331,7 @@ pub fn plan(status: &Status, scope: &Scope, target: &str, _cluster: &str) -> Res
             return Err(format!(
                 "Kubernetes updates one minor at a time: {}.{} first.",
                 current.major,
-                current.minor + 1
+                current.minor.saturating_add(1)
             ));
         }
     }
@@ -433,6 +448,34 @@ mod tests {
             Some("maxSurge 1 · maxUnavailable 0")
         );
         assert!(!status.pools[3].updatable);
+    }
+
+    /// A failed control plane list fails the read instead of yielding no control planes (which
+    /// would skip the workers-vs-control-plane guard).
+    #[test]
+    fn control_plane_list_errors_are_not_swallowed() {
+        let api_error = |code: u16, reason: &str| {
+            kube::Error::Api(
+                kube::core::Status::failure("nope", reason)
+                    .with_code(code)
+                    .boxed(),
+            )
+        };
+        let list = json!({"items": [{"metadata": {"name": "cp"}}]});
+        assert_eq!(control_planes(Ok(list)).unwrap().len(), 1);
+        assert!(
+            control_planes(Err(api_error(404, "NotFound")))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(matches!(
+            control_planes(Err(api_error(403, "Forbidden"))),
+            Err(ProviderError::Forbidden { .. })
+        ));
+        assert!(matches!(
+            control_planes(Err(api_error(500, "InternalError"))),
+            Err(ProviderError::Other(_))
+        ));
     }
 
     #[test]

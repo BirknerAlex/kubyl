@@ -946,3 +946,59 @@ async fn denied_add_on_versions_make_one_note() {
         .count();
     assert_eq!(notes, 1, "{:?}", status.notes);
 }
+
+#[test]
+fn a_region_that_could_redirect_the_endpoint_is_refused() {
+    for ok in ["eu-west-1", "us-gov-east-1", "cn-north-1", "ap-southeast-2"] {
+        assert!(valid_region(ok), "{ok}");
+    }
+    for bad in [
+        "",
+        "evil.com/x#",
+        "eu-west-1.evil.com",
+        "eu-west-1@evil.com",
+        "eu-west",
+        "EU-WEST-1",
+        "eu-west-12",
+        "e-west-1",
+        "eu--west-1",
+    ] {
+        assert!(!valid_region(bad), "{bad}");
+    }
+    let hints = Hints {
+        region: Some("attacker.example/".into()),
+        cluster: Some("prod".into()),
+        ..Hints::default()
+    };
+    let err = resolve(None, &hints, "ctx", "cluster", "https://x.example").unwrap_err();
+    assert!(
+        matches!(&err, ProviderError::Other(m) if m.contains("valid AWS region")),
+        "{err:?}"
+    );
+}
+
+/// A long history doesn't hide a running update behind the first 30, and a describe that
+/// fails is reported instead of dropped.
+#[tokio::test]
+async fn describes_every_update_and_keeps_errors() {
+    let c = "/clusters/prod-eu-west-1";
+    let ids: Vec<String> = (0..45).map(|i| format!("upd-{i:02}")).collect();
+    let mut routes: Vec<mock::Route> = Vec::new();
+    for (i, id) in ids.iter().enumerate() {
+        if i == 10 {
+            continue; // no route: the describe fails
+        }
+        let status = if i == 44 { "InProgress" } else { "Successful" };
+        let body = json!({"update": {"id": id, "status": status, "type": "VersionUpdate",
+            "params": [{"type": "Version", "value": "1.31"}],
+            "createdAt": 1725148800.0 + i as f64, "errors": []}});
+        routes.push(("GET", format!("{c}/updates/{id}"), 200, body.to_string()));
+    }
+    let (base, _) = mock::serve(routes).await;
+    let provider = test_provider(base);
+    let (_, api) = provider.inner.api().await.unwrap();
+    let (updates, error) = provider.inner.updates(&api, &ids, None).await;
+    assert_eq!(updates.len(), 44);
+    assert!(updates.iter().any(|u| u.id == "upd-44" && u.running()));
+    assert!(error.is_some());
+}

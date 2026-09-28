@@ -318,7 +318,7 @@ pub fn targets(current: &str, profile: &UpgradeProfile, busy: Option<&str>) -> V
         .collect();
     upgrades.sort_by(|a, b| version::compare(&b.kubernetes_version, &a.kubernetes_version));
     upgrades.dedup_by(|a, b| a.kubernetes_version == b.kubernetes_version);
-    let next = format!("{}.{}", cur.major, cur.minor + 1);
+    let next = format!("{}.{}", cur.major, cur.minor.saturating_add(1));
     let mut recommended = false;
     upgrades
         .into_iter()

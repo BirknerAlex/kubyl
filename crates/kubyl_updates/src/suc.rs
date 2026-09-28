@@ -370,10 +370,22 @@ pub fn plan(status: &Status, scope: &Scope, target: &str, cluster: &str) -> Resu
     if Version::parse(target).is_none() {
         return Err(format!("{target} isn't a version."));
     }
-    if let Some(found) = status.target(target)
-        && !found.startable()
-    {
+    // Only versions from the fetched channel list (newer than the current one): a typed or
+    // stale version could be a downgrade, and without the list nothing can be checked.
+    let Some(found) = status.target(target) else {
+        return Err(if status.targets.is_empty() {
+            "The channel list isn't available (update server unreachable), so no version can be \
+             checked. Try again later."
+                .to_string()
+        } else {
+            format!("{target} isn't an update offered by the channel list.")
+        });
+    };
+    if !found.startable() {
         return Err(found.blocked.join(" "));
+    }
+    if status.progress.is_some() || status.pools.iter().any(|p| p.state == PoolState::Updating) {
+        return Err("Plans are applying an update. Wait for it to finish.".into());
     }
     let pools: Vec<&Pool> = match scope {
         Scope::AllPools | Scope::ControlPlane => status
@@ -521,6 +533,19 @@ mod tests {
             update.changes[0].contains("server-plan: spec.version v1.33.4+k3s1 → v1.33.6+k3s1")
         );
         assert!(plan(&status, &Scope::AllPools, "v1.35.0+k3s1", "k3s-edge").is_err());
+        // Not in the channel list (a downgrade or a typo), or no list at all.
+        for version in ["v1.32.0+k3s1", "v1.33.4+k3s1", "v1.99.0+k3s1"] {
+            let err = plan(&status, &Scope::AllPools, version, "k3s-edge").unwrap_err();
+            assert!(err.contains("channel list"), "{err}");
+        }
+        let offline = super::status(ProviderKind::K3s, "v1.33.4+k3s1", &idle, &nodes(), vec![]);
+        let err = plan(&offline, &Scope::AllPools, "v1.34", "k3s-edge").unwrap_err();
+        assert!(err.contains("isn't available"), "{err}");
+        // Plans still applying: even a listed version waits.
+        let mut busy = status.clone();
+        busy.pools[0].state = PoolState::Updating;
+        let err = plan(&busy, &Scope::AllPools, "v1.33.6+k3s1", "k3s-edge").unwrap_err();
+        assert!(err.contains("applying"), "{err}");
         let yaml = plan_templates(ProviderKind::K3s, "v1.33.6+k3s1");
         assert!(kubyl_yaml::parse::parse(&yaml).error.is_none());
         assert_eq!(kubyl_yaml::parse::parse(&yaml).roots().count(), 2);
