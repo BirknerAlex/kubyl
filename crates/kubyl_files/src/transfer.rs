@@ -483,12 +483,16 @@ async fn upload(job: &TransferJob, progress: &ProgressTx) -> anyhow::Result<()> 
     check_status(status, &err_text).await
 }
 
-/// `cat > dir/name` for a single file (images without tar).
+/// `cat > dir/name` for a single file (images without tar), through a temporary name so a
+/// failed upload doesn't replace an existing file with a partial one.
 async fn upload_cat(job: &TransferJob, progress: &ProgressTx) -> anyhow::Result<()> {
     let dest = crate::entry::join(&job.remote, &job.dest_name);
     let mut process = remote::exec_stream(
         &job.target,
-        sh("cat > \"$1\"", [job.target.real(&dest)]),
+        sh(
+            "tmp=\"$1.kubyl-part\"; cat > \"$tmp\" && mv -f -- \"$tmp\" \"$1\"; rc=$?; rm -f \"$tmp\"; exit $rc",
+            [job.target.real(&dest)],
+        ),
         true,
     )
     .await?;
