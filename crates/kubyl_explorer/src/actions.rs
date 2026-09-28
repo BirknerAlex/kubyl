@@ -711,16 +711,36 @@ fn cordon(unschedulable: bool, cx: &mut App) {
     } else {
         "Node: Uncordon"
     };
-    let Some((items, _)) = targets(cx, name, true) else {
+    let Some((items, caps)) = targets(cx, name, true) else {
         return;
     };
-    let verb = if unschedulable {
-        "Cordoned"
+    let (verb, done) = if unschedulable {
+        ("Cordon", "Cordoned")
     } else {
-        "Uncordoned"
+        ("Uncordon", "Uncordoned")
     };
-    run_each(items, verb, cx, move |client, _, target| {
-        ops::cordon(client, target.name.unwrap_or_default(), unschedulable)
+    let mut spec = ConfirmSpec::new(format!("{verb} {}?", describe_targets(&items)), verb);
+    spec.lines = items.iter().map(line).collect();
+    spec.note = Some(
+        if unschedulable {
+            "No new pods are scheduled on the node; running pods stay."
+        } else {
+            "The node accepts new pods again."
+        }
+        .into(),
+    );
+    spec.typed = typed_confirmation(&caps, &items, &verb.to_lowercase());
+    with_window(cx, move |window, cx| {
+        dialogs::confirm(
+            spec,
+            move |_, _, cx| {
+                run_each(items.clone(), done, cx, move |client, _, target| {
+                    ops::cordon(client, target.name.unwrap_or_default(), unschedulable)
+                });
+            },
+            window,
+            cx,
+        )
     });
 }
 
