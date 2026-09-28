@@ -97,6 +97,10 @@ impl Parsed {
     }
 }
 
+/// Most nodes that aliases may copy into one stream; beyond it the parse stops with an error
+/// (a "billion laughs" document would otherwise expand to gigabytes).
+const MAX_ALIAS_NODES: usize = 100_000;
+
 /// Parses `text`. On a syntax error, documents before it are kept.
 pub fn parse(text: &str) -> Parsed {
     let offsets = CharOffsets::new(text);
@@ -106,11 +110,23 @@ pub fn parse(text: &str) -> Parsed {
         anchors: HashMap::new(),
         docs: Vec::new(),
         doc_start: 0,
+        count: 0,
+        expanded: 0,
+        exceeded: None,
     };
     let mut parsed = Parsed::default();
     for next in Parser::new_from_str(text) {
         match next {
-            Ok((event, span)) => builder.event(event, span),
+            Ok((event, span)) => {
+                builder.event(event, span);
+                if let Some(range) = builder.exceeded.take() {
+                    parsed.error = Some(SyntaxError {
+                        message: "too many nodes from aliases (possible alias bomb)".into(),
+                        range,
+                    });
+                    break;
+                }
+            }
             Err(err) => {
                 let at = offsets.byte(err.marker().byte_offset(), err.marker().index());
                 let end = text[at..].chars().next().map_or(at, |c| at + c.len_utf8());
@@ -175,10 +191,12 @@ enum Frame {
         anchor: usize,
         entries: Vec<Entry>,
         key: Option<Node>,
+        mark: usize,
     },
     Seq {
         start: usize,
         anchor: usize,
+        mark: usize,
         items: Vec<Node>,
     },
 }
@@ -186,7 +204,14 @@ enum Frame {
 struct Builder<'a> {
     offsets: &'a CharOffsets<'a>,
     stack: Vec<Frame>,
-    anchors: HashMap<usize, Node>,
+    /// Anchored nodes and how many nodes each holds.
+    anchors: HashMap<usize, (Node, usize)>,
+    /// Nodes built so far, with alias copies counted in full.
+    count: usize,
+    /// Nodes copied in by aliases.
+    expanded: usize,
+    /// Set (to the alias's range) when `expanded` passes [`MAX_ALIAS_NODES`].
+    exceeded: Option<Range<usize>>,
     docs: Vec<Document>,
     doc_start: usize,
 }
@@ -233,13 +258,23 @@ impl Builder<'_> {
                     }),
                     span: range,
                 };
+                self.count += 1;
                 if anchor != 0 {
-                    self.anchors.insert(anchor, node.clone());
+                    self.anchors.insert(anchor, (node.clone(), 1));
                 }
                 self.push(node);
             }
             Event::Alias(id) => {
-                let node = self.anchors.get(&id).cloned().map(|mut n| {
+                if let Some((_, size)) = self.anchors.get(&id) {
+                    self.expanded = self.expanded.saturating_add(*size);
+                    if self.expanded > MAX_ALIAS_NODES {
+                        self.exceeded = Some(range);
+                        return;
+                    }
+                    self.count += size;
+                }
+                let node = self.anchors.get(&id).map(|(n, _)| {
+                    let mut n = n.clone();
                     n.span = range.clone();
                     n
                 });
@@ -257,21 +292,24 @@ impl Builder<'_> {
                 anchor,
                 entries: Vec::new(),
                 key: None,
+                mark: self.count,
             }),
             Event::SequenceStart(_, anchor, _) => self.stack.push(Frame::Seq {
                 start: range.start,
                 anchor,
                 items: Vec::new(),
+                mark: self.count,
             }),
             Event::MappingEnd | Event::SequenceEnd => {
                 let Some(frame) = self.stack.pop() else {
                     return;
                 };
-                let (node, anchor) = match frame {
+                let (node, anchor, mark) = match frame {
                     Frame::Map {
                         start,
                         anchor,
                         entries,
+                        mark,
                         ..
                     } => {
                         let end = entries.last().map_or(range.end, |e| e.value.span.end);
@@ -281,12 +319,14 @@ impl Builder<'_> {
                                 span: start..end.max(start),
                             },
                             anchor,
+                            mark,
                         )
                     }
                     Frame::Seq {
                         start,
                         anchor,
                         items,
+                        mark,
                     } => {
                         let end = items.last().map_or(range.end, |i| i.span.end);
                         (
@@ -295,11 +335,14 @@ impl Builder<'_> {
                                 span: start..end.max(start),
                             },
                             anchor,
+                            mark,
                         )
                     }
                 };
+                self.count += 1;
                 if anchor != 0 {
-                    self.anchors.insert(anchor, node.clone());
+                    let size = self.count - mark;
+                    self.anchors.insert(anchor, (node.clone(), size));
                 }
                 self.push(node);
             }
@@ -737,6 +780,29 @@ spec:
     size: 256
     rotationPolicy: Allways
 ";
+
+    #[test]
+    fn alias_bomb_stops_with_an_error() {
+        let mut text = String::from("a0: &a0 [x, x, x, x, x, x, x, x, x, x]\n");
+        for i in 1..12 {
+            let p = i - 1;
+            text.push_str(&format!(
+                "a{i}: &a{i} [*a{p}, *a{p}, *a{p}, *a{p}, *a{p}, *a{p}, *a{p}, *a{p}, *a{p}, *a{p}]\n"
+            ));
+        }
+        let parsed = parse(&text);
+        let error = parsed.error.expect("expansion is capped");
+        assert!(error.message.contains("alias"));
+    }
+
+    #[test]
+    fn ordinary_aliases_still_expand() {
+        let parsed = parse("base: &b {k: v}\ncopy: *b\nlist: [*b, *b]\n");
+        assert!(parsed.error.is_none());
+        let json = parsed.docs[0].root.as_ref().unwrap().to_json();
+        assert_eq!(json["copy"]["k"], "v");
+        assert_eq!(json["list"][1]["k"], "v");
+    }
 
     #[test]
     fn spans_point_at_keys_and_values() {
