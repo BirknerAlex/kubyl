@@ -243,6 +243,8 @@ pub struct ConnectionManager {
     active: Option<ClusterId>,
     restored: bool,
     loading: bool,
+    /// Bumped by every [`Self::reload`]; only the latest load's result is applied.
+    reload_generation: u64,
     watch_files: bool,
     watcher: Option<notify::RecommendedWatcher>,
     watched: Vec<PathBuf>,
@@ -303,6 +305,7 @@ impl ConnectionManager {
             active: None,
             restored: false,
             loading: false,
+            reload_generation: 0,
             watch_files,
             watcher: None,
             watched: Vec::new(),
@@ -447,17 +450,35 @@ impl ConnectionManager {
             &self.pasted_dir,
         );
         self.loading = true;
+        self.reload_generation += 1;
+        let generation = self.reload_generation;
         let load = cx
             .background_executor()
             .spawn(async move { (kubeconfig::load(&specs), specs) });
         self._tasks.push(cx.spawn(async move |this, cx| {
             let (loaded, specs) = load.await;
-            this.update(cx, |this, cx| this.apply_loaded(loaded, &specs, cx))
-                .ok();
+            this.update(cx, |this, cx| {
+                this.finish_reload(generation, loaded, &specs, cx)
+            })
+            .ok();
         }));
         // Finished loads stay in the list until the next reload; keep it short.
         if self._tasks.len() > 8 {
             self._tasks.drain(..self._tasks.len() - 4);
+        }
+    }
+
+    /// Applies a finished load unless a newer reload started since (its result is coming and
+    /// would be overwritten by this stale one).
+    fn finish_reload(
+        &mut self,
+        generation: u64,
+        loaded: Loaded,
+        specs: &[SourceSpec],
+        cx: &mut Context<Self>,
+    ) {
+        if generation == self.reload_generation {
+            self.apply_loaded(loaded, specs, cx);
         }
     }
 
@@ -2099,6 +2120,22 @@ mod tests {
         manager.read_with(cx, |m, _| {
             assert!(m.contexts().any(|c| c.name == "kind-renamed"));
             assert!(!m.contexts().any(|c| c.name == "kind-dev"));
+        });
+    }
+
+    #[gpui::test]
+    fn stale_reload_results_are_ignored(cx: &mut TestAppContext) {
+        let (_dir, manager) = setup(cx);
+        let before = manager.read_with(cx, |m, _| m.contexts().count());
+        assert!(before > 0);
+        manager.update(cx, |m, cx| {
+            m.reload_generation += 1;
+            let generation = m.reload_generation;
+            // A result of an older reload arrives after a newer one started.
+            m.finish_reload(generation - 1, Loaded::default(), &[], cx);
+            assert_eq!(m.contexts().count(), before);
+            m.finish_reload(generation, Loaded::default(), &[], cx);
+            assert_eq!(m.contexts().count(), 0);
         });
     }
 
