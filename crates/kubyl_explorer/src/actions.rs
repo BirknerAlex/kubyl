@@ -355,8 +355,72 @@ fn line(item: &Selected) -> SharedString {
     }
 }
 
+/// The distinct clusters of a selection, in order of first appearance.
+fn distinct_clusters(items: &[Selected]) -> Vec<&ClusterId> {
+    let mut out: Vec<&ClusterId> = Vec::new();
+    for item in items {
+        if !out.contains(&&item.target.cluster) {
+            out.push(&item.target.cluster);
+        }
+    }
+    out
+}
+
+/// Confirmation lines; the cluster is named when the selection spans several (Favorites).
+fn lines(items: &[Selected], cluster_name: &dyn Fn(&ClusterId) -> String) -> Vec<SharedString> {
+    let mixed = distinct_clusters(items).len() > 1;
+    items
+        .iter()
+        .map(|item| {
+            if mixed {
+                format!("{}: {}", cluster_name(&item.target.cluster), line(item)).into()
+            } else {
+                line(item)
+            }
+        })
+        .collect()
+}
+
+fn selection_lines(cx: &App, items: &[Selected]) -> Vec<SharedString> {
+    let manager = ConnectionManager::global(cx).read(cx);
+    lines(items, &|id| manager.display_name(id).to_string())
+}
+
+/// Checks every cluster of the selection: read-only (when `mutating`) and, per item, the cached
+/// RBAC answer (`denied` gives the refused verb). On success the caps are the first cluster's
+/// with `production` set when any cluster is production, so the typed confirmation applies.
+fn check_selection(
+    items: &[Selected],
+    mutating: bool,
+    caps_of: &dyn Fn(&ClusterId) -> ClusterCaps,
+    cluster_name: &dyn Fn(&ClusterId) -> String,
+    denied: &dyn Fn(&ResourceRef) -> Option<String>,
+) -> Result<ClusterCaps, String> {
+    let clusters = distinct_clusters(items);
+    let mut merged = caps_of(clusters.first().ok_or("Nothing selected.")?);
+    merged.production = false;
+    for cluster in &clusters {
+        let caps = caps_of(cluster);
+        if mutating && caps.read_only {
+            return Err(format!("{} is read-only.", cluster_name(cluster)));
+        }
+        merged.production |= caps.production;
+    }
+    for item in items {
+        if let Some(verb) = denied(&item.target) {
+            let mut message = format!("You are not allowed to {verb} {}", item.target.gvr.resource);
+            if clusters.len() > 1 {
+                message.push_str(&format!(" on {}", cluster_name(&item.target.cluster)));
+            }
+            message.push('.');
+            return Err(message);
+        }
+    }
+    Ok(merged)
+}
+
 /// The selection, if an action may run on it. `mutating` checks the read-only flag; `resources`
-/// restricts kinds.
+/// restricts kinds. Every cluster in the selection is checked, not just the first item's.
 fn targets(cx: &mut App, name: &str, mutating: bool) -> Option<(Vec<Selected>, ClusterCaps)> {
     let selection = ResourceSelection::global(cx).clone();
     let def = defs().into_iter().find(|d| d.name == name)?;
@@ -367,32 +431,27 @@ fn targets(cx: &mut App, name: &str, mutating: bool) -> Option<(Vec<Selected>, C
             def.resources.is_empty() || def.resources.contains(&s.target.gvr.resource.as_str())
         })
         .collect();
-    let first = items.first()?;
-    let manager = ConnectionManager::global(cx);
-    let caps = manager.read(cx).caps(&first.target.cluster);
-    if mutating && caps.read_only {
-        error(
-            cx,
-            format!(
-                "{} is read-only.",
-                manager.read(cx).display_name(&first.target.cluster)
-            ),
-        );
+    if items.is_empty() {
         return None;
     }
-    if let Some(query) = access_for(name, &first.target)
-        && manager.read(cx).cached_can_i(&first.target.cluster, &query) == Some(false)
-    {
-        error(
-            cx,
-            format!(
-                "You are not allowed to {} {}.",
-                query.verb, first.target.gvr.resource
-            ),
-        );
-        return None;
+    let manager = ConnectionManager::global(cx).read(cx);
+    let result = check_selection(
+        &items,
+        mutating,
+        &|id| manager.caps(id),
+        &|id| manager.display_name(id).to_string(),
+        &|target| {
+            let query = access_for(name, target)?;
+            (manager.cached_can_i(&target.cluster, &query) == Some(false)).then_some(query.verb)
+        },
+    );
+    match result {
+        Ok(caps) => Some((items, caps)),
+        Err(message) => {
+            error(cx, message);
+            None
+        }
     }
-    Some((items, caps))
 }
 
 pub(crate) fn client_and_resource(
@@ -495,7 +554,7 @@ fn delete(force: bool, cx: &mut App) {
         if force { "Kill" } else { "Delete" },
     );
     spec.danger = true;
-    spec.lines = items.iter().map(line).collect();
+    spec.lines = selection_lines(cx, &items);
     spec.typed = typed_confirmation(&caps, &items, verb);
     if force {
         spec.note = Some("Pods are removed immediately (grace period 0), without waiting for their containers to stop.".into());
@@ -540,7 +599,7 @@ fn scale(cx: &mut App) {
         .and_then(|s| s.object.as_ref())
         .map(|o| format::int_at(o, "/spec/replicas").max(0) as u32);
     let mut spec = ConfirmSpec::new(format!("Scale {}", describe_targets(&items)), "Scale");
-    spec.lines = items.iter().map(line).collect();
+    spec.lines = selection_lines(cx, &items);
     spec.number = Some(current.unwrap_or(1));
     with_window(cx, move |window, cx| {
         dialogs::confirm(
@@ -575,7 +634,7 @@ fn restart(cx: &mut App) {
         return;
     };
     let mut spec = ConfirmSpec::new(format!("Restart {}?", describe_targets(&items)), "Restart");
-    spec.lines = items.iter().map(line).collect();
+    spec.lines = selection_lines(cx, &items);
     spec.note = Some("Pods are replaced one by one following the rollout strategy.".into());
     spec.typed = typed_confirmation(&caps, &items, "restart");
     with_window(cx, move |window, cx| {
@@ -978,6 +1037,83 @@ mod tests {
             "jobs"
         );
         assert!(access_for("Resource: Copy Name", &pod).is_none());
+    }
+
+    fn selected(cluster: &str, ns: &str, name: &str) -> Selected {
+        Selected {
+            target: ResourceRef::object(
+                ClusterId::new(cluster),
+                Gvr::new("apps", "v1", "deployments"),
+                Some(ns.into()),
+                name.into(),
+            ),
+            kind: "Deployment".into(),
+            object: None,
+            store: None,
+        }
+    }
+
+    /// `dev` is plain, `prod` is production, `ro` is read-only (and production).
+    fn caps_of(id: &ClusterId) -> ClusterCaps {
+        ClusterCaps {
+            read_only: id.as_str() == "ro",
+            production: matches!(id.as_str(), "prod" | "ro"),
+            ..ClusterCaps::default()
+        }
+    }
+
+    fn name_of(id: &ClusterId) -> String {
+        format!("{id}-name")
+    }
+
+    #[test]
+    fn selection_checks_every_cluster() {
+        let never = |_: &ResourceRef| None;
+        // A read-only cluster that is not the first item still blocks a mutation.
+        let items = vec![selected("dev", "a", "x"), selected("ro", "a", "y")];
+        let err = check_selection(&items, true, &caps_of, &name_of, &never).unwrap_err();
+        assert_eq!(err, "ro-name is read-only.");
+        // Non-mutating actions ignore the flag.
+        assert!(check_selection(&items, false, &caps_of, &name_of, &never).is_ok());
+        // Production anywhere in the selection asks for the typed confirmation, in any order.
+        for items in [
+            vec![selected("dev", "a", "x"), selected("prod", "a", "y")],
+            vec![selected("prod", "a", "y"), selected("dev", "a", "x")],
+        ] {
+            let caps = check_selection(&items, true, &caps_of, &name_of, &never).unwrap();
+            assert!(caps.production);
+        }
+        let plain = vec![selected("dev", "a", "x"), selected("dev", "b", "y")];
+        assert!(
+            !check_selection(&plain, true, &caps_of, &name_of, &never)
+                .unwrap()
+                .production
+        );
+        assert!(check_selection(&[], true, &caps_of, &name_of, &never).is_err());
+    }
+
+    #[test]
+    fn selection_checks_rbac_per_item() {
+        let deny_b =
+            |t: &ResourceRef| (t.namespace.as_deref() == Some("b")).then(|| "patch".into());
+        let items = vec![selected("dev", "a", "x"), selected("dev", "b", "y")];
+        let err = check_selection(&items, true, &caps_of, &name_of, &deny_b).unwrap_err();
+        assert_eq!(err, "You are not allowed to patch deployments.");
+        // With several clusters the message names the one that refused.
+        let items = vec![selected("dev", "a", "x"), selected("prod", "b", "y")];
+        let err = check_selection(&items, true, &caps_of, &name_of, &deny_b).unwrap_err();
+        assert_eq!(
+            err,
+            "You are not allowed to patch deployments on prod-name."
+        );
+    }
+
+    #[test]
+    fn lines_name_the_cluster_only_when_mixed() {
+        let one = vec![selected("dev", "a", "x"), selected("dev", "b", "y")];
+        assert_eq!(lines(&one, &name_of), ["a/x", "b/y"]);
+        let mixed = vec![selected("dev", "a", "x"), selected("prod", "b", "y")];
+        assert_eq!(lines(&mixed, &name_of), ["dev-name: a/x", "prod-name: b/y"]);
     }
 
     #[gpui::test]

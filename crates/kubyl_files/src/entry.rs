@@ -168,6 +168,17 @@ pub fn crumbs(path: &str) -> Vec<(String, String)> {
     out
 }
 
+/// Whether `name` is a single, plain path component: what a listing may hand out and what
+/// may be joined onto a local or remote directory without leaving it. Rejects empty names,
+/// `.`, `..`, separators (a newline in a file name can fake an `ls` line such as `x/..`) and NUL.
+pub fn is_safe_name(name: &str) -> bool {
+    !(name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains(['/', '\0'])
+        || (cfg!(windows) && name.contains('\\')))
+}
+
 /// A name that doesn't collide with `taken`: `a.txt` → `a (1).txt`, `dir` → `dir (1)`.
 pub fn keep_both_name(name: &str, taken: &dyn Fn(&str) -> bool) -> String {
     let (stem, ext) = match name.rfind('.') {
@@ -191,6 +202,17 @@ mod tests {
         assert_eq!(mode_string(EntryKind::Dir, 0o1777), "drwxrwxrwt");
         assert_eq!(mode_string(EntryKind::File, 0o4755), "-rwsr-xr-x");
         assert_eq!(mode_string(EntryKind::Symlink, 0o777), "lrwxrwxrwx");
+    }
+
+    #[test]
+    fn safe_names_are_single_components() {
+        for ok in ["a.txt", ".hidden", "..x", "a b", "x\ny", "...", "a\tb"] {
+            assert!(is_safe_name(ok), "{ok:?}");
+        }
+        for bad in ["", ".", "..", "x/..", "../x", "a/b", "/etc", "a\0b"] {
+            assert!(!is_safe_name(bad), "{bad:?}");
+        }
+        assert_eq!(is_safe_name("a\\b"), !cfg!(windows));
     }
 
     #[test]

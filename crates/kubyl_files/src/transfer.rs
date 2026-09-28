@@ -93,6 +93,8 @@ const RETRIES: u32 = 5;
 
 /// Runs `job` to completion.
 pub async fn run(job: TransferJob, progress: ProgressTx) -> anyhow::Result<Verification> {
+    // Names come from the container; never join one that could leave the destination folder.
+    local_child(&job.local, &job.dest_name)?;
     match (job.direction, job.is_dir) {
         (Direction::Download, true) => download_dir(&job, &progress).await?,
         (Direction::Download, false) => download_file(&job, &progress).await?,
@@ -152,6 +154,16 @@ impl Write for ChannelWriter {
     }
 }
 
+/// `dir/name` for a name that is a single path component, so the result is a direct child of
+/// `dir` (and `remove_dir_all` on it can never touch `dir` or its parents).
+fn local_child(dir: &Path, name: &str) -> anyhow::Result<PathBuf> {
+    anyhow::ensure!(
+        crate::entry::is_safe_name(name),
+        "refusing the unsafe file name {name:?}"
+    );
+    Ok(dir.join(name))
+}
+
 fn part_path(dir: &Path, name: &str) -> PathBuf {
     dir.join(format!(".{name}.kubyl-part"))
 }
@@ -170,7 +182,7 @@ async fn download_file(job: &TransferJob, progress: &ProgressTx) -> anyhow::Resu
     remote::require(caps, "Downloading", caps.cat || caps.dd, "cat or dd")?;
     tokio::fs::create_dir_all(&job.local).await?;
     let part = part_path(&job.local, &job.dest_name);
-    let dest = job.local.join(&job.dest_name);
+    let dest = local_child(&job.local, &job.dest_name)?;
     if caps.dd && job.size > job.chunk_size {
         download_chunks(job, &part, progress).await?;
     } else {
@@ -382,7 +394,7 @@ async fn download_dir(job: &TransferJob, progress: &ProgressTx) -> anyhow::Resul
     check_status(status, &err_text).await?;
     extracted.context("extracting the archive")?;
 
-    let dest = job.local.join(&job.dest_name);
+    let dest = local_child(&job.local, &job.dest_name)?;
     let unpacked = staging.join(&name);
     if dest.exists() {
         if dest.is_dir() {
@@ -578,6 +590,15 @@ pub fn compare(
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn local_child_is_a_direct_child() {
+        let dir = Path::new("/tmp/downloads");
+        assert_eq!(local_child(dir, "a.txt").unwrap(), dir.join("a.txt"));
+        for bad in ["..", ".", "", "x/..", "../x", "a/b"] {
+            assert!(local_child(dir, bad).is_err(), "{bad:?}");
+        }
+    }
 
     #[test]
     fn channel_reader_and_writer_move_bytes() {

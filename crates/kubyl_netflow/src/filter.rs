@@ -976,9 +976,12 @@ pub fn complete(
     if !input.is_char_boundary(cursor) {
         return Vec::new();
     }
+    // The separator can be multi-byte (U+00A0, U+3000), so skip its own length.
     let start = input[..cursor]
-        .rfind(char::is_whitespace)
-        .map_or(0, |i| i + 1);
+        .char_indices()
+        .rev()
+        .find(|(_, c)| c.is_whitespace())
+        .map_or(0, |(i, c)| i + c.len_utf8());
     let token = &input[start..cursor];
     if token.is_empty() {
         return Vec::new();
@@ -1296,6 +1299,19 @@ mod tests {
             .collect();
         assert_eq!(sided, ["dst.pod=", "dst.port="]);
         assert!(complete("ns=payments ", 12, &Seen, 8).is_empty());
+    }
+
+    #[test]
+    fn completion_after_multibyte_whitespace() {
+        // U+00A0 (Option+Space on macOS) is 2 bytes, U+3000 is 3; neither may panic.
+        for sep in ['\u{a0}', '\u{3000}'] {
+            let input = format!("ns=payments{sep}ver");
+            let keys = complete(&input, input.len(), &Seen, 8);
+            assert_eq!(keys[0].text, "verdict=");
+            assert_eq!(keys[0].range, input.len() - 3..input.len());
+            let trailing = format!("ns=payments{sep}");
+            assert!(complete(&trailing, trailing.len(), &Seen, 8).is_empty());
+        }
     }
 
     #[test]
