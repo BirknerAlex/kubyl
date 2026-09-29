@@ -2,6 +2,24 @@
 
 All notable changes to Kubyl are documented here.
 
+## [0.3.5] - 2026-09-29
+
+### DataTable
+
+- Rows fill the width so cells line up with the header ([bd78836](https://github.com/BirknerAlex/kubyl/commit/bd7883628bc6929a57fc5aca7f9bc821b119ae22))
+
+### Logs
+
+- Unwrapped lines scroll sideways, with a horizontal scrollbar ([7600610](https://github.com/BirknerAlex/kubyl/commit/76006100b9d655414e799d4b1aa8cecbb317f5c0))
+
+### Miscellaneous
+
+- Update Flatpak manifest to v0.3.4 ([a40a293](https://github.com/BirknerAlex/kubyl/commit/a40a293e7becde3491311d7df5a7f00092f821d8))
+
+### Topology
+
+- Nodes keep their place and the view its fit across refreshes ([c583fd8](https://github.com/BirknerAlex/kubyl/commit/c583fd845f929bb33dda76d491a36e7fc7467622))
+
 ## [0.3.4] - 2026-09-28
 
 ### Bug Fixes
