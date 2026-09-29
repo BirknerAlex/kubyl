@@ -58,7 +58,8 @@ impl Tab {
         self
     }
 
-    /// Unsaved changes: shows an accent dot instead of the close button (until hovered).
+    /// Unsaved changes: shows an accent dot instead of the close button (until hovered). Only
+    /// for closable tabs ([`Self::on_close`]).
     pub fn dirty(mut self, dirty: bool) -> Self {
         self.dirty = dirty;
         self
@@ -69,7 +70,7 @@ impl Tab {
         self
     }
 
-    /// Called by the × button and by middle-clicking the tab.
+    /// Called by the × button and by middle-clicking the tab. Without it the tab has no ×.
     pub fn on_close(mut self, f: impl Fn(&mut Window, &mut App) + 'static) -> Self {
         self.on_close = Some(Box::new(f));
         self
@@ -116,7 +117,11 @@ impl RenderOnce for Tab {
                     })
                 })
         };
-        let trailing = if self.dirty {
+        // Tabs that can't be closed (dock panels) show no × at all.
+        let closable = on_close.is_some();
+        let trailing = if !closable {
+            None
+        } else if self.dirty {
             div()
                 .flex_none()
                 .size(u(16.0))
@@ -136,8 +141,9 @@ impl RenderOnce for Tab {
                         .child(close_button),
                 )
                 .into_any_element()
+                .into()
         } else {
-            close_button.into_any_element()
+            Some(close_button.into_any_element())
         };
 
         h_flex()
@@ -167,7 +173,8 @@ impl RenderOnce for Tab {
                 this.child(Icon::from_path(path).size(13.0).color(icon_color))
             })
             .child(self.label)
-            .child(trailing)
+            .children(trailing)
+            .when(!closable, |this| this.pr(u(14.0)))
             .when_some(self.on_click, |this, f| this.on_click(f))
             .when_some(on_close, |this, f| {
                 this.on_mouse_up(MouseButton::Middle, move |_, window, cx| f(window, cx))
