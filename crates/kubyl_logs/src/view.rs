@@ -401,8 +401,10 @@ pub struct LogsView {
     wrap: bool,
     /// How far messages are scrolled to the left while lines don't wrap (pixels).
     h_scroll: f32,
-    /// Characters of the longest shown line (since the last rebuild): the horizontal range.
+    /// Characters of the longest shown line: the horizontal range.
     longest: usize,
+    /// `longest` may be too long (its line was evicted, paused or filtered out): recount.
+    longest_stale: bool,
     /// Widths of the message column and of the list, measured while painting.
     message_width: Rc<Cell<f32>>,
     track_width: Rc<Cell<f32>>,
@@ -535,6 +537,7 @@ impl LogsView {
             wrap: settings.wrap,
             h_scroll: 0.0,
             longest: 0,
+            longest_stale: false,
             message_width: Rc::new(Cell::new(0.0)),
             track_width: Rc::new(Cell::new(0.0)),
             h_drag: None,
@@ -638,6 +641,7 @@ impl LogsView {
         self.rate = RateMeter::default();
         self.pods.clear();
         self.longest = 0;
+        self.longest_stale = false;
         self.h_scroll = 0.0;
         self.list_state.reset(0);
         if self.follow {
@@ -1016,6 +1020,9 @@ impl LogsView {
             self.visible.pop_front();
         }
         if self.rendered.front() == Some(&evicted.seq) {
+            if evicted.text.chars().count() >= self.longest {
+                self.longest_stale = true;
+            }
             self.rendered.pop_front();
             self.pending_evicted += 1;
         }
@@ -1037,7 +1044,10 @@ impl LogsView {
         }
         let restrict = self.filter_to_matches && self.search.is_some();
         if !restrict || search_match {
-            if let Some(line) = self.ring.get_by_seq(seq) {
+            // While paused, new rows aren't shown.
+            if self.frozen.is_none()
+                && let Some(line) = self.ring.get_by_seq(seq)
+            {
                 self.longest = self.longest.max(line.text.chars().count());
             }
             self.rendered.push_back(seq);
@@ -1132,13 +1142,7 @@ impl LogsView {
         } else {
             self.visible.clone()
         };
-        self.longest = self
-            .rendered
-            .iter()
-            .filter_map(|&seq| self.ring.get_by_seq(seq))
-            .map(|l| l.text.chars().count())
-            .max()
-            .unwrap_or(0);
+        self.longest_stale = true;
         self.pending_appended = 0;
         self.pending_evicted = 0;
         if self.frozen.is_some() {
@@ -1260,6 +1264,7 @@ impl LogsView {
     }
 
     fn toggle_pause(&mut self, cx: &mut Context<Self>) {
+        self.longest_stale = true;
         if self.frozen.take().is_some() {
             self.pause_limit = None;
             self.paused_new_lines = 0;
@@ -1491,6 +1496,24 @@ impl LogsView {
     /// Lines are cut at the view's edge: messages scroll sideways instead.
     fn scrolls_horizontally(&self) -> bool {
         !self.wrap && self.json_mode != JsonMode::Pretty
+    }
+
+    /// Recounts the longest shown line (the paused rows while paused) once it may be stale.
+    fn refresh_longest(&mut self) {
+        if !self.longest_stale {
+            return;
+        }
+        self.longest_stale = false;
+        let lengths = |seqs: &mut dyn Iterator<Item = &u64>| {
+            seqs.filter_map(|&seq| self.ring.get_by_seq(seq))
+                .map(|l| l.text.chars().count())
+                .max()
+                .unwrap_or(0)
+        };
+        self.longest = match &self.frozen {
+            Some(rows) => lengths(&mut rows.iter()),
+            None => lengths(&mut self.rendered.iter()),
+        };
     }
 
     /// How far the longest line can scroll: until its end is in view.
@@ -2603,6 +2626,9 @@ impl Render for LogsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors().clone();
         // Filters and evictions can shorten the longest line.
+        if self.scrolls_horizontally() {
+            self.refresh_longest();
+        }
         self.h_scroll = if self.scrolls_horizontally() {
             self.h_scroll.min(self.max_h_scroll(window))
         } else {

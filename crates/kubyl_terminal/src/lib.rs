@@ -276,7 +276,7 @@ pub(crate) fn confirm_node_shell(
         format!(
             "Creates a privileged pod in {namespace} (host PID, network and IPC) on {node}, with \
              the node's root filesystem at /host: run `chroot /host` to use it. The pod is \
-             deleted when the shell closes, and after 12 hours at the latest."
+             deleted when the shell closes, and stops after 12 hours at the latest."
         )
         .into(),
     );

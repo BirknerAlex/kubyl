@@ -179,8 +179,10 @@ fn pinned(
                 continue;
             }
             let [dx, dy] = [starts[a][0] - starts[b][0], starts[a][1] - starts[b][1]];
-            // Collide doesn't separate circles exactly: some slack before moving them.
-            let room = (collide_radii[a] + collide_radii[b]) * 0.85;
+            // Collide doesn't separate circles exactly: some slack before moving them, but
+            // never so much that the circles themselves overlap (big group circles).
+            let room = ((collide_radii[a] + collide_radii[b]) * 0.85)
+                .max(f64::from(nodes[a].radius) + f64::from(nodes[b].radius));
             if dx * dx + dy * dy < room * room {
                 crowded[a] = true;
                 crowded[b] = true;

@@ -1145,6 +1145,42 @@ mod tests {
     }
 
     #[gpui::test]
+    fn dropping_onto_a_duplicate_keeps_unsaved_edits(cx: &mut TestAppContext) {
+        let _dir = init(cx);
+        let window = open(cx, WorkspaceLayout::default());
+        window
+            .update(cx, |workspace, window, cx| {
+                // Nothing builds this kind: the split's copy is a clean placeholder.
+                let request = ViewRequest::new(kubyl_core::ViewKind::Custom("unsaved".into()));
+                let dirty = cx.new(|cx| DirtyTab {
+                    request: request.clone(),
+                    focus: cx.focus_handle(),
+                });
+                let dirty_id = dirty.entity_id();
+                let first = workspace.active_pane.clone();
+                first.update(cx, |p, cx| p.add_item(Box::new(dirty), true, window, cx));
+                workspace.split(&first, SplitAxis::Horizontal, window, cx);
+                let second = workspace.active_pane.clone();
+                let copy_id = second.read(cx).active_item().unwrap().entity_id();
+                assert_ne!(copy_id, dirty_id);
+
+                let drag = pane::DraggedTab::new(first.downgrade(), dirty_id);
+                second.update(cx, |p, cx| p.drop_tab(&drag, None, window, cx));
+                let ids: Vec<_> = second
+                    .read(cx)
+                    .items()
+                    .iter()
+                    .map(|i| i.entity_id())
+                    .collect();
+                assert!(
+                    ids.contains(&dirty_id) && !ids.contains(&copy_id),
+                    "{ids:?}"
+                );
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
     fn keymap_presets_name_existing_actions(cx: &mut TestAppContext) {
         let _dir = init(cx);
         cx.update(|cx| {

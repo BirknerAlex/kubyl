@@ -1485,6 +1485,8 @@ impl TabView for ResourceListView {
         Some(TabContext {
             cluster: cluster.clone(),
             namespace: match self.namespaces.as_slice() {
+                // Cluster-scoped kinds (Nodes) have no namespace to show.
+                _ if !self.namespaced => TabNamespace::Keep,
                 [] => TabNamespace::All,
                 [namespace] => TabNamespace::One(namespace.clone()),
                 // The title bar shows one namespace or all.

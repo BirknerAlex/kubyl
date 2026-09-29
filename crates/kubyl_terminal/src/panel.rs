@@ -118,15 +118,25 @@ impl TerminalPanel {
         }) else {
             return;
         };
+        // Focus only moves if the exited terminal had it (not for one in the background).
+        let had_focus = self.tabs[tab].terminals[split]
+            .read(cx)
+            .focus_handle(cx)
+            .contains_focused(window, cx);
         if self.tabs[tab].terminals.len() <= 1 {
-            self.close_tab(tab, window, cx);
+            self.remove_tab(tab, had_focus, window, cx);
             return;
         }
         let terminal = self.tabs[tab].terminals.remove(split);
         self.subscriptions.remove(&terminal.entity_id());
         let t = &mut self.tabs[tab];
+        // An earlier split closing keeps the active one active.
+        if t.active > split {
+            t.active -= 1;
+        }
         t.active = t.active.min(t.terminals.len() - 1);
-        if tab == self.active
+        if had_focus
+            && tab == self.active
             && let Some(terminal) = self.active_terminal()
         {
             terminal.read(cx).focus_handle(cx).focus(window, cx);
@@ -190,6 +200,17 @@ impl TerminalPanel {
     }
 
     fn close_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.remove_tab(index, true, window, cx);
+    }
+
+    /// Removes a tab; `focus` moves focus to the tab that becomes active.
+    fn remove_tab(
+        &mut self,
+        index: usize,
+        focus: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if index >= self.tabs.len() {
             return;
         }
@@ -205,9 +226,11 @@ impl TerminalPanel {
         if self.active >= self.tabs.len() {
             self.active = self.tabs.len().saturating_sub(1);
         }
-        match self.active_terminal() {
-            Some(terminal) => terminal.read(cx).focus_handle(cx).focus(window, cx),
-            None => self.focus.focus(window, cx),
+        if focus {
+            match self.active_terminal() {
+                Some(terminal) => terminal.read(cx).focus_handle(cx).focus(window, cx),
+                None => self.focus.focus(window, cx),
+            }
         }
         cx.notify();
     }

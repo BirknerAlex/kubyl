@@ -257,26 +257,41 @@ impl Pane {
         let Some(source) = dragged.pane.upgrade() else {
             return;
         };
-        let item = dragged.item;
-        let Some(item) = source.update(cx, |pane, cx| pane.take_item(item, window, cx)) else {
+        let Some((request, dirty)) = source
+            .read(cx)
+            .items
+            .iter()
+            .find(|i| i.entity_id() == dragged.item)
+            .map(|i| (i.view_request(cx), i.is_dirty(cx)))
+        else {
             return;
         };
-        let mut index = index.unwrap_or(self.items.len());
-        // This pane already shows that view: keep one tab, at the drop position.
-        let request = item.view_request(cx);
+        // This pane already shows that view: keep one tab, at the drop position. The one with
+        // unsaved edits stays; if both have some, nothing moves.
         let existing = request.as_ref().and_then(|request| {
             self.items
                 .iter()
                 .position(|i| i.view_request(cx).as_ref() == Some(request))
         });
+        if let Some(existing) = existing
+            && dirty
+            && self.items[existing].is_dirty(cx)
+        {
+            return;
+        }
+        let item = dragged.item;
+        let Some(item) = source.update(cx, |pane, cx| pane.take_item(item, window, cx)) else {
+            return;
+        };
+        let mut index = index.unwrap_or(self.items.len());
         let item = match existing {
             Some(existing) => {
-                let item = self.items.remove(existing);
-                self.item_subscriptions.remove(&item.entity_id());
+                let kept = self.items.remove(existing);
+                self.item_subscriptions.remove(&kept.entity_id());
                 if existing < index {
                     index -= 1;
                 }
-                item
+                if dirty { item } else { kept }
             }
             None => item,
         };
