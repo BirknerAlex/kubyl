@@ -14,7 +14,7 @@ use gpui::{
 use gpui_component::input::{Input, InputEvent, InputState};
 use kubyl_core::{
     ActionRegistry, ActionSpec, ActiveContext, CellValue, ColumnDef, ColumnWidth, ResourceRef,
-    TabView, Tone, ViewKind, ViewRequest,
+    TabContext, TabNamespace, TabView, Tone, ViewKind, ViewRequest,
 };
 use kubyl_resources::{ResourceSelection, Selected};
 use kubyl_ui::{
@@ -172,7 +172,12 @@ impl EventsView {
             cx.new(|cx| InputState::new(window, cx).placeholder("Search reason, object, message"));
         let subscriptions = vec![
             cx.observe(&feed, |this, _, cx| this.refresh(cx)),
-            cx.observe_global::<ActiveContext>(|this, cx| this.follow(cx)),
+            cx.observe_global::<ActiveContext>(|this, cx| {
+                // Another tab's namespace shown in the title bar doesn't re-scope this view.
+                if !ActiveContext::follows_tab(cx) {
+                    this.follow(cx)
+                }
+            }),
             cx.subscribe_in(
                 &table,
                 window,
@@ -328,6 +333,17 @@ impl TabView for EventsView {
             ViewKind::Events,
             self.target.clone(),
         ))
+    }
+
+    fn tab_context(&self, cx: &App) -> Option<TabContext> {
+        let feed = self.feed.read(cx);
+        Some(TabContext {
+            cluster: feed.cluster()?.clone(),
+            namespace: match feed.namespace() {
+                Some(namespace) => TabNamespace::One(namespace.to_string()),
+                None => TabNamespace::All,
+            },
+        })
     }
 }
 

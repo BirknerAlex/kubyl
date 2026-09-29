@@ -7,9 +7,9 @@ mod pane_group;
 mod sidebar;
 
 use gpui::{
-    AnyElement, AnyView, App, Context, Entity, ExternalPaths, FocusHandle, Focusable, IntoElement,
-    MouseButton, NavigationDirection, Pixels, Render, SharedString, Subscription, WeakEntity,
-    Window, actions, div, prelude::*, px,
+    AnyElement, AnyView, App, Context, Entity, EntityId, ExternalPaths, FocusHandle, Focusable,
+    IntoElement, MouseButton, NavigationDirection, Pixels, Render, SharedString, Subscription,
+    WeakEntity, Window, actions, div, prelude::*, px,
 };
 use gpui_component::resizable::{ResizableState, h_resizable, resizable_panel, v_resizable};
 use kubyl_core::actions::{ActivateDockPanel, OpenSettings, OpenView, ShowNotifications};
@@ -17,6 +17,7 @@ use kubyl_core::{
     ActiveContext, ChromeRegistry, DockPosition, NotificationCenter, StatusBarPosition, TabHandle,
     ViewRegistry, ViewRequest,
 };
+use kubyl_kube::ConnectionManager;
 use kubyl_settings::{Settings, State};
 use kubyl_ui::{
     ActiveColors, AppearanceSettings, Button, IconButton, IconName, Modal, StatusBar,
@@ -80,6 +81,8 @@ pub struct Workspace {
     toasts_shown: u64,
     history_seen: u64,
     overlay: Option<Overlay>,
+    /// The tab whose cluster and namespace the title bar last followed.
+    followed_tab: Option<EntityId>,
     focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -144,6 +147,11 @@ impl Workspace {
             cx.observe_window_appearance(window, |_, _, cx| kubyl_ui::apply_theme(cx)),
         ];
 
+        // The restored tabs don't switch the restored cluster.
+        let followed_tab = active_pane
+            .read(cx)
+            .active_item()
+            .map(|item| item.entity_id());
         let this = Self {
             center,
             active_pane,
@@ -163,6 +171,7 @@ impl Workspace {
             toasts_shown: latest,
             history_seen: latest,
             overlay: None,
+            followed_tab,
             focus: cx.focus_handle(),
             _subscriptions: subscriptions,
         };
@@ -205,6 +214,26 @@ impl Workspace {
             }
             PaneEvent::ToggleZoom => self.toggle_zoom(pane, cx),
             PaneEvent::Changed => self.save_layout(window, cx),
+        }
+        self.follow_active_tab(cx);
+    }
+
+    /// Shows the cluster and namespace of the active tab in the title bar once another tab
+    /// becomes active (e.g. logs of pods in different clusters).
+    fn follow_active_tab(&mut self, cx: &mut Context<Self>) {
+        let Some(item) = self.active_pane.read(cx).active_item() else {
+            return;
+        };
+        let id = item.entity_id();
+        if self.followed_tab == Some(id) {
+            return;
+        }
+        self.followed_tab = Some(id);
+        let Some(context) = item.tab_context(cx) else {
+            return;
+        };
+        if let Some(manager) = ConnectionManager::try_global(cx) {
+            manager.update(cx, |manager, cx| manager.follow_tab(&context, cx));
         }
     }
 

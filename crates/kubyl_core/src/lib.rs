@@ -20,7 +20,7 @@ pub mod runtime;
 pub mod types;
 
 pub use cluster_ids::ClusterIds;
-pub use context::{ActiveContext, ClusterBadge};
+pub use context::{ActiveContext, ClusterBadge, TabContext, TabNamespace};
 pub use error::{Error, Result};
 pub use notify::{
     Notification, NotificationAction, NotificationCenter, NotificationLevel, NotifyResultExt,
