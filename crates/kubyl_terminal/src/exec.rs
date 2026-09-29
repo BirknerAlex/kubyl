@@ -2,6 +2,7 @@
 //! the UI thread, plus the Kubernetes objects some sessions need first: ephemeral debug
 //! containers (`kubectl debug`) and privileged node-shell pods.
 
+use std::future::poll_fn;
 use std::time::Duration;
 
 use anyhow::Context as _;
@@ -123,14 +124,16 @@ pub async fn pod_info(
 }
 
 /// Runs until `input` closes or the connection drops. Output bytes (stdout and stderr) go to
-/// `output`; `resize` carries `(columns, rows)`. `connected` is signaled once the websocket is
+/// `output`, which is bounded: a flood (`tcpdump`, `yes`) is read only as fast as the view
+/// draws it, so the backlog stays small and Ctrl+C stops the output promptly instead of a
+/// queue of already-received megabytes scrolling on. `resize` carries `(columns, rows)`. `connected` is signaled once the websocket is
 /// established (`Ok(())`) or failed (`Err(message)`). Returns whether the process exited (the
 /// API server sent its status), rather than the connection dropping or `input` closing.
 pub async fn run(
     client: kube::Client,
     target: ExecTarget,
     mut input: mpsc::UnboundedReceiver<Vec<u8>>,
-    output: mpsc::UnboundedSender<Vec<u8>>,
+    mut output: mpsc::Sender<Vec<u8>>,
     mut resize: mpsc::UnboundedReceiver<(u16, u16)>,
     connected: futures::channel::oneshot::Sender<Result<(), String>>,
 ) -> anyhow::Result<bool> {
@@ -173,6 +176,8 @@ pub async fn run(
     let mut stdout = attached.stdout();
     let mut stderr = attached.stderr();
     let mut resize_tx = attached.terminal_size();
+    // Each stream waits for its own queue slot, so stderr needs its own sender.
+    let mut err_output = output.clone();
 
     let mut out_buf = [0u8; 8192];
     let mut err_buf = [0u8; 4096];
@@ -195,31 +200,39 @@ pub async fn run(
                         .ok();
                 }
             }
+            // Reads only once the view has room, while input and resizes keep flowing.
             read = async {
-                match stdout.as_mut() {
-                    Some(stdout) => stdout.read(&mut out_buf).await,
-                    None => std::future::pending().await,
+                let Some(stdout) = stdout.as_mut() else {
+                    return std::future::pending().await;
+                };
+                if poll_fn(|cx| output.poll_ready(cx)).await.is_err() {
+                    return Ok(None);
                 }
+                stdout.read(&mut out_buf).await.map(Some)
             } => {
                 match read {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        if output.unbounded_send(out_buf[..n].to_vec()).is_err() {
+                    Ok(None | Some(0)) | Err(_) => break,
+                    Ok(Some(n)) => {
+                        if output.start_send(out_buf[..n].to_vec()).is_err() {
                             break;
                         }
                     }
                 }
             }
             read = async {
-                match stderr.as_mut() {
-                    Some(stderr) => stderr.read(&mut err_buf).await,
-                    None => std::future::pending().await,
+                let Some(stderr) = stderr.as_mut() else {
+                    return std::future::pending().await;
+                };
+                if poll_fn(|cx| err_output.poll_ready(cx)).await.is_err() {
+                    return Ok(None);
                 }
+                stderr.read(&mut err_buf).await.map(Some)
             } => {
                 match read {
-                    Ok(0) | Err(_) => stderr = None,
-                    Ok(n) => {
-                        if output.unbounded_send(err_buf[..n].to_vec()).is_err() {
+                    Ok(None) => break,
+                    Ok(Some(0)) | Err(_) => stderr = None,
+                    Ok(Some(n)) => {
+                        if err_output.start_send(err_buf[..n].to_vec()).is_err() {
                             break;
                         }
                     }

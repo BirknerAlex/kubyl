@@ -80,7 +80,7 @@ async fn session_output(
     expect: &str,
 ) -> String {
     let (input_tx, input_rx) = mpsc::unbounded();
-    let (output_tx, mut output_rx) = mpsc::unbounded();
+    let (output_tx, mut output_rx) = mpsc::channel(32);
     let (resize_tx, resize_rx) = mpsc::unbounded();
     let (connected_tx, connected_rx) = oneshot::channel();
     resize_tx.unbounded_send(size).unwrap();
@@ -113,7 +113,7 @@ async fn session_output(
 /// Types `exit` and returns what [`exec::run`] reports: `true` when the process exited.
 async fn exits(client: kube::Client, target: ExecTarget) -> bool {
     let (input_tx, input_rx) = mpsc::unbounded();
-    let (output_tx, _output_rx) = mpsc::unbounded();
+    let (output_tx, _output_rx) = mpsc::channel(32);
     let (_resize_tx, resize_rx) = mpsc::unbounded();
     let (connected_tx, connected_rx) = oneshot::channel();
     let task = tokio::spawn(exec::run(

@@ -456,7 +456,7 @@ impl TerminalView {
         let name = spec.target.name.clone().unwrap_or_default();
 
         let (input_tx, input_rx) = mpsc::unbounded();
-        let (output_tx, mut output_rx) = mpsc::unbounded();
+        let (output_tx, mut output_rx) = mpsc::channel(OUTPUT_QUEUE);
         let (resize_tx, resize_rx) = mpsc::unbounded();
         // The current size goes first, so the program starts with the right dimensions.
         resize_tx
@@ -1709,9 +1709,13 @@ pub(crate) fn notify_error(cx: &mut App, message: impl Into<SharedString>) {
 /// The most output parsed in one go on the UI thread; the rest waits for the next round.
 const MAX_BATCH: usize = 256 * 1024;
 
+/// Output reads (up to 8 KiB each) queued for the view before the session stops reading: about
+/// one batch, so a flood never builds a backlog that keeps scrolling after Ctrl+C.
+const OUTPUT_QUEUE: usize = 32;
+
 /// Appends queued output to `batch` until it holds `MAX_BATCH` bytes, so a flood (`cat` of a
 /// big file) is parsed in slices and the UI keeps painting and handling input.
-fn fill_batch(batch: &mut Vec<u8>, rx: &mut mpsc::UnboundedReceiver<Vec<u8>>) {
+fn fill_batch(batch: &mut Vec<u8>, rx: &mut mpsc::Receiver<Vec<u8>>) {
     while batch.len() < MAX_BATCH {
         match rx.try_recv() {
             Ok(more) => batch.extend_from_slice(&more),
@@ -1726,10 +1730,10 @@ mod tests {
 
     #[test]
     fn output_batches_are_capped_and_nothing_is_lost() {
-        let (tx, mut rx) = mpsc::unbounded();
+        let (mut tx, mut rx) = mpsc::channel(20);
         let chunk = vec![b'x'; 64 * 1024];
         for _ in 0..20 {
-            tx.unbounded_send(chunk.clone()).unwrap();
+            tx.try_send(chunk.clone()).unwrap();
         }
         let mut total = 0;
         let mut rounds = 0;
