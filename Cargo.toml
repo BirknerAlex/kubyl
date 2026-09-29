@@ -53,6 +53,12 @@ http = "1.5.0"
 http-body-util = "0.1.5"
 jiff = "0.2.37"
 tower = { version = "0.5.3", features = ["buffer", "filter"] }
+# kube's HTTP stack, rebuilt in `kubyl_kube::transport` to speak HTTP/2 (same versions as kube).
+hyper = { version = "1.11.1", default-features = false }
+hyper-util = { version = "0.1.20", default-features = false, features = ["client-legacy", "client-proxy", "http1", "http2", "tokio"] }
+hyper-rustls = { version = "0.27.10", default-features = false, features = ["http1", "http2"] }
+hyper-timeout = "0.5.2"
+tower-http = { version = "0.6.11", default-features = false, features = ["decompression-gzip"] }
 
 # Auth: OS keychain and OIDC (openidconnect brings its own reqwest, re-exported as `openidconnect::reqwest`).
 keyring = "4.2.0"
