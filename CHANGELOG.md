@@ -2,6 +2,25 @@
 
 All notable changes to Kubyl are documented here.
 
+## [0.3.6] - 2026-09-29
+
+### Miscellaneous
+
+- Update Flatpak manifest to v0.3.5 ([abe0c71](https://github.com/BirknerAlex/kubyl/commit/abe0c7193b07638e01213a1544eaef352f995dcd))
+
+### Terminal
+
+- Bound the output queue so Ctrl+C stops a flood promptly ([1fcb54b](https://github.com/BirknerAlex/kubyl/commit/1fcb54bfb3594fc7f4d9a4ca3caf72cf0d73dd7f))
+
+### Kubyl
+
+- Raise the open-file limit at startup ([40992c7](https://github.com/BirknerAlex/kubyl/commit/40992c7422677ba890f4a1d8a58e497b104cd92d))
+- Log when the open-file limit can't be raised (review) ([f5aeda9](https://github.com/BirknerAlex/kubyl/commit/f5aeda9093a54f73b745fd2682349267b980cf09))
+
+### Kubyl_kube
+
+- HTTP/2 to API servers, one connection per cluster ([8a1f17e](https://github.com/BirknerAlex/kubyl/commit/8a1f17e6c561c0e8361571427894a2ff36e2c06a))
+
 ## [0.3.5] - 2026-09-29
 
 ### DataTable
