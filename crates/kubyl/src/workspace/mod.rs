@@ -1038,6 +1038,83 @@ mod tests {
     }
 
     #[gpui::test]
+    fn dragging_tabs_reorders_and_moves_them(cx: &mut TestAppContext) {
+        use kubyl_core::ViewKind;
+        let _dir = init(cx);
+        let window = open(cx, WorkspaceLayout::default());
+        let kinds = |pane: &Entity<Pane>, cx: &App| -> Vec<ViewKind> {
+            pane.read(cx)
+                .items()
+                .iter()
+                .filter_map(|i| i.view_request(cx).map(|r| r.kind))
+                .collect()
+        };
+        let dragged = |pane: &Entity<Pane>, index: usize, cx: &App| {
+            pane::DraggedTab::new(pane.downgrade(), pane.read(cx).items()[index].entity_id())
+        };
+        let (first, second) = window
+            .update(cx, |workspace, window, cx| {
+                workspace.open(&ViewRequest::new(ViewKind::Overview), window, cx);
+                workspace.open(&ViewRequest::new(ViewKind::Events), window, cx);
+                let first = workspace.active_pane.clone();
+                assert_eq!(
+                    kinds(&first, cx),
+                    [ViewKind::Welcome, ViewKind::Overview, ViewKind::Events]
+                );
+
+                // Onto another tab: takes its place. Onto the empty space: goes last.
+                let drag = dragged(&first, 0, cx);
+                first.update(cx, |p, cx| p.drop_tab(&drag, Some(2), window, cx));
+                assert_eq!(
+                    kinds(&first, cx),
+                    [ViewKind::Overview, ViewKind::Events, ViewKind::Welcome]
+                );
+                assert_eq!(first.read(cx).active_item().unwrap().entity_id(), drag.item);
+                let drag = dragged(&first, 0, cx);
+                first.update(cx, |p, cx| p.drop_tab(&drag, None, window, cx));
+                assert_eq!(
+                    kinds(&first, cx),
+                    [ViewKind::Events, ViewKind::Welcome, ViewKind::Overview]
+                );
+
+                // Into another pane (the split starts with a copy of Overview).
+                workspace.split(&first, SplitAxis::Horizontal, window, cx);
+                let second = workspace.active_pane.clone();
+                let drag = dragged(&first, 0, cx);
+                second.update(cx, |p, cx| p.drop_tab(&drag, Some(0), window, cx));
+                assert_eq!(kinds(&first, cx), [ViewKind::Welcome, ViewKind::Overview]);
+                assert_eq!(kinds(&second, cx), [ViewKind::Events, ViewKind::Overview]);
+                assert_eq!(
+                    second.read(cx).active_item().unwrap().entity_id(),
+                    drag.item
+                );
+
+                // A view the pane already shows isn't duplicated.
+                let drag = dragged(&first, 1, cx);
+                second.update(cx, |p, cx| p.drop_tab(&drag, Some(0), window, cx));
+                assert_eq!(kinds(&first, cx), [ViewKind::Welcome]);
+                assert_eq!(kinds(&second, cx), [ViewKind::Overview, ViewKind::Events]);
+
+                // Moving the last tab out removes the pane.
+                let drag = dragged(&first, 0, cx);
+                second.update(cx, |p, cx| p.drop_tab(&drag, None, window, cx));
+                (first, second)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |workspace, _, cx| {
+                assert_eq!(workspace.center.panes(), std::slice::from_ref(&second));
+                assert!(first.read(cx).items().is_empty());
+                assert_eq!(
+                    kinds(&second, cx),
+                    [ViewKind::Overview, ViewKind::Events, ViewKind::Welcome]
+                );
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
     fn keymap_presets_name_existing_actions(cx: &mut TestAppContext) {
         let _dir = init(cx);
         cx.update(|cx| {
