@@ -57,6 +57,7 @@ pub mod kubeconfig;
 pub mod manager;
 pub mod openapi;
 pub mod settings;
+pub mod transport;
 pub mod ui;
 pub mod watches;
 

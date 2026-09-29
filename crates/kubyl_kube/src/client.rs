@@ -17,6 +17,7 @@ use crate::auth::{
     OpenShiftAuth, exec,
 };
 use crate::kubeconfig::ContextInfo;
+use crate::transport::{self, ConnectionCounts};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Requests queued in front of the auth layer.
@@ -111,6 +112,8 @@ pub struct BuiltClient {
     pub proxy: Option<String>,
     /// A client certificate from an exec plugin expires then; the client must be rebuilt.
     pub rebuild_at: Option<jiff::Timestamp>,
+    /// Its open connections to the API server.
+    pub connections: Arc<ConnectionCounts>,
 }
 
 /// Builds a client for `info` from its parsed kubeconfig. Runs exec plugins that return
@@ -205,10 +208,11 @@ pub async fn build(
         .map(|u| redact_userinfo(&u.to_string()));
     let default_namespace = config.default_namespace.clone();
 
-    let builder = kube::client::ClientBuilder::try_from(config)
-        .map_err(|err| ConnectError::Config(error_chain(&err)))?;
+    let connections = Arc::new(ConnectionCounts::default());
+    let builder = transport::client_builder(&config, connections.clone())
+        .map_err(|err| ConnectError::Config(error_chain(&*err)))?;
     let client = match &credentials {
-        // `AsyncFilter` clones its inner service per request; kube's boxed stack isn't `Clone`,
+        // `AsyncFilter` clones its inner service per request; the boxed stack isn't `Clone`,
         // so a buffer (a channel to a worker task on the Tokio runtime) sits in between.
         Some(source) => builder
             .with_layer(&BufferLayer::new(BUFFER_SIZE))
@@ -223,6 +227,7 @@ pub async fn build(
         default_namespace,
         proxy,
         rebuild_at,
+        connections,
     })
 }
 

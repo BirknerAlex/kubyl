@@ -992,6 +992,20 @@ impl ConnectionManager {
             .count()
     }
 
+    /// Open API server connections of each cluster that has a client, by display name.
+    pub fn open_connections(&self) -> Vec<(SharedString, crate::transport::OpenConnections)> {
+        let mut list: Vec<_> = self
+            .clusters
+            .iter()
+            .filter_map(|(id, cluster)| {
+                let open = cluster.client.as_ref()?.connections.snapshot();
+                (open.total() > 0).then(|| (self.display_name(id), open))
+            })
+            .collect();
+        list.sort_by(|a, b| a.0.cmp(&b.0));
+        list
+    }
+
     pub fn active(&self) -> Option<&ClusterId> {
         self.active.as_ref()
     }
