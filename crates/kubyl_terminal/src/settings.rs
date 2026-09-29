@@ -32,8 +32,8 @@ pub struct TerminalSettings {
     /// Image of ephemeral debug containers (`kubectl debug`).
     pub debug_image: String,
     /// Image of node-shell pods. The node's root filesystem is mounted at `/host`
-    /// (`chroot /host` to use it); defaults to `netshoot`, which bundles common debugging
-    /// tools (`curl`, `dig`, `tcpdump`, `iproute2`…).
+    /// (`chroot /host` to use it); defaults to Kubyl's debug image (Alpine with `tcpdump`,
+    /// `htop`, `strace`, `mtr`, filesystem tools…, github.com/BirknerAlex/kubyl-debug-image).
     pub node_shell_image: String,
     /// Namespace node-shell pods are created in (it must allow privileged pods).
     pub node_shell_namespace: String,
@@ -48,7 +48,7 @@ impl Default for TerminalSettings {
             option_as_meta: !cfg!(target_os = "macos"),
             open_in: OpenIn::Panel,
             debug_image: "busybox:1.37".into(),
-            node_shell_image: "nicolaka/netshoot:v0.16".into(),
+            node_shell_image: "docker.io/tyrola/kubyl-debug:3.24".into(),
             node_shell_namespace: "kube-system".into(),
         }
     }
