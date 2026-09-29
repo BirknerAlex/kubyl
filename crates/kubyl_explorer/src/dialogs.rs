@@ -231,16 +231,22 @@ fn typed_confirmation(
     v_flex()
         .gap(u(6.0))
         .child(
+            // Wraps: long names (FQDNs) would run out of the dialog. The name can be selected
+            // and copied.
             h_flex()
-                .gap(u(6.0))
+                .flex_wrap()
+                .gap_x(u(6.0))
+                .gap_y(u(4.0))
                 .text_size(u(12.0))
                 .child(kubyl_ui::ProdBadge)
                 .child("This is a production cluster. Type")
                 .child(
                     div()
+                        .min_w_0()
+                        .max_w_full()
                         .font_family(fonts::MONO)
                         .text_color(colors.text)
-                        .child(typed),
+                        .child(kubyl_ui::Selectable::new("typed", typed)),
                 )
                 .child("to confirm."),
         )
