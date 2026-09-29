@@ -2351,6 +2351,20 @@ impl DetailsContent {
 
 impl Render for DetailsContent {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A sub-tab view that asks to close (a terminal whose shell exited) is dropped: opening
+        // the sub-tab again starts a new session.
+        let closed: Vec<Mode> = self
+            .extra
+            .iter()
+            .filter(|(_, tab)| tab.handle.wants_close(cx))
+            .map(|(mode, _)| *mode)
+            .collect();
+        for mode in closed {
+            self.extra.remove(&mode);
+            if self.mode == mode {
+                self.mode = Mode::Summary;
+            }
+        }
         let colors = cx.colors().clone();
         let (Some(target), Some(object)) = (self.target.clone(), self.object.clone()) else {
             let message = if self.target.is_some() {

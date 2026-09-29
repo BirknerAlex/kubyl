@@ -218,6 +218,8 @@ pub struct TerminalView {
     resize_tx: Option<mpsc::UnboundedSender<(u16, u16)>>,
     session_id: Option<SessionId>,
     node_pod: Option<NodePod>,
+    /// The session's process exited: the view asks to be closed ([`TabView::wants_close`]).
+    exited: bool,
     selecting: bool,
     /// Mouse button held while the program gets mouse reports.
     reporting_button: Option<u8>,
@@ -294,6 +296,7 @@ impl TerminalView {
             resize_tx: None,
             session_id: None,
             node_pod: None,
+            exited: false,
             selecting: false,
             reporting_button: None,
             last_report_cell: None,
@@ -623,7 +626,7 @@ impl TerminalView {
             }
 
             let (connected_tx, connected_rx) = futures::channel::oneshot::channel();
-            let _run = cx.update(|cx| {
+            let run = cx.update(|cx| {
                 kubyl_core::spawn_kube(cx, async move {
                     exec::run(client, target, input_rx, output_tx, resize_rx, connected_tx).await
                 })
@@ -666,11 +669,15 @@ impl TerminalView {
                     .timer(Duration::from_millis(8))
                     .await;
             }
+            let exited = matches!(run.await, Ok(true));
             this.update(cx, |this, cx| {
                 this.input_tx = None;
                 if let Some(pod) = this.node_pod.take() {
                     pod.delete();
                 }
+                // The shell or container exited (`exit`): its tab closes, a new one starts a
+                // new session. A dropped connection keeps the output and can reconnect.
+                this.exited = exited;
                 this.set_status(
                     Status::Ended("session ended · press Enter to reconnect".into()),
                     cx,
@@ -727,6 +734,7 @@ impl TerminalView {
         ) {
             return;
         }
+        self.exited = false;
         if matches!(self.spec.mode, SessionMode::NodeShell { .. }) {
             self.status = Status::NeedsConfirmation;
             cx.notify();
@@ -1024,7 +1032,7 @@ impl TerminalView {
             .into_any_element()
     }
 
-    /// Confirms (creates a privileged pod, PROD asks for the typed node name), then connects.
+    /// Confirms (creates a privileged pod), then connects.
     fn start_node_shell(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let target = self.spec.target.clone();
         // The namespace `start` actually creates the pod in: settings may have changed since
@@ -1528,6 +1536,10 @@ impl TabView for TerminalView {
 
     fn tab_icon(&self, _: &App) -> Option<SharedString> {
         Some(IconName::Terminal.path())
+    }
+
+    fn wants_close(&self, _: &App) -> bool {
+        self.exited
     }
 
     fn view_request(&self, _: &App) -> Option<ViewRequest> {

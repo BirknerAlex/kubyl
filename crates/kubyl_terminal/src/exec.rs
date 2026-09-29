@@ -124,7 +124,8 @@ pub async fn pod_info(
 
 /// Runs until `input` closes or the connection drops. Output bytes (stdout and stderr) go to
 /// `output`; `resize` carries `(columns, rows)`. `connected` is signaled once the websocket is
-/// established (`Ok(())`) or failed (`Err(message)`).
+/// established (`Ok(())`) or failed (`Err(message)`). Returns whether the process exited (the
+/// API server sent its status), rather than the connection dropping or `input` closing.
 pub async fn run(
     client: kube::Client,
     target: ExecTarget,
@@ -132,7 +133,7 @@ pub async fn run(
     output: mpsc::UnboundedSender<Vec<u8>>,
     mut resize: mpsc::UnboundedReceiver<(u16, u16)>,
     connected: futures::channel::oneshot::Sender<Result<(), String>>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     use futures::StreamExt as _;
 
     let api: Api<Pod> = Api::namespaced(client, &target.namespace);
@@ -167,6 +168,7 @@ pub async fn run(
         }
     };
 
+    let status = attached.take_status();
     let mut stdin = attached.stdin();
     let mut stdout = attached.stdout();
     let mut stderr = attached.stderr();
@@ -227,7 +229,12 @@ pub async fn run(
     }
     drop(stdin);
     attached.join().await.ok();
-    Ok(())
+    // Sent when the process ends (`exit`); dropped with the connection otherwise.
+    let exited = match status {
+        Some(status) => status.await.is_some(),
+        None => false,
+    };
+    Ok(exited)
 }
 
 /// A short random-looking suffix for generated names (`debugger-k3x9q`).

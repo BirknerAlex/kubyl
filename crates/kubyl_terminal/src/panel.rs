@@ -88,13 +88,50 @@ impl TerminalPanel {
         }
     }
 
-    fn terminal(&mut self, spec: TerminalSpec, cx: &mut Context<Self>) -> Entity<TerminalView> {
+    fn terminal(
+        &mut self,
+        spec: TerminalSpec,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<TerminalView> {
         let terminal = cx.new(|cx| TerminalView::new(spec, false, cx));
         self.subscriptions.insert(
             terminal.entity_id(),
-            cx.observe(&terminal, |_, _, cx| cx.notify()),
+            cx.observe_in(&terminal, window, |_, terminal, window, cx| {
+                // The shell exited: close its split (and the tab with the last one).
+                if terminal.read(cx).wants_close(cx) {
+                    let id = terminal.entity_id();
+                    cx.defer_in(window, move |this, window, cx| {
+                        this.close_terminal(id, window, cx)
+                    });
+                }
+                cx.notify();
+            }),
         );
         terminal
+    }
+
+    fn close_terminal(&mut self, id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((tab, split)) = self.tabs.iter().enumerate().find_map(|(tab, t)| {
+            let split = t.terminals.iter().position(|t| t.entity_id() == id)?;
+            Some((tab, split))
+        }) else {
+            return;
+        };
+        if self.tabs[tab].terminals.len() <= 1 {
+            self.close_tab(tab, window, cx);
+            return;
+        }
+        let terminal = self.tabs[tab].terminals.remove(split);
+        self.subscriptions.remove(&terminal.entity_id());
+        let t = &mut self.tabs[tab];
+        t.active = t.active.min(t.terminals.len() - 1);
+        if tab == self.active
+            && let Some(terminal) = self.active_terminal()
+        {
+            terminal.read(cx).focus_handle(cx).focus(window, cx);
+        }
+        cx.notify();
     }
 
     /// Opens a terminal in a new tab (and focuses it, when the panel is visible).
@@ -105,7 +142,7 @@ impl TerminalPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let terminal = self.terminal(spec, cx);
+        let terminal = self.terminal(spec, window, cx);
         self.tabs.push(PanelTab {
             terminals: vec![terminal.clone()],
             active: 0,
@@ -130,7 +167,7 @@ impl TerminalPanel {
         let current = active.read(cx).spec().clone();
         let spec = match current.mode {
             // A node shell's pod belongs to its session: `+` starts another node shell, through
-            // the same confirmation (typed on production) and read-only check as the action.
+            // the same confirmation and read-only check as the action.
             SessionMode::NodeShell { .. } => {
                 crate::node_shell(current.target, cx);
                 return;
@@ -141,7 +178,7 @@ impl TerminalPanel {
             },
         };
         if split {
-            let terminal = self.terminal(spec, cx);
+            let terminal = self.terminal(spec, window, cx);
             let tab = &mut self.tabs[self.active];
             tab.terminals.push(terminal.clone());
             tab.active = tab.terminals.len() - 1;
@@ -159,6 +196,11 @@ impl TerminalPanel {
         let tab = self.tabs.remove(index);
         for terminal in tab.terminals {
             self.subscriptions.remove(&terminal.entity_id());
+        }
+        // A tab before the active one (a shell that exited in the background) keeps the active
+        // tab active.
+        if self.active > index {
+            self.active -= 1;
         }
         if self.active >= self.tabs.len() {
             self.active = self.tabs.len().saturating_sub(1);
