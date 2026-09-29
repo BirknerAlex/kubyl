@@ -8,7 +8,8 @@
 //! ```
 //!
 //! Creates (and deletes) the namespace `kubyl-live-term` with one busybox pod; the node-shell
-//! test creates a privileged pod in `kube-system` and deletes it.
+//! test creates a privileged pod with the default node-shell image in `kube-system` and deletes
+//! it.
 
 use std::time::Duration;
 
@@ -17,6 +18,7 @@ use futures::channel::{mpsc, oneshot};
 use k8s_openapi::api::core::v1::{Namespace, Pod};
 use kube::api::{Api, DeleteParams, PostParams};
 use kubyl_terminal::exec::{self, DebugSpec, ExecTarget, Mode};
+use kubyl_terminal::settings::TerminalSettings;
 
 const NAMESPACE: &str = "kubyl-live-term";
 
@@ -211,7 +213,9 @@ async fn exec_debug_container_and_node_shell() {
     );
 
     // Node shell: a privileged pod on the node, nsenter into the host.
-    let shell_pod = exec::create_node_shell(&client, "kube-system", &node, "busybox:1.37")
+    // The image node shells ship with (`terminal.node_shell_image`'s default).
+    let image = TerminalSettings::default().node_shell_image;
+    let shell_pod = exec::create_node_shell(&client, "kube-system", &node, &image)
         .await
         .expect("node shell pod");
     let shell_pod_name = shell_pod.name().to_string();
