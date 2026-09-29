@@ -12,7 +12,9 @@ use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 use jiff::Timestamp;
 use kubyl_core::{ClusterId, spawn_kube};
 use kubyl_metrics::prometheus::RangeSeries;
-use kubyl_ui::{ActiveColors, Button, Colors, Icon, IconName, fonts, h_flex, u, v_flex};
+use kubyl_ui::{
+    ActiveColors, Button, Colors, Icon, IconName, Selectable, fonts, h_flex, u, v_flex,
+};
 use serde_json::Value;
 
 use super::alerts_tab::target_icon;
@@ -359,11 +361,14 @@ impl AlertsView {
         let mut times: Vec<(&'static str, AnyElement)> = Vec::new();
         let time = |t: Timestamp, approx: bool| {
             div()
-                .child(format!(
-                    "{}{} · {}",
-                    if approx { "~" } else { "" },
-                    widgets::ago(Some(t), now),
-                    widgets::local_and_utc(t)
+                .child(Selectable::new(
+                    "value",
+                    format!(
+                        "{}{} · {}",
+                        if approx { "~" } else { "" },
+                        widgets::ago(Some(t), now),
+                        widgets::local_and_utc(t)
+                    ),
                 ))
                 .into_any_element()
         };
@@ -374,7 +379,10 @@ impl AlertsView {
                     times.push((
                         "Duration",
                         div()
-                            .child(widgets::short_duration(end.duration_since(start).as_secs()))
+                            .child(Selectable::new(
+                                "value",
+                                widgets::short_duration(end.duration_since(start).as_secs()),
+                            ))
                             .into_any_element(),
                     ));
                 }
@@ -392,7 +400,10 @@ impl AlertsView {
             times.push((
                 "Last received",
                 div()
-                    .child(format!("{} ago", widgets::ago(Some(updated), now)))
+                    .child(Selectable::new(
+                        "value",
+                        format!("{} ago", widgets::ago(Some(updated), now)),
+                    ))
                     .into_any_element(),
             ));
         }
@@ -401,7 +412,7 @@ impl AlertsView {
                 "Value",
                 div()
                     .font_family(fonts::MONO)
-                    .child(widgets::format_value(value))
+                    .child(Selectable::new("value", widgets::format_value(value)))
                     .into_any_element(),
             ));
         }
@@ -426,7 +437,7 @@ impl AlertsView {
             times.push((
                 "Cluster",
                 div()
-                    .child(Self::cluster_name(&cluster, cx))
+                    .child(Selectable::new("value", Self::cluster_name(&cluster, cx)))
                     .into_any_element(),
             ));
         }
@@ -435,7 +446,7 @@ impl AlertsView {
             div()
                 .truncate()
                 .text_color(colors.text_muted)
-                .child(alert.source.clone())
+                .child(Selectable::new("value", alert.source.clone()))
                 .into_any_element(),
         ));
         let times = v_flex()
@@ -1008,34 +1019,45 @@ impl AlertsView {
             colors.green
         };
         let mut kv: Vec<(&'static str, AnyElement)> = vec![
-            ("Group", div().child(rule.group.clone()).into_any_element()),
+            (
+                "Group",
+                div()
+                    .child(Selectable::new("value", rule.group.clone()))
+                    .into_any_element(),
+            ),
             (
                 "for",
                 div()
                     .font_family(fonts::MONO)
-                    .child(if rule.duration > 0.0 {
-                        widgets::short_duration(rule.duration as i64)
-                    } else {
-                        "—".into()
-                    })
+                    .child(Selectable::new(
+                        "value",
+                        if rule.duration > 0.0 {
+                            widgets::short_duration(rule.duration as i64)
+                        } else {
+                            "—".into()
+                        },
+                    ))
                     .into_any_element(),
             ),
             (
                 "keep_firing_for",
                 div()
                     .font_family(fonts::MONO)
-                    .child(if rule.keep_firing_for > 0.0 {
-                        widgets::short_duration(rule.keep_firing_for as i64)
-                    } else {
-                        "—".into()
-                    })
+                    .child(Selectable::new(
+                        "value",
+                        if rule.keep_firing_for > 0.0 {
+                            widgets::short_duration(rule.keep_firing_for as i64)
+                        } else {
+                            "—".into()
+                        },
+                    ))
                     .into_any_element(),
             ),
             (
                 "Health",
                 div()
                     .text_color(health_color)
-                    .child(rule.health.clone())
+                    .child(Selectable::new("value", rule.health.clone()))
                     .into_any_element(),
             ),
         ];
@@ -1043,10 +1065,13 @@ impl AlertsView {
             kv.push((
                 "Evaluated",
                 div()
-                    .child(format!(
-                        "{} ago · took {}",
-                        widgets::ago(Some(at), now),
-                        eval_time(rule.evaluation_time)
+                    .child(Selectable::new(
+                        "value",
+                        format!(
+                            "{} ago · took {}",
+                            widgets::ago(Some(at), now),
+                            eval_time(rule.evaluation_time)
+                        ),
                     ))
                     .into_any_element(),
             ));

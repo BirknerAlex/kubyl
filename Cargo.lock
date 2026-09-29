@@ -5438,6 +5438,7 @@ name = "kubyl_ui"
 version = "0.3.4"
 dependencies = [
  "anyhow",
+ "gpui-base",
  "gpui-component",
  "gpui-kit-assets",
  "gpui-pre",

@@ -23,7 +23,7 @@ use kubyl_core::{
 };
 use kubyl_kube::ConnectionManager;
 use kubyl_ui::{
-    ActiveColors, Button, Chip, Colors, Icon, IconName, fonts, h_flex, sizes, u, v_flex,
+    ActiveColors, Button, Chip, Colors, Icon, IconName, Selectable, fonts, h_flex, sizes, u, v_flex,
 };
 
 use crate::olm::hub::{self, CAPABILITY_LEVELS, Filters, Package};
@@ -763,12 +763,9 @@ impl OperatorHubView {
                 "Latest",
                 h_flex()
                     .gap(u(6.0))
-                    .child(
-                        div()
-                            .font_family(fonts::MONO)
-                            .text_size(u(11.5))
-                            .child(head.version.clone().unwrap_or_default()),
-                    )
+                    .child(div().font_family(fonts::MONO).text_size(u(11.5)).child(
+                        Selectable::new("latest", head.version.clone().unwrap_or_default()),
+                    ))
                     .child(
                         div()
                             .text_color(colors.text_dim)
@@ -779,7 +776,7 @@ impl OperatorHubView {
         }
         rows.push((
             "Channels",
-            widgets::text(
+            widgets::kv_text(
                 package
                     .channels
                     .iter()
@@ -789,15 +786,15 @@ impl OperatorHubView {
             ),
         ));
         if let Some(capability) = &package.capability {
-            rows.push(("Capability", widgets::text(capability.clone())));
+            rows.push(("Capability", widgets::kv_text(capability.clone())));
         }
         if let Some(head) = &head {
             let modes: Vec<&str> = head.install_modes.iter().map(|m| m.label()).collect();
-            rows.push(("Install modes", widgets::text(modes.join(", "))));
+            rows.push(("Install modes", widgets::kv_text(modes.join(", "))));
             if let Some(min) = &head.min_kube_version {
                 rows.push((
                     "Min Kubernetes",
-                    widgets::mono(min.trim_end_matches("-0").to_string()),
+                    widgets::kv_mono(min.trim_end_matches("-0").to_string()),
                 ));
             }
         }
@@ -819,11 +816,11 @@ impl OperatorHubView {
             ));
         }
         if let Some(image) = &package.container_image {
-            rows.push(("Image", widgets::mono(image.clone())));
+            rows.push(("Image", widgets::kv_mono(image.clone())));
         }
         rows.push((
             "Catalog",
-            widgets::text(format!(
+            widgets::kv_text(format!(
                 "{} · {}/{}",
                 package.catalog_display, package.catalog_namespace, package.catalog
             )),

@@ -518,12 +518,15 @@ impl Render for AppDock {
         let source = app.spec.all_sources().into_iter().next();
         let mut facts: Vec<(&'static str, gpui::AnyElement)> = Vec::new();
         if let Some(source) = &source {
-            facts.push(("Repository", widgets::text(source.repo_short())));
-            facts.push(("Path", widgets::mono(source.what())));
-            facts.push(("Target", widgets::mono(source.target().to_string())));
+            facts.push(("Repository", widgets::kv_text(source.repo_short())));
+            facts.push(("Path", widgets::kv_mono(source.what())));
+            facts.push(("Target", widgets::kv_mono(source.target().to_string())));
         }
-        facts.push(("Destination", widgets::text(app.spec.destination.label())));
-        facts.push(("Project", widgets::text(app.spec.project.clone())));
+        facts.push((
+            "Destination",
+            widgets::kv_text(app.spec.destination.label()),
+        ));
+        facts.push(("Project", widgets::kv_text(app.spec.project.clone())));
         let source_section = widgets::section("Source", &colors).child(widgets::kv(facts, &colors));
         let toggle = |id: &'static str,
                       label: &'static str,

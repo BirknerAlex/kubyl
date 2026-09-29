@@ -6,6 +6,7 @@ mod data_table;
 mod dock;
 mod keys;
 mod modal;
+mod selectable;
 mod sidebar;
 mod status;
 mod status_bar;
@@ -19,6 +20,7 @@ pub use data_table::{DataTable, DataTableEvent, TableDelegate};
 pub use dock::DockHeader;
 pub use keys::{Kbd, KeyHints, format_keystroke};
 pub use modal::Modal;
+pub use selectable::{CopySelectedText, Selectable, copy_selected_text};
 pub use sidebar::{PanelHeader, SectionHeader, TreeRow};
 pub use status::{ProgressBar, StatusDot, StatusPill, tone_color};
 pub use status_bar::{StatusBar, StatusBarText};
@@ -33,4 +35,5 @@ pub use gpui_component::{h_flex, v_flex};
 
 pub(crate) fn init(cx: &mut App) {
     data_table::init(cx);
+    selectable::init(cx);
 }

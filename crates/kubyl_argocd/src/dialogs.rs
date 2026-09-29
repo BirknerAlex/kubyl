@@ -1930,17 +1930,17 @@ impl Render for SignInDialog {
                     })
                     .unwrap_or_else(|| "not found".into());
                 let mut facts: Vec<(&'static str, AnyElement)> = vec![
-                    ("Cluster", widgets::text(name.clone())),
-                    ("Namespace", widgets::mono(install.namespace.clone())),
-                    ("Service", widgets::mono(service)),
-                    ("Through", widgets::text(transport)),
+                    ("Cluster", widgets::kv_text(name.clone())),
+                    ("Namespace", widgets::kv_mono(install.namespace.clone())),
+                    ("Service", widgets::kv_mono(service)),
+                    ("Through", widgets::kv_text(transport)),
                 ];
                 if let Some(url) = &install.url {
                     let used = if install.sso.dex { "SSO signs in there" } else { "not used" };
-                    facts.push(("Argo CD URL", widgets::mono(format!("{url} ({used})"))));
+                    facts.push(("Argo CD URL", widgets::kv_mono(format!("{url} ({used})"))));
                 }
                 if let Some(version) = &install.version {
-                    facts.push(("Version", widgets::mono(version.clone())));
+                    facts.push(("Version", widgets::kv_mono(version.clone())));
                 }
                 body = body.child(widgets::kv(facts, &colors));
                 if installs.len() > 1 {

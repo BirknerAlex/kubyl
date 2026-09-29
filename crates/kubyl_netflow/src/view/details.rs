@@ -7,7 +7,7 @@ use gpui::{
 };
 use kubyl_core::actions::OpenView;
 use kubyl_core::{Gvr, Notification, NotificationCenter, ResourceRef, ViewKind, ViewRequest};
-use kubyl_ui::{ActiveColors, Chip, Colors, Icon, IconName, fonts, h_flex, u, v_flex};
+use kubyl_ui::{ActiveColors, Chip, Colors, Icon, IconName, Selectable, fonts, h_flex, u, v_flex};
 
 use super::{NetworkFlowsView, SelectedPart, widgets};
 use crate::model::{Direction, Endpoint, EndpointKind, Flow, L7, PolicyRef, PolicySummary};
@@ -162,10 +162,13 @@ pub(super) fn render(
             "Interval".into(),
             div()
                 .text_color(colors.text_muted)
-                .child(format!(
-                    "{}s from {}",
-                    flow.time.duration_since(start).as_secs().max(0),
-                    widgets::local_and_utc(start)
+                .child(Selectable::new(
+                    "value",
+                    format!(
+                        "{}s from {}",
+                        flow.time.duration_since(start).as_secs().max(0),
+                        widgets::local_and_utc(start)
+                    ),
                 ))
                 .into_any_element(),
         ));
@@ -387,7 +390,9 @@ fn endpoint_section(
     if endpoint.namespace.is_none() && endpoint.kind != EndpointKind::Pod {
         rows.push((
             "Kind".into(),
-            div().child(endpoint.kind.label()).into_any_element(),
+            div()
+                .child(Selectable::new("value", endpoint.kind.label()))
+                .into_any_element(),
         ));
     }
     if let Some(ip) = endpoint.ip {
@@ -499,13 +504,17 @@ fn l7_section(l7: &L7, colors: &Colors) -> AnyElement {
             if let Some(protocol) = protocol {
                 rows.push((
                     "Protocol".into(),
-                    div().child(protocol.to_string()).into_any_element(),
+                    div()
+                        .child(Selectable::new("value", protocol.to_string()))
+                        .into_any_element(),
                 ));
             }
             if let Some(latency) = latency_ms {
                 rows.push((
                     "Latency".into(),
-                    div().child(format!("{latency:.2} ms")).into_any_element(),
+                    div()
+                        .child(Selectable::new("value", format!("{latency:.2} ms")))
+                        .into_any_element(),
                 ));
             }
             for (name, value) in headers.iter().take(12) {
@@ -533,7 +542,9 @@ fn l7_section(l7: &L7, colors: &Colors) -> AnyElement {
             if let Some(rcode) = rcode {
                 rows.push((
                     "Answer".into(),
-                    div().child(rcode.to_string()).into_any_element(),
+                    div()
+                        .child(Selectable::new("value", rcode.to_string()))
+                        .into_any_element(),
                 ));
             }
             if !answers.is_empty() {

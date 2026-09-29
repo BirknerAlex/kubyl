@@ -42,8 +42,8 @@ use kubyl_resources::{
     ResourceSelection, ResourceStore, ResourceStores, StoreHandle, StoreKey, object_key,
 };
 use kubyl_ui::{
-    ActiveColors, Chip, Colors, Icon, IconButton, IconName, StatusDot, StatusPill, fonts, h_flex,
-    tone_color, u, v_flex,
+    ActiveColors, Chip, Colors, Icon, IconButton, IconName, Selectable, StatusDot, StatusPill,
+    fonts, h_flex, tone_color, u, v_flex,
 };
 use serde_json::Value;
 
@@ -720,7 +720,7 @@ fn kv(rows: Vec<(&'static str, String)>, colors: &Colors) -> impl IntoElement {
                         .min_w_0()
                         .truncate()
                         .text_color(colors.text)
-                        .child(v),
+                        .child(Selectable::new(k, v)),
                 )
         }))
 }
@@ -1025,7 +1025,7 @@ impl DetailsContent {
                         } else {
                             colors.text
                         })
-                        .child(target.name.clone()),
+                        .child(Selectable::new("name", target.name.clone())),
                 )
                 .when(self.gone, |this| {
                     this.child(

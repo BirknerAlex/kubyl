@@ -2,7 +2,7 @@
 //! icons, buttons.
 
 use gpui::{AnyElement, App, FontWeight, Hsla, IntoElement, SharedString, Window, div, prelude::*};
-use kubyl_ui::{Colors, Icon, IconName, fonts, h_flex, u, v_flex};
+use kubyl_ui::{Colors, Icon, IconName, Selectable, fonts, h_flex, u, v_flex};
 
 use crate::check::CheckStatus;
 
@@ -55,6 +55,7 @@ pub fn kv(
     width: f32,
     colors: &Colors,
 ) -> impl IntoElement {
+    let label = label.into();
     h_flex()
         .items_start()
         .gap(u(10.0))
@@ -64,9 +65,9 @@ pub fn kv(
                 .flex_none()
                 .w(u(width))
                 .text_color(colors.text_dim)
-                .child(label.into()),
+                .child(label.clone()),
         )
-        .child(div().flex_1().min_w_0().child(value))
+        .child(div().id(label).flex_1().min_w_0().child(value))
 }
 
 /// Mono text.
@@ -75,6 +76,15 @@ pub fn mono(text: impl Into<SharedString>) -> gpui::Div {
         .font_family(fonts::MONO)
         .text_size(u(12.0))
         .child(text.into())
+}
+
+/// Mono text for a kv value that can be selected and copied.
+pub fn kv_mono(text: impl Into<SharedString>) -> gpui::Div {
+    let text = text.into();
+    div()
+        .font_family(fonts::MONO)
+        .text_size(u(12.0))
+        .child(Selectable::new(text.clone(), text))
 }
 
 /// The icon and color of a check status.

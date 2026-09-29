@@ -588,6 +588,7 @@ impl Render for Workspace {
             .text_color(colors.text)
             .font_family(kubyl_ui::fonts::UI)
             .text_size(u(kubyl_ui::sizes::UI_FONT))
+            .on_action(kubyl_ui::copy_selected_text)
             .on_action(cx.listener(|this, _: &ToggleLeftDock, window, cx| {
                 this.toggle_dock(DockPosition::Left, window, cx)
             }))

@@ -10,12 +10,14 @@ use gpui_component::WindowExt as _;
 use gpui_component::input::{Input, InputEvent, InputState};
 use kubyl_core::{ClusterId, Notification, NotificationCenter};
 use kubyl_kube::ConnectionManager;
-use kubyl_ui::{ActiveColors, Button, Colors, Icon, IconName, ProdBadge, fonts, h_flex, u, v_flex};
+use kubyl_ui::{
+    ActiveColors, Button, Colors, Icon, IconName, ProdBadge, Selectable, fonts, h_flex, u, v_flex,
+};
 
 use crate::check::{Check, CheckStatus, Counts};
 use crate::model::{Plan, ProviderKind, Scope};
 use crate::service::Updates;
-use crate::view::widgets::{kv, status_icon};
+use crate::view::widgets::{kv, kv_mono, status_icon};
 
 /// Opens the confirmation of `plan`. `checks`: the pre-flight results of its target, if run.
 pub fn open(
@@ -332,18 +334,10 @@ impl Render for ConfirmDialog {
         let mut body = v_flex()
             .p(u(16.0))
             .gap(u(10.0))
-            .child(kv(
-                "Cluster",
-                div()
-                    .font_family(fonts::MONO)
-                    .text_size(u(12.0))
-                    .child(name.clone()),
-                label_width,
-                &colors,
-            ))
+            .child(kv("Cluster", kv_mono(name.clone()), label_width, &colors))
             .child(kv(
                 "Provider",
-                div().child(self.provider.label()),
+                div().child(Selectable::new("value", self.provider.label())),
                 label_width,
                 &colors,
             ))

@@ -513,20 +513,20 @@ impl OperatorsView {
                 Some(format!("{}/{group} · {mode}", c.namespace))
             });
             let mut rows = vec![
-                ("Catalog", widgets::text(catalog)),
+                ("Catalog", widgets::kv_text(catalog)),
                 (
                     "Channel",
-                    widgets::text(sub.channel.clone().unwrap_or_else(|| "default".into())),
+                    widgets::kv_text(sub.channel.clone().unwrap_or_else(|| "default".into())),
                 ),
                 (
                     "Installed CSV",
-                    widgets::mono(sub.installed_csv.clone().unwrap_or_else(|| "—".into())),
+                    widgets::kv_mono(sub.installed_csv.clone().unwrap_or_else(|| "—".into())),
                 ),
             ];
             if sub.current_csv != sub.installed_csv
                 && let Some(current) = &sub.current_csv
             {
-                rows.push(("Latest CSV", widgets::mono(current.clone())));
+                rows.push(("Latest CSV", widgets::kv_mono(current.clone())));
             }
             rows.push((
                 "Approval",
@@ -540,7 +540,7 @@ impl OperatorsView {
                     .into_any_element(),
             ));
             if let Some(group) = group {
-                rows.push(("Watches", widgets::mono(group)));
+                rows.push(("Watches", widgets::kv_mono(group)));
             }
             if let Some(healthy) = sub.catalog_healthy.filter(|h| !h) {
                 let _ = healthy;

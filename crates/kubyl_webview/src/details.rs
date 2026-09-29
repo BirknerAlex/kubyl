@@ -13,7 +13,9 @@ use kubyl_kube::ConnectionManager;
 use kubyl_portforward::manager::human_bytes;
 use kubyl_resources::route::{self, Route};
 use kubyl_resources::store::{ResourceStores, StoreHandle, StoreKey, object_key};
-use kubyl_ui::{ActiveColors, Button, Colors, Icon, IconName, fonts, h_flex, u, v_flex};
+use kubyl_ui::{
+    ActiveColors, Button, Colors, Icon, IconName, Selectable, fonts, h_flex, u, v_flex,
+};
 use serde_json::Value;
 
 use crate::forward::{ForwardStatus, WebForwards};
@@ -450,7 +452,13 @@ impl WebSection {
                         .text_color(colors.text_dim)
                         .child(label),
                 )
-                .child(div().flex_1().min_w_0().truncate().child(value))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(Selectable::new(label, value)),
+                )
         };
         let storage = if private {
             "private · nothing is kept".to_string()
