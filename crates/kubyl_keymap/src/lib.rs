@@ -16,6 +16,10 @@
 //! every change the keystrokes in the `ActionRegistry` (key-hint bar, palette) are updated to
 //! what is really bound.
 //!
+//! Keys that type text (`s`, `/`, `shift-g`, `g g`) don't fire while an input has focus: every
+//! binding made only of them gets `&& !Input` added to its context, so typing into a filter
+//! field never triggers a view's single-key shortcut.
+//!
 //! Precedence: GPUI prefers the binding that matches the deepest key context, then the one added
 //! last. Presets are tagged with meta 1 and user bindings with meta 0 so that a user's `null`
 //! also hides preset and built-in bindings, while reloading can tell them apart from the
@@ -108,8 +112,8 @@ pub fn apply(cx: &mut App) {
     layered.extend(load_blocks(&settings.bindings, USER, cx, &mut errors));
 
     cx.clear_key_bindings();
-    cx.bind_keys(builtin);
-    cx.bind_keys(layered);
+    cx.bind_keys(builtin.into_iter().map(guard_typing));
+    cx.bind_keys(layered.into_iter().map(guard_typing));
     sync_registry(cx);
 
     for error in &errors {
@@ -120,6 +124,70 @@ pub fn apply(cx: &mut App) {
             cx,
             Notification::warning(format!("Keymap: {}", errors.join("; "))),
         );
+    }
+}
+
+/// `Input` is gpui-component's text field context.
+const INPUT: &str = "Input";
+
+/// A binding made only of keys that type text gets `!Input` added to its context. Inputs bind
+/// their editing keys (enter, arrows, backspace…) in their own, deeper context, which already
+/// wins; typed characters aren't bindings there, so a view's `s` would win over them.
+fn guard_typing(binding: KeyBinding) -> KeyBinding {
+    let types_text = binding.keystrokes().iter().all(|k| {
+        let m = k.modifiers();
+        !(m.control || m.alt || m.platform || m.function)
+            && (k.key().chars().count() == 1 || k.key() == "space")
+    });
+    let guarded = binding
+        .predicate()
+        .is_some_and(|p| p.to_string().contains(INPUT));
+    if !types_text || guarded {
+        return binding;
+    }
+    let not_input = KeyBindingContextPredicate::Not(Box::new(
+        KeyBindingContextPredicate::Identifier(INPUT.into()),
+    ));
+    let predicate = match binding.predicate() {
+        Some(context) => {
+            KeyBindingContextPredicate::And(Box::new((*context).clone()), Box::new(not_input))
+        }
+        None => not_input,
+    };
+    let keys = binding
+        .keystrokes()
+        .iter()
+        .map(|k| k.inner().unparse())
+        .collect::<Vec<_>>()
+        .join(" ");
+    match KeyBinding::load(
+        &keys,
+        binding.action().boxed_clone(),
+        Some(Rc::new(predicate)),
+        false,
+        binding.action_input(),
+        &gpui::DummyKeyboardMapper,
+    ) {
+        Ok(mut guarded) => {
+            if let Some(meta) = binding.meta() {
+                guarded.set_meta(meta);
+            }
+            guarded
+        }
+        Err(_) => binding,
+    }
+}
+
+/// The context a binding was registered with, without the `!Input` of [`guard_typing`].
+fn unguarded(
+    predicate: Option<&KeyBindingContextPredicate>,
+) -> Option<&KeyBindingContextPredicate> {
+    use KeyBindingContextPredicate::{And, Identifier, Not};
+    let is_not_input = |p: &KeyBindingContextPredicate| matches!(p, Not(inner) if matches!(&**inner, Identifier(name) if name == INPUT));
+    match predicate? {
+        p if is_not_input(p) => None,
+        And(context, right) if is_not_input(right) => Some(context),
+        p => Some(p),
     }
 }
 
@@ -245,7 +313,7 @@ fn displayed_keys(
     let in_context = bindings
         .iter()
         .rev()
-        .find(|b| b.predicate().as_deref() == context);
+        .find(|b| unguarded(b.predicate().as_deref()) == context);
     let binding = in_context.or_else(|| bindings.last())?;
     Some(
         binding
@@ -266,6 +334,48 @@ mod tests {
     use super::*;
 
     gpui::actions!(test_keymap, [Logs, Delete, Help]);
+
+    #[test]
+    fn typing_keys_are_off_in_inputs() {
+        let stack = |names: &[&str]| -> Vec<KeyContext> {
+            names
+                .iter()
+                .map(|n| KeyContext::parse(n).unwrap())
+                .collect()
+        };
+        let in_view = stack(&["Workspace", "ArgoApp"]);
+        let in_filter = stack(&["Workspace", "ArgoApp", "Input"]);
+        let enabled = |binding: &KeyBinding, contexts: &[KeyContext]| {
+            binding
+                .predicate()
+                .is_none_or(|p| p.depth_of(contexts).is_some())
+        };
+
+        for keys in ["s", "shift-s", "/", "g g", "space"] {
+            let binding = guard_typing(KeyBinding::new(keys, Logs, Some("ArgoApp")));
+            assert!(enabled(&binding, &in_view), "{keys} in the view");
+            assert!(!enabled(&binding, &in_filter), "{keys} while typing");
+            assert_eq!(
+                unguarded(binding.predicate().as_deref()),
+                Some(&KeyBindingContextPredicate::parse("ArgoApp").unwrap()),
+            );
+        }
+        let global = guard_typing(KeyBinding::new("?", Help, None));
+        assert!(!enabled(&global, &in_filter));
+        assert_eq!(unguarded(global.predicate().as_deref()), None);
+        // Modified keys and editing keys still work in inputs (the input's own win there).
+        for keys in [
+            "ctrl-s",
+            "secondary-l",
+            "alt-d",
+            "enter",
+            "escape",
+            "delete",
+        ] {
+            let binding = guard_typing(KeyBinding::new(keys, Delete, Some("ArgoApp")));
+            assert!(enabled(&binding, &in_filter), "{keys}");
+        }
+    }
 
     fn setup(cx: &mut TestAppContext) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
