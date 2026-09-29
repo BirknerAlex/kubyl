@@ -10,8 +10,12 @@ mod views;
 mod workspace;
 
 fn main() {
+    let fd_limit = platform::raise_fd_limit();
     let _log_guard = logging::init();
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "starting Kubyl");
+    if let Some((old, new)) = fd_limit {
+        tracing::info!(old, new, "raised the open-file limit");
+    }
 
     gpui_platform::application()
         .with_assets(kubyl_ui::Assets)

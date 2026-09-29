@@ -76,6 +76,9 @@ objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSImage", "NSResponder"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSData"] }
 
+# Unix process limits (already in the tree)
+libc = "0.2.189"
+
 # Web views (phase 08): WKWebView on macOS, WebView2 on Windows, WebKitGTK on Linux.
 wry = { version = "0.57.0", default-features = false, features = ["devtools"] }
 raw-window-handle = "0.6.2"

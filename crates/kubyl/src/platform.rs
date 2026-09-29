@@ -9,6 +9,43 @@ pub fn init(_cx: &mut App) {
     macos::set_dock_icon();
 }
 
+/// Raises the open-file soft limit to what the OS allows. Apps launched from the Finder get
+/// 256, which Kubyl outgrows with a few clusters (HTTP/1.1: a socket per watch) and web views;
+/// WebKit aborts the process when it can't open what it needs. Call first in `main`, before
+/// threads start. Returns the (old, new) soft limit when it changed.
+#[cfg(unix)]
+pub fn raise_fd_limit() -> Option<(u64, u64)> {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: `limit` is a valid, writable rlimit.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
+        return None;
+    }
+    let old = limit.rlim_cur;
+    // macOS rejects values above `OPEN_MAX` (10240), even with an unlimited hard limit.
+    let wanted = if cfg!(target_os = "macos") {
+        limit.rlim_max.min(10240)
+    } else {
+        limit.rlim_max
+    };
+    if wanted <= old {
+        return None;
+    }
+    limit.rlim_cur = wanted;
+    // SAFETY: `limit` is a valid rlimit; raising the soft limit up to the hard one is allowed.
+    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) } != 0 {
+        return None;
+    }
+    Some((old, wanted))
+}
+
+#[cfg(not(unix))]
+pub fn raise_fd_limit() -> Option<(u64, u64)> {
+    None
+}
+
 /// The window icon, used by X11 (Wayland and the other platforms take it from the app bundle
 /// or desktop file).
 pub fn window_icon() -> Option<Arc<image::RgbaImage>> {
