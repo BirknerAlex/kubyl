@@ -290,10 +290,10 @@ impl AppSetsView {
             );
         }
         let mut facts: Vec<(&'static str, AnyElement)> = vec![
-            ("Policy", widgets::text(set.policy_summary())),
+            ("Policy", widgets::kv_text(set.policy_summary())),
             (
                 "Templating",
-                widgets::text(if set.spec.go_template {
+                widgets::kv_text(if set.spec.go_template {
                     "Go templates"
                 } else {
                     "fasttemplate"
@@ -301,7 +301,7 @@ impl AppSetsView {
             ),
         ];
         if set.rolling_sync() {
-            facts.push(("Strategy", widgets::text("RollingSync (progressive)")));
+            facts.push(("Strategy", widgets::kv_text("RollingSync (progressive)")));
         }
         let policy = widgets::section("Sync policy", &colors).child(widgets::kv(facts, &colors));
         let mut conditions = widgets::section("Conditions", &colors);

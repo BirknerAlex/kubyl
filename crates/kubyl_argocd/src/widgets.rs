@@ -7,7 +7,8 @@ use gpui::{
 };
 use kubyl_core::{Align, ColumnDef, ColumnWidth, Tone};
 use kubyl_ui::{
-    ActiveColors, Chip, Colors, Icon, IconName, StatusDot, fonts, h_flex, sizes, u, v_flex,
+    ActiveColors, Chip, Colors, Icon, IconName, Selectable, StatusDot, fonts, h_flex, sizes, u,
+    v_flex,
 };
 
 use crate::model::{Activity, Health, OperationPhase, SyncStatus};
@@ -148,7 +149,7 @@ pub fn kv(rows: Vec<(&'static str, AnyElement)>, colors: &Colors) -> impl IntoEl
                         .text_color(colors.text_dim)
                         .child(key),
                 )
-                .child(div().flex_1().min_w_0().child(value))
+                .child(div().id(key).flex_1().min_w_0().child(value))
         }))
 }
 
@@ -163,6 +164,26 @@ pub fn mono(value: impl Into<SharedString>) -> AnyElement {
         .font_family(fonts::MONO)
         .text_size(u(11.5))
         .child(value.into())
+        .into_any_element()
+}
+
+/// Text for a kv value that can be selected and copied.
+pub fn kv_text(value: impl Into<SharedString>) -> AnyElement {
+    let value = value.into();
+    div()
+        .truncate()
+        .child(Selectable::new(value.clone(), value))
+        .into_any_element()
+}
+
+/// Monospace text for a kv value that can be selected and copied.
+pub fn kv_mono(value: impl Into<SharedString>) -> AnyElement {
+    let value = value.into();
+    div()
+        .truncate()
+        .font_family(fonts::MONO)
+        .text_size(u(11.5))
+        .child(Selectable::new(value.clone(), value))
         .into_any_element()
 }
 

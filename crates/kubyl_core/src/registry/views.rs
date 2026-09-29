@@ -7,6 +7,7 @@ use gpui::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::context::{TabContext, TabNamespace};
 use crate::types::{Gvr, ResourceRef, ViewKind};
 
 /// What to open: a view kind, optionally for a resource or a local file. Persisted to restore
@@ -78,6 +79,23 @@ pub trait TabView: Render + Focusable {
     fn view_request(&self, _cx: &App) -> Option<ViewRequest> {
         None
     }
+
+    /// The cluster and namespace the view shows; the title bar follows it when the tab is
+    /// activated. Defaults to the target of [`Self::view_request`] (a view of one object shows
+    /// its namespace; one without a namespace leaves the title bar's).
+    fn tab_context(&self, cx: &App) -> Option<TabContext> {
+        let target = self.view_request(cx)?.target?;
+        if target.cluster.as_str().is_empty() {
+            return None;
+        }
+        Some(TabContext {
+            cluster: target.cluster,
+            namespace: match target.namespace {
+                Some(namespace) => TabNamespace::One(namespace),
+                None => TabNamespace::Keep,
+            },
+        })
+    }
 }
 
 /// Type-erased handle to a [`TabView`] entity. Panes and docks hold these.
@@ -89,6 +107,7 @@ pub trait TabHandle: 'static {
     fn dot(&self, cx: &App) -> Option<Hsla>;
     fn wants_close(&self, cx: &App) -> bool;
     fn view_request(&self, cx: &App) -> Option<ViewRequest>;
+    fn tab_context(&self, cx: &App) -> Option<TabContext>;
     fn focus_handle(&self, cx: &App) -> FocusHandle;
     fn to_any_view(&self) -> AnyView;
     fn boxed_clone(&self) -> Box<dyn TabHandle>;
@@ -123,6 +142,10 @@ impl<T: TabView> TabHandle for Entity<T> {
 
     fn view_request(&self, cx: &App) -> Option<ViewRequest> {
         self.read(cx).view_request(cx)
+    }
+
+    fn tab_context(&self, cx: &App) -> Option<TabContext> {
+        self.read(cx).tab_context(cx)
     }
 
     fn focus_handle(&self, cx: &App) -> FocusHandle {

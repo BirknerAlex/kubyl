@@ -249,9 +249,8 @@ fn debug_container(target: ResourceRef, cx: &mut App) {
     });
 }
 
-/// Shows the node-shell confirmation (creates a privileged pod, PROD asks for the typed node
-/// name) and, once confirmed, calls `on_confirm`. Shared by the `Node: Shell…` action and
-/// [`view::TerminalView`]'s unconfirmed node shell (the Details view's Terminal sub-tab).
+/// Shows the node-shell confirmation (creates a privileged pod) and, once confirmed, calls
+/// `on_confirm`. Shared by the `Node: Shell…` action and [`view::TerminalView`]'s unconfirmed node shell (the Details view's Terminal sub-tab).
 ///
 /// `namespace` is the one the pod will actually be created in (the caller's already-resolved
 /// value, not re-read from live settings here): settings can change between opening the tab and
@@ -271,17 +270,17 @@ pub(crate) fn confirm_node_shell(
         notify_error(cx, format!("{name} is read-only."));
         return;
     }
-    let production = manager.read(cx).caps(&target.cluster).production;
+    // Opening a shell changes nothing on the node by itself: no typed name, even on PROD.
     let mut spec = ConfirmSpec::new(format!("Open a shell on node {node}?"), "Start Node Shell");
-    spec.lines = vec![
-        format!("Creates a privileged pod in {namespace} (host PID, network and IPC) on {node},")
-            .into(),
-        "mounting the node's root filesystem at /host -- run `chroot /host` to use it.".into(),
-    ];
-    spec.note =
-        Some("The pod is deleted when the shell closes, and after 12 hours at the latest.".into());
+    spec.note = Some(
+        format!(
+            "Creates a privileged pod in {namespace} (host PID, network and IPC) on {node}, with \
+             the node's root filesystem at /host: run `chroot /host` to use it. The pod is \
+             deleted when the shell closes, and stops after 12 hours at the latest."
+        )
+        .into(),
+    );
     spec.danger = true;
-    spec.typed = production.then(|| node.clone());
     dialogs::confirm(spec, on_confirm, window, cx);
 }
 

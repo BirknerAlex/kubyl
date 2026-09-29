@@ -415,25 +415,25 @@ impl OperatorsView {
                 let mut rows = vec![
                     (
                         "Chart",
-                        widgets::mono(format!("{} {}", s.chart.name, s.chart.version)),
+                        widgets::kv_mono(format!("{} {}", s.chart.name, s.chart.version)),
                     ),
                     (
                         "App version",
-                        widgets::mono(s.chart.app_version.clone().unwrap_or_else(|| "—".into())),
+                        widgets::kv_mono(s.chart.app_version.clone().unwrap_or_else(|| "—".into())),
                     ),
                 ];
                 if let Some(first) = s.first_deployed {
                     rows.push((
                         "First deployed",
-                        widgets::text(format!("{} ago", widgets::ago(Some(first)))),
+                        widgets::kv_text(format!("{} ago", widgets::ago(Some(first)))),
                     ));
                 }
                 if let Some(description) = &s.description {
-                    rows.push(("Description", widgets::text(description.clone())));
+                    rows.push(("Description", widgets::kv_text(description.clone())));
                 }
                 rows.push((
                     "Stored in",
-                    widgets::text(format!("{}s · {}", row.driver.label(), latest.object)),
+                    widgets::kv_text(format!("{}s · {}", row.driver.label(), latest.object)),
                 ));
                 summary = summary.child(widgets::kv(rows, &colors));
             }

@@ -16,7 +16,7 @@ use k8s_openapi::apimachinery::pkg::version::Info;
 use kube::config::Kubeconfig;
 use kubyl_core::{
     ActiveContext, ClusterBadge, ClusterCaps, ClusterId, Notification, NotificationCenter,
-    spawn_kube,
+    TabContext, TabNamespace, spawn_kube,
 };
 use kubyl_settings::{Settings, State, StateSection};
 use serde::{Deserialize, Serialize};
@@ -1761,18 +1761,54 @@ impl ConnectionManager {
         if self.context(id).is_none() {
             return;
         }
+        let namespace = self.initial_namespace(id, cx);
+        self.activate_in(id, namespace, false, cx);
+    }
+
+    /// Shows the context of an activated tab in the title bar: its cluster, and its namespace
+    /// unless the tab leaves that to the title bar. Views in other tabs keep their namespace.
+    pub fn follow_tab(&mut self, context: &TabContext, cx: &mut Context<Self>) {
+        let id = &self.resolve(&context.cluster);
+        if self.context(id).is_none() {
+            return;
+        }
+        let current = ActiveContext::global(cx);
+        let same_cluster = current.cluster.as_ref().map(|c| &c.id) == Some(id);
+        let namespace = match &context.namespace {
+            TabNamespace::One(namespace) => Some(namespace.clone()),
+            TabNamespace::All => None,
+            TabNamespace::Keep if same_cluster => return,
+            TabNamespace::Keep => self.initial_namespace(id, cx),
+        };
+        if same_cluster
+            && self.active.as_ref() == Some(id)
+            && current.namespace.as_deref() == namespace.as_deref()
+        {
+            return;
+        }
+        self.activate_in(id, namespace, true, cx);
+    }
+
+    fn activate_in(
+        &mut self,
+        id: &ClusterId,
+        namespace: Option<String>,
+        from_tab: bool,
+        cx: &mut Context<Self>,
+    ) {
         let changed = self.active.as_ref() != Some(id);
         self.active = Some(id.clone());
         State::update::<KubeState>(cx, |state| state.active = Some(id.clone()));
-        let namespace = self.initial_namespace(id, cx);
         let badge = self.badge(id, cx);
-        ActiveContext::set(
-            cx,
-            ActiveContext {
-                cluster: Some(badge),
-                namespace: namespace.map(SharedString::from),
-            },
-        );
+        let context = ActiveContext {
+            cluster: Some(badge),
+            namespace: namespace.map(SharedString::from),
+        };
+        if from_tab {
+            ActiveContext::set_from_tab(cx, context);
+        } else {
+            ActiveContext::set(cx, context);
+        }
         if changed {
             cx.emit(ConnectionEvent::ActiveChanged(Some(id.clone())));
         }
@@ -1871,13 +1907,16 @@ impl ConnectionManager {
         let badge = self.badge(id, cx);
         let current = ActiveContext::global(cx).clone();
         if current.cluster.as_ref() != Some(&badge) {
-            ActiveContext::set(
-                cx,
-                ActiveContext {
-                    cluster: Some(badge),
-                    namespace: current.namespace,
-                },
-            );
+            let context = ActiveContext {
+                cluster: Some(badge),
+                namespace: current.namespace,
+            };
+            // Only the badge changed: views that ignored a tab's namespace keep ignoring it.
+            if ActiveContext::follows_tab(cx) {
+                ActiveContext::set_from_tab(cx, context);
+            } else {
+                ActiveContext::set(cx, context);
+            }
         }
     }
 }
@@ -2273,6 +2312,41 @@ mod tests {
             assert_eq!(active.cluster.as_ref().unwrap().name.as_ref(), "broken");
             assert!(!active.cluster.as_ref().unwrap().connected);
         });
+    }
+
+    #[gpui::test]
+    fn activated_tabs_show_their_namespace(cx: &mut TestAppContext) {
+        let (_dir, manager) = setup(cx);
+        // The only context that fails without touching the network.
+        let broken = manager.read_with(cx, |m, _| m.all_contexts()[3].id.clone());
+        manager.update(cx, |m, cx| m.activate(&broken, cx));
+        cx.run_until_parked();
+        let namespace = |cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                let active = ActiveContext::global(cx);
+                (
+                    active.namespace.as_ref().map(|n| n.to_string()),
+                    ActiveContext::follows_tab(cx),
+                )
+            })
+        };
+        assert_eq!(namespace(cx), (None, false));
+        let follow = |namespace: TabNamespace, cx: &mut TestAppContext| {
+            let context = TabContext {
+                cluster: broken.clone(),
+                namespace,
+            };
+            manager.update(cx, |m, cx| m.follow_tab(&context, cx));
+        };
+        follow(TabNamespace::One("payments".into()), cx);
+        assert_eq!(namespace(cx), (Some("payments".into()), true));
+        // A view that follows the title bar leaves it alone.
+        follow(TabNamespace::Keep, cx);
+        assert_eq!(namespace(cx), (Some("payments".into()), true));
+        follow(TabNamespace::All, cx);
+        assert_eq!(namespace(cx), (None, true));
+        manager.update(cx, |m, cx| m.activate(&broken, cx));
+        assert_eq!(namespace(cx), (None, false));
     }
 
     #[gpui::test]

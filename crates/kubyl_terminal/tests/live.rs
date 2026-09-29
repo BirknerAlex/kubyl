@@ -108,6 +108,30 @@ async fn session_output(
     output
 }
 
+/// Types `exit` and returns what [`exec::run`] reports: `true` when the process exited.
+async fn exits(client: kube::Client, target: ExecTarget) -> bool {
+    let (input_tx, input_rx) = mpsc::unbounded();
+    let (output_tx, _output_rx) = mpsc::unbounded();
+    let (_resize_tx, resize_rx) = mpsc::unbounded();
+    let (connected_tx, connected_rx) = oneshot::channel();
+    let task = tokio::spawn(exec::run(
+        client,
+        target,
+        input_rx,
+        output_tx,
+        resize_rx,
+        connected_tx,
+    ));
+    connected_rx.await.unwrap().expect("connected");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    input_tx.unbounded_send(b"exit\r".to_vec()).unwrap();
+    tokio::time::timeout(Duration::from_secs(20), task)
+        .await
+        .expect("session ends after exit")
+        .unwrap()
+        .expect("run")
+}
+
 #[tokio::test]
 #[ignore = "needs a cluster (script/dev-cluster.sh)"]
 async fn exec_debug_container_and_node_shell() {
@@ -131,6 +155,16 @@ async fn exec_debug_container_and_node_shell() {
     )
     .await;
     assert!(output.contains("30 100"), "stty size: {output:?}");
+    // `exit` ends the session as exited (the view closes its tab).
+    let shell = ExecTarget {
+        namespace: NAMESPACE.into(),
+        pod: "box".into(),
+        container: Some("main".into()),
+        mode: Mode::Exec {
+            command: vec!["sh".into()],
+        },
+    };
+    assert!(exits(client.clone(), shell).await, "exec shell exits");
 
     // Debug container sharing main's processes: /proc/1/root is main's filesystem.
     let debugger = exec::create_debug_container(
@@ -162,6 +196,19 @@ async fn exec_debug_container_and_node_shell() {
     )
     .await;
     assert!(output.contains("debug-42"), "debug container: {output:?}");
+    let debug_shell = ExecTarget {
+        namespace: NAMESPACE.into(),
+        pod: "box".into(),
+        container: Some(debugger.clone()),
+        mode: Mode::Attach {
+            tty: true,
+            stdin: true,
+        },
+    };
+    assert!(
+        exits(client.clone(), debug_shell).await,
+        "debug container exits"
+    );
 
     // Node shell: a privileged pod on the node, nsenter into the host.
     let shell_pod = exec::create_node_shell(&client, "kube-system", &node, "busybox:1.37")

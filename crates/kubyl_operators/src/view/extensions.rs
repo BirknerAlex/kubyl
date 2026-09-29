@@ -231,7 +231,7 @@ impl OperatorsView {
                             .text_size(u(12.5))
                             .text_color(colors.text_muted)
                             .child(kubyl_ui::Icon::new(IconName::Info).size(13.0).color(colors.accent))
-                            .child(div().flex_1().child("OLM v1: Kubyl lists extensions and catalogs. Install or upgrade one from a YAML template."))
+                            .child(div().flex_1().min_w_0().child("OLM v1: Kubyl lists extensions and catalogs. Install or upgrade one from a YAML template."))
                             .when(!read_only, |this| {
                                 this.child(
                                     Button::new("new-extension")

@@ -648,7 +648,7 @@ impl Render for SyncDialog {
             };
             widgets::warning_box(&colors)
                 .child(Icon::new(IconName::Clock).size(14.0).color(colors.yellow))
-                .child(div().flex_1().text_size(u(12.0)).child(text))
+                .child(div().flex_1().min_w_0().text_size(u(12.0)).child(text))
         });
         let submit = Button::new("sync-submit")
             .primary()
@@ -1048,6 +1048,7 @@ impl Render for RollbackDialog {
                 .child(
                     v_flex()
                         .flex_1()
+                        .min_w_0()
                         .gap(u(8.0))
                         .child(
                             div()
@@ -1845,7 +1846,7 @@ impl SignInDialog {
                             .size(14.0)
                             .color(colors.yellow),
                     )
-                    .child(div().flex_1().child(format!(
+                    .child(div().flex_1().min_w_0().child(format!(
                         "Argo CD's oidc.config has no `cliClientID`, so the provider will probably only accept argocd-server (it has the client secret). Like `argocd login --sso`, Kubyl needs a public client: add one in {} with the redirect URI {}, and set it as `cliClientID` in argocd-cm. Until then, use the Token tab.",
                         provider.clone().unwrap_or_default(),
                         crate::sso::REDIRECT_URI
@@ -1857,7 +1858,7 @@ impl SignInDialog {
                 h_flex()
                     .gap(u(8.0))
                     .child(Icon::new(IconName::Globe).size(13.0).color(colors.accent))
-                    .child(div().flex_1().child(
+                    .child(div().flex_1().min_w_0().child(
                         "Finish signing in in your browser. You can close this dialog: the sign-in completes in the background.",
                     ))
                     .when_some(self.sso_url.clone(), |this, url| {
@@ -1930,17 +1931,17 @@ impl Render for SignInDialog {
                     })
                     .unwrap_or_else(|| "not found".into());
                 let mut facts: Vec<(&'static str, AnyElement)> = vec![
-                    ("Cluster", widgets::text(name.clone())),
-                    ("Namespace", widgets::mono(install.namespace.clone())),
-                    ("Service", widgets::mono(service)),
-                    ("Through", widgets::text(transport)),
+                    ("Cluster", widgets::kv_text(name.clone())),
+                    ("Namespace", widgets::kv_mono(install.namespace.clone())),
+                    ("Service", widgets::kv_mono(service)),
+                    ("Through", widgets::kv_text(transport)),
                 ];
                 if let Some(url) = &install.url {
                     let used = if install.sso.dex { "SSO signs in there" } else { "not used" };
-                    facts.push(("Argo CD URL", widgets::mono(format!("{url} ({used})"))));
+                    facts.push(("Argo CD URL", widgets::kv_mono(format!("{url} ({used})"))));
                 }
                 if let Some(version) = &install.version {
-                    facts.push(("Version", widgets::mono(version.clone())));
+                    facts.push(("Version", widgets::kv_mono(version.clone())));
                 }
                 body = body.child(widgets::kv(facts, &colors));
                 if installs.len() > 1 {
@@ -1973,7 +1974,7 @@ impl Render for SignInDialog {
                     body = body.child(
                         widgets::warning_box(&colors)
                             .child(Icon::new(IconName::TriangleAlert).size(14.0).color(colors.yellow))
-                            .child(div().flex_1().text_size(u(12.0)).child(problem.clone())),
+                            .child(div().flex_1().min_w_0().text_size(u(12.0)).child(problem.clone())),
                     );
                 }
 
@@ -2028,7 +2029,7 @@ impl Render for SignInDialog {
                     .text_size(u(11.5))
                     .text_color(colors.text_dim)
                     .child(Icon::new(IconName::Lock).size(12.0))
-                    .child(div().flex_1().child(format!(
+                    .child(div().flex_1().min_w_0().child(format!(
                         "Signing in confirms this install: Kubyl remembers it for {name} and asks again if its Service is replaced. The token goes to the {}; your Kubernetes credentials are never sent to Argo CD.",
                         kubyl_kube::auth::store::store_name()
                     ))),

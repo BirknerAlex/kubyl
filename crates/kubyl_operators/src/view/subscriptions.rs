@@ -220,27 +220,27 @@ impl OperatorsView {
         let (state_label, tone) = state(&sub);
         let cluster = self.cluster.clone();
         let mut rows = vec![
-            ("Package", widgets::text(sub.package.clone())),
+            ("Package", widgets::kv_text(sub.package.clone())),
             (
                 "Channel",
-                widgets::text(sub.channel.clone().unwrap_or_else(|| "default".into())),
+                widgets::kv_text(sub.channel.clone().unwrap_or_else(|| "default".into())),
             ),
             (
                 "Catalog",
-                widgets::text(format!("{} · {}", sub.source, sub.source_namespace)),
+                widgets::kv_text(format!("{} · {}", sub.source, sub.source_namespace)),
             ),
         ];
         if let Some(start) = &sub.starting_csv {
-            rows.push(("Starting CSV", widgets::mono(start.clone())));
+            rows.push(("Starting CSV", widgets::kv_mono(start.clone())));
         }
         rows.push((
             "Installed CSV",
-            widgets::mono(sub.installed_csv.clone().unwrap_or_else(|| "—".into())),
+            widgets::kv_mono(sub.installed_csv.clone().unwrap_or_else(|| "—".into())),
         ));
         if sub.current_csv != sub.installed_csv
             && let Some(current) = &sub.current_csv
         {
-            rows.push(("Latest CSV", widgets::mono(current.clone())));
+            rows.push(("Latest CSV", widgets::kv_mono(current.clone())));
         }
         rows.push((
             "Approval",

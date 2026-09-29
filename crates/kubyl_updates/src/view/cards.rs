@@ -18,8 +18,8 @@ use crate::model::{
 use crate::service::Updates;
 use crate::view::UpdatesView;
 use crate::view::widgets::{
-    self, ago, bar, card, card_header, cell, date, kv, link, mono, row_button, status_icon,
-    table_header, table_row, took,
+    self, ago, bar, card, card_header, cell, date, kv, kv_mono, link, mono, row_button,
+    status_icon, table_header, table_row, took,
 };
 
 /// Height of one target row of the update path.
@@ -812,7 +812,7 @@ fn target_details(target: &Target, colors: &Colors, cx: &mut Context<UpdatesView
     if !target.channels.is_empty() {
         col = col.child(kv(
             "Channels",
-            mono(target.channels.join(" · ")),
+            kv_mono(target.channels.join(" · ")),
             104.0,
             colors,
         ));
@@ -825,7 +825,7 @@ fn target_details(target: &Target, colors: &Colors, cx: &mut Context<UpdatesView
             }
             None => image.clone(),
         };
-        col = col.child(kv("Image", mono(short), 104.0, colors));
+        col = col.child(kv("Image", kv_mono(short), 104.0, colors));
     }
     for reason in &target.blocked {
         col = col.child(

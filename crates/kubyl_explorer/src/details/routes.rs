@@ -5,12 +5,16 @@
 
 use std::sync::Arc;
 
-use gpui::{AnyElement, ClipboardItem, Context, IntoElement, SharedString, div, prelude::*};
+use gpui::{
+    AnyElement, ClipboardItem, Context, ElementId, IntoElement, SharedString, div, prelude::*,
+};
 use kubyl_core::{Gvr, Notification, NotificationCenter, ResourceRef, Tone};
 use kubyl_resources::format::{human_duration, seconds_since, str_at, timestamp};
 use kubyl_resources::object_key;
 use kubyl_resources::route::{self, Route, ServicePortMatch};
-use kubyl_ui::{Chip, Colors, Icon, IconButton, IconName, StatusPill, fonts, h_flex, u, v_flex};
+use kubyl_ui::{
+    Chip, Colors, Icon, IconButton, IconName, Selectable, StatusPill, fonts, h_flex, u, v_flex,
+};
 use serde_json::Value;
 
 use super::{DetailsContent, PortRow, SECRET_MASK, Target, chips, link, row_button, section};
@@ -56,7 +60,11 @@ fn kv_row(label: &'static str, value: impl IntoElement, colors: &Colors) -> impl
 }
 
 fn text(value: impl Into<SharedString>, color: gpui::Hsla) -> gpui::Div {
-    div().truncate().text_color(color).child(value.into())
+    let value = value.into();
+    div()
+        .truncate()
+        .text_color(color)
+        .child(Selectable::new(ElementId::Name(value.clone()), value))
 }
 
 /// `10.244.0.12:8080` for each ready endpoint of `service` in its EndpointSlices. An endpoint

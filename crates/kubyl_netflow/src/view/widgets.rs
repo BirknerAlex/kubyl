@@ -7,7 +7,7 @@ use gpui::{
 use jiff::Timestamp;
 use kubyl_core::{ClusterId, ResourceRef};
 use kubyl_kube::ConnectionManager;
-use kubyl_ui::{Colors, Icon, IconName, fonts, h_flex, u, v_flex};
+use kubyl_ui::{Colors, Icon, IconName, Selectable, fonts, h_flex, u, v_flex};
 
 use crate::model::{PolicyRef, PolicySummary, Verdict};
 
@@ -196,21 +196,23 @@ pub fn kv(rows: Vec<(SharedString, AnyElement)>, key_width: f32, colors: &Colors
                         .flex_none()
                         .w(u(key_width))
                         .text_color(colors.text_dim)
-                        .child(key),
+                        .child(key.clone()),
                 )
-                .child(div().flex_1().min_w_0().child(value))
+                .child(div().id(key).flex_1().min_w_0().child(value))
         }))
         .into_any_element()
 }
 
+/// Monospace text that can be selected and copied.
 pub fn mono(text: impl Into<SharedString>, colors: &Colors) -> gpui::Div {
+    let text = text.into();
     div()
         .min_w_0()
         .truncate()
         .font_family(fonts::MONO)
         .text_size(u(11.5))
         .text_color(colors.text)
-        .child(text.into())
+        .child(Selectable::new(text.clone(), text))
 }
 
 /// A small bordered button (`This connection`).

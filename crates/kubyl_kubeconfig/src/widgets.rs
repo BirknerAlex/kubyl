@@ -5,7 +5,7 @@ use gpui::{
     Window, div, prelude::*,
 };
 use gpui_component::input::{Input, InputState};
-use kubyl_ui::{Colors, Icon, IconName, fonts, h_flex, u, v_flex};
+use kubyl_ui::{Colors, Icon, IconName, Selectable, fonts, h_flex, u, v_flex};
 
 use crate::conntest::Status;
 use crate::validate::Severity;
@@ -351,20 +351,26 @@ pub fn kv(rows: Vec<(&'static str, AnyElement)>, colors: &Colors) -> impl IntoEl
                         .text_color(colors.text_dim)
                         .child(k),
                 )
-                .child(div().flex_1().min_w_0().child(v))
+                .child(div().id(k).flex_1().min_w_0().child(v))
         }))
 }
 
+/// Monospace text that can be selected and copied.
 pub fn mono(text: impl Into<SharedString>) -> AnyElement {
+    let text = text.into();
     div()
         .font_family(fonts::MONO)
         .text_size(u(11.5))
-        .child(text.into())
+        .child(Selectable::new(text.clone(), text))
         .into_any_element()
 }
 
+/// Text that can be selected and copied.
 pub fn text(text: impl Into<SharedString>) -> AnyElement {
-    div().child(text.into()).into_any_element()
+    let text = text.into();
+    div()
+        .child(Selectable::new(text.clone(), text))
+        .into_any_element()
 }
 
 /// A clickable accent-colored label.

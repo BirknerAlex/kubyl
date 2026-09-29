@@ -7,9 +7,9 @@ mod pane_group;
 mod sidebar;
 
 use gpui::{
-    AnyElement, AnyView, App, Context, Entity, ExternalPaths, FocusHandle, Focusable, IntoElement,
-    MouseButton, NavigationDirection, Pixels, Render, SharedString, Subscription, WeakEntity,
-    Window, actions, div, prelude::*, px,
+    AnyElement, AnyView, App, Context, Entity, EntityId, ExternalPaths, FocusHandle, Focusable,
+    IntoElement, MouseButton, NavigationDirection, Pixels, Render, SharedString, Subscription,
+    WeakEntity, Window, actions, div, prelude::*, px,
 };
 use gpui_component::resizable::{ResizableState, h_resizable, resizable_panel, v_resizable};
 use kubyl_core::actions::{ActivateDockPanel, OpenSettings, OpenView, ShowNotifications};
@@ -17,6 +17,7 @@ use kubyl_core::{
     ActiveContext, ChromeRegistry, DockPosition, NotificationCenter, StatusBarPosition, TabHandle,
     ViewRegistry, ViewRequest,
 };
+use kubyl_kube::ConnectionManager;
 use kubyl_settings::{Settings, State};
 use kubyl_ui::{
     ActiveColors, AppearanceSettings, Button, IconButton, IconName, Modal, StatusBar,
@@ -80,6 +81,8 @@ pub struct Workspace {
     toasts_shown: u64,
     history_seen: u64,
     overlay: Option<Overlay>,
+    /// The tab whose cluster and namespace the title bar last followed.
+    followed_tab: Option<EntityId>,
     focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -144,6 +147,11 @@ impl Workspace {
             cx.observe_window_appearance(window, |_, _, cx| kubyl_ui::apply_theme(cx)),
         ];
 
+        // The restored tabs don't switch the restored cluster.
+        let followed_tab = active_pane
+            .read(cx)
+            .active_item()
+            .map(|item| item.entity_id());
         let this = Self {
             center,
             active_pane,
@@ -163,6 +171,7 @@ impl Workspace {
             toasts_shown: latest,
             history_seen: latest,
             overlay: None,
+            followed_tab,
             focus: cx.focus_handle(),
             _subscriptions: subscriptions,
         };
@@ -205,6 +214,26 @@ impl Workspace {
             }
             PaneEvent::ToggleZoom => self.toggle_zoom(pane, cx),
             PaneEvent::Changed => self.save_layout(window, cx),
+        }
+        self.follow_active_tab(cx);
+    }
+
+    /// Shows the cluster and namespace of the active tab in the title bar once another tab
+    /// becomes active (e.g. logs of pods in different clusters).
+    fn follow_active_tab(&mut self, cx: &mut Context<Self>) {
+        let Some(item) = self.active_pane.read(cx).active_item() else {
+            return;
+        };
+        let id = item.entity_id();
+        if self.followed_tab == Some(id) {
+            return;
+        }
+        self.followed_tab = Some(id);
+        let Some(context) = item.tab_context(cx) else {
+            return;
+        };
+        if let Some(manager) = ConnectionManager::try_global(cx) {
+            manager.update(cx, |manager, cx| manager.follow_tab(&context, cx));
         }
     }
 
@@ -588,6 +617,7 @@ impl Render for Workspace {
             .text_color(colors.text)
             .font_family(kubyl_ui::fonts::UI)
             .text_size(u(kubyl_ui::sizes::UI_FONT))
+            .on_action(kubyl_ui::copy_selected_text)
             .on_action(cx.listener(|this, _: &ToggleLeftDock, window, cx| {
                 this.toggle_dock(DockPosition::Left, window, cx)
             }))
@@ -1033,6 +1063,119 @@ mod tests {
                     Some(kubyl_core::ViewKind::Events)
                 );
                 assert!(!pane.update(cx, |p, cx| p.navigate(1, window, cx)));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn dragging_tabs_reorders_and_moves_them(cx: &mut TestAppContext) {
+        use kubyl_core::ViewKind;
+        let _dir = init(cx);
+        let window = open(cx, WorkspaceLayout::default());
+        let kinds = |pane: &Entity<Pane>, cx: &App| -> Vec<ViewKind> {
+            pane.read(cx)
+                .items()
+                .iter()
+                .filter_map(|i| i.view_request(cx).map(|r| r.kind))
+                .collect()
+        };
+        let dragged = |pane: &Entity<Pane>, index: usize, cx: &App| {
+            pane::DraggedTab::new(pane.downgrade(), pane.read(cx).items()[index].entity_id())
+        };
+        let (first, second) = window
+            .update(cx, |workspace, window, cx| {
+                workspace.open(&ViewRequest::new(ViewKind::Overview), window, cx);
+                workspace.open(&ViewRequest::new(ViewKind::Events), window, cx);
+                let first = workspace.active_pane.clone();
+                assert_eq!(
+                    kinds(&first, cx),
+                    [ViewKind::Welcome, ViewKind::Overview, ViewKind::Events]
+                );
+
+                // Onto another tab: takes its place. Onto the empty space: goes last.
+                let drag = dragged(&first, 0, cx);
+                first.update(cx, |p, cx| p.drop_tab(&drag, Some(2), window, cx));
+                assert_eq!(
+                    kinds(&first, cx),
+                    [ViewKind::Overview, ViewKind::Events, ViewKind::Welcome]
+                );
+                assert_eq!(first.read(cx).active_item().unwrap().entity_id(), drag.item);
+                let drag = dragged(&first, 0, cx);
+                first.update(cx, |p, cx| p.drop_tab(&drag, None, window, cx));
+                assert_eq!(
+                    kinds(&first, cx),
+                    [ViewKind::Events, ViewKind::Welcome, ViewKind::Overview]
+                );
+
+                // Into another pane (the split starts with a copy of Overview).
+                workspace.split(&first, SplitAxis::Horizontal, window, cx);
+                let second = workspace.active_pane.clone();
+                let drag = dragged(&first, 0, cx);
+                second.update(cx, |p, cx| p.drop_tab(&drag, Some(0), window, cx));
+                assert_eq!(kinds(&first, cx), [ViewKind::Welcome, ViewKind::Overview]);
+                assert_eq!(kinds(&second, cx), [ViewKind::Events, ViewKind::Overview]);
+                assert_eq!(
+                    second.read(cx).active_item().unwrap().entity_id(),
+                    drag.item
+                );
+
+                // A view the pane already shows isn't duplicated.
+                let drag = dragged(&first, 1, cx);
+                second.update(cx, |p, cx| p.drop_tab(&drag, Some(0), window, cx));
+                assert_eq!(kinds(&first, cx), [ViewKind::Welcome]);
+                assert_eq!(kinds(&second, cx), [ViewKind::Overview, ViewKind::Events]);
+
+                // Moving the last tab out removes the pane.
+                let drag = dragged(&first, 0, cx);
+                second.update(cx, |p, cx| p.drop_tab(&drag, None, window, cx));
+                (first, second)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |workspace, _, cx| {
+                assert_eq!(workspace.center.panes(), std::slice::from_ref(&second));
+                assert!(first.read(cx).items().is_empty());
+                assert_eq!(
+                    kinds(&second, cx),
+                    [ViewKind::Overview, ViewKind::Events, ViewKind::Welcome]
+                );
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn dropping_onto_a_duplicate_keeps_unsaved_edits(cx: &mut TestAppContext) {
+        let _dir = init(cx);
+        let window = open(cx, WorkspaceLayout::default());
+        window
+            .update(cx, |workspace, window, cx| {
+                // Nothing builds this kind: the split's copy is a clean placeholder.
+                let request = ViewRequest::new(kubyl_core::ViewKind::Custom("unsaved".into()));
+                let dirty = cx.new(|cx| DirtyTab {
+                    request: request.clone(),
+                    focus: cx.focus_handle(),
+                });
+                let dirty_id = dirty.entity_id();
+                let first = workspace.active_pane.clone();
+                first.update(cx, |p, cx| p.add_item(Box::new(dirty), true, window, cx));
+                workspace.split(&first, SplitAxis::Horizontal, window, cx);
+                let second = workspace.active_pane.clone();
+                let copy_id = second.read(cx).active_item().unwrap().entity_id();
+                assert_ne!(copy_id, dirty_id);
+
+                let drag = pane::DraggedTab::new(first.downgrade(), dirty_id);
+                second.update(cx, |p, cx| p.drop_tab(&drag, None, window, cx));
+                let ids: Vec<_> = second
+                    .read(cx)
+                    .items()
+                    .iter()
+                    .map(|i| i.entity_id())
+                    .collect();
+                assert!(
+                    ids.contains(&dirty_id) && !ids.contains(&copy_id),
+                    "{ids:?}"
+                );
             })
             .unwrap();
     }

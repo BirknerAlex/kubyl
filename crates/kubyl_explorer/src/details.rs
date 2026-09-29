@@ -42,8 +42,8 @@ use kubyl_resources::{
     ResourceSelection, ResourceStore, ResourceStores, StoreHandle, StoreKey, object_key,
 };
 use kubyl_ui::{
-    ActiveColors, Chip, Colors, Icon, IconButton, IconName, StatusDot, StatusPill, fonts, h_flex,
-    tone_color, u, v_flex,
+    ActiveColors, Chip, Colors, Icon, IconButton, IconName, Selectable, StatusDot, StatusPill,
+    fonts, h_flex, tone_color, u, v_flex,
 };
 use serde_json::Value;
 
@@ -720,7 +720,7 @@ fn kv(rows: Vec<(&'static str, String)>, colors: &Colors) -> impl IntoElement {
                         .min_w_0()
                         .truncate()
                         .text_color(colors.text)
-                        .child(v),
+                        .child(Selectable::new(k, v)),
                 )
         }))
 }
@@ -1025,7 +1025,7 @@ impl DetailsContent {
                         } else {
                             colors.text
                         })
-                        .child(target.name.clone()),
+                        .child(Selectable::new("name", target.name.clone())),
                 )
                 .when(self.gone, |this| {
                     this.child(
@@ -2351,6 +2351,20 @@ impl DetailsContent {
 
 impl Render for DetailsContent {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A sub-tab view that asks to close (a terminal whose shell exited) is dropped: opening
+        // the sub-tab again starts a new session.
+        let closed: Vec<Mode> = self
+            .extra
+            .iter()
+            .filter(|(_, tab)| tab.handle.wants_close(cx))
+            .map(|(mode, _)| *mode)
+            .collect();
+        for mode in closed {
+            self.extra.remove(&mode);
+            if self.mode == mode {
+                self.mode = Mode::Summary;
+            }
+        }
         let colors = cx.colors().clone();
         let (Some(target), Some(object)) = (self.target.clone(), self.object.clone()) else {
             let message = if self.target.is_some() {

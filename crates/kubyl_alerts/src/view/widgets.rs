@@ -260,7 +260,7 @@ pub fn kv(rows: Vec<(&'static str, AnyElement)>, colors: &Colors) -> impl IntoEl
                         .text_color(colors.text_dim)
                         .child(key),
                 )
-                .child(div().flex_1().min_w_0().child(value))
+                .child(div().id(key).flex_1().min_w_0().child(value))
         }))
 }
 

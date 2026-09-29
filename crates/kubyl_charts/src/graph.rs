@@ -5,8 +5,9 @@
 //! toward the middle keeps separate components together. It's CPU work: run it off the UI thread
 //! (`cx.background_spawn`); its inputs and output are plain data.
 //!
-//! A live graph stays calm: nodes start where the previous layout put them (by id) and the
-//! simulation only settles what changed. New nodes start next to a neighbor that's already
+//! A live graph stays calm: once most nodes were placed before, those stay where the previous
+//! layout put them (by id) and only new nodes are placed around them; placed nodes only move
+//! again when their circles grew into each other. New nodes start next to a neighbor that's already
 //! placed, else at a spot derived from their id, and nodes are simulated in id order, so the same
 //! graph always gets the same layout.
 //! [`fit`] maps the result into a view.
@@ -108,6 +109,10 @@ fn simulate(
         .collect();
     let charges: Vec<f64> = radii.iter().map(|r| -300.0 - 6.0 * r).collect();
     let collide_radii: Vec<f64> = radii.iter().map(|r| r + LABEL_ROOM).collect();
+    let pinned = pinned(nodes, previous, &starts, &collide_radii, warm);
+    if pinned.iter().all(|&p| p) {
+        return starts.iter().map(|&[x, y]| [x as f32, y as f32]).collect();
+    }
     let builder = if warm {
         // Most nodes are placed: settle the changes without shaking the rest.
         SimulationBuilder::default()
@@ -117,7 +122,13 @@ fn simulate(
         SimulationBuilder::default()
     };
     let mut simulation = builder
-        .build(starts.iter().map(|&[x, y]| Node::default().position(x, y)))
+        .build(starts.iter().zip(&pinned).map(|(&[x, y], &pinned)| {
+            if pinned {
+                Node::default().fixed_position(x, y)
+            } else {
+                Node::default().position(x, y)
+            }
+        }))
         .add_force(
             "link",
             Link::new(links)
@@ -143,6 +154,45 @@ fn simulate(
         .positions()
         .map(|[x, y]| [x as f32, y as f32])
         .collect()
+}
+
+/// Which nodes keep their previous position: on a warm start every node placed before, except
+/// those whose circles (grown with their traffic) now run into another one.
+fn pinned(
+    nodes: &[GraphNode],
+    previous: &Positions,
+    starts: &[[f64; 2]],
+    collide_radii: &[f64],
+    warm: bool,
+) -> Vec<bool> {
+    let mut pinned: Vec<bool> = nodes
+        .iter()
+        .map(|n| warm && previous.contains_key(&n.id))
+        .collect();
+    if !warm {
+        return pinned;
+    }
+    let mut crowded = vec![false; nodes.len()];
+    for a in 0..nodes.len() {
+        for b in a + 1..nodes.len() {
+            if !(pinned[a] && pinned[b]) {
+                continue;
+            }
+            let [dx, dy] = [starts[a][0] - starts[b][0], starts[a][1] - starts[b][1]];
+            // Collide doesn't separate circles exactly: some slack before moving them, but
+            // never so much that the circles themselves overlap (big group circles).
+            let room = ((collide_radii[a] + collide_radii[b]) * 0.85)
+                .max(f64::from(nodes[a].radius) + f64::from(nodes[b].radius));
+            if dx * dx + dy * dy < room * room {
+                crowded[a] = true;
+                crowded[b] = true;
+            }
+        }
+    }
+    for (pinned, crowded) in pinned.iter_mut().zip(crowded) {
+        *pinned &= !crowded;
+    }
+    pinned
 }
 
 /// A per-node value for fjadra (its callbacks get the node's index second).
@@ -530,6 +580,43 @@ mod tests {
         let d = ((second[20][0] - second[3][0]).powi(2) + (second[20][1] - second[3][1]).powi(2))
             .sqrt();
         assert!(d < 300.0, "{d}");
+    }
+
+    /// Live refreshes (traffic changes the sizes a little) leave placed nodes where they are.
+    #[test]
+    fn refreshes_keep_placed_nodes_still() {
+        let (mut nodes, edges) = ring(20);
+        let first = layout(&nodes, &edges, &Positions::new());
+        let mut previous: Positions = nodes
+            .iter()
+            .zip(&first)
+            .map(|(n, &p)| (n.id.clone(), p))
+            .collect();
+        let mut current = first.clone();
+        for refresh in 0..10 {
+            for (i, node) in nodes.iter_mut().enumerate() {
+                node.radius = 10.0 + ((i + refresh) % 3) as f32;
+            }
+            current = layout(&nodes, &edges, &previous);
+            previous = nodes
+                .iter()
+                .zip(&current)
+                .map(|(n, &p)| (n.id.clone(), p))
+                .collect();
+        }
+        assert_eq!(first, current);
+
+        // A node whose traffic jumps grows into its neighbors: those make room again.
+        nodes[0].radius = 70.0;
+        let grown = layout(&nodes, &edges, &previous);
+        for j in 1..nodes.len() {
+            let d =
+                ((grown[0][0] - grown[j][0]).powi(2) + (grown[0][1] - grown[j][1]).powi(2)).sqrt();
+            assert!(
+                d > nodes[0].radius + nodes[j].radius,
+                "node-{j} overlaps: {d}"
+            );
+        }
     }
 
     /// The topology's limit: a few hundred nodes lay out quickly (debug builds too).

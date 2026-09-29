@@ -139,9 +139,9 @@ cargo run -p kubyl
 - GPUI tests of views that close a gpui-component dialog (`window.close_dialog`) need
   `gpui_component::Root` as the window's first view: build yours inside
   `add_window_view(|window, cx| Root::new(view, window, cx))`.
-- Key bindings win over text input: a single-key binding (`s`, `/`, `j`) in a context that
-  also contains an input eats that character while typing. Give the list its own key context
-  and focus handle, and keep inputs outside of it.
+- Key bindings win over text input. `kubyl_keymap::apply` adds `&& !Input` to every binding
+  made only of typing keys (`s`, `/`, `shift-g`, `g g`), so they don't fire while an input has
+  focus. Still give lists their own key context and focus handle, and keep inputs outside of it.
 - Screenshot runs stall while the Mac's screen is locked (no step runs, not even with an empty
   config); run them while someone is at the machine.
 - `window.on_next_frame` doesn't fire while macOS doesn't drive frames (hidden or occluded

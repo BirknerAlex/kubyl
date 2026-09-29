@@ -1,6 +1,7 @@
 //! The topology (board 18, README "Topology graph"): namespaces or workloads as nodes sized by
 //! volume, edges by verdict (forwarded, dropped dashed, no reply) and width by volume.
-//! Aggregation and layout run in the background, warm-started from the previous positions;
+//! Aggregation and layout run in the background; nodes placed before keep their positions and
+//! the fitted view stays put across refreshes (see `kubyl_charts::graph`);
 //! nodes are elements (click, double-click, hover), edges are painted on a canvas and hit-tested.
 //! Drag pans, the wheel zooms. A click selects (the side panel explains it); a double-click or
 //! "Show flows" filters the table to the node or edge.
@@ -37,6 +38,9 @@ pub enum Selection {
     Edge(String, String),
 }
 
+/// A fitted view and the canvas size it was fitted to.
+type FittedView = (Viewport, [f32; 2]);
+
 struct Drag {
     start: gpui::Point<Pixels>,
     pan: [f32; 2],
@@ -51,6 +55,10 @@ pub struct TopologyState {
     radii: Vec<f32>,
     /// What fitting keeps in view: the nodes and the tops of their loops.
     fit: (Vec<[f32; 2]>, Vec<f32>),
+    /// The fitted view (and the canvas size it was fitted to), kept across refreshes so the
+    /// graph doesn't rescale every second. Refitted when something leaves it.
+    base: Rc<Cell<Option<FittedView>>>,
+    /// Every node's last position, also of nodes gone for now: they come back to their place.
     previous: Positions,
     pub selected: Option<Selection>,
     /// The user's zoom and pan on top of fitting.
@@ -74,6 +82,7 @@ impl TopologyState {
             positions: Vec::new(),
             radii: Vec::new(),
             fit: (Vec::new(), Vec::new()),
+            base: Rc::new(Cell::new(None)),
             previous: Positions::new(),
             selected: None,
             scale: 1.0,
@@ -97,6 +106,7 @@ impl TopologyState {
     fn fit(&mut self) {
         self.scale = 1.0;
         self.pan = [0.0, 0.0];
+        self.base.set(None);
     }
 
     /// Layout → view coordinates (inside the canvas).
@@ -109,7 +119,14 @@ impl TopologyState {
         } else {
             (&self.positions, &self.radii)
         };
-        let base = graph::fit(points, radii, size, 40.0, 1.6);
+        let base = match self.base.get() {
+            Some((base, fitted)) if fitted == size && contains(&base, points, radii, size) => base,
+            _ => {
+                let base = graph::fit(points, radii, size, 40.0, 1.6);
+                self.base.set(Some((base, size)));
+                base
+            }
+        };
         let center = [size[0] / 2.0, size[1] / 2.0];
         let scale = base.scale * self.scale;
         let offset = [
@@ -122,6 +139,16 @@ impl TopologyState {
     fn index_of(&self, id: &str) -> Option<usize> {
         self.graph.as_ref()?.nodes.iter().position(|n| n.id == id)
     }
+}
+
+/// Whether every circle (and the label under it) is inside the view `base` maps to.
+fn contains(base: &Viewport, points: &[[f32; 2]], radii: &[f32], size: [f32; 2]) -> bool {
+    points.iter().zip(radii).all(|(&p, &r)| {
+        let [x, y] = base.apply(p);
+        let r = r * base.scale;
+        let label = 22.0 * base.scale;
+        x - r >= 0.0 && y - r >= 0.0 && x + r <= size[0] && y + r + label <= size[1]
+    })
 }
 
 /// A node's radius (layout units) by volume.
@@ -326,12 +353,17 @@ impl NetworkFlowsView {
         self.topology.computing = false;
         self.topology.computed = Some(Instant::now());
         self.topology.key = Some(key);
-        self.topology.previous = topology
-            .nodes
-            .iter()
-            .zip(&positions)
-            .map(|(n, p)| (n.id.clone(), *p))
-            .collect();
+        // Workloads come and go; don't remember them forever.
+        if self.topology.previous.len() > 4096 {
+            self.topology.previous.clear();
+        }
+        self.topology.previous.extend(
+            topology
+                .nodes
+                .iter()
+                .zip(&positions)
+                .map(|(n, p)| (n.id.clone(), *p)),
+        );
         // Loops and their labels need room when fitting: their tops join the nodes.
         let center = middle(&positions);
         let mut fit_points = positions.clone();
@@ -908,6 +940,7 @@ fn graph_canvas(
         let colors = colors.clone();
         (graph, positions, radii, fit, selected, colors)
     };
+    let base = view.topology.base.clone();
     let scale_cell = view.topology.scale;
     let pan_cell = view.topology.pan;
     layer = layer.child(
@@ -927,6 +960,7 @@ fn graph_canvas(
                     positions: positions.clone(),
                     radii: radii.clone(),
                     fit: fit.clone(),
+                    base: base.clone(),
                     bounds: Rc::new(Cell::new(Some(bounds))),
                     scale: scale_cell,
                     pan: pan_cell,

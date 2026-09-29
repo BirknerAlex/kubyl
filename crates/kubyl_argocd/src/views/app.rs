@@ -1157,7 +1157,7 @@ impl AppView {
                 )
                 .into_any_element()
             }
-            None => widgets::text(dest_label),
+            None => widgets::kv_text(dest_label),
         };
         let mut facts = vec![("Destination", dest)];
         if let Some(kind) = app
@@ -1166,10 +1166,10 @@ impl AppView {
             .clone()
             .or_else(|| app.status.source_types.first().cloned())
         {
-            facts.push(("Type", widgets::text(kind)));
+            facts.push(("Type", widgets::kv_text(kind)));
         }
         if let Some(set) = app.application_set() {
-            facts.push(("From", widgets::text(format!("ApplicationSet {set}"))));
+            facts.push(("From", widgets::kv_text(format!("ApplicationSet {set}"))));
         }
         sources = sources.child(widgets::kv(facts, &colors));
         column = column.child(sources);
@@ -2463,8 +2463,8 @@ impl AppView {
             .child(div().text_size(u(13.0)).child("The application controller's logs, filtered to the lines about this application."))
             .child(widgets::kv(
                 vec![
-                    ("Controller", widgets::mono(controller.clone().unwrap_or_else(|| "not found".into()))),
-                    ("Filter", widgets::mono(query)),
+                    ("Controller", widgets::kv_mono(controller.clone().unwrap_or_else(|| "not found".into()))),
+                    ("Filter", widgets::kv_mono(query)),
                 ],
                 &colors,
             ))

@@ -4,10 +4,10 @@ use std::collections::HashMap;
 
 use gpui::{
     App, Context, EntityId, EventEmitter, FocusHandle, Focusable, IntoElement, Render,
-    SharedString, Subscription, Window, actions, div, prelude::*,
+    SharedString, Subscription, WeakEntity, Window, actions, div, prelude::*,
 };
 use kubyl_core::{ClusterIds, TabHandle, ViewKind, ViewRequest};
-use kubyl_ui::{ActiveColors, IconButton, IconName, Tab, TabBar, u, v_flex};
+use kubyl_ui::{ActiveColors, Icon, IconButton, IconName, Tab, TabBar, h_flex, u, v_flex};
 
 use super::layout::{PaneLayout, SplitAxis};
 
@@ -45,6 +45,51 @@ pub enum PaneEvent {
     ToggleZoom,
     /// Tabs were opened, closed or reordered.
     Changed,
+}
+
+/// A tab being dragged to another position or pane.
+pub struct DraggedTab {
+    pub(super) pane: WeakEntity<Pane>,
+    pub(super) item: EntityId,
+    title: SharedString,
+    icon: Option<SharedString>,
+}
+
+impl DraggedTab {
+    #[cfg(test)]
+    pub(super) fn new(pane: WeakEntity<Pane>, item: EntityId) -> Self {
+        Self {
+            pane,
+            item,
+            title: SharedString::default(),
+            icon: None,
+        }
+    }
+}
+
+struct TabDragPreview {
+    title: SharedString,
+    icon: Option<SharedString>,
+}
+
+impl Render for TabDragPreview {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = cx.colors();
+        h_flex()
+            .px(u(10.0))
+            .py(u(4.0))
+            .gap(u(7.0))
+            .rounded(u(4.0))
+            .bg(colors.elevated)
+            .border_1()
+            .border_color(colors.accent)
+            .text_size(u(12.5))
+            .text_color(colors.text)
+            .when_some(self.icon.clone(), |this, path| {
+                this.child(Icon::from_path(path).size(13.0).color(colors.accent))
+            })
+            .child(self.title.clone())
+    }
 }
 
 pub struct Pane {
@@ -122,6 +167,31 @@ impl Pane {
             self.activate(existing, focus, window, cx);
             return;
         }
+        let index = if self.items.is_empty() {
+            0
+        } else {
+            self.active + 1
+        };
+        self.insert_item(index, item, focus, window, cx);
+    }
+
+    /// Inserts `item` at `index` (clamped) and activates it.
+    fn insert_item(
+        &mut self,
+        index: usize,
+        item: Box<dyn TabHandle>,
+        focus: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.observe_item(item.as_ref(), cx);
+        let index = index.min(self.items.len());
+        self.items.insert(index, item);
+        self.activate(index, focus, window, cx);
+        cx.emit(PaneEvent::Changed);
+    }
+
+    fn observe_item(&mut self, item: &dyn TabHandle, cx: &mut Context<Self>) {
         let this = cx.entity().downgrade();
         let subscription = item.observe(
             cx,
@@ -131,14 +201,105 @@ impl Pane {
         );
         self.item_subscriptions
             .insert(item.entity_id(), subscription);
-        let index = if self.items.is_empty() {
-            0
+    }
+
+    /// Removes the tab showing `item` without closing its view, for moving it to another pane.
+    /// The pane reports [`PaneEvent::Emptied`] when that was its last tab.
+    fn take_item(
+        &mut self,
+        item: EntityId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Box<dyn TabHandle>> {
+        let index = self.items.iter().position(|i| i.entity_id() == item)?;
+        let taken = self.items.remove(index);
+        self.item_subscriptions.remove(&item);
+        if self.items.is_empty() {
+            self.active = 0;
+            cx.emit(PaneEvent::Emptied);
         } else {
-            self.active + 1
-        };
-        self.items.insert(index, item);
-        self.activate(index, focus, window, cx);
+            if self.active > index || self.active == self.items.len() {
+                self.active -= 1;
+            }
+            let active = self.active;
+            self.activate(active, false, window, cx);
+        }
         cx.emit(PaneEvent::Changed);
+        cx.notify();
+        Some(taken)
+    }
+
+    /// Moves the dragged tab to `index` (the end when `None`) of this pane and activates it.
+    pub(super) fn drop_tab(
+        &mut self,
+        dragged: &DraggedTab,
+        index: Option<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let this = cx.entity().downgrade();
+        if dragged.pane == this {
+            let Some(from) = self
+                .items
+                .iter()
+                .position(|i| i.entity_id() == dragged.item)
+            else {
+                return;
+            };
+            let item = self.items.remove(from);
+            let to = index.unwrap_or(self.items.len()).min(self.items.len());
+            self.items.insert(to, item);
+            self.activate(to, true, window, cx);
+            cx.emit(PaneEvent::Changed);
+            cx.notify();
+            return;
+        }
+        let Some(source) = dragged.pane.upgrade() else {
+            return;
+        };
+        let Some((request, dirty)) = source
+            .read(cx)
+            .items
+            .iter()
+            .find(|i| i.entity_id() == dragged.item)
+            .map(|i| (i.view_request(cx), i.is_dirty(cx)))
+        else {
+            return;
+        };
+        // This pane already shows that view: keep one tab, at the drop position. The one with
+        // unsaved edits stays; if both have some, nothing moves.
+        let existing = request.as_ref().and_then(|request| {
+            self.items
+                .iter()
+                .position(|i| i.view_request(cx).as_ref() == Some(request))
+        });
+        if let Some(existing) = existing
+            && dirty
+            && self.items[existing].is_dirty(cx)
+        {
+            return;
+        }
+        let item = dragged.item;
+        let Some(item) = source.update(cx, |pane, cx| pane.take_item(item, window, cx)) else {
+            return;
+        };
+        let mut index = index.unwrap_or(self.items.len());
+        let item = match existing {
+            Some(existing) => {
+                let kept = self.items.remove(existing);
+                self.item_subscriptions.remove(&kept.entity_id());
+                if existing < index {
+                    index -= 1;
+                }
+                if dirty { item } else { kept }
+            }
+            None => item,
+        };
+        self.insert_item(index, item, false, window, cx);
+        // After the workspace handled the source pane emptying (it focuses another pane).
+        cx.defer_in(window, |this, window, cx| {
+            this.active_focus_handle(cx).focus(window, cx);
+        });
     }
 
     pub fn activate(
@@ -344,8 +505,18 @@ impl Pane {
     }
 
     fn render_tab_bar(&self, cx: &mut Context<Self>) -> TabBar {
+        let drop_background = cx.colors().accent.opacity(0.12);
         let tabs = self.items.iter().enumerate().map(|(index, item)| {
             let this = cx.entity().downgrade();
+            let dragged = DraggedTab {
+                pane: this.clone(),
+                item: item.entity_id(),
+                title: item.title(cx),
+                icon: item.icon(cx),
+            };
+            let on_drop = cx.listener(move |this, dragged: &DraggedTab, window, cx| {
+                this.drop_tab(dragged, Some(index), window, cx)
+            });
             Tab::new(
                 SharedString::from(format!("tab-{}", item.entity_id())),
                 item.title(cx),
@@ -361,9 +532,26 @@ impl Pane {
                 this.update(cx, |this, cx| this.close(index, window, cx))
                     .ok();
             })
+            .decorate(move |tab| {
+                tab.on_drag(dragged, |dragged, _, _, cx| {
+                    cx.new(|_| TabDragPreview {
+                        title: dragged.title.clone(),
+                        icon: dragged.icon.clone(),
+                    })
+                })
+                .drag_over::<DraggedTab>(move |style, _, _, _| style.bg(drop_background))
+                .on_drop(on_drop)
+            })
+        });
+        let on_drop_end = cx.listener(|this, dragged: &DraggedTab, window, cx| {
+            this.drop_tab(dragged, None, window, cx)
         });
         TabBar::new("tabs")
             .tabs(tabs)
+            .decorate_end(move |end| {
+                end.drag_over::<DraggedTab>(move |style, _, _, _| style.bg(drop_background))
+                    .on_drop(on_drop_end)
+            })
             .tool(
                 IconButton::new("new-tab", IconName::Plus)
                     .on_click(|_, window, cx| window.dispatch_action(Box::new(NewTab), cx)),

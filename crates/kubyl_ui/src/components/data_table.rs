@@ -202,9 +202,12 @@ impl DataTable {
         range
             .map(|row| {
                 let selected = self.selected == Some(row);
+                // `uniform_list` lays rows out as roots, which shrink to their content: fill the
+                // width like the header, or flex columns end up narrower than their titles.
                 h_flex()
                     .id(ElementId::Integer(row as u64))
                     .relative()
+                    .w_full()
                     .h(u(self.row_height))
                     .px(u(12.0))
                     .border_b_1()

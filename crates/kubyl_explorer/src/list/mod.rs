@@ -25,7 +25,8 @@ use gpui::{
 use gpui_component::input::{InputEvent, InputState};
 use kubyl_core::{
     ActionRegistry, ActionSpec, ActiveContext, CellValue, ClusterId, ColumnDef, ColumnProvider,
-    ColumnWidth, Gvr, ResourceColumns, ResourceRef, TabView, ViewKind, ViewRequest,
+    ColumnWidth, Gvr, ResourceColumns, ResourceRef, TabContext, TabNamespace, TabView, ViewKind,
+    ViewRequest,
 };
 use kubyl_kube::access::AccessQuery;
 use kubyl_kube::{ConnectionEvent, ConnectionManager};
@@ -1020,6 +1021,10 @@ impl ResourceListView {
         let Some(cluster) = self.cluster() else {
             return;
         };
+        // Another tab's namespace shown in the title bar doesn't re-scope this list.
+        if ActiveContext::follows_tab(cx) {
+            return;
+        }
         let active = ActiveContext::global(cx);
         if active.cluster.as_ref().map(|c| &c.id) != Some(cluster) {
             return;
@@ -1471,6 +1476,23 @@ impl TabView for ResourceListView {
                 ResourceRef::list(ClusterId::new(""), self.gvr.clone(), None),
             )),
         }
+    }
+
+    fn tab_context(&self, _: &App) -> Option<TabContext> {
+        let Mode::Cluster(cluster) = &self.mode else {
+            return None;
+        };
+        Some(TabContext {
+            cluster: cluster.clone(),
+            namespace: match self.namespaces.as_slice() {
+                // Cluster-scoped kinds (Nodes) have no namespace to show.
+                _ if !self.namespaced => TabNamespace::Keep,
+                [] => TabNamespace::All,
+                [namespace] => TabNamespace::One(namespace.clone()),
+                // The title bar shows one namespace or all.
+                _ => TabNamespace::Keep,
+            },
+        })
     }
 }
 

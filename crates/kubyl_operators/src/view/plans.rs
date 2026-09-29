@@ -285,7 +285,7 @@ impl OperatorsView {
         }
         rows.push((
             "Approval",
-            widgets::text(format!(
+            widgets::kv_text(format!(
                 "{}{}",
                 plan.approval.label(),
                 if plan.approved { " · approved" } else { "" }
@@ -293,7 +293,7 @@ impl OperatorsView {
         ));
         rows.push((
             "Created",
-            widgets::text(format!("{} ago", widgets::ago(plan.created))),
+            widgets::kv_text(format!("{} ago", widgets::ago(plan.created))),
         ));
         let yaml_ref = ResourceRef::object(
             cluster.clone(),

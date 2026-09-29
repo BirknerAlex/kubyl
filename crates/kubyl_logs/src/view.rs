@@ -13,9 +13,11 @@
 //! matches") are seq lists maintained per pushed/evicted line, and the list state is spliced to
 //! match, so a 100k-line buffer never rescans on new data.
 
+use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::ops::Range;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use futures::StreamExt as _;
@@ -23,8 +25,9 @@ use futures::channel::mpsc;
 use gpui::{
     AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle, Focusable,
     FollowMode, FontWeight, HighlightStyle, Hsla, InteractiveText, IntoElement, KeyBinding,
-    ListAlignment, ListOffset, ListState, MouseButton, MouseDownEvent, SharedString, StyledText,
-    Subscription, Task, Window, actions, div, list, prelude::*, px,
+    ListAlignment, ListOffset, ListState, MouseButton, MouseDownEvent, MouseMoveEvent,
+    ScrollWheelEvent, SharedString, StyledText, Subscription, Task, Window, actions, canvas, div,
+    list, prelude::*, px, relative,
 };
 use gpui_component::button::{Button as MenuButton, ButtonVariants as _};
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -396,6 +399,17 @@ pub struct LogsView {
     previous: bool,
     show_timestamps: bool,
     wrap: bool,
+    /// How far messages are scrolled to the left while lines don't wrap (pixels).
+    h_scroll: f32,
+    /// Characters of the longest shown line: the horizontal range.
+    longest: usize,
+    /// `longest` may be too long (its line was evicted, paused or filtered out): recount.
+    longest_stale: bool,
+    /// Widths of the message column and of the list, measured while painting.
+    message_width: Rc<Cell<f32>>,
+    track_width: Rc<Cell<f32>>,
+    /// A drag of the horizontal scrollbar: mouse x and scroll when it started.
+    h_drag: Option<(f32, f32)>,
     json_mode: JsonMode,
     time_zone: TimeZone,
     // Lines and filters.
@@ -521,6 +535,12 @@ impl LogsView {
             previous: false,
             show_timestamps: settings.timestamps,
             wrap: settings.wrap,
+            h_scroll: 0.0,
+            longest: 0,
+            longest_stale: false,
+            message_width: Rc::new(Cell::new(0.0)),
+            track_width: Rc::new(Cell::new(0.0)),
+            h_drag: None,
             json_mode: JsonMode::Raw,
             time_zone: TimeZone::system(),
             ring: LogRingBuffer::new(settings.ring_buffer_lines),
@@ -620,6 +640,9 @@ impl LogsView {
         self.last_error = None;
         self.rate = RateMeter::default();
         self.pods.clear();
+        self.longest = 0;
+        self.longest_stale = false;
+        self.h_scroll = 0.0;
         self.list_state.reset(0);
         if self.follow {
             self.list_state.set_follow_mode(FollowMode::Tail);
@@ -997,6 +1020,9 @@ impl LogsView {
             self.visible.pop_front();
         }
         if self.rendered.front() == Some(&evicted.seq) {
+            if evicted.text.chars().count() >= self.longest {
+                self.longest_stale = true;
+            }
             self.rendered.pop_front();
             self.pending_evicted += 1;
         }
@@ -1018,6 +1044,12 @@ impl LogsView {
         }
         let restrict = self.filter_to_matches && self.search.is_some();
         if !restrict || search_match {
+            // While paused, new rows aren't shown.
+            if self.frozen.is_none()
+                && let Some(line) = self.ring.get_by_seq(seq)
+            {
+                self.longest = self.longest.max(line.text.chars().count());
+            }
             self.rendered.push_back(seq);
             self.pending_appended += 1;
         }
@@ -1110,6 +1142,7 @@ impl LogsView {
         } else {
             self.visible.clone()
         };
+        self.longest_stale = true;
         self.pending_appended = 0;
         self.pending_evicted = 0;
         if self.frozen.is_some() {
@@ -1231,6 +1264,7 @@ impl LogsView {
     }
 
     fn toggle_pause(&mut self, cx: &mut Context<Self>) {
+        self.longest_stale = true;
         if self.frozen.take().is_some() {
             self.pause_limit = None;
             self.paused_new_lines = 0;
@@ -1459,8 +1493,149 @@ impl LogsView {
         cx.notify();
     }
 
+    /// Lines are cut at the view's edge: messages scroll sideways instead.
+    fn scrolls_horizontally(&self) -> bool {
+        !self.wrap && self.json_mode != JsonMode::Pretty
+    }
+
+    /// Recounts the longest shown line (the paused rows while paused) once it may be stale.
+    fn refresh_longest(&mut self) {
+        if !self.longest_stale {
+            return;
+        }
+        self.longest_stale = false;
+        let lengths = |seqs: &mut dyn Iterator<Item = &u64>| {
+            seqs.filter_map(|&seq| self.ring.get_by_seq(seq))
+                .map(|l| l.text.chars().count())
+                .max()
+                .unwrap_or(0)
+        };
+        self.longest = match &self.frozen {
+            Some(rows) => lengths(&mut rows.iter()),
+            None => lengths(&mut self.rendered.iter()),
+        };
+    }
+
+    /// How far the longest line can scroll: until its end is in view.
+    fn max_h_scroll(&self, window: &Window) -> f32 {
+        let size = u(12.0).to_pixels(window.rem_size());
+        let text = window.text_system();
+        let char_width = text
+            .advance(text.resolve_font(&gpui::font(fonts::MONO)), size, 'm')
+            .map(|advance| f32::from(advance.width))
+            .unwrap_or(7.2);
+        (self.longest as f32 * char_width - self.message_width.get() + 16.0).max(0.0)
+    }
+
+    fn set_h_scroll(&mut self, scroll: f32, window: &Window, cx: &mut Context<Self>) {
+        let scroll = scroll.clamp(0.0, self.max_h_scroll(window));
+        if scroll != self.h_scroll {
+            self.h_scroll = scroll;
+            cx.notify();
+        }
+    }
+
+    fn scroll_sideways(
+        &mut self,
+        event: &ScrollWheelEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.scrolls_horizontally() {
+            return;
+        }
+        let dx = f32::from(event.delta.pixel_delta(px(20.0)).x);
+        if dx != 0.0 {
+            self.set_h_scroll(self.h_scroll - dx, window, cx);
+        }
+    }
+
+    fn drag_h_scrollbar(
+        &mut self,
+        event: &MouseMoveEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((start_x, start_scroll)) = self.h_drag else {
+            return;
+        };
+        let max = self.max_h_scroll(window);
+        let track = self.track_width.get();
+        let thumb = track * thumb_share(self.message_width.get(), max);
+        if track - thumb <= 0.0 {
+            return;
+        }
+        let moved = f32::from(event.position.x) - start_x;
+        self.set_h_scroll(start_scroll + moved * max / (track - thumb), window, cx);
+    }
+
+    /// The horizontal scrollbar under the lines, while one of them is wider than the view.
+    fn render_h_scrollbar(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.scrolls_horizontally() {
+            return None;
+        }
+        let max = self.max_h_scroll(window);
+        if max <= 0.0 {
+            return None;
+        }
+        let colors = cx.colors();
+        let share = thumb_share(self.message_width.get(), max);
+        let position = (1.0 - share) * (self.h_scroll / max);
+        let track_width = self.track_width.clone();
+        Some(
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .h(u(10.0))
+                .px(u(2.0))
+                .py(u(2.0))
+                .child(
+                    div()
+                        .relative()
+                        .size_full()
+                        .child(
+                            canvas(
+                                move |bounds, _, _| track_width.set(f32::from(bounds.size.width)),
+                                |_, _, _, _| {},
+                            )
+                            .absolute()
+                            .size_full(),
+                        )
+                        .child(
+                            div()
+                                .id("log-h-thumb")
+                                .absolute()
+                                .top_0()
+                                .bottom_0()
+                                .left(relative(position))
+                                .w(relative(share))
+                                .rounded(u(3.0))
+                                .bg(colors.text_faint.opacity(if self.h_drag.is_some() {
+                                    0.7
+                                } else {
+                                    0.45
+                                }))
+                                .hover(|s| s.bg(colors.text_faint.opacity(0.7)))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                                        cx.stop_propagation();
+                                        this.h_drag =
+                                            Some((f32::from(event.position.x), this.h_scroll));
+                                        cx.notify();
+                                    }),
+                                ),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn toggle_wrap(&mut self, cx: &mut Context<Self>) {
         self.wrap = !self.wrap;
+        self.h_scroll = 0.0;
         self.list_state.remeasure();
         cx.notify();
     }
@@ -1626,34 +1801,47 @@ impl LogsView {
             highlights = gpui::combine_highlights(highlights, matches).collect();
         }
         let styled = StyledText::new(text).with_highlights(highlights);
+        let sideways = self.scrolls_horizontally();
         let base = div()
             .flex_1()
             .min_w_0()
             .text_color(colors.text)
             .map(|this| {
-                if self.wrap || self.json_mode == JsonMode::Pretty {
-                    this.whitespace_normal()
+                if sideways {
+                    this.relative().whitespace_nowrap().overflow_hidden()
                 } else {
-                    this.whitespace_nowrap().overflow_hidden()
+                    this.whitespace_normal()
                 }
             });
-        if fields.is_empty() {
-            return base.child(styled).into_any_element();
-        }
-        let ranges: Vec<Range<usize>> = fields.iter().map(|(r, _)| r.clone()).collect();
-        let filters: Vec<FieldFilter> = fields.into_iter().map(|(_, f)| f).collect();
-        let weak = cx.weak_entity();
-        base.child(
-            InteractiveText::new(("log-message", line.seq as usize), styled).on_click(
-                ranges,
-                move |ix, _, cx| {
+        let content = if fields.is_empty() {
+            styled.into_any_element()
+        } else {
+            let ranges: Vec<Range<usize>> = fields.iter().map(|(r, _)| r.clone()).collect();
+            let filters: Vec<FieldFilter> = fields.into_iter().map(|(_, f)| f).collect();
+            let weak = cx.weak_entity();
+            InteractiveText::new(("log-message", line.seq as usize), styled)
+                .on_click(ranges, move |ix, _, cx| {
                     if let Some(filter) = filters.get(ix).cloned() {
                         weak.update(cx, |this, cx| this.add_field_filter(filter, cx))
                             .ok();
                     }
-                },
-            ),
+                })
+                .into_any_element()
+        };
+        if !sideways {
+            return base.child(content).into_any_element();
+        }
+        // The column's width sets how far the longest line scrolls.
+        let message_width = self.message_width.clone();
+        base.child(
+            canvas(
+                move |bounds, _, _| message_width.set(f32::from(bounds.size.width)),
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .size_full(),
         )
+        .child(div().ml(px(-self.h_scroll)).child(content))
         .into_any_element()
     }
 
@@ -2435,8 +2623,18 @@ impl TabView for LogsView {
 }
 
 impl Render for LogsView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors().clone();
+        // Filters and evictions can shorten the longest line.
+        if self.scrolls_horizontally() {
+            self.refresh_longest();
+        }
+        self.h_scroll = if self.scrolls_horizontally() {
+            self.h_scroll.min(self.max_h_scroll(window))
+        } else {
+            0.0
+        };
+        let h_scrollbar = self.render_h_scrollbar(window, cx);
         let source_bar = self.render_source_bar(cx);
         let search_bar = self.render_search_bar(cx);
         let following = self.list_state.is_following_tail();
@@ -2523,6 +2721,24 @@ impl Render for LogsView {
                     .flex_1()
                     .min_h_0()
                     .py(u(6.0))
+                    .on_scroll_wheel(cx.listener(Self::scroll_sideways))
+                    .when(self.h_drag.is_some(), |this| {
+                        this.on_mouse_move(cx.listener(Self::drag_h_scrollbar))
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| {
+                                    this.h_drag = None;
+                                    cx.notify();
+                                }),
+                            )
+                            .on_mouse_up_out(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| {
+                                    this.h_drag = None;
+                                    cx.notify();
+                                }),
+                            )
+                    })
                     .when_some(placeholder, |this, message| {
                         this.child(
                             div()
@@ -2544,6 +2760,7 @@ impl Render for LogsView {
                         )
                         .size_full(),
                     )
+                    .children(h_scrollbar)
                     .when(
                         self.follow && !following && !empty && self.frozen.is_none(),
                         |this| {
@@ -2562,6 +2779,14 @@ impl Render for LogsView {
                     ),
             )
     }
+}
+
+/// The thumb's share of the scrollbar: the visible part of the widest line.
+fn thumb_share(visible: f32, max_scroll: f32) -> f32 {
+    if visible <= 0.0 {
+        return 1.0;
+    }
+    (visible / (visible + max_scroll)).clamp(0.05, 1.0)
 }
 
 #[cfg(test)]
