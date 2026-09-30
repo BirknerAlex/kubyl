@@ -1,12 +1,21 @@
-//! The HTTP stack under every `kube::Client`: kube's default stack, but speaking HTTP/2.
+//! The HTTP stack under every `kube::Client`: kube's default stack, plus HTTP/2 for streams.
 //!
-//! kube only offers HTTP/1.1, where every watch and in-flight request holds its own socket; a
-//! few clusters then use hundreds of file descriptors. Here TLS offers `h2` and `http/1.1`, so
-//! all requests to an API server that speaks HTTP/2 share one connection, kept alive and
-//! checked with HTTP/2 pings.
+//! kube only offers HTTP/1.1, where every watch and log follow holds its own socket for as long
+//! as it runs; a few clusters then keep hundreds of sockets open. Those long-lived streams carry
+//! little data once running, so they share one HTTP/2 connection per API server (kept alive and
+//! checked with HTTP/2 pings).
 //!
-//! WebSocket upgrades (exec, attach, port-forward) only work over HTTP/1.1: requests with an
-//! `Upgrade` header go to a second, HTTP/1.1-only client.
+//! Other requests (lists, gets, a watch's initial list) go over pooled HTTP/1.1 connections,
+//! one request per connection at a time: multiplexing them puts every request on one TCP
+//! connection, where a large list delays small requests behind it by seconds on high-latency
+//! links (head-of-line blocking), which no HTTP/2 window setting avoids. At most
+//! [`MAX_SINGLE`] of them run on their own connection; more at once (a burst of initial lists
+//! when many views or sidebar counts start) are multiplexed instead of opening a connection
+//! each.
+//!
+//! WebSocket upgrades (exec, attach, port-forward) only work over HTTP/1.1. They always get
+//! their own connection and don't count against [`MAX_SINGLE`]: a terminal stays open for
+//! hours.
 //!
 //! Everything else mirrors kube's `ClientBuilder::try_from(Config)`: proxies (HTTP, HTTPS,
 //! SOCKS5), the TLS server name, timeouts, gzip, retries, auth and extra headers. kube's
@@ -36,6 +45,10 @@ use tower::{BoxError, Service, ServiceBuilder, ServiceExt as _};
 /// closed, which ends every watch on it so they reconnect.
 const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(30);
 const KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Ordinary requests in flight on their own HTTP/1.1 connection, per client. Also the number of
+/// idle HTTP/1.1 connections kept for reuse.
+pub const MAX_SINGLE: usize = 16;
 
 /// The boxed stack a `kube::Client` is built from.
 pub type KubeService = BoxService<Request<Body>, Response<Box<DynBody>>, BoxError>;
@@ -146,21 +159,26 @@ where
 {
     let multiplexed = https_connector(connector.clone(), config, true)?;
     let multiplexed = timeouts(Counted::new(multiplexed, counts.clone()), config);
-    let upgrades = https_connector(connector, config, false)?;
-    let upgrades = timeouts(Counted::new(upgrades, counts), config);
+    let single = https_connector(connector, config, false)?;
+    let single = timeouts(Counted::new(single, counts), config);
 
-    let http2 = HyperClient::builder(TokioExecutor::new())
+    let streams = HyperClient::builder(TokioExecutor::new())
         .timer(TokioTimer::new())
         .pool_timer(TokioTimer::new())
         .http2_keep_alive_interval(KEEP_ALIVE_INTERVAL)
         .http2_keep_alive_timeout(KEEP_ALIVE_TIMEOUT)
         .http2_keep_alive_while_idle(true)
         .build(multiplexed);
-    let http1 = HyperClient::builder(TokioExecutor::new())
+    let requests = HyperClient::builder(TokioExecutor::new())
         .timer(TokioTimer::new())
         .pool_timer(TokioTimer::new())
-        .build(upgrades);
-    let router = Router { http2, http1 };
+        .pool_max_idle_per_host(MAX_SINGLE)
+        .build(single);
+    let router = Router {
+        streams,
+        requests,
+        in_flight: Arc::default(),
+    };
 
     let decompression = tower_http::decompression::DecompressionLayer::new()
         .no_br()
@@ -230,36 +248,126 @@ where
     connector
 }
 
-/// Sends WebSocket upgrades over HTTP/1.1, everything else over the multiplexed client.
+/// Picks a client per request: see the module docs.
 #[derive(Clone)]
 struct Router<C: Clone> {
-    http2: HyperClient<C, Body>,
-    http1: HyperClient<C, Body>,
+    /// HTTP/2 when the server picks it: watches, log follows, and requests beyond
+    /// [`MAX_SINGLE`].
+    streams: HyperClient<C, Body>,
+    /// HTTP/1.1 only: ordinary requests and WebSocket upgrades.
+    requests: HyperClient<C, Body>,
+    /// Ordinary requests in flight on `requests`.
+    in_flight: Arc<AtomicUsize>,
 }
 
 impl<C> Service<Request<Body>> for Router<C>
 where
     C: hyper_util::client::legacy::connect::Connect + Clone + Send + Sync + 'static,
 {
-    type Response = Response<hyper::body::Incoming>;
+    type Response = Response<RoutedBody>;
     type Error = hyper_util::client::legacy::Error;
-    type Future = hyper_util::client::legacy::ResponseFuture;
+    type Future =
+        Pin<Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
     }
 
     fn call(&mut self, request: Request<Body>) -> Self::Future {
-        if is_upgrade(&request) {
-            self.http1.request(request)
-        } else {
-            self.http2.request(request)
-        }
+        let (response, slot) = match route(&request, &self.in_flight) {
+            Route::Multiplexed => (self.streams.request(request), None),
+            Route::Upgrade => (self.requests.request(request), None),
+            Route::Single(slot) => (self.requests.request(request), Some(slot)),
+        };
+        Box::pin(async move {
+            let response = response.await?;
+            Ok(response.map(|inner| RoutedBody { inner, _slot: slot }))
+        })
     }
 }
 
-fn is_upgrade<B>(request: &Request<B>) -> bool {
-    request.headers().contains_key(http::header::UPGRADE)
+enum Route {
+    /// The shared HTTP/2 connection (HTTP/1.1 if the server doesn't speak HTTP/2).
+    Multiplexed,
+    /// A WebSocket upgrade: its own HTTP/1.1 connection.
+    Upgrade,
+    /// An ordinary request on its own pooled HTTP/1.1 connection.
+    Single(Slot),
+}
+
+fn route<B>(request: &Request<B>, in_flight: &Arc<AtomicUsize>) -> Route {
+    if request.headers().contains_key(http::header::UPGRADE) {
+        Route::Upgrade
+    } else if is_stream(request) {
+        Route::Multiplexed
+    } else {
+        Slot::take(in_flight).map_or(Route::Multiplexed, Route::Single)
+    }
+}
+
+/// One of the [`MAX_SINGLE`] ordinary requests on its own connection; released when its
+/// response body is dropped (or the request fails).
+struct Slot(Arc<AtomicUsize>);
+
+impl Slot {
+    fn take(in_flight: &Arc<AtomicUsize>) -> Option<Self> {
+        in_flight
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < MAX_SINGLE).then_some(n + 1)
+            })
+            .ok()
+            .map(|_| Slot(in_flight.clone()))
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// A response body that holds its request's [`Slot`] until it's dropped.
+struct RoutedBody {
+    inner: hyper::body::Incoming,
+    _slot: Option<Slot>,
+}
+
+impl hyper::body::Body for RoutedBody {
+    type Data = hyper::body::Bytes;
+    type Error = hyper::Error;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<hyper::body::Frame<Self::Data>, Self::Error>>> {
+        Pin::new(&mut self.inner).poll_frame(cx)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> hyper::body::SizeHint {
+        self.inner.size_hint()
+    }
+}
+
+/// A watch or a log follow: open until the server or Kubyl ends it. Not WebSocket upgrades
+/// (exec, attach, port-forward), which only work over HTTP/1.1.
+fn is_stream<B>(request: &Request<B>) -> bool {
+    if request.method() != http::Method::GET
+        || request.headers().contains_key(http::header::UPGRADE)
+    {
+        return false;
+    }
+    request.uri().query().is_some_and(|query| {
+        query.split('&').any(|pair| {
+            matches!(
+                pair.split_once('='),
+                Some(("watch" | "follow", "true" | "1"))
+            )
+        })
+    })
 }
 
 /// Counts the connections a connector opens, until they're dropped.
@@ -409,14 +517,51 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_upgrades_take_the_http1_client() {
-        let upgrade = Request::get("/api/v1/namespaces/a/pods/b/exec")
+    fn requests_beyond_the_limit_are_multiplexed() {
+        let in_flight = Arc::default();
+        let list = || Request::get("/api/v1/pods?limit=500").body(()).unwrap();
+        let slots: Vec<_> = (0..MAX_SINGLE)
+            .map(|_| match route(&list(), &in_flight) {
+                Route::Single(slot) => slot,
+                _ => panic!("expected its own connection"),
+            })
+            .collect();
+        assert!(matches!(route(&list(), &in_flight), Route::Multiplexed));
+        drop(slots);
+        assert!(matches!(route(&list(), &in_flight), Route::Single(_)));
+        let exec = Request::get("/api/v1/namespaces/a/pods/b/exec")
+            .header(http::header::UPGRADE, "websocket")
+            .body(())
+            .unwrap();
+        assert!(matches!(route(&exec, &in_flight), Route::Upgrade));
+    }
+
+    #[test]
+    fn only_watches_and_log_follows_are_multiplexed() {
+        let get = |uri: &str| Request::get(uri).body(()).unwrap();
+        assert!(is_stream(&get(
+            "/api/v1/pods?watch=true&resourceVersion=12"
+        )));
+        assert!(is_stream(&get(
+            "/api/v1/namespaces/a/pods?labelSelector=x&watch=1"
+        )));
+        assert!(is_stream(&get(
+            "/api/v1/namespaces/a/pods/b/log?follow=true&tailLines=100"
+        )));
+        assert!(!is_stream(&get("/api/v1/pods?limit=500")));
+        assert!(!is_stream(&get(
+            "/api/v1/namespaces/a/pods/b/log?follow=false"
+        )));
+        assert!(!is_stream(&get("/api/v1/pods?watchful=true")));
+        let exec = Request::get("/api/v1/namespaces/a/pods/b/exec?command=sh&follow=true")
             .header(http::header::CONNECTION, "Upgrade")
             .header(http::header::UPGRADE, "websocket")
             .body(())
             .unwrap();
-        assert!(is_upgrade(&upgrade));
-        let watch = Request::get("/api/v1/pods?watch=true").body(()).unwrap();
-        assert!(!is_upgrade(&watch));
+        assert!(!is_stream(&exec));
+        let post = Request::post("/api/v1/namespaces/a/pods?watch=true")
+            .body(())
+            .unwrap();
+        assert!(!is_stream(&post));
     }
 }
