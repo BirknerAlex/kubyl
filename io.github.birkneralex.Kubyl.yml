@@ -36,35 +36,35 @@ modules:
       # version, so strip-components flattens it instead of hardcoding that path).
       - type: archive
         only-arches: [x86_64]
-        url: https://github.com/BirknerAlex/kubyl/releases/download/v0.3.7/kubyl-0.3.7-linux-amd64.tar.gz
-        sha256: a23e02e89f68d4eb41f9599d25a1eec1706f4a39fe278a48e370523860acef2b
+        url: https://github.com/BirknerAlex/kubyl/releases/download/v0.3.8/kubyl-0.3.8-linux-amd64.tar.gz
+        sha256: 39a11ab8ed17e3b211dd473b339324ce3656b37850555a4cd69c29f031f5dcd3
         strip-components: 1
       - type: archive
         only-arches: [aarch64]
-        url: https://github.com/BirknerAlex/kubyl/releases/download/v0.3.7/kubyl-0.3.7-linux-arm64.tar.gz
-        sha256: 6bb3f69eabaae90ea1878bc6d64aa65d6b5cc87fa927cbdfa227fd2565c8f8ef
+        url: https://github.com/BirknerAlex/kubyl/releases/download/v0.3.8/kubyl-0.3.8-linux-arm64.tar.gz
+        sha256: 50a99e0fa307bc9d36e9d850b0bbef2678875af2e1e889874fc96743f2a61940
         strip-components: 1
       # Desktop file and icons live in the kubyl repo, not this manifest's own submission repo
       # (Flathub only ever checks out the manifest + metainfo, not the whole upstream tree), so
       # these are fetched from the tagged release commit rather than a local `path:`.
       - type: file
-        url: https://raw.githubusercontent.com/BirknerAlex/kubyl/v0.3.7/packaging/linux/kubyl.desktop
+        url: https://raw.githubusercontent.com/BirknerAlex/kubyl/v0.3.8/packaging/linux/kubyl.desktop
         sha256: a703360b80941abc05b0e53565c50fe1914d60a86adba56bbd6cd42c071073ea
         dest-filename: io.github.birkneralex.Kubyl.desktop
       - type: file
-        url: https://raw.githubusercontent.com/BirknerAlex/kubyl/v0.3.7/assets/logo/png/app-icon-512.png
+        url: https://raw.githubusercontent.com/BirknerAlex/kubyl/v0.3.8/assets/logo/png/app-icon-512.png
         sha256: e1108c43d73fa90ded46b77ea7f0dd7f86bebbcf483c0934b1baaecad0f498fc
         dest-filename: app-icon-512.png
       - type: file
-        url: https://raw.githubusercontent.com/BirknerAlex/kubyl/v0.3.7/assets/logo/png/app-icon-256.png
+        url: https://raw.githubusercontent.com/BirknerAlex/kubyl/v0.3.8/assets/logo/png/app-icon-256.png
         sha256: b0ddf01debd3f4d9e77a7adfa8fcd2f57974a19e53a0537c0247acb3bf280215
         dest-filename: app-icon-256.png
       - type: file
-        url: https://raw.githubusercontent.com/BirknerAlex/kubyl/v0.3.7/assets/logo/png/app-icon-128.png
+        url: https://raw.githubusercontent.com/BirknerAlex/kubyl/v0.3.8/assets/logo/png/app-icon-128.png
         sha256: af5a4b3f643bcd6783d64150262939661c72d9f8247f2cd1884a2e23a91a5c23
         dest-filename: app-icon-128.png
       - type: file
-        url: https://raw.githubusercontent.com/BirknerAlex/kubyl/v0.3.7/assets/logo/png/app-icon-64.png
+        url: https://raw.githubusercontent.com/BirknerAlex/kubyl/v0.3.8/assets/logo/png/app-icon-64.png
         sha256: 40d9f7e986f07ebdc4a8a0c26d25912d8aee2fa20aaf63d3ed8b78b51402a1b9
         dest-filename: app-icon-64.png
       # Metainfo is a sibling of this manifest (not part of the kubyl repo tree Flathub can't
