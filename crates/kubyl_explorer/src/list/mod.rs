@@ -489,10 +489,12 @@ impl ResourceListView {
             .iter()
             .enumerate()
             .filter(|(ix, _)| !favorites.is_excluded_from_workspace(*ix))
+            // Saved views (an Overview, a Logs tab…) aren't lists of this kind.
+            .filter(|(_, favorite)| favorite.view.is_none())
             .filter_map(|(_, favorite)| {
                 Some(ScopeSpec {
                     cluster: favorites::cluster_of(favorite, cx)?,
-                    namespace: Some(favorite.namespace.clone()),
+                    namespace: favorite.namespace.clone(),
                     labels: favorite.selector.clone(),
                     only: None,
                     label: favorite.alias.clone().map(SharedString::from),

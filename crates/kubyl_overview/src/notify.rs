@@ -71,6 +71,10 @@ impl WarningNotifier {
         let mut wanted: HashMap<(ClusterId, String), String> = HashMap::new();
         if enabled {
             for favorite in Favorites::global(cx).read(cx).items() {
+                // Only favorited namespaces, not saved views that happen to show one.
+                let (None, Some(namespace)) = (&favorite.view, &favorite.namespace) else {
+                    continue;
+                };
                 let Some(cluster) = favorites::cluster_of(favorite, cx) else {
                     continue;
                 };
@@ -83,8 +87,8 @@ impl WarningNotifier {
                         .map(|m| m.read(cx).display_name(&cluster).to_string())
                         .unwrap_or_else(|| cluster.to_string());
                     wanted.insert(
-                        (cluster, favorite.namespace.clone()),
-                        format!("{} · {name}", favorite.namespace),
+                        (cluster, namespace.clone()),
+                        format!("{namespace} · {name}"),
                     );
                 }
             }

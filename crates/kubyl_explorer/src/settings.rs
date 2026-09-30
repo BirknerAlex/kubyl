@@ -90,6 +90,9 @@ pub struct SidebarGroup {
 pub struct SidebarGroupsState {
     /// In display order.
     pub groups: Vec<SidebarGroup>,
+    /// Manual order of the clusters that aren't in a folder (set by moving them); clusters not
+    /// listed follow in the configured sort order.
+    pub order: Vec<String>,
     /// Collapsed folder ids.
     pub collapsed: BTreeSet<String>,
 }

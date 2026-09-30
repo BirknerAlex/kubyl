@@ -11,8 +11,8 @@ use kubyl_settings::State;
 use crate::workspace::layout::WorkspaceLayout;
 use crate::workspace::{
     About, ActivateNextTab, ActivatePreviousTab, CloseActiveTab, CloseWindow, GoBack, GoForward,
-    NewTab, ResetZoom, SplitDown, SplitRight, ToggleBottomDock, ToggleLeftDock, ToggleRightDock,
-    ToggleTheme, ToggleZoom, Workspace, ZoomIn, ZoomOut,
+    NewTab, ResetZoom, SplitDown, SplitRight, ToggleBottomDock, ToggleFavoriteView, ToggleLeftDock,
+    ToggleRightDock, ToggleTheme, ToggleZoom, Workspace, ZoomIn, ZoomOut,
 };
 
 actions!(kubyl_app, [Quit, NewWindow, OpenRepository]);
@@ -116,6 +116,10 @@ pub fn init(cx: &mut App) {
         (
             ActionSpec::new("Pane: Go Back", GoBack),
             Some(("secondary-[", pane)),
+        ),
+        (
+            ActionSpec::new("Favorites: Add or Remove Current View", ToggleFavoriteView),
+            None,
         ),
         (
             ActionSpec::new("Pane: Go Forward", GoForward),

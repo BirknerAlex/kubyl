@@ -1005,6 +1005,8 @@ impl AlertsService {
                 .read(cx)
                 .items()
                 .iter()
+                // Saved views don't make their cluster a favorite.
+                .filter(|f| f.view.is_none())
                 .any(|f| kubyl_explorer::favorites::cluster_of(f, cx).as_ref() == Some(cluster)),
         }
     }

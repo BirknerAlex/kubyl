@@ -83,12 +83,15 @@ pub struct FavoriteEntry {
     pub index: usize,
     /// The cluster it resolves to, if its context is loaded.
     pub cluster_id: Option<ClusterId>,
-    pub namespace: String,
+    pub namespace: Option<String>,
     pub label: String,
     pub cluster: String,
-    /// Plural resource name (`pods`, `deployments.apps`).
+    /// Plural resource name (`pods`, `deployments.apps`), or the view kind of a saved tab
+    /// (`overview`).
     pub kind: String,
     pub selector: Option<String>,
+    /// A saved tab, not a namespace.
+    pub is_view: bool,
     pub resolved: bool,
 }
 
@@ -745,9 +748,10 @@ impl Builder<'_> {
             self.snapshot.namespace.clone(),
         ) && !self.snapshot.favorites.iter().any(|f| {
             f.cluster_id.as_ref() == Some(&cluster)
-                && f.namespace == ns
+                && f.namespace.as_deref() == Some(ns.as_str())
                 && f.selector.is_none()
                 && f.kind == "pods"
+                && !f.is_view
         }) && let Some(m) = q.score(&format!("Add {ns} to favorites"), &["add", "star"])
         {
             let mut item = Item::new(
@@ -1114,11 +1118,12 @@ mod tests {
             favorites: vec![FavoriteEntry {
                 index: 0,
                 cluster_id: Some(ClusterId::new("staging@/k")),
-                namespace: "payments".into(),
+                namespace: Some("payments".into()),
                 label: "payments".into(),
                 cluster: "staging-eu-west-1".into(),
                 kind: "certificates.cert-manager.io".into(),
                 selector: None,
+                is_view: false,
                 resolved: true,
             }],
             ..Default::default()
@@ -1408,6 +1413,13 @@ mod tests {
         s2.favorites[0].kind = "pods".into();
         let items = build(Mode::Favorites, "", &s2, Options::default());
         assert!(!matches!(items[0].target, Target::AddFavorite { .. }));
+        // A saved pods table isn't the namespace favorite: adding the namespace is still offered.
+        let mut s3 = s.clone();
+        s3.favorites[0].cluster_id = Some(ClusterId::new("dev@/k"));
+        s3.favorites[0].kind = "pods".into();
+        s3.favorites[0].is_view = true;
+        let items = build(Mode::Favorites, "", &s3, Options::default());
+        assert!(matches!(items[0].target, Target::AddFavorite { .. }));
         let items = build(Mode::Favorites, "deploy", &s, Options::default());
         assert!(items.iter().any(
             |i| matches!(&i.target, Target::FavoritesWorkspace(g) if g.resource == "deployments")
