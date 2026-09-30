@@ -126,7 +126,7 @@ pub async fn watch_crds(client: Client, tx: UnboundedSender<Vec<String>>) {
                     tx.unbounded_send(crd_names(&generations)).ok();
                     false
                 } else if previous.keys().ne(generations.keys()) {
-                    shapes.retain(|name, _| generations.contains_key(name));
+                    forget_changed_shapes(&mut shapes, &previous, &generations);
                     true
                 } else {
                     // A relist with the same CRDs: check the ones whose spec changed meanwhile.
@@ -160,6 +160,21 @@ pub async fn watch_crds(client: Client, tx: UnboundedSender<Vec<String>>) {
             return;
         }
     }
+}
+
+/// After a relist that re-runs discovery anyway: keeps the shapes of CRDs that are still there
+/// with the same generation. The others may have changed unseen, so their next change must not
+/// be compared with a stale shape.
+fn forget_changed_shapes<V>(
+    shapes: &mut HashMap<String, V>,
+    previous: &BTreeMap<String, i64>,
+    generations: &BTreeMap<String, i64>,
+) {
+    shapes.retain(|name, _| {
+        generations
+            .get(name)
+            .is_some_and(|generation| previous.get(name) == Some(generation))
+    });
 }
 
 fn crd_names(generations: &BTreeMap<String, i64>) -> Vec<String> {
@@ -263,6 +278,23 @@ mod tests {
                 "conversion": {"strategy": "None"},
             },
         }))
+    }
+
+    #[test]
+    fn a_relist_forgets_shapes_of_changed_and_removed_crds() {
+        let generations = |pairs: &[(&str, i64)]| -> BTreeMap<String, i64> {
+            pairs.iter().map(|(n, g)| (n.to_string(), *g)).collect()
+        };
+        let mut shapes: HashMap<String, ()> = ["same", "bumped", "removed"]
+            .into_iter()
+            .map(|n| (n.to_string(), ()))
+            .collect();
+        forget_changed_shapes(
+            &mut shapes,
+            &generations(&[("same", 1), ("bumped", 1), ("removed", 1)]),
+            &generations(&[("same", 1), ("bumped", 2), ("added", 1)]),
+        );
+        assert_eq!(shapes.keys().collect::<Vec<_>>(), ["same"]);
     }
 
     #[test]
