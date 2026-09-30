@@ -25,7 +25,10 @@ pub struct ApiResourceInfo {
     pub categories: Vec<String>,
     /// `status`, `scale`, `log`, `exec`…
     pub subresources: Vec<String>,
-    /// This is the group's preferred version.
+    /// The version `kubectl get` resolves this resource to: the first version, in the group's
+    /// preference order, that serves it. A group's preferred version doesn't have to serve
+    /// every resource (`argoproj.io` prefers `v1beta1` with the operator's `ArgoCD` CRD, while
+    /// `Application` only exists in `v1alpha1`).
     pub preferred: bool,
 }
 
@@ -194,6 +197,7 @@ fn add_aggregated(discovery: &mut Discovery, list: APIGroupDiscoveryList) {
         }
         discovery.groups.push(ApiGroupInfo { name, versions });
     }
+    mark_preferred(&mut discovery.resources);
 }
 
 async fn discover_legacy(client: &Client) -> Result<Discovery, kube::Error> {
@@ -299,7 +303,18 @@ async fn discover_legacy(client: &Client) -> Result<Discovery, kube::Error> {
             resource.subresources = subs.clone();
         }
     }
+    mark_preferred(&mut discovery.resources);
     Ok(discovery)
+}
+
+/// Marks each resource (group and plural) preferred in the first version that serves it.
+/// `resources` lists each group's versions in preference order.
+fn mark_preferred(resources: &mut [ApiResourceInfo]) {
+    let mut seen = std::collections::HashSet::new();
+    for resource in resources {
+        resource.preferred =
+            seen.insert((resource.gvr.group.clone(), resource.gvr.resource.clone()));
+    }
 }
 
 #[cfg(test)]
@@ -380,5 +395,47 @@ mod tests {
         assert!(discovery.serves_crd("certificates.cert-manager.io"));
         assert!(!discovery.serves_crd("issuers.cert-manager.io"));
         assert!(!discovery.serves_crd("pods"));
+    }
+
+    #[test]
+    fn a_resource_the_preferred_version_lacks_is_preferred_in_the_version_serving_it() {
+        // OpenShift GitOps: `argoproj.io` prefers v1beta1 (the operator's ArgoCD CRD), but
+        // Application only exists in v1alpha1.
+        let list: APIGroupDiscoveryList = serde_json::from_value(serde_json::json!({
+            "kind": "APIGroupDiscoveryList",
+            "apiVersion": "apidiscovery.k8s.io/v2",
+            "items": [{
+                "metadata": { "name": "argoproj.io" },
+                "versions": [
+                    { "version": "v1beta1", "resources": [
+                        { "resource": "argocds", "responseKind": { "group": "argoproj.io", "version": "v1beta1", "kind": "ArgoCD" },
+                          "scope": "Namespaced", "verbs": ["get", "list", "watch"] }
+                    ]},
+                    { "version": "v1alpha1", "resources": [
+                        { "resource": "applications", "responseKind": { "group": "argoproj.io", "version": "v1alpha1", "kind": "Application" },
+                          "scope": "Namespaced", "shortNames": ["app"], "verbs": ["get", "list", "watch"] },
+                        { "resource": "argocds", "responseKind": { "group": "argoproj.io", "version": "v1alpha1", "kind": "ArgoCD" },
+                          "scope": "Namespaced", "verbs": ["get", "list", "watch"] }
+                    ]}
+                ]
+            }]
+        }))
+        .unwrap();
+        let mut discovery = Discovery::default();
+        add_aggregated(&mut discovery, list);
+        let app = discovery.resolve("app").unwrap();
+        assert_eq!(app.gvr.version, "v1alpha1");
+        assert!(app.preferred);
+        // One preferred version per resource: ArgoCD stays in v1beta1.
+        assert_eq!(discovery.kind_count(), 2);
+        assert_eq!(
+            discovery
+                .preferred()
+                .find(|r| r.gvr.resource == "argocds")
+                .unwrap()
+                .gvr
+                .version,
+            "v1beta1"
+        );
     }
 }
