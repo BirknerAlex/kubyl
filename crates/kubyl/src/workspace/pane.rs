@@ -6,7 +6,9 @@ use gpui::{
     App, Context, EntityId, EventEmitter, FocusHandle, Focusable, IntoElement, Render,
     SharedString, Subscription, WeakEntity, Window, actions, div, prelude::*,
 };
+use gpui_component::menu::{ContextMenuExt as _, PopupMenuItem};
 use kubyl_core::{ClusterIds, TabHandle, ViewKind, ViewRequest};
+use kubyl_explorer::favorites::{self, Favorites};
 use kubyl_ui::{ActiveColors, Icon, IconButton, IconName, Tab, TabBar, h_flex, u, v_flex};
 
 use super::layout::{PaneLayout, SplitAxis};
@@ -24,6 +26,8 @@ actions!(
         SplitDown,
         /// Fills the window with the active pane (docks hidden).
         ToggleZoom,
+        /// Adds the active tab's view to the favorites, or removes it.
+        ToggleFavoriteView,
         /// Opens a new tab.
         NewTab,
         /// Goes back to the previously active tab of this pane (reopens it if it was closed).
@@ -121,6 +125,9 @@ impl Pane {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
         let focus_sub = cx.on_focus_in(&focus, window, |_, _, cx| cx.emit(PaneEvent::Focused));
+        // The star in the tab bar follows the favorites.
+        let favorites_sub = Favorites::try_global(cx)
+            .map(|favorites| cx.observe(&favorites, |_, _, cx| cx.notify()));
         Self {
             items: Vec::new(),
             active: 0,
@@ -131,7 +138,10 @@ impl Pane {
             navigating: false,
             closing_wanted: false,
             item_subscriptions: HashMap::new(),
-            _subscriptions: vec![focus_sub],
+            _subscriptions: [Some(focus_sub), favorites_sub]
+                .into_iter()
+                .flatten()
+                .collect(),
         }
     }
 
@@ -504,6 +514,17 @@ impl Pane {
         self.add_item(item, true, window, cx);
     }
 
+    fn toggle_favorite_view(
+        &mut self,
+        _: &ToggleFavoriteView,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(item) = self.items.get(self.active) {
+            toggle_favorite(item.as_ref(), cx);
+        }
+    }
+
     fn render_tab_bar(&self, cx: &mut Context<Self>) -> TabBar {
         let drop_background = cx.colors().accent.opacity(0.12);
         let tabs = self.items.iter().enumerate().map(|(index, item)| {
@@ -517,7 +538,8 @@ impl Pane {
             let on_drop = cx.listener(move |this, dragged: &DraggedTab, window, cx| {
                 this.drop_tab(dragged, Some(index), window, cx)
             });
-            Tab::new(
+            let tab_item = item.boxed_clone();
+            let tab = Tab::new(
                 SharedString::from(format!("tab-{}", item.entity_id())),
                 item.title(cx),
             )
@@ -541,39 +563,99 @@ impl Pane {
                 })
                 .drag_over::<DraggedTab>(move |style, _, _, _| style.bg(drop_background))
                 .on_drop(on_drop)
-            })
+            });
+            h_flex()
+                .id(SharedString::from(format!("tab-menu-{}", item.entity_id())))
+                .flex_none()
+                .h_full()
+                .child(tab)
+                .context_menu(move |menu, _, cx| {
+                    let is_favorite = favorite_state(tab_item.as_ref(), cx);
+                    let item = tab_item.boxed_clone();
+                    menu.item(
+                        PopupMenuItem::new(match is_favorite {
+                            Some(true) => "Remove from Favorites",
+                            _ => "Add to Favorites",
+                        })
+                        .disabled(is_favorite.is_none())
+                        .on_click(move |_, _, cx| toggle_favorite(item.as_ref(), cx)),
+                    )
+                })
         });
         let on_drop_end = cx.listener(|this, dragged: &DraggedTab, window, cx| {
             this.drop_tab(dragged, None, window, cx)
         });
-        TabBar::new("tabs")
-            .tabs(tabs)
-            .decorate_end(move |end| {
-                end.drag_over::<DraggedTab>(move |style, _, _, _| style.bg(drop_background))
-                    .on_drop(on_drop_end)
-            })
-            .tool(
-                IconButton::new("new-tab", IconName::Plus)
-                    .on_click(|_, window, cx| window.dispatch_action(Box::new(NewTab), cx)),
+        // The star of the active tab's view (only for views that can be reopened).
+        let favorite_state = self
+            .items
+            .get(self.active)
+            .and_then(|item| favorite_state(item.as_ref(), cx));
+        let favorite_button = favorite_state.map(|is_favorite| {
+            IconButton::new(
+                "favorite-view",
+                if is_favorite {
+                    IconName::StarFilled
+                } else {
+                    IconName::Star
+                },
             )
-            .tool(
-                IconButton::new("split", IconName::Columns)
-                    .on_click(|_, window, cx| window.dispatch_action(Box::new(SplitRight), cx)),
+            .icon_size(13.0)
+            .toggled(is_favorite)
+            .on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleFavoriteView), cx))
+        });
+        let mut bar = TabBar::new("tabs");
+        for tab in tabs {
+            bar = bar.tab_element(tab);
+        }
+        if let Some(button) = favorite_button {
+            bar = bar.tool(button);
+        }
+        bar.decorate_end(move |end| {
+            end.drag_over::<DraggedTab>(move |style, _, _, _| style.bg(drop_background))
+                .on_drop(on_drop_end)
+        })
+        .tool(
+            IconButton::new("new-tab", IconName::Plus)
+                .on_click(|_, window, cx| window.dispatch_action(Box::new(NewTab), cx)),
+        )
+        .tool(
+            IconButton::new("split", IconName::Columns)
+                .on_click(|_, window, cx| window.dispatch_action(Box::new(SplitRight), cx)),
+        )
+        .tool(
+            IconButton::new(
+                "zoom",
+                if self.zoomed {
+                    IconName::Minimize
+                } else {
+                    IconName::Maximize
+                },
             )
-            .tool(
-                IconButton::new(
-                    "zoom",
-                    if self.zoomed {
-                        IconName::Minimize
-                    } else {
-                        IconName::Maximize
-                    },
-                )
-                .icon_size(13.0)
-                .toggled(self.zoomed)
-                .on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleZoom), cx)),
-            )
+            .icon_size(13.0)
+            .toggled(self.zoomed)
+            .on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleZoom), cx)),
+        )
     }
+}
+
+/// Whether the view of `item` is a favorite (`None`: it can't be one).
+fn favorite_state(item: &dyn TabHandle, cx: &App) -> Option<bool> {
+    let favorite = favorites::from_tab(item, cx)?;
+    let saved = Favorites::try_global(cx)?
+        .read(cx)
+        .position(&favorite, cx)
+        .is_some();
+    Some(saved)
+}
+
+/// Adds the view of `item` to the favorites, or removes it.
+fn toggle_favorite(item: &dyn TabHandle, cx: &mut App) {
+    let (Some(favorite), Some(favorites)) =
+        (favorites::from_tab(item, cx), Favorites::try_global(cx))
+    else {
+        return;
+    };
+    favorites.update(cx, |favorites, cx| favorites.toggle(favorite, cx));
 }
 
 impl Render for Pane {
@@ -614,6 +696,7 @@ impl Render for Pane {
             .on_action(cx.listener(Self::activate_next))
             .on_action(cx.listener(Self::activate_previous))
             .on_action(cx.listener(Self::new_tab))
+            .on_action(cx.listener(Self::toggle_favorite_view))
             .on_action(cx.listener(|this, _: &GoBack, window, cx| {
                 this.navigate(-1, window, cx);
             }))

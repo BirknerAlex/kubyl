@@ -605,8 +605,20 @@ fn gather_favorites(cx: &App) -> Vec<FavoriteEntry> {
                 namespace: fav.namespace.clone(),
                 label: fav.label().to_string(),
                 cluster: cluster_name,
-                kind: fav.kind.clone().unwrap_or_else(|| "pods".into()),
+                kind: match &fav.view {
+                    Some(view) => match view.target.as_ref().map(|t| &t.gvr) {
+                        Some(gvr)
+                            if view.kind == kubyl_core::ViewKind::Table
+                                && !gvr.resource.is_empty() =>
+                        {
+                            gvr.resource.clone()
+                        }
+                        _ => view.kind.as_str().to_string(),
+                    },
+                    None => fav.kind.clone().unwrap_or_else(|| "pods".into()),
+                },
                 selector: fav.selector.clone(),
+                is_view: fav.view.is_some(),
                 resolved: cluster.is_some(),
             }
         })

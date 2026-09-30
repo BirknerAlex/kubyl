@@ -142,8 +142,16 @@ struct DraggedCluster {
     label: SharedString,
 }
 
+/// Payload while a sidebar folder is dragged to reorder the folders.
+#[derive(Clone)]
+struct DraggedGroup {
+    id: String,
+    name: SharedString,
+}
+
 struct ClusterDragPreview {
     label: SharedString,
+    icon: IconName,
 }
 
 impl Render for ClusterDragPreview {
@@ -159,11 +167,7 @@ impl Render for ClusterDragPreview {
             .border_color(colors.accent)
             .text_size(u(12.0))
             .text_color(colors.text)
-            .child(
-                Icon::new(IconName::ShipWheel)
-                    .size(12.0)
-                    .color(colors.accent),
-            )
+            .child(Icon::new(self.icon).size(12.0).color(colors.accent))
             .child(self.label.clone())
     }
 }
@@ -183,8 +187,32 @@ pub struct ClustersSection {
     /// Expanded roots already connected at startup (a later manual disconnect sticks).
     started: HashSet<ClusterId>,
     focus: FocusHandle,
+    /// The clusters outside the folders, in the order last shown (what moving one reorders).
+    visible_ungrouped: Vec<String>,
+    /// Every cluster shown (in folders or not), for ordering the members of a folder.
+    visible_roots: HashSet<String>,
     _count_observers: Vec<Subscription>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// Marks where a dragged row lands: under the target when it comes from above it in the same
+/// list (it takes the target's place), over it otherwise.
+fn drop_border(
+    style: gpui::StyleRefinement,
+    from_above: bool,
+    color: gpui::Hsla,
+) -> gpui::StyleRefinement {
+    if from_above {
+        style.border_b_2().border_color(color)
+    } else {
+        style.border_t_2().border_color(color)
+    }
+}
+
+/// Whether `dragged` is listed above `target` in `list`.
+fn is_above(list: &[String], dragged: &str, target: &str) -> bool {
+    let at = |id: &str| list.iter().position(|m| m == id);
+    matches!((at(dragged), at(target)), (Some(d), Some(t)) if d < t)
 }
 
 impl ClustersSection {
@@ -249,6 +277,8 @@ impl ClustersSection {
             rbac_requested: RbacRequests::default(),
             started: HashSet::new(),
             focus: cx.focus_handle(),
+            visible_ungrouped: Vec::new(),
+            visible_roots: HashSet::new(),
             _count_observers: Vec::new(),
             _subscriptions: subscriptions,
         };
@@ -419,10 +449,16 @@ impl ClustersSection {
                 self.push_cluster(&mut items, &cluster, 1, &settings, &query, cx);
             }
         }
-        for cluster in contexts
+        self.visible_roots = contexts.iter().map(|c| c.to_string()).collect();
+        let mut ungrouped: Vec<ClusterId> = contexts
             .into_iter()
             .filter(|c| !grouped.contains(c.as_str()))
-        {
+            .collect();
+        crate::groups::sort_by_order(sidebar_groups.read(cx).root_order(), &mut ungrouped, |c| {
+            c.as_str()
+        });
+        self.visible_ungrouped = ungrouped.iter().map(|c| c.to_string()).collect();
+        for cluster in ungrouped {
             self.push_cluster(&mut items, &cluster, 0, &settings, &query, cx);
         }
         items
@@ -1116,11 +1152,34 @@ impl ClustersSection {
             Wrap::UserGroup(group_id, name) => {
                 let accent = colors.accent;
                 let drop_id = group_id.clone();
+                let drop_group_id = group_id.clone();
+                let over_id = group_id.clone();
+                let drag = DraggedGroup {
+                    id: group_id.clone(),
+                    name: name.clone(),
+                };
                 div()
                     .id(SharedString::from(format!("user-group-{group_id}")))
                     .child(row)
+                    .on_drag(drag, |drag, _, _, cx| {
+                        cx.new(|_| ClusterDragPreview {
+                            label: drag.name.clone(),
+                            icon: IconName::Folder,
+                        })
+                    })
+                    // Dropped on the header, a cluster is appended to the folder.
                     .drag_over::<DraggedCluster>(move |style, _, _, _| {
-                        style.border_t_2().border_color(accent)
+                        style.bg(accent.opacity(0.15))
+                    })
+                    .drag_over::<DraggedGroup>(move |style, drag, _, cx| {
+                        let groups = SidebarGroups::global(cx);
+                        let ids: Vec<String> = groups
+                            .read(cx)
+                            .groups()
+                            .iter()
+                            .map(|g| g.id.clone())
+                            .collect();
+                        drop_border(style, is_above(&ids, &drag.id, &over_id), accent)
                     })
                     .on_drop(cx.listener(move |_, drag: &DraggedCluster, _, cx| {
                         let cluster = drag.cluster.clone();
@@ -1128,11 +1187,42 @@ impl ClustersSection {
                             g.add_member(&drop_id, cluster.as_str(), None, cx)
                         });
                     }))
-                    .context_menu(move |menu, _, _| {
+                    .on_drop(cx.listener(move |_, drag: &DraggedGroup, _, cx| {
+                        SidebarGroups::global(cx)
+                            .update(cx, |g, cx| g.move_group_onto(&drag.id, &drop_group_id, cx));
+                    }))
+                    .context_menu(move |menu, _, cx| {
                         let rename_id = group_id.clone();
                         let rename_name = name.to_string();
                         let delete_id = group_id.clone();
+                        let up_id = group_id.clone();
+                        let down_id = group_id.clone();
+                        let (can_up, can_down) = {
+                            let groups = SidebarGroups::global(cx);
+                            let groups = groups.read(cx);
+                            (
+                                groups.can_move_group(&group_id, -1),
+                                groups.can_move_group(&group_id, 1),
+                            )
+                        };
                         menu.item(
+                            gpui_component::menu::PopupMenuItem::new("Move Up")
+                                .disabled(!can_up)
+                                .on_click(move |_, _, cx| {
+                                    SidebarGroups::global(cx)
+                                        .update(cx, |g, cx| g.move_group(&up_id, -1, cx));
+                                }),
+                        )
+                        .item(
+                            gpui_component::menu::PopupMenuItem::new("Move Down")
+                                .disabled(!can_down)
+                                .on_click(move |_, _, cx| {
+                                    SidebarGroups::global(cx)
+                                        .update(cx, |g, cx| g.move_group(&down_id, 1, cx));
+                                }),
+                        )
+                        .separator()
+                        .item(
                             gpui_component::menu::PopupMenuItem::new("Rename…").on_click(
                                 move |_, window, cx| {
                                     let rename_id = rename_id.clone();
@@ -1170,9 +1260,51 @@ impl ClustersSection {
                 let drag_label: SharedString = ConnectionManager::global(cx)
                     .read(cx)
                     .display_name(&cluster);
+                // The list this cluster is in (its folder, or the ones outside folders): a drop
+                // on it reorders that list.
+                let siblings: Vec<String> = {
+                    let groups = SidebarGroups::global(cx);
+                    match groups.read(cx).group_of(cluster.as_str()) {
+                        Some(folder) => folder
+                            .members
+                            .iter()
+                            .filter(|m| self.visible_roots.contains(*m))
+                            .cloned()
+                            .collect(),
+                        None => self.visible_ungrouped.clone(),
+                    }
+                };
+                let in_folder = SidebarGroups::global(cx)
+                    .read(cx)
+                    .group_of(cluster.as_str())
+                    .is_some();
+                let accent = colors.accent;
+                let drop_target = cluster.clone();
+                let drop_siblings = siblings.clone();
+                let over_target = cluster.clone();
+                let over_siblings = siblings.clone();
                 div()
                     .id(SharedString::from(format!("menu-{cluster}")))
                     .child(row)
+                    .drag_over::<DraggedCluster>(move |style, drag, _, _| {
+                        let above =
+                            is_above(&over_siblings, drag.cluster.as_str(), over_target.as_str());
+                        drop_border(style, above, accent)
+                    })
+                    .on_drop(cx.listener(move |_, drag: &DraggedCluster, _, cx| {
+                        SidebarGroups::global(cx).update(cx, |g, cx| {
+                            if in_folder {
+                                g.move_member_onto(drag.cluster.as_str(), drop_target.as_str(), cx)
+                            } else {
+                                g.move_root_onto(
+                                    &drop_siblings,
+                                    drag.cluster.as_str(),
+                                    drop_target.as_str(),
+                                    cx,
+                                )
+                            }
+                        });
+                    }))
                     .on_drag(
                         DraggedCluster {
                             cluster: drag_cluster,
@@ -1181,6 +1313,7 @@ impl ClustersSection {
                         |drag, _, _, cx| {
                             cx.new(|_| ClusterDragPreview {
                                 label: drag.label.clone(),
+                                icon: IconName::ShipWheel,
                             })
                         },
                     )
@@ -1199,6 +1332,9 @@ impl ClustersSection {
                             let group = entry.group.clone()?;
                             (entry.is_group() || grouping_on).then_some((group, entry.is_group()))
                         });
+                        let menu_siblings = siblings.clone();
+                        let reset_order = !in_folder
+                            && !SidebarGroups::global(cx).read(cx).root_order().is_empty();
                         let switch = cluster.clone();
                         let toggle = cluster.clone();
                         let favorite = cluster.clone();
@@ -1261,6 +1397,44 @@ impl ClustersSection {
                                 .group_of(cluster.as_str())
                                 .map(|g| g.id.clone());
                             let folders = groups.read(cx).groups().to_vec();
+                            {
+                                let position = menu_siblings
+                                    .iter()
+                                    .position(|m| m.as_str() == cluster.as_str());
+                                let can_up = position.is_some_and(|p| p > 0);
+                                let can_down =
+                                    position.is_some_and(|p| p + 1 < menu_siblings.len());
+                                let in_folder = current.is_some();
+                                let move_by = |offset: isize| {
+                                    let cluster = cluster.clone();
+                                    let siblings = menu_siblings.clone();
+                                    move |_: &gpui::ClickEvent, _: &mut Window, cx: &mut App| {
+                                        SidebarGroups::global(cx).update(cx, |g, cx| {
+                                            if in_folder {
+                                                g.move_member(
+                                                    cluster.as_str(),
+                                                    offset,
+                                                    &siblings,
+                                                    cx,
+                                                )
+                                            } else {
+                                                g.move_root(&siblings, cluster.as_str(), offset, cx)
+                                            }
+                                        });
+                                    }
+                                };
+                                menu = menu
+                                    .item(
+                                        gpui_component::menu::PopupMenuItem::new("Move Up")
+                                            .disabled(!can_up)
+                                            .on_click(move_by(-1)),
+                                    )
+                                    .item(
+                                        gpui_component::menu::PopupMenuItem::new("Move Down")
+                                            .disabled(!can_down)
+                                            .on_click(move_by(1)),
+                                    );
+                            }
                             for folder in folders {
                                 if Some(&folder.id) == current.as_ref() {
                                     continue;
@@ -1298,6 +1472,15 @@ impl ClustersSection {
                                 );
                             }
                             menu
+                        })
+                        .when(reset_order, |menu| {
+                            menu.item(
+                                gpui_component::menu::PopupMenuItem::new("Reset Cluster Order")
+                                    .on_click(|_, _, cx| {
+                                        SidebarGroups::global(cx)
+                                            .update(cx, |g, cx| g.reset_root_order(cx));
+                                    }),
+                            )
                         })
                         .separator()
                         .menu(

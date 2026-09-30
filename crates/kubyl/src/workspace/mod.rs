@@ -28,7 +28,7 @@ pub use dock::Dock;
 use layout::{DockLayout, SplitAxis, WorkspaceLayout};
 pub use pane::{
     ActivateNextTab, ActivatePreviousTab, CloseActiveTab, GoBack, GoForward, NewTab, Pane,
-    PaneEvent, SplitDown, SplitRight, ToggleZoom,
+    PaneEvent, SplitDown, SplitRight, ToggleFavoriteView, ToggleZoom,
 };
 use pane_group::PaneGroup;
 use sidebar::Sidebar;

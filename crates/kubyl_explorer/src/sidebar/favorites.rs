@@ -1,5 +1,6 @@
-//! The Favorites section: `namespace · cluster` rows with the cluster's color dot, a tooltip with
-//! the kubeconfig file, drag to reorder, rename and remove from the context menu.
+//! The Favorites section: `namespace · cluster` rows (or `view namespace · cluster` for a saved
+//! tab) with the cluster's color dot, a tooltip with the kubeconfig file, drag to reorder, rename
+//! and remove from the context menu.
 
 use gpui::{
     App, AppContext as _, Context, FocusHandle, Focusable, IntoElement, Render, SharedString,
@@ -91,6 +92,11 @@ pub fn open_favorite(favorite: &Favorite, window: &mut Window, cx: &mut App) {
     let Some(cluster) = activate_favorite(favorite, cx) else {
         return;
     };
+    // A saved tab: reopen its view (an open tab for the same request is activated).
+    if let Some(request) = favorite.request(&cluster) {
+        window.dispatch_action(Box::new(OpenView(request)), cx);
+        return;
+    }
     let gvr = favorite.gvr();
     if let Some(selector) = &favorite.selector {
         cx.set_global(PendingFilter(Some((
@@ -125,7 +131,7 @@ pub fn open_favorite_view(favorite: &Favorite, kind: ViewKind, window: &mut Wind
             ResourceRef::list(
                 cluster,
                 kubyl_core::Gvr::new("", "", ""),
-                Some(favorite.namespace.clone()),
+                favorite.namespace.clone(),
             ),
         ))),
         cx,
@@ -151,14 +157,18 @@ fn activate_favorite(favorite: &Favorite, cx: &mut App) -> Option<kubyl_core::Cl
     } else {
         manager.update(cx, |m, cx| m.ensure_connected(&cluster, cx));
     }
-    let active = ActiveContext::global(cx).clone();
-    ActiveContext::set(
-        cx,
-        ActiveContext {
-            namespace: Some(favorite.namespace.clone().into()),
-            ..active
-        },
-    );
+    // A view that isn't scoped to a namespace leaves the title bar's alone; one that shows all
+    // of them switches it to "all namespaces" (a list adopts the title bar's namespace).
+    if favorite.namespace.is_some() || favorite.all_namespaces {
+        let active = ActiveContext::global(cx).clone();
+        ActiveContext::set(
+            cx,
+            ActiveContext {
+                namespace: favorite.namespace.clone().map(Into::into),
+                ..active
+            },
+        );
+    }
     Some(cluster)
 }
 
@@ -203,7 +213,10 @@ impl Render for FavoritesSection {
                     .py(u(4.0))
                     .text_size(u(12.0))
                     .text_color(colors.text_faint)
-                    .child("Star a namespace in the namespace switcher to pin it here."),
+                    .child(
+                        "Star a namespace in the namespace switcher, or use the star in the \
+                         tab bar to pin the current view here.",
+                    ),
             );
         }
         for (index, favorite) in items.iter().enumerate() {
@@ -222,15 +235,23 @@ impl Render for FavoritesSection {
             };
             // Faint while the cluster isn't connected; the tooltip says why.
             let connected = state.is_connected();
+            // A saved view can't tell from the title bar whether it's the one on screen.
             let selected = cluster.is_some()
+                && favorite.view.is_none()
                 && active.cluster.as_ref().map(|c| &c.id) == cluster.as_ref()
-                && active.namespace.as_deref() == Some(favorite.namespace.as_str());
+                && active.namespace.as_deref() == favorite.namespace.as_deref();
             let missing = cluster.is_none();
             let label: SharedString = favorite.label().to_string().into();
             let tooltip: SharedString = format!(
-                "{} · {}{}\n{}",
+                "{} · {}{}{}\n{}",
                 favorite.context,
                 favorite.file.display(),
+                favorite
+                    .view
+                    .as_ref()
+                    .zip(favorite.namespace.as_ref())
+                    .map(|(_, namespace)| format!(" · {namespace}"))
+                    .unwrap_or_default(),
                 favorite
                     .selector
                     .as_ref()
@@ -298,16 +319,23 @@ impl Render for FavoritesSection {
                                 })
                                 .child(label.clone()),
                         )
-                        .when(favorite.kind.is_some(), |this| {
-                            this.child(
-                                div()
-                                    .flex_none()
-                                    .font_family(fonts::MONO)
-                                    .text_size(u(11.0))
-                                    .text_color(colors.text_dim)
-                                    .child(favorite.kind.clone().unwrap_or_default()),
-                            )
-                        })
+                        // The kind of a namespace favorite, or the namespace of a saved view.
+                        .when_some(
+                            favorite
+                                .kind
+                                .clone()
+                                .or_else(|| favorite.view.as_ref().and(favorite.namespace.clone())),
+                            |this, chip| {
+                                this.child(
+                                    div()
+                                        .flex_none()
+                                        .font_family(fonts::MONO)
+                                        .text_size(u(11.0))
+                                        .text_color(colors.text_dim)
+                                        .child(chip),
+                                )
+                            },
+                        )
                         .child(
                             div()
                                 .truncate()
@@ -350,7 +378,10 @@ impl Render for FavoritesSection {
                         .is_excluded_from_workspace(index);
                     let alias = menu_favorite.alias.clone().unwrap_or_default();
                     let overview = open.clone();
-                    let has_overview = ViewRegistry::is_registered(cx, &ViewKind::Overview);
+                    // Namespace favorites open the namespace's views; a saved view is one view.
+                    let namespace_favorite = open.view.is_none();
+                    let has_overview =
+                        namespace_favorite && ViewRegistry::is_registered(cx, &ViewKind::Overview);
                     menu.item(
                         PopupMenuItem::new("Open")
                             .on_click(move |_, window, cx| open_favorite(&open, window, cx)),
@@ -361,6 +392,9 @@ impl Render for FavoritesSection {
                         ))
                     })
                     .map(|mut menu| {
+                        if !namespace_favorite {
+                            return menu;
+                        }
                         for view in crate::catalog::namespace_views(cx) {
                             let favorite = menu_favorite.clone();
                             menu = menu.item(PopupMenuItem::new(view.label).on_click(
@@ -369,28 +403,27 @@ impl Render for FavoritesSection {
                                 },
                             ));
                         }
-                        menu
+                        menu.item(PopupMenuItem::new("Open Favorites Workspace").on_click(
+                            |_, window, cx| {
+                                window.dispatch_action(Box::new(crate::OpenFavoritesWorkspace), cx)
+                            },
+                        ))
+                        .item(
+                            PopupMenuItem::new("Include in Workspace")
+                                .checked(in_workspace)
+                                .on_click(move |_, _, cx| {
+                                    Favorites::global(cx).update(cx, |f, cx| {
+                                        f.set_in_workspace(index, !in_workspace, cx)
+                                    });
+                                }),
+                        )
                     })
-                    .item(PopupMenuItem::new("Open Favorites Workspace").on_click(
-                        |_, window, cx| {
-                            window.dispatch_action(Box::new(crate::OpenFavoritesWorkspace), cx)
-                        },
-                    ))
-                    .item(
-                        PopupMenuItem::new("Include in Workspace")
-                            .checked(in_workspace)
-                            .on_click(move |_, _, cx| {
-                                Favorites::global(cx).update(cx, |f, cx| {
-                                    f.set_in_workspace(index, !in_workspace, cx)
-                                });
-                            }),
-                    )
                     .separator()
                     .item(
                         PopupMenuItem::new("Rename…").on_click(move |_, window, cx| {
                             crate::dialogs::prompt_text(
                                 "Rename favorite".into(),
-                                "Alias (empty: show the namespace)",
+                                "Alias (empty: the default name)",
                                 alias.clone(),
                                 move |text, _, cx| {
                                     Favorites::global(cx)
