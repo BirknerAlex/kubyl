@@ -2,6 +2,18 @@
 
 All notable changes to Kubyl are documented here.
 
+## [0.3.7] - 2026-09-30
+
+### Miscellaneous
+
+- Update Flatpak manifest to v0.3.6 ([7b597c7](https://github.com/BirknerAlex/kubyl/commit/7b597c7be94c4f93baea910d79d3543bf4822a25))
+
+### Kubyl_kube
+
+- Only watches and log follows share the HTTP/2 connection ([9a8e383](https://github.com/BirknerAlex/kubyl/commit/9a8e38377d0b3fafc522f253f0c71b39d56840fa))
+- Re-run discovery only when a CRD changes what discovery sees ([75b70f4](https://github.com/BirknerAlex/kubyl/commit/75b70f40d015ee128616cda765dba1e8a7e60105))
+- Forget cached CRD shapes that changed during a relist (review) ([ba82fba](https://github.com/BirknerAlex/kubyl/commit/ba82fba63ce72889c096e15f27b5fd1fe23f5550))
+
 ## [0.3.6] - 2026-09-29
 
 ### Miscellaneous
