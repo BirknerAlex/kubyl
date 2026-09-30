@@ -207,6 +207,12 @@ impl TabBar {
         self
     }
 
+    /// Adds a tab wrapped in another element (for a context menu around it).
+    pub fn tab_element(mut self, tab: impl IntoElement) -> Self {
+        self.tabs.push(tab.into_any_element());
+        self
+    }
+
     pub fn tabs(mut self, tabs: impl IntoIterator<Item = Tab>) -> Self {
         self.tabs
             .extend(tabs.into_iter().map(IntoElement::into_any_element));
