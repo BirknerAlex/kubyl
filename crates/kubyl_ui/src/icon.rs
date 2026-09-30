@@ -55,6 +55,7 @@ icons! {
     EyeOff => "eye-off",
     File => "file",
     FilePlus => "file-plus",
+    Flame => "flame",
     Folder => "folder",
     FolderKanban => "folder-kanban",
     Funnel => "funnel",

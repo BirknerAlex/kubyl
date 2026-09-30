@@ -55,6 +55,7 @@ kubyl_kubeconfig.workspace = true
 kubyl_logs.workspace = true
 kubyl_metrics.workspace = true
 kubyl_netflow.workspace = true
+kubyl_prometheus.workspace = true
 kubyl_operators.workspace = true
 kubyl_overview.workspace = true
 kubyl_palette.workspace = true
