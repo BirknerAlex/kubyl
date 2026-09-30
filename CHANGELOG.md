@@ -2,6 +2,33 @@
 
 All notable changes to Kubyl are documented here.
 
+## [0.3.8] - 2026-09-30
+
+### Bug Fixes
+
+- Show Argo CD on clusters whose argoproj.io prefers another version ([21bce48](https://github.com/BirknerAlex/kubyl/commit/21bce48a30705e5be953aacf6556075314ac0268))
+
+### Miscellaneous
+
+- Update Flatpak manifest to v0.3.7 ([a3b55a7](https://github.com/BirknerAlex/kubyl/commit/a3b55a7b284fa87176d176e2f48fdb03eb439506))
+
+### Kubyl
+
+- Wire in kubyl_prometheus ([0f76f22](https://github.com/BirknerAlex/kubyl/commit/0f76f22a76c309694de9b87df5c056f177dc9557))
+
+### Kubyl_explorer
+
+- Favorite any view; reorder sidebar folders and clusters ([e0bd276](https://github.com/BirknerAlex/kubyl/commit/e0bd27629004cd4c78f81e117d59c4d96276149c))
+
+### Kubyl_prometheus
+
+- A Prometheus web UI for Prometheus, Thanos Query and VictoriaMetrics ([d0f97fd](https://github.com/BirknerAlex/kubyl/commit/d0f97fd982af245187e029682edcc3b867e3ea21))
+
+### Kubyl_ui
+
+- Add the Flame icon ([3d1ff25](https://github.com/BirknerAlex/kubyl/commit/3d1ff25ac87a550b736f055d571c5601a3463739))
+- TabBar::tab_element for tabs wrapped in another element ([0b95af5](https://github.com/BirknerAlex/kubyl/commit/0b95af5aa0b0475e2b53e64237c4cd4c065e9f68))
+
 ## [0.3.7] - 2026-09-30
 
 ### Miscellaneous
