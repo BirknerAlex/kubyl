@@ -340,13 +340,16 @@ impl ClustersSection {
         None
     }
 
+    /// The namespace `kind` is counted and checked in. Kinds of a contributed group (Argo CD
+    /// Applications) live with their controller, not in the namespace the user works in, so
+    /// they are counted across all namespaces, like their list view.
+    fn kind_namespace(cluster: &ClusterId, kind: &TreeKind, cx: &App) -> Option<String> {
+        scoped_namespace(kind, Self::scope_namespace(cluster, cx))
+    }
+
     /// Whether the user may list `kind` (unknown counts as yes; asks the server once).
     fn allowed(&mut self, cluster: &ClusterId, kind: &TreeKind, cx: &mut Context<Self>) -> bool {
-        let namespace = if kind.namespaced {
-            Self::scope_namespace(cluster, cx)
-        } else {
-            None
-        };
+        let namespace = Self::kind_namespace(cluster, kind, cx);
         let query = AccessQuery::new("list", &kind.gvr, namespace.as_deref());
         let Some(manager) = ConnectionManager::try_global(cx) else {
             return true;
@@ -662,11 +665,7 @@ impl ClustersSection {
     }
 
     fn count_key(cluster: &ClusterId, kind: &TreeKind, cx: &App) -> StoreKey {
-        let namespace = if kind.namespaced {
-            Self::scope_namespace(cluster, cx)
-        } else {
-            None
-        };
+        let namespace = Self::kind_namespace(cluster, kind, cx);
         StoreKey::new(cluster.clone(), kind.gvr.clone(), namespace).metadata()
     }
 
@@ -1658,6 +1657,16 @@ impl Render for ClustersSection {
     }
 }
 
+/// `active` (the namespace the user works in) when `kind`'s count follows it: namespaced
+/// kinds that don't belong to a contributed group.
+fn scoped_namespace(kind: &TreeKind, active: Option<String>) -> Option<String> {
+    if kind.namespaced && kind.via.is_none() {
+        active
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -1729,5 +1738,36 @@ mod tests {
         );
         assert!(state_line(&ConnectionState::Forbidden("no".into())).starts_with("Forbidden"));
         assert!(state_line(&ConnectionState::Disconnected).starts_with("Not connected"));
+    }
+
+    fn kind(resource: &str, namespaced: bool, via: Option<&'static str>) -> TreeKind {
+        TreeKind {
+            gvr: Gvr::new("argoproj.io", "v1alpha1", resource),
+            kind: resource.into(),
+            label: resource.into(),
+            icon: kubyl_ui::IconName::Layers,
+            namespaced,
+            via,
+        }
+    }
+
+    #[test]
+    fn counts_follow_the_namespace_except_for_contributed_groups() {
+        let active = || Some("default".to_string());
+        // Pods in the namespace the user works in.
+        assert_eq!(
+            scoped_namespace(&kind("pods", true, None), active()),
+            active()
+        );
+        // Cluster-scoped kinds have no namespace.
+        assert_eq!(
+            scoped_namespace(&kind("nodes", false, None), active()),
+            None
+        );
+        // Argo CD Applications live in Argo's namespace: counted across all, like their view.
+        assert_eq!(
+            scoped_namespace(&kind("applications", true, Some("argocd")), active()),
+            None
+        );
     }
 }

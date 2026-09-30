@@ -364,6 +364,9 @@ pub fn row(
         .relative()
         .w_full()
         .h(u(height))
+        // A fixed-height row in a scrolling list must not shrink to fit: with more rows than
+        // the viewport holds, flexbox would squeeze them and `overflow_hidden` clip their text.
+        .flex_none()
         .px(u(12.0))
         .border_b_1()
         .border_color(colors.row_border)
@@ -479,5 +482,13 @@ mod tests {
             middle_ellipsis("kube-prometheus-stack-operator", 12),
             "kube-p…rator"
         );
+    }
+
+    #[test]
+    fn rows_keep_their_height_in_a_long_list() {
+        // The Diff tab lists every out-of-sync resource: 64 rows of 40 px overflow the tab, and
+        // rows that may shrink get squeezed to half their height with their text clipped.
+        let mut row = row("row", false, 40.0, &Colors::one_dark());
+        assert_eq!(row.style().flex_shrink, Some(0.0));
     }
 }
