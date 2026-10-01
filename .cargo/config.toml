@@ -1,0 +1,4 @@
+# Link the MSVC C runtime into kubyl.exe. Otherwise it needs vcruntime140.dll from the
+# Visual C++ Redistributable and fails to start (STATUS_DLL_NOT_FOUND) on machines without it.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]
