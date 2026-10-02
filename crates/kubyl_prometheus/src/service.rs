@@ -21,6 +21,7 @@ use gpui::{
 use kubyl_core::{ClusterId, Gvr, ResourceRef, spawn_kube};
 use kubyl_kube::{ConnectionEvent, ConnectionManager};
 use kubyl_metrics::MetricsService;
+use kubyl_metrics::basic_auth::{self, SavedBasic};
 use kubyl_metrics::discover::{self, Candidate};
 use kubyl_metrics::prometheus::{PromClient, PromError, Target, basic_authorization};
 use kubyl_metrics::settings::MetricsSettings;
@@ -46,10 +47,8 @@ const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long the loopback forward to a signed-in server may take to listen.
 const FORWARD_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// The keychain entry holding the Authorization header for a server (`Instance::id`).
-pub fn auth_key(cluster: &ClusterId, instance: &str) -> String {
-    format!("prometheus-auth:{cluster}/{instance}")
-}
+/// Keychain entries of a server's credentials are `prometheus-auth:<cluster id>/<Instance::id>`.
+const AUTH_PREFIX: &str = "prometheus-auth";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -112,6 +111,9 @@ pub struct Instance {
     pub kind: Kind,
     pub client: PromClient,
     pub access: Access,
+    /// Which sign-in the client belongs to: a refused read only locks the server again when
+    /// it was made with the current credentials.
+    pub session: u64,
 }
 
 impl Instance {
@@ -122,6 +124,7 @@ impl Instance {
             kind: Kind::of(target),
             client,
             access: Access::Open,
+            session: 0,
         }
     }
 
@@ -217,6 +220,8 @@ impl ClusterState {
 enum Unlock {
     /// The keychain has nothing for it.
     NoCredentials,
+    /// The Service was re-created since the credentials were saved.
+    Replaced,
     /// The server said no to the username and password.
     Rejected,
     Failed(String),
@@ -225,6 +230,8 @@ enum Unlock {
 pub struct PrometheusService {
     clusters: HashMap<ClusterId, ClusterState>,
     generation: u64,
+    /// Numbers sign-ins (`Instance::session`).
+    sessions: u64,
     _tick: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -267,6 +274,7 @@ impl PrometheusService {
         Self {
             clusters: HashMap::new(),
             generation: 0,
+            sessions: 0,
             _tick: task,
             _subscriptions: subscriptions,
         }
@@ -514,15 +522,23 @@ impl PrometheusService {
     }
 
     /// A read of a signed-in server was refused: its credentials no longer work. They're
-    /// deleted, and the view asks again.
-    pub fn rejected(&mut self, cluster: &ClusterId, id: &str, cx: &mut Context<Self>) {
+    /// deleted, and the view asks again. `session` is the sign-in the read was made with: a
+    /// late answer to older credentials changes nothing.
+    pub fn rejected(
+        &mut self,
+        cluster: &ClusterId,
+        id: &str,
+        session: u64,
+        cx: &mut Context<Self>,
+    ) {
+        let keys = auth_keys(cluster, id, cx);
         let Some(state) = self.clusters.get_mut(cluster) else {
             return;
         };
         let Some(instance) = state.instance_mut(id) else {
             return;
         };
-        if instance.access != Access::SignedIn {
+        if instance.access != Access::SignedIn || instance.session != session {
             return;
         }
         instance.access = Access::Locked {
@@ -530,7 +546,7 @@ impl PrometheusService {
             problem: Some("The server no longer takes the saved username and password.".into()),
         };
         stop_forwards(state.forwards.remove(id), cx);
-        delete_secret(auth_key(cluster, id), cx);
+        delete_secrets(keys, cx);
         cx.notify();
     }
 
@@ -552,7 +568,8 @@ impl PrometheusService {
     }
 
     /// Connects to a locked server through a loopback forward with `header` (`None`: the one in
-    /// the keychain), and keeps a header the user typed once the server takes it.
+    /// the keychain, if the Service is still the one it was given to), and keeps a header the
+    /// user typed once the server takes it.
     fn unlock(
         &mut self,
         cluster: &ClusterId,
@@ -561,6 +578,7 @@ impl PrometheusService {
         cx: &mut Context<Self>,
     ) {
         let client = ConnectionManager::try_global(cx).and_then(|m| m.read(cx).client(cluster));
+        let keys = auth_keys(cluster, id, cx);
         let Some(state) = self.clusters.get_mut(cluster) else {
             return;
         };
@@ -568,12 +586,14 @@ impl PrometheusService {
         let Some(instance) = state.instance_mut(id) else {
             return;
         };
-        if instance.access == Access::Unlocking {
-            return;
-        }
+        let was_saved = match &instance.access {
+            Access::Locked { saved, .. } => *saved,
+            Access::Unlocking => return,
+            Access::Open | Access::SignedIn => false,
+        };
         let Some(client) = client else {
             instance.access = Access::Locked {
-                saved: false,
+                saved: was_saved,
                 problem: Some("The cluster isn't connected.".into()),
             };
             cx.notify();
@@ -583,70 +603,93 @@ impl PrometheusService {
         instance.access = Access::Unlocking;
         cx.notify();
         let typed = header.is_some();
-        let key = auth_key(cluster, id);
         let cluster = cluster.clone();
         let id = id.to_string();
         cx.spawn(async move |this, cx| {
-            let header = match header {
-                Some(header) => Some(header),
-                None => read_secret(cx, key.clone()).await,
-            };
-            let result = match header.clone() {
-                None => Err(Unlock::NoCredentials),
-                Some(header) => connect(&cluster, &id, &target, client, header, cx).await,
-            };
-            // Keep what the user typed only once it worked; forget what the server refused.
-            match (&result, header) {
-                (Ok(_), Some(header)) if typed => {
-                    if let Err(err) = write_secret(cx, key.clone(), header).await {
+            let result = async {
+                let uid = service_uid(&client, &target, cx).await?;
+                let header = match header {
+                    Some(header) => header,
+                    None => {
+                        let saved = read_saved(cx, &keys).await.ok_or(Unlock::NoCredentials)?;
+                        // Never to a Service that replaced the one the user signed in to.
+                        if saved.service_uid != uid {
+                            return Err(Unlock::Replaced);
+                        }
+                        saved.header
+                    }
+                };
+                let connected = connect(&cluster, &id, &target, client, header.clone(), cx).await?;
+                Ok((connected, header, uid))
+            }
+            .await;
+            // Keep what the user typed only once it worked; forget saved credentials the server
+            // refused or that belong to a replaced Service. (A mistyped password leaves saved
+            // ones alone.)
+            match &result {
+                Ok((_, header, uid)) if typed => {
+                    let saved = SavedBasic {
+                        header: header.clone(),
+                        service_uid: uid.clone(),
+                    };
+                    if let Some(key) = keys.first()
+                        && let Err(err) = write_secret(cx, key.clone(), saved.to_secret()).await
+                    {
                         tracing::warn!("Prometheus credentials not stored: {err}");
                     }
                 }
-                (Err(Unlock::Rejected), _) => {
-                    cx.update(|cx| delete_secret(key.clone(), cx));
-                }
+                Err(Unlock::Rejected) if !typed => cx.update(|cx| delete_secrets(keys, cx)),
+                Err(Unlock::Replaced) => cx.update(|cx| delete_secrets(keys, cx)),
                 _ => {}
             }
             this.update(cx, |this, cx| {
+                this.sessions += 1;
+                let session = this.sessions;
                 let state = this
                     .clusters
                     .get_mut(&cluster)
                     .filter(|s| s.generation == generation);
-                let Some(state) = state else {
-                    if let Ok((_, forward)) = result {
-                        stop_forwards(Some(forward), cx);
-                    }
-                    return;
-                };
-                let Some(instance) = state.instances.iter_mut().find(|i| i.id == id) else {
-                    if let Ok((_, forward)) = result {
+                let instance = state.and_then(|state| {
+                    let instance = state.instances.iter_mut().find(|i| i.id == id)?;
+                    Some((instance, &mut state.forwards))
+                });
+                let Some((instance, forwards)) = instance else {
+                    if let Ok(((_, forward), _, _)) = result {
                         stop_forwards(Some(forward), cx);
                     }
                     return;
                 };
                 instance.access = match result {
-                    Ok((prom, forward)) => {
+                    Ok(((prom, forward), _, _)) => {
                         instance.client = prom;
-                        stop_forwards(state.forwards.insert(id.clone(), forward), cx);
+                        instance.session = session;
+                        stop_forwards(forwards.insert(id.clone(), forward), cx);
                         Access::SignedIn
                     }
                     Err(Unlock::NoCredentials) => Access::Locked {
                         saved: false,
                         problem: None,
                     },
+                    Err(Unlock::Replaced) => Access::Locked {
+                        saved: false,
+                        problem: Some(
+                            "The Service was re-created since you signed in. Check that it's \
+                             still your Prometheus, then sign in again."
+                                .into(),
+                        ),
+                    },
+                    Err(Unlock::Rejected) if typed => Access::Locked {
+                        saved: was_saved,
+                        problem: Some("The server rejected this username and password.".into()),
+                    },
                     Err(Unlock::Rejected) => Access::Locked {
                         saved: false,
                         problem: Some(
-                            if typed {
-                                "The server rejected this username and password."
-                            } else {
-                                "The server no longer takes the saved username and password."
-                            }
-                            .into(),
+                            "The server no longer takes the saved username and password.".into(),
                         ),
                     },
                     Err(Unlock::Failed(err)) => Access::Locked {
-                        saved: !typed,
+                        saved: was_saved || !typed,
                         problem: Some(err.into()),
                     },
                 };
@@ -656,6 +699,35 @@ impl PrometheusService {
         })
         .detach();
     }
+}
+
+/// Where a server's credentials may be in the keychain, the one to write first.
+fn auth_keys(cluster: &ClusterId, id: &str, cx: &App) -> Vec<String> {
+    let ids = ConnectionManager::try_global(cx)
+        .map(|m| m.read(cx).settings_keys(cluster))
+        .unwrap_or_else(|| vec![cluster.to_string()]);
+    basic_auth::keys(AUTH_PREFIX, &ids, id)
+}
+
+/// The UID of the Service behind `target`.
+async fn service_uid(
+    client: &kube::Client,
+    target: &Target,
+    cx: &mut AsyncApp,
+) -> Result<String, Unlock> {
+    let Target::Service {
+        namespace, service, ..
+    } = target
+    else {
+        return Err(Unlock::Failed("Only a Service can be signed in to.".into()));
+    };
+    let (client, namespace, service) = (client.clone(), namespace.clone(), service.clone());
+    let task = cx.update(|cx| {
+        spawn_kube(cx, async move {
+            basic_auth::service_uid(&client, &namespace, &service).await
+        })
+    });
+    task.await.map_err(Unlock::Failed)
 }
 
 /// Opens a loopback forward to `target` and checks that the server takes `header` there.
@@ -786,14 +858,23 @@ fn stop_forwards(forwards: impl IntoIterator<Item = ForwardId>, cx: &mut App) {
     });
 }
 
-async fn read_secret(cx: &mut AsyncApp, key: String) -> Option<SecretString> {
+/// The first readable entry of `keys`.
+async fn read_saved(cx: &mut AsyncApp, keys: &[String]) -> Option<SavedBasic> {
+    let keys = keys.to_vec();
     let task = cx.update(|cx| {
         spawn_kube(cx, async move {
-            tokio::task::spawn_blocking(move || kubyl_kube::auth::store::get(&key))
-                .await
-                .ok()
-                .and_then(|r| r.inspect_err(|e| tracing::warn!("keychain: {e}")).ok())
-                .flatten()
+            tokio::task::spawn_blocking(move || {
+                keys.iter().find_map(|key| {
+                    kubyl_kube::auth::store::get(key)
+                        .inspect_err(|e| tracing::warn!("keychain: {e}"))
+                        .ok()
+                        .flatten()
+                        .and_then(|secret| SavedBasic::parse(&secret))
+                })
+            })
+            .await
+            .ok()
+            .flatten()
         })
     });
     task.await
@@ -810,11 +891,15 @@ async fn write_secret(cx: &mut AsyncApp, key: String, secret: SecretString) -> R
     task.await
 }
 
-fn delete_secret(key: String, cx: &mut App) {
+fn delete_secrets(keys: Vec<String>, cx: &mut App) {
     spawn_kube(cx, async move {
-        tokio::task::spawn_blocking(move || kubyl_kube::auth::store::delete(&key))
-            .await
-            .ok();
+        tokio::task::spawn_blocking(move || {
+            for key in keys {
+                kubyl_kube::auth::store::delete(&key).ok();
+            }
+        })
+        .await
+        .ok();
     })
     .detach();
 }

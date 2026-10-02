@@ -6,6 +6,7 @@ mod alerts_tab;
 mod details;
 pub mod rows;
 mod rules_tab;
+mod sign_in;
 mod silences_tab;
 mod states;
 pub mod widgets;
@@ -190,6 +191,7 @@ pub struct AlertsView {
     /// A filter text to put into the input on the next render.
     pending_input: Option<String>,
     pub(crate) rule_objects: rules_tab::RuleObjects,
+    pub(crate) sign_in_form: sign_in::State,
     _ticker: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -244,6 +246,8 @@ impl AlertsView {
         if let Some(service) = AlertsService::global(cx) {
             subscriptions.push(cx.observe(&service, |this, _, cx| this.sync(cx)));
         }
+        let sign_in_form = sign_in::State::new(window, cx);
+        subscriptions.extend(sign_in_form.subscriptions(window, cx));
         if let Some(manager) = ConnectionManager::try_global(cx) {
             subscriptions.push(cx.observe(&manager, |_, _, cx| cx.notify()));
         }
@@ -287,6 +291,7 @@ impl AlertsView {
             details_state: details::DetailsState::default(),
             pending_input: None,
             rule_objects: rules_tab::RuleObjects::default(),
+            sign_in_form,
             _ticker: ticker,
             _subscriptions: subscriptions,
         };
@@ -704,6 +709,30 @@ impl AlertsView {
                         .into_any_element(),
                 );
             }
+            for (i, locked) in state.locked.iter().enumerate() {
+                chips.push(
+                    h_flex()
+                        .id(("am-locked", i))
+                        .flex_shrink(1.0)
+                        .min_w(u(120.0))
+                        .h(u(22.0))
+                        .px(u(7.0))
+                        .gap(u(5.0))
+                        .rounded(u(4.0))
+                        .bg(colors.chip_background)
+                        .text_color(colors.text_muted)
+                        .child(Icon::new(IconName::Lock).size(11.0))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .font_family(fonts::MONO)
+                                .text_size(u(11.0))
+                                .child(format!("Alertmanager {} · sign in", locked.label())),
+                        )
+                        .into_any_element(),
+                );
+            }
             if let Some(rules) = &state.rules_source {
                 let rules: SharedString = rules.clone().into();
                 chips.push(
@@ -985,6 +1014,7 @@ impl Render for AlertsView {
         let colors: Colors = cx.colors().clone();
         let header = self.render_header(cx);
         let tabs = self.render_tabs(cx);
+        let sign_in = self.render_sign_in(cx);
         let context = self.context();
         let body = match self.tab {
             Tab::Alerts => self.render_alerts_tab(window, cx),
@@ -1012,6 +1042,7 @@ impl Render for AlertsView {
             .map(|this| crate::actions::bind_view_actions(this, cx))
             .child(header)
             .child(tabs)
+            .children(sign_in)
             .child(div().flex_1().min_h_0().flex().child(body))
             .child(kubyl_ui::KeyHints::new(hints))
     }
@@ -1065,6 +1096,45 @@ mod tests {
         assert_eq!(position_of(&alerts, &clusters, &key(&a, "fp1")), Some(0));
         assert_eq!(position_of(&alerts, &clusters, &key(&b, "fp1")), Some(1));
         assert_eq!(position_of(&alerts, &clusters, &key(&a, "fp2")), None);
+    }
+
+    #[gpui::test]
+    fn a_locked_alertmanager_shows_the_sign_in_strip(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let service = cx.update(|cx| {
+            kubyl_core::init(cx);
+            kubyl_settings::init_with_dir(cx, dir.path());
+            kubyl_ui::init(cx);
+            kubyl_settings::Settings::register::<crate::settings::AlertsSettings>(cx);
+            AlertsService::install(false, cx)
+        });
+        let cluster = ClusterId::new("c");
+        service.update(cx, |s, cx| {
+            s.insert_for_test(&cluster, vec![alert(1)], cx);
+            s.lock_for_test(
+                &cluster,
+                crate::discover::AmTarget::service(
+                    "prometheus",
+                    "alertmanager",
+                    "9093",
+                    "http",
+                    "",
+                ),
+            );
+        });
+        let slot: std::rc::Rc<std::cell::RefCell<Option<Entity<AlertsView>>>> = Default::default();
+        let (_root, cx) = cx.add_window_view({
+            let slot = slot.clone();
+            let cluster = cluster.clone();
+            move |window, cx| {
+                let view = cx.new(|cx| AlertsView::new(Some(cluster), window, cx));
+                *slot.borrow_mut() = Some(view.clone());
+                gpui_component::Root::new(view, window, cx)
+            }
+        });
+        let view = slot.borrow().clone().unwrap();
+        cx.run_until_parked();
+        view.update(cx, |view, cx| assert!(view.render_sign_in(cx).is_some()));
     }
 
     #[gpui::test]

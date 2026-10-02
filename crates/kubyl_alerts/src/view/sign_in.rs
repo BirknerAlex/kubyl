@@ -67,13 +67,19 @@ impl AlertsView {
         if locked.busy {
             return;
         }
-        let username = self.sign_in_form.username.read(cx).value().trim().to_string();
+        let username = self
+            .sign_in_form
+            .username
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
         let password = self.sign_in_form.password.read(cx).value().to_string();
         if username.is_empty() || password.is_empty() {
             return;
         }
         // The password isn't kept in the field.
-        self.sign_in
+        self.sign_in_form
             .password
             .update(cx, |input, cx| input.set_value("", window, cx));
         if let Some(service) = AlertsService::global(cx) {
@@ -101,7 +107,10 @@ impl AlertsView {
                 .border_color(colors.border)
                 .child(Input::new(input).appearance(false))
         };
-        let mut title = format!("Alertmanager {} asks for a username and password", locked.label());
+        let mut title = format!(
+            "Alertmanager {} asks for a username and password",
+            locked.label()
+        );
         if self.cluster.is_none() {
             title.push_str(&format!(" ({})", Self::cluster_name(&cluster, cx)));
         }
@@ -135,11 +144,15 @@ impl AlertsView {
                             Button::new("alerts-sign-in")
                                 .primary()
                                 .icon(IconName::Key)
-                                .label(if locked.busy { "Signing in…" } else { "Sign in" })
+                                .label(if locked.busy {
+                                    "Signing in…"
+                                } else {
+                                    "Sign in"
+                                })
                                 .disabled(locked.busy)
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.sign_in(window, cx)
-                                })),
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.sign_in(window, cx)),
+                                ),
                         )
                         .when(locked.saved && !locked.busy, |this| {
                             this.child(

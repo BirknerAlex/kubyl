@@ -302,12 +302,12 @@ impl PrometheusView {
         if self.tab == Tab::Query && self.names.due(Duration::from_secs(names_every)) {
             self.names.loading = true;
             let prom = instance.client.clone();
-            let id = instance.id.clone();
+            let (id, session) = (instance.id.clone(), instance.session);
             self.spawn_read(
                 cx,
                 async move { fetch::names(&prom).await },
                 move |this, result, cx| {
-                    this.names.finish(this.checked(&id, result, cx));
+                    this.names.finish(this.checked(&id, session, result, cx));
                     this.update_suggestions(cx);
                 },
             );
@@ -315,12 +315,12 @@ impl PrometheusView {
         if targets && self.targets.due(every) {
             self.targets.loading = true;
             let prom = instance.client.clone();
-            let id = instance.id.clone();
+            let (id, session) = (instance.id.clone(), instance.session);
             self.spawn_read(
                 cx,
                 async move { fetch::targets(&prom).await },
                 move |this, result, cx| {
-                    let result = this.checked(&id, result, cx);
+                    let result = this.checked(&id, session, result, cx);
                     this.targets.finish(result);
                 },
             );
@@ -328,12 +328,12 @@ impl PrometheusView {
         if rules && self.rules.due(every) {
             self.rules.loading = true;
             let prom = instance.client.clone();
-            let id = instance.id.clone();
+            let (id, session) = (instance.id.clone(), instance.session);
             self.spawn_read(
                 cx,
                 async move { fetch::rules(&prom).await },
                 move |this, result, cx| {
-                    let result = this.checked(&id, result, cx);
+                    let result = this.checked(&id, session, result, cx);
                     this.rules.finish(result);
                 },
             );
@@ -345,6 +345,7 @@ impl PrometheusView {
     fn checked<T>(
         &self,
         id: &str,
+        session: u64,
         result: Result<T, PromError>,
         cx: &mut Context<Self>,
     ) -> Result<T, String> {
@@ -352,7 +353,7 @@ impl PrometheusView {
             && let Some(service) = PrometheusService::global(cx)
         {
             let cluster = self.cluster.clone();
-            service.update(cx, |s, cx| s.rejected(&cluster, id, cx));
+            service.update(cx, |s, cx| s.rejected(&cluster, id, session, cx));
         }
         result.map_err(|e| e.to_string())
     }
