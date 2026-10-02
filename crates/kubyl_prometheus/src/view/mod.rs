@@ -7,6 +7,7 @@ mod discovery;
 mod overview;
 mod query;
 mod rules;
+mod sign_in;
 mod targets;
 pub(crate) mod widgets;
 
@@ -26,6 +27,7 @@ use kubyl_core::{
     spawn_kube,
 };
 use kubyl_kube::ConnectionManager;
+use kubyl_metrics::prometheus::PromError;
 use kubyl_settings::Settings;
 use kubyl_ui::{ActiveColors, Colors, Icon, IconName, ProdBadge, fonts, h_flex, sizes, u, v_flex};
 
@@ -36,7 +38,7 @@ use crate::actions::{
 use crate::complete::Names;
 use crate::fetch;
 use crate::model::{Overview, RuleGroup, Targets};
-use crate::service::{Instance, Kind, Phase, PrometheusService};
+use crate::service::{Access, Instance, Kind, Phase, PrometheusService};
 use crate::settings::PrometheusSettings;
 
 /// `ViewKind::Custom` of a cluster's Prometheus tab.
@@ -159,6 +161,7 @@ pub struct PrometheusView {
     pub(crate) rules_tab: rules::State,
     pub(crate) discovery_tab: discovery::State,
     pub(crate) query_tab: query::State,
+    pub(crate) sign_in_tab: sign_in::State,
     pub(crate) focus: FocusHandle,
     /// The id of the server the sections belong to.
     seen_instance: Option<String>,
@@ -189,10 +192,12 @@ impl PrometheusView {
         let rules_tab = rules::State::new(window, cx);
         let discovery_tab = discovery::State::new(window, cx);
         let query_tab = query::State::new(window, cx);
+        let sign_in_tab = sign_in::State::new(window, cx);
         subscriptions.extend(targets_tab.subscriptions(window, cx));
         subscriptions.extend(rules_tab.subscriptions(window, cx));
         subscriptions.extend(discovery_tab.subscriptions(window, cx));
         subscriptions.extend(query_tab.subscriptions(window, cx));
+        subscriptions.extend(sign_in_tab.subscriptions(window, cx));
         Self {
             cluster,
             tab: Tab::Overview,
@@ -207,6 +212,7 @@ impl PrometheusView {
             rules_tab,
             discovery_tab,
             query_tab,
+            sign_in_tab,
             focus: cx.focus_handle(),
             rendered_at: Instant::now(),
             _ticker: ticker,
@@ -271,7 +277,7 @@ impl PrometheusView {
         if self.rendered_at.elapsed() > Duration::from_secs(3) {
             return;
         }
-        let Some(instance) = self.current(cx) else {
+        let Some(instance) = self.current(cx).filter(Instance::is_readable) else {
             return;
         };
         let every = Settings::get::<PrometheusSettings>(cx).refresh();
@@ -296,11 +302,12 @@ impl PrometheusView {
         if self.tab == Tab::Query && self.names.due(Duration::from_secs(names_every)) {
             self.names.loading = true;
             let prom = instance.client.clone();
+            let id = instance.id.clone();
             self.spawn_read(
                 cx,
-                async move { fetch::names(&prom).await.map_err(|e| e.to_string()) },
-                |this, result, cx| {
-                    this.names.finish(result);
+                async move { fetch::names(&prom).await },
+                move |this, result, cx| {
+                    this.names.finish(this.checked(&id, result, cx));
                     this.update_suggestions(cx);
                 },
             );
@@ -308,21 +315,46 @@ impl PrometheusView {
         if targets && self.targets.due(every) {
             self.targets.loading = true;
             let prom = instance.client.clone();
+            let id = instance.id.clone();
             self.spawn_read(
                 cx,
-                async move { fetch::targets(&prom).await.map_err(|e| e.to_string()) },
-                |this, result, _| this.targets.finish(result),
+                async move { fetch::targets(&prom).await },
+                move |this, result, cx| {
+                    let result = this.checked(&id, result, cx);
+                    this.targets.finish(result);
+                },
             );
         }
         if rules && self.rules.due(every) {
             self.rules.loading = true;
             let prom = instance.client.clone();
+            let id = instance.id.clone();
             self.spawn_read(
                 cx,
-                async move { fetch::rules(&prom).await.map_err(|e| e.to_string()) },
-                |this, result, _| this.rules.finish(result),
+                async move { fetch::rules(&prom).await },
+                move |this, result, cx| {
+                    let result = this.checked(&id, result, cx);
+                    this.rules.finish(result);
+                },
             );
         }
+    }
+
+    /// A read's result as text. A `401` from a signed-in server means its saved credentials no
+    /// longer work: the service forgets them and the view asks again.
+    fn checked<T>(
+        &self,
+        id: &str,
+        result: Result<T, PromError>,
+        cx: &mut Context<Self>,
+    ) -> Result<T, String> {
+        if let Err(PromError::Http(401, _)) = &result
+            && let Some(service) = PrometheusService::global(cx)
+        {
+            let cluster = self.cluster.clone();
+            service.update(cx, |s, cx| s.rejected(&cluster, id, cx));
+        }
+        result.map_err(|e| e.to_string())
     }
 
     /// Runs `future` on the Tokio runtime and applies its result unless the server changed.
@@ -409,6 +441,7 @@ impl PrometheusView {
         let selector =
             instance.map(|current| self.render_selector(current, &instances, &colors, cx));
         let ui = instance
+            .filter(|i| i.access == Access::Open)
             .filter(|i| matches!(i.kind, Kind::Prometheus | Kind::Thanos))
             .and_then(|i| {
                 let (namespace, service, port, path) = i.service()?;
@@ -539,7 +572,13 @@ impl PrometheusView {
         let weak = cx.weak_entity();
         let list: Vec<(String, String)> = instances
             .iter()
-            .map(|i| (i.id.clone(), format!("{} · {}", i.kind.label(), i.label())))
+            .map(|i| {
+                let mut label = format!("{} · {}", i.kind.label(), i.label());
+                if !i.is_readable() {
+                    label.push_str(" · sign in");
+                }
+                (i.id.clone(), label)
+            })
             .collect();
         let current_id = current.id.clone();
         MenuButton::new("prometheus-instance")
@@ -549,7 +588,14 @@ impl PrometheusView {
                 h_flex()
                     .gap(u(6.0))
                     .text_size(u(12.0))
-                    .child(Icon::new(IconName::Server).size(12.0))
+                    .child(
+                        Icon::new(if current.is_readable() {
+                            IconName::Server
+                        } else {
+                            IconName::Lock
+                        })
+                        .size(12.0),
+                    )
                     .child(div().max_w(u(320.0)).truncate().child(text))
                     .child(Icon::new(IconName::ChevronDown).size(11.0)),
             )
@@ -807,6 +853,7 @@ impl Render for PrometheusView {
         let content = match (&blocking, &instance) {
             (Some(blocking), _) => self.render_blocking(blocking, cx),
             (None, None) => self.render_blocking(&Blocking::Loading, cx),
+            (None, Some(instance)) if !instance.is_readable() => self.render_sign_in(instance, cx),
             (None, Some(instance)) => {
                 let tabs = self.render_tabs(cx);
                 let body = match self.tab {
@@ -988,6 +1035,45 @@ mod tests {
                 Tab::Discovery => view.render_discovery(window, cx),
             })
         }
+    }
+
+    /// Paints the sign-in panel of a locked server.
+    struct SignInProbe(Entity<PrometheusView>, Instance);
+
+    impl Render for SignInProbe {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let instance = self.1.clone();
+            self.0
+                .update(cx, |view, cx| view.render_sign_in(&instance, cx))
+        }
+    }
+
+    #[gpui::test]
+    fn the_sign_in_panel_paints(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            kubyl_core::init(cx);
+            kubyl_settings::init_with_dir(cx, dir.path());
+            kubyl_ui::init(cx);
+            Settings::register::<PrometheusSettings>(cx);
+        });
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = runtime.enter();
+        let mut instance =
+            Instance::new(PromClient::external("http://127.0.0.1:1", false, None).unwrap());
+        instance.access = Access::Locked {
+            saved: true,
+            problem: Some("The server rejected this username and password.".into()),
+        };
+        assert!(!instance.is_readable());
+        let (_probe, cx) = cx.add_window_view(move |window, cx| {
+            let view = cx.new(|cx| PrometheusView::new(ClusterId::new("c"), window, cx));
+            gpui_component::Root::new(cx.new(|_| SignInProbe(view, instance)), window, cx)
+        });
+        cx.run_until_parked();
     }
 
     #[gpui::test]
