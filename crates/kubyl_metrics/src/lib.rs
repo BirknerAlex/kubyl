@@ -19,6 +19,7 @@
 //!   pressure, OOM kills… for pods, nodes, namespaces, workloads and PVCs).
 //! - [`settings`]: the `"metrics"` settings.json section.
 
+pub mod basic_auth;
 pub mod details;
 pub mod discover;
 pub mod metrics_server;

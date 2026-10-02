@@ -16,7 +16,7 @@ use serde_json::Value;
 
 use crate::openshift::Bearer;
 use crate::transport::{ExternalTls, Transport, proxy_base, query_error};
-pub use crate::transport::{PromError, credentials_allowed, short};
+pub use crate::transport::{PromError, basic_authorization, credentials_allowed, short};
 
 /// Where a Prometheus-compatible API lives.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -224,6 +224,14 @@ impl PromClient {
             Ok(result) => result.map(|_| ()),
             Err(_) => Err(PromError::Timeout),
         }
+    }
+
+    /// Whether the server refuses queries until it gets a username and password (HTTP basic
+    /// auth). Worth asking only after [`Self::probe`] failed with a 401.
+    pub async fn asks_for_basic_auth(&self) -> bool {
+        self.transport
+            .asks_for_basic_auth("/api/v1/query", &[("query", "vector(1)".to_string())])
+            .await
     }
 
     /// Any read of the Prometheus HTTP API (`/api/v1/alerts`, `/api/v1/rules`…), as JSON.

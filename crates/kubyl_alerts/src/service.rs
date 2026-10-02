@@ -11,6 +11,11 @@
 //! Prometheus phase 07 found. Transitions (started firing, resolved) are kept in memory: the
 //! first fetch is the baseline, resolved alerts show for a while, and notifications only ever
 //! mention alerts that started while Kubyl watched.
+//!
+//! An Alertmanager behind HTTP basic auth is listed as [`Locked`] until the user signs in. Its
+//! Authorization header is kept in the keychain while it works and deleted once it's rejected
+//! (the view asks again); it's read through a temporary loopback forward, since the API server
+//! strips credentials from service-proxy requests.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -24,7 +29,8 @@ use jiff::Timestamp;
 use kubyl_core::{ClusterId, Notification, NotificationCenter, spawn_kube};
 use kubyl_kube::{ConnectionEvent, ConnectionManager};
 use kubyl_metrics::MetricsService;
-use kubyl_metrics::prometheus::PromClient;
+use kubyl_metrics::basic_auth::{self, SavedBasic};
+use kubyl_metrics::prometheus::{PromClient, PromError, basic_authorization};
 use kubyl_portforward::manager::{
     Ephemeral, ForwardId, ForwardSpec, ForwardState, PortForwardManager,
 };
@@ -62,6 +68,53 @@ const FORWARD_TIMEOUT: Duration = Duration::from_secs(15);
 /// Keychain entry of the Authorization header of an external Alertmanager URL.
 pub fn auth_key(cluster: &str, url: &str) -> String {
     format!("alerts-auth:{cluster}/{url}")
+}
+
+/// Keychain entries of the username and password (a `Basic …` header with the Service's UID)
+/// of an in-cluster Alertmanager behind basic auth: `alerts-password:<cluster id>/<ns>/<svc>`,
+/// the entry's id first, then its members' (see [`basic_auth::keys`]).
+fn password_keys(cluster: &ClusterId, label: &str, cx: &App) -> Vec<String> {
+    let ids = ConnectionManager::try_global(cx)
+        .map(|m| m.read(cx).settings_keys(cluster))
+        .unwrap_or_else(|| vec![cluster.to_string()]);
+    basic_auth::keys("alerts-password", &ids, label)
+}
+
+/// An Alertmanager that wants a username and password before it can be read.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Locked {
+    pub target: AmTarget,
+    /// Signing in.
+    pub busy: bool,
+    /// The keychain has credentials (the forward was stopped, or the server didn't answer):
+    /// reconnecting may work.
+    pub saved: bool,
+    /// Why the last attempt failed.
+    pub problem: Option<SharedString>,
+}
+
+impl Locked {
+    fn new(target: AmTarget) -> Self {
+        Self {
+            target,
+            busy: false,
+            saved: false,
+            problem: None,
+        }
+    }
+
+    pub fn label(&self) -> String {
+        self.target.label()
+    }
+}
+
+/// How signing in to a locked Alertmanager ended.
+enum Unlock {
+    NoCredentials,
+    /// The Service was re-created since the credentials were saved.
+    Replaced,
+    Rejected,
+    Failed(String),
 }
 
 /// Where a cluster's alerts stand.
@@ -182,6 +235,8 @@ pub struct ClusterAlerts {
     pub error: Option<SharedString>,
     /// The cluster's `matchers` (a central Alertmanager), added to every silence.
     pub matchers: Vec<Matcher>,
+    /// Alertmanagers behind basic auth that aren't signed in.
+    pub locked: Vec<Locked>,
     /// Bumped whenever the data changes (views rebuild their rows then).
     pub revision: u64,
     generation: u64,
@@ -194,6 +249,8 @@ pub struct ClusterAlerts {
     /// Firing alerts of the last read, by fingerprint (for transitions).
     firing: HashMap<String, Alert>,
     forwards: Vec<ForwardId>,
+    /// The forwards of signed-in Alertmanagers (also in `forwards`), by label.
+    password_forwards: HashMap<String, ForwardId>,
     prom: Option<PromClient>,
     prometheus_alertmanagers: Option<usize>,
     nodes: Arc<NodeMap>,
@@ -225,6 +282,7 @@ impl ClusterAlerts {
             checked_at: None,
             error: None,
             matchers: Vec::new(),
+            locked: Vec::new(),
             revision: 0,
             generation,
             fetch: Fetch::default(),
@@ -235,6 +293,7 @@ impl ClusterAlerts {
             baseline: false,
             firing: HashMap::new(),
             forwards: Vec::new(),
+            password_forwards: HashMap::new(),
             prom: None,
             prometheus_alertmanagers: None,
             nodes: Arc::default(),
@@ -794,6 +853,9 @@ impl AlertsService {
         state.prom = prom;
         state.nodes = Arc::new(nodes);
         let previous = std::mem::replace(&mut state.forwards, forwards);
+        state.password_forwards.clear();
+        state.locked = found.locked.into_iter().map(Locked::new).collect();
+        let locked: Vec<String> = state.locked.iter().map(Locked::label).collect();
         state.phase = if state.sources.is_empty() && state.prom.is_none() {
             Phase::NoSource
         } else {
@@ -811,7 +873,250 @@ impl AlertsService {
         );
         crate::changed(cx);
         cx.notify();
+        // Signs in with what the keychain has, if anything.
+        for label in locked {
+            self.unlock(cluster, &label, None, cx);
+        }
         self.tick(cx);
+    }
+
+    // ----- Basic auth -----
+
+    /// Signs in to a locked Alertmanager; the credentials are kept in the keychain once it
+    /// takes them.
+    pub fn sign_in(
+        &mut self,
+        cluster: &ClusterId,
+        label: &str,
+        username: &str,
+        password: &SecretString,
+        cx: &mut Context<Self>,
+    ) {
+        let header = basic_authorization(username, password);
+        self.unlock(cluster, label, Some(header), cx);
+    }
+
+    /// Signs in again with the credentials in the keychain.
+    pub fn reconnect(&mut self, cluster: &ClusterId, label: &str, cx: &mut Context<Self>) {
+        self.unlock(cluster, label, None, cx);
+    }
+
+    /// Connects to a locked Alertmanager through a loopback forward with `header` (`None`: the
+    /// one in the keychain, if the Service is still the one it was given to). A header the user
+    /// typed is kept once it works; saved ones the server refused are deleted.
+    fn unlock(
+        &mut self,
+        cluster: &ClusterId,
+        label: &str,
+        header: Option<SecretString>,
+        cx: &mut Context<Self>,
+    ) {
+        let client = ConnectionManager::try_global(cx).and_then(|m| m.read(cx).client(cluster));
+        let keys = password_keys(cluster, label, cx);
+        let Some(state) = self.clusters.get_mut(cluster) else {
+            return;
+        };
+        let generation = state.generation;
+        let Some(locked) = state.locked.iter_mut().find(|l| l.label() == label) else {
+            return;
+        };
+        if locked.busy {
+            return;
+        }
+        let Some(client) = client else {
+            locked.problem = Some("The cluster isn't connected.".into());
+            cx.notify();
+            return;
+        };
+        let was_saved = locked.saved;
+        locked.busy = true;
+        let target = locked.target.clone();
+        cx.notify();
+        let typed = header.is_some();
+        let cluster = cluster.clone();
+        let label = label.to_string();
+        cx.spawn(async move |this, cx| {
+            let result = async {
+                let uid = service_uid(&client, &target, cx).await?;
+                let header = match header {
+                    Some(header) => header,
+                    None => {
+                        let saved = read_saved(cx, &keys).await.ok_or(Unlock::NoCredentials)?;
+                        // Never to a Service that replaced the one the user signed in to.
+                        if saved.service_uid != uid {
+                            return Err(Unlock::Replaced);
+                        }
+                        saved.header
+                    }
+                };
+                let connected = password_forward(&cluster, &target, &header, cx).await?;
+                Ok((connected, header, uid))
+            }
+            .await;
+            // A mistyped password leaves saved credentials alone.
+            match &result {
+                Ok((_, header, uid)) if typed => {
+                    let saved = SavedBasic {
+                        header: header.clone(),
+                        service_uid: uid.clone(),
+                    };
+                    if let Some(key) = keys.first()
+                        && let Err(err) = write_secret(cx, key.clone(), saved.to_secret()).await
+                    {
+                        tracing::warn!("Alertmanager credentials not stored: {err}");
+                    }
+                }
+                Err(Unlock::Rejected) if !typed => cx.update(|cx| delete_secrets(keys, cx)),
+                Err(Unlock::Replaced) => cx.update(|cx| delete_secrets(keys, cx)),
+                _ => {}
+            }
+            let result = result.map(|(connected, _, _)| connected);
+            this.update(cx, |this, cx| {
+                let current = this
+                    .clusters
+                    .get(&cluster)
+                    .is_some_and(|s| s.generation == generation);
+                if !current {
+                    if let Ok((_, forward)) = result {
+                        stop_forwards(vec![forward], cx);
+                    }
+                    return;
+                }
+                this.unlocked(&cluster, &label, typed, was_saved, result, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn unlocked(
+        &mut self,
+        cluster: &ClusterId,
+        label: &str,
+        typed: bool,
+        was_saved: bool,
+        result: Result<(AmConn, ForwardId), Unlock>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(state) = self.clusters.get_mut(cluster) else {
+            return;
+        };
+        let Some(index) = state.locked.iter().position(|l| l.label() == label) else {
+            if let Ok((_, forward)) = result {
+                stop_forwards(vec![forward], cx);
+            }
+            return;
+        };
+        match result {
+            Ok((conn, forward)) => {
+                state.locked.remove(index);
+                state.forwards.push(forward);
+                state.password_forwards.insert(label.to_string(), forward);
+                state.sources.push(Source {
+                    conn,
+                    error: None,
+                    receivers: Vec::new(),
+                });
+                if state.phase == Phase::NoSource {
+                    state.phase = Phase::Ready;
+                }
+                if let Some(tried) = state.tried.iter_mut().find(|t| t.label == label) {
+                    tried.error = None;
+                }
+                state.fetch.last = None;
+                state.revision += 1;
+                crate::changed(cx);
+                cx.notify();
+                self.tick(cx);
+            }
+            Err(err) => {
+                let locked = &mut state.locked[index];
+                locked.busy = false;
+                (locked.saved, locked.problem) = match err {
+                    Unlock::NoCredentials => (false, None),
+                    Unlock::Replaced => (
+                        false,
+                        Some(
+                            "The Service was re-created since you signed in. Check that it's \
+                             still your Alertmanager, then sign in again."
+                                .into(),
+                        ),
+                    ),
+                    Unlock::Rejected if typed => (
+                        was_saved,
+                        Some("Alertmanager rejected this username and password.".into()),
+                    ),
+                    Unlock::Rejected => (
+                        false,
+                        Some(
+                            "Alertmanager no longer takes the saved username and password.".into(),
+                        ),
+                    ),
+                    Unlock::Failed(err) => (was_saved || !typed, Some(err.into())),
+                };
+                state.revision += 1;
+                cx.notify();
+            }
+        }
+    }
+
+    /// Signed-in Alertmanagers whose reads were refused: their credentials are deleted and
+    /// they're locked again. Each comes with the forward port the read went through: a late
+    /// answer for credentials already replaced by a new sign-in changes nothing.
+    fn rejected(
+        &mut self,
+        cluster: &ClusterId,
+        rejected: &[(String, u16)],
+        cx: &mut Context<Self>,
+    ) {
+        for (label, port) in rejected {
+            let keys = password_keys(cluster, label, cx);
+            let Some(state) = self.clusters.get_mut(cluster) else {
+                return;
+            };
+            let Some(index) = state.sources.iter().position(|s| {
+                &s.label() == label && s.conn.via == client::Via::Password { local_port: *port }
+            }) else {
+                continue;
+            };
+            let source = state.sources.remove(index);
+            if let Some(forward) = state.password_forwards.remove(label) {
+                state.forwards.retain(|f| *f != forward);
+                stop_forwards(vec![forward], cx);
+            }
+            delete_secrets(keys, cx);
+            let mut locked = Locked::new(source.conn.target);
+            locked.problem =
+                Some("Alertmanager no longer takes the saved username and password.".into());
+            state.locked.push(locked);
+            state.revision += 1;
+        }
+    }
+
+    /// The user stopped a signed-in Alertmanager's forward in Active Sessions.
+    fn password_forward_stopped(
+        &mut self,
+        cluster: &ClusterId,
+        label: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(state) = self.clusters.get_mut(cluster) else {
+            return;
+        };
+        let Some(forward) = state.password_forwards.remove(label) else {
+            return;
+        };
+        state.forwards.retain(|f| *f != forward);
+        if let Some(index) = state.sources.iter().position(|s| s.label() == label) {
+            let source = state.sources.remove(index);
+            let mut locked = Locked::new(source.conn.target);
+            locked.saved = true;
+            locked.problem = Some("The port-forward was stopped.".into());
+            state.locked.push(locked);
+        }
+        state.revision += 1;
+        crate::changed(cx);
+        cx.notify();
     }
 
     fn fetch(&mut self, cluster: &ClusterId, client: kube::Client, cx: &mut Context<Self>) {
@@ -862,6 +1167,16 @@ impl AlertsService {
         }
         state.fetch.in_flight = false;
         state.fetch.last = Some(Instant::now());
+        if !output.rejected.is_empty() {
+            self.rejected(cluster, &output.rejected, cx);
+            // The sources changed under this read: the next one starts over.
+            crate::changed(cx);
+            cx.notify();
+            return;
+        }
+        let Some(state) = self.clusters.get_mut(cluster) else {
+            return;
+        };
         if let Some(rules) = output.rules {
             state.rules_fetch.in_flight = false;
             state.rules_fetch.last = Some(Instant::now());
@@ -951,6 +1266,14 @@ impl AlertsService {
         }
         crate::changed(cx);
         cx.notify();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn lock_for_test(&mut self, cluster: &ClusterId, target: AmTarget) {
+        if let Some(state) = self.clusters.get_mut(cluster) {
+            state.locked.push(Locked::new(target));
+            state.revision += 1;
+        }
     }
 
     #[cfg(test)]
@@ -1318,13 +1641,14 @@ async fn read_nodes(client: &kube::Client) -> NodeMap {
     }
 }
 
-/// Opens a temporary loopback forward to `target` and connects through it.
-async fn forward(
+/// Opens a temporary loopback forward to `target` (a Service) and waits until it listens.
+/// `on_stop` runs when the user stops it in Active Sessions.
+async fn open_forward(
     cluster: &ClusterId,
     target: &AmTarget,
-    credentials: &Credentials,
+    on_stop: Arc<dyn Fn(&mut App)>,
     cx: &mut AsyncApp,
-) -> Result<(AmConn, ForwardId), String> {
+) -> Result<(kube::Client, ForwardId, u16), String> {
     let AmTarget::Service {
         namespace,
         service,
@@ -1380,15 +1704,7 @@ async fn forward(
         ephemeral: Some(Ephemeral {
             title: format!("Alertmanager · svc/{service}"),
             buttons: Vec::new(),
-            on_stop: Arc::new({
-                let cluster = cluster.clone();
-                move |cx| {
-                    if let Some(service) = AlertsService::global(cx) {
-                        let cluster = cluster.clone();
-                        service.update(cx, |this, cx| this.redetect(&cluster, cx));
-                    }
-                }
-            }),
+            on_stop,
         }),
     };
     let id = cx.update(|cx| PortForwardManager::start(client.clone(), spec, cx));
@@ -1417,6 +1733,26 @@ async fn forward(
             .timer(Duration::from_millis(100))
             .await;
     };
+    Ok((client, id, local_port))
+}
+
+/// Opens a temporary loopback forward to `target` and connects through it.
+async fn forward(
+    cluster: &ClusterId,
+    target: &AmTarget,
+    credentials: &Credentials,
+    cx: &mut AsyncApp,
+) -> Result<(AmConn, ForwardId), String> {
+    let on_stop: Arc<dyn Fn(&mut App)> = Arc::new({
+        let cluster = cluster.clone();
+        move |cx| {
+            if let Some(service) = AlertsService::global(cx) {
+                let cluster = cluster.clone();
+                service.update(cx, |this, cx| this.redetect(&cluster, cx));
+            }
+        }
+    });
+    let (client, id, local_port) = open_forward(cluster, target, on_stop, cx).await?;
     let target = target.clone();
     let credentials = credentials.clone();
     let probed = cx
@@ -1432,7 +1768,119 @@ async fn forward(
             cx.update(|cx| stop_forwards(vec![id], cx));
             Err(err)
         }
+        Probed::NeedsPassword(_) => {
+            cx.update(|cx| stop_forwards(vec![id], cx));
+            Err("asks for a username and password".into())
+        }
     }
+}
+
+/// Opens a temporary loopback forward to an Alertmanager behind basic auth and connects with
+/// `header`.
+async fn password_forward(
+    cluster: &ClusterId,
+    target: &AmTarget,
+    header: &SecretString,
+    cx: &mut AsyncApp,
+) -> Result<(AmConn, ForwardId), Unlock> {
+    let on_stop: Arc<dyn Fn(&mut App)> = Arc::new({
+        let (cluster, label) = (cluster.clone(), target.label());
+        move |cx| {
+            if let Some(service) = AlertsService::global(cx) {
+                service.update(cx, |this, cx| {
+                    this.password_forward_stopped(&cluster, &label, cx)
+                });
+            }
+        }
+    });
+    let (_, id, local_port) = open_forward(cluster, target, on_stop, cx)
+        .await
+        .map_err(Unlock::Failed)?;
+    let (target, header) = (target.clone(), header.clone());
+    let probed = cx
+        .update(|cx| {
+            spawn_kube(cx, async move {
+                client::probe_password(&target, local_port, &header).await
+            })
+        })
+        .await;
+    match probed {
+        Ok(conn) => Ok((conn, id)),
+        Err(err) => {
+            cx.update(|cx| stop_forwards(vec![id], cx));
+            Err(match err {
+                PromError::Http(401, _) => Unlock::Rejected,
+                err => Unlock::Failed(err.to_string()),
+            })
+        }
+    }
+}
+
+/// The first readable entry of `keys`.
+async fn read_saved(cx: &mut AsyncApp, keys: &[String]) -> Option<SavedBasic> {
+    let keys = keys.to_vec();
+    let task = cx.update(|cx| {
+        spawn_kube(cx, async move {
+            tokio::task::spawn_blocking(move || {
+                keys.iter().find_map(|key| {
+                    kubyl_kube::auth::store::get(key)
+                        .inspect_err(|e| tracing::warn!("keychain: {e}"))
+                        .ok()
+                        .flatten()
+                        .and_then(|secret| SavedBasic::parse(&secret))
+                })
+            })
+            .await
+            .ok()
+            .flatten()
+        })
+    });
+    task.await
+}
+
+/// The UID of the Service behind `target`.
+async fn service_uid(
+    client: &kube::Client,
+    target: &AmTarget,
+    cx: &mut AsyncApp,
+) -> Result<String, Unlock> {
+    let AmTarget::Service {
+        namespace, service, ..
+    } = target
+    else {
+        return Err(Unlock::Failed("not a Service".into()));
+    };
+    let (client, namespace, service) = (client.clone(), namespace.clone(), service.clone());
+    let task = cx.update(|cx| {
+        spawn_kube(cx, async move {
+            basic_auth::service_uid(&client, &namespace, &service).await
+        })
+    });
+    task.await.map_err(Unlock::Failed)
+}
+
+async fn write_secret(cx: &mut AsyncApp, key: String, secret: SecretString) -> Result<(), String> {
+    let task = cx.update(|cx| {
+        spawn_kube(cx, async move {
+            tokio::task::spawn_blocking(move || kubyl_kube::auth::store::set(&key, &secret))
+                .await
+                .map_err(|e| e.to_string())?
+        })
+    });
+    task.await
+}
+
+fn delete_secrets(keys: Vec<String>, cx: &mut App) {
+    spawn_kube(cx, async move {
+        tokio::task::spawn_blocking(move || {
+            for key in keys {
+                kubyl_kube::auth::store::delete(&key).ok();
+            }
+        })
+        .await
+        .ok();
+    })
+    .detach();
 }
 
 /// The number of a Service's named port.
@@ -1468,6 +1916,9 @@ struct FetchInput {
 struct FetchOutput {
     /// Per Alertmanager: its receivers when read this time, or its error.
     sources: Vec<Result<Option<Vec<String>>, String>>,
+    /// Signed-in Alertmanagers that refused their saved username and password, with the
+    /// forward port the read went through.
+    rejected: Vec<(String, u16)>,
     silences: Vec<Silence>,
     /// False when a silences read failed: keep the previous list (`error` says why).
     silences_ok: bool,
@@ -1529,6 +1980,7 @@ async fn fetch(input: FetchInput) -> FetchOutput {
     let mut sources = Vec::new();
     let mut am_ok = false;
     let mut silences_ok = true;
+    let mut rejected = Vec::new();
     for (conn, (alerts, silence_list, receivers)) in input.conns.iter().zip(am) {
         let label = conn.label();
         match alerts {
@@ -1546,6 +1998,11 @@ async fn fetch(input: FetchInput) -> FetchOutput {
                 sources.push(Ok(receivers.ok().map(|b| model::parse_receivers(&b))));
             }
             Err(err) => {
+                if let client::Via::Password { local_port } = conn.via
+                    && matches!(err, PromError::Http(401, _))
+                {
+                    rejected.push((label.clone(), local_port));
+                }
                 let message = client::explain(&conn.target, via_name(conn), &err);
                 errors.push(format!("{label}: {message}"));
                 sources.push(Err(message));
@@ -1593,6 +2050,7 @@ async fn fetch(input: FetchInput) -> FetchOutput {
     silences.sort_by_key(|s| std::cmp::Reverse(s.starts_at));
     FetchOutput {
         sources,
+        rejected,
         silences,
         silences_ok,
         rules,
@@ -1613,7 +2071,7 @@ fn via_name(conn: &AmConn) -> &'static str {
     match conn.via {
         client::Via::Proxy => "proxy",
         client::Via::Route { .. } => "route",
-        client::Via::Forward { .. } => "forward",
+        client::Via::Forward { .. } | client::Via::Password { .. } => "forward",
         client::Via::Url => "url",
     }
 }
@@ -1737,6 +2195,7 @@ mod tests {
 
     fn output(alerts: Vec<Alert>) -> FetchOutput {
         FetchOutput {
+            rejected: Vec::new(),
             sources: Vec::new(),
             silences: Vec::new(),
             silences_ok: true,
@@ -1946,6 +2405,57 @@ mod tests {
             assert!(!state.discovering && !state.fetch.in_flight);
             assert_eq!(state.phase, Phase::Unknown);
             assert!(state.generation > old_generation);
+        });
+    }
+
+    #[gpui::test]
+    fn a_failed_sign_in_says_why_and_keeps_it_locked(cx: &mut TestAppContext) {
+        let (_dir, service) = setup(cx, serde_json::json!({}));
+        let cluster = ClusterId::new("c");
+        let target = AmTarget::service("prometheus", "alertmanager", "9093", "http", "");
+        service.update(cx, |s, cx| {
+            s.insert_for_test(&cluster, Vec::new(), cx);
+            let state = s.clusters.get_mut(&cluster).unwrap();
+            state.locked.push(Locked::new(target.clone()));
+            state.locked[0].busy = true;
+            let label = target.label();
+            s.unlocked(&cluster, &label, true, false, Err(Unlock::Rejected), cx);
+            let locked = &s.clusters[&cluster].locked[0];
+            assert!(!locked.busy && !locked.saved);
+            assert!(locked.problem.as_ref().unwrap().contains("rejected this"));
+            // Saved credentials that couldn't be tried stay saved: "Reconnect" may work.
+            s.unlocked(
+                &cluster,
+                &label,
+                false,
+                false,
+                Err(Unlock::Failed("port-forward: no pods".into())),
+                cx,
+            );
+            let locked = &s.clusters[&cluster].locked[0];
+            assert!(locked.saved);
+            assert_eq!(locked.problem.as_deref(), Some("port-forward: no pods"));
+            // A mistyped password doesn't hide saved credentials.
+            s.unlocked(&cluster, &label, true, true, Err(Unlock::Rejected), cx);
+            assert!(s.clusters[&cluster].locked[0].saved);
+            s.unlocked(&cluster, &label, false, true, Err(Unlock::Replaced), cx);
+            let locked = &s.clusters[&cluster].locked[0];
+            assert!(!locked.saved);
+            assert!(locked.problem.as_ref().unwrap().contains("re-created"));
+            s.unlocked(
+                &cluster,
+                &label,
+                false,
+                false,
+                Err(Unlock::NoCredentials),
+                cx,
+            );
+            let locked = &s.clusters[&cluster].locked[0];
+            assert!(!locked.saved && locked.problem.is_none());
+            assert_eq!(
+                password_keys(&cluster, &label, cx),
+                ["alerts-password:c/prometheus/alertmanager"]
+            );
         });
     }
 

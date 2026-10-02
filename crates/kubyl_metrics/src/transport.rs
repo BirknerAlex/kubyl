@@ -360,6 +360,53 @@ impl Transport {
         self.send(request).await
     }
 
+    /// Whether `GET path` is refused with `401` and a `WWW-Authenticate: Basic` challenge: the
+    /// server wants a username and password (Prometheus' `--web.config.file`, an nginx in front).
+    /// Through the service proxy the challenge arrives, but credentials can't be sent back that
+    /// way (the API server strips them).
+    pub async fn asks_for_basic_auth(&self, path: &str, params: &[(&str, String)]) -> bool {
+        let Ok(mut request) = http::Request::get(self.uri(path, params)).body(Vec::new()) else {
+            return false;
+        };
+        if self.authorize(&mut request).await.is_err() {
+            return false;
+        }
+        let response = tokio::time::timeout(
+            REQUEST_TIMEOUT,
+            self.client.send(request.map(kube::client::Body::from)),
+        )
+        .await;
+        let Ok(Ok(response)) = response else {
+            return false;
+        };
+        let challenged = response.status() == http::StatusCode::UNAUTHORIZED
+            && response
+                .headers()
+                .get_all(http::header::WWW_AUTHENTICATE)
+                .iter()
+                .any(|v| is_basic_challenge(v.to_str().unwrap_or_default()));
+        if !challenged {
+            return false;
+        }
+        // The API server (or a proxy in front of it) refusing the user's own credentials
+        // answers with a small JSON `Status` object: that's not the service asking for a
+        // password. A large body isn't one, and isn't read.
+        let small = response
+            .headers()
+            .get(http::header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok()?.parse::<u64>().ok())
+            .is_some_and(|len| len <= 8192);
+        if !small {
+            return true;
+        }
+        let body = tokio::time::timeout(REQUEST_TIMEOUT, response.into_body().collect_bytes())
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or_default();
+        !is_kube_status(&body)
+    }
+
     /// `GET` returning JSON.
     pub async fn get(&self, path: &str, params: &[(&str, String)]) -> Result<Value, PromError> {
         let text = self.get_text(path, params).await?;
@@ -402,6 +449,30 @@ fn map_error(err: kube::Error) -> PromError {
         }
         err => PromError::Transport(short(&err.to_string())),
     }
+}
+
+/// A Kubernetes `Status` object, as the API server answers its own errors with.
+fn is_kube_status(body: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(body).is_ok_and(|v| v["kind"] == "Status")
+}
+
+/// `Basic realm="…"` (one of possibly several challenges in the header).
+fn is_basic_challenge(value: &str) -> bool {
+    value.split(',').any(|part| {
+        part.split_whitespace()
+            .next()
+            .is_some_and(|scheme| scheme.eq_ignore_ascii_case("basic"))
+    })
+}
+
+/// `Basic base64(username:password)`, for an Authorization header.
+pub fn basic_authorization(username: &str, password: &SecretString) -> SecretString {
+    use base64::Engine as _;
+    let pair = format!("{username}:{}", password.expose_secret());
+    SecretString::from(format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode(pair)
+    ))
 }
 
 /// The error of a `status: error` answer.
@@ -448,6 +519,49 @@ mod tests {
             .with_header("x-scope-orgid", "tenant-a")
             .unwrap();
         assert!(!format!("{ok:?}").contains("s3cr3t"));
+    }
+
+    #[test]
+    fn basic_challenges_and_headers() {
+        assert!(is_basic_challenge(r#"Basic realm="prometheus""#));
+        assert!(is_basic_challenge("Bearer realm=\"x\", basic"));
+        assert!(!is_basic_challenge(r#"Bearer realm="oauth""#));
+        assert!(!is_basic_challenge(""));
+        let header = basic_authorization("admin", &SecretString::from("s3cr3t".to_string()));
+        assert_eq!(header.expose_secret(), "Basic YWRtaW46czNjcjN0");
+    }
+
+    /// A 401 with a Basic challenge asks for a password; one without (an auth proxy) doesn't.
+    #[tokio::test]
+    async fn basic_auth_is_told_apart_from_other_401s() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let status = r#"{"kind":"Status","apiVersion":"v1","code":401}"#;
+            for (challenge, body) in [
+                ("www-authenticate: Basic realm=\"prom\"\r\n", "Unauthorized"),
+                ("", "Unauthorized"),
+                // The API server's own 401 (expired kube credentials) isn't the service.
+                ("www-authenticate: Basic realm=\"kubernetes\"\r\n", status),
+            ] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buffer = vec![0; 8192];
+                let _ = socket.read(&mut buffer).await.unwrap();
+                let answer = format!(
+                    "HTTP/1.1 401 Unauthorized\r\n{challenge}content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                socket.write_all(answer.as_bytes()).await.unwrap();
+            }
+        });
+        let transport =
+            Transport::external(&format!("http://{address}"), None, &ExternalTls::default())
+                .unwrap();
+        assert!(transport.asks_for_basic_auth("/api/v1/query", &[]).await);
+        assert!(!transport.asks_for_basic_auth("/api/v1/query", &[]).await);
+        assert!(!transport.asks_for_basic_auth("/api/v1/query", &[]).await);
     }
 
     /// Streamed lines arrive while the response is still open (server-sent events); an error
