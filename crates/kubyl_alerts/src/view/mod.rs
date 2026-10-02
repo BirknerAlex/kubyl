@@ -669,6 +669,11 @@ impl AlertsView {
                     (None, crate::client::Via::Forward { local_port }) => {
                         format!("Through a temporary port-forward (127.0.0.1:{local_port})").into()
                     }
+                    (None, crate::client::Via::Password { local_port }) => format!(
+                        "Signed in with a username and password, through a temporary \
+                         port-forward (127.0.0.1:{local_port})"
+                    )
+                    .into(),
                     (None, crate::client::Via::Url) => "An external URL".into(),
                 };
                 let tooltip: SharedString = format!("{text}\n{tooltip}").into();

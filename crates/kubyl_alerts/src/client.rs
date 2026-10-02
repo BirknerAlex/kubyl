@@ -8,7 +8,9 @@
 //!   (OpenShift's `alertmanager-main`), else a temporary loopback forward verified against the
 //!   service CA (OpenShift's user workload Alertmanager, which has no Route);
 //! - an external URL with the Authorization header from the keychain (never with
-//!   `insecure_skip_tls_verify`), an optional CA file and client certificate.
+//!   `insecure_skip_tls_verify`), an optional CA file and client certificate;
+//! - behind HTTP basic auth (a 401 with a `Basic` challenge through the proxy): a temporary
+//!   loopback forward with the username and password the user typed, kept in the keychain.
 
 use std::time::Duration;
 
@@ -40,6 +42,8 @@ pub enum Via {
     Route { url: String },
     /// A temporary loopback forward (kept by the service while it's used).
     Forward { local_port: u16 },
+    /// A temporary loopback forward with a username and password (HTTP basic auth).
+    Password { local_port: u16 },
     /// An external URL.
     Url,
 }
@@ -176,6 +180,8 @@ pub enum Probed {
     Connected(Box<AmConn>),
     /// Behind an auth proxy without a Route: needs a temporary forward to its port.
     NeedsForward(AmTarget, String),
+    /// Asks for a username and password (HTTP basic auth).
+    NeedsPassword(AmTarget),
     Failed(AmTarget, String),
 }
 
@@ -282,6 +288,12 @@ pub async fn probe(client: &kube::Client, target: &AmTarget, credentials: &Crede
                 }
                 Err(err) => err,
             };
+            // A password, not a token (an auth proxy's 401 has no Basic challenge).
+            if matches!(err, PromError::Http(401, _))
+                && transport.asks_for_basic_auth("/api/v2/status", &[]).await
+            {
+                return Probed::NeedsPassword(target.clone());
+            }
             // Behind an auth proxy the API server's stripped credentials get a 401/403. Only
             // trusted Services may get a token.
             if !matches!(err, PromError::Http(401 | 403, _)) || !token_allowed(target) {
@@ -428,6 +440,44 @@ pub async fn probe_forward(
     Probed::Failed(target.clone(), errors.join("; "))
 }
 
+/// Connects through a temporary loopback forward to a Service behind HTTP basic auth, with
+/// `authorization` (`Basic …`). TLS, if any, ends in the pod behind the API server's tunnel,
+/// so its certificate (for the Service's name) isn't checked against 127.0.0.1.
+pub async fn probe_password(
+    target: &AmTarget,
+    local_port: u16,
+    authorization: &SecretString,
+) -> Result<AmConn, PromError> {
+    let AmTarget::Service {
+        path,
+        scheme,
+        tenant,
+        ..
+    } = target
+    else {
+        return Err(PromError::Transport("not a Service".into()));
+    };
+    let https = scheme == "https";
+    let url = format!(
+        "{}://127.0.0.1:{local_port}{}",
+        if https { "https" } else { "http" },
+        kubyl_metrics::transport::normalize_prefix(path)
+    );
+    let tls = ExternalTls {
+        insecure: https,
+        ..Default::default()
+    };
+    let transport = Transport::external(&url, Some(authorization), &tls)
+        .and_then(|t| with_tenant(t, tenant.as_deref()))?;
+    let status = status(&transport).await?;
+    Ok(AmConn {
+        target: target.clone(),
+        transport,
+        via: Via::Password { local_port },
+        status,
+    })
+}
+
 /// What discovery reads from the cluster.
 #[derive(Clone, Debug, Default)]
 pub struct Gathered {
@@ -514,6 +564,8 @@ pub struct Discovered {
     pub connected: Vec<AmConn>,
     /// Trusted Services behind an auth proxy without a Route (need a forward).
     pub forwards: Vec<AmTarget>,
+    /// Services behind HTTP basic auth (need a username and password).
+    pub locked: Vec<AmTarget>,
     pub tried: Vec<Tried>,
     /// Steps that found nothing, for the "no Alertmanager" explanation.
     pub notes: Vec<String>,
@@ -606,6 +658,14 @@ pub async fn discover(
                     error: Some(why),
                 });
                 out.forwards.push(target);
+            }
+            Probed::NeedsPassword(target) => {
+                out.tried.push(Tried {
+                    label,
+                    found_by,
+                    error: Some("asks for a username and password".into()),
+                });
+                out.locked.push(target);
             }
             Probed::Failed(_, why) => out.tried.push(Tried {
                 label,
@@ -707,6 +767,49 @@ mod tests {
         assert!(debug.contains("your token"));
     }
 
+    /// A 401 with a Basic challenge through the proxy asks for a password; no token is sent
+    /// and no Route is looked up.
+    #[tokio::test]
+    async fn basic_auth_asks_for_a_password() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            while let Ok(Ok((mut socket, _))) =
+                tokio::time::timeout(Duration::from_millis(800), listener.accept()).await
+            {
+                let mut buf = vec![0; 8192];
+                let n = socket.read(&mut buf).await.unwrap_or(0);
+                requests.push(String::from_utf8_lossy(&buf[..n]).to_string());
+                let response = "HTTP/1.1 401 Unauthorized\r\nwww-authenticate: Basic realm=\"am\"\r\ncontent-length: 12\r\nconnection: close\r\n\r\nUnauthorized";
+                socket.write_all(response.as_bytes()).await.ok();
+            }
+            requests
+        });
+        let config = kube::Config::new(format!("http://{address}").parse().unwrap());
+        let client = kube::Client::try_from(config).unwrap();
+        let credentials = Credentials {
+            user_token: Some(BearerToken::Static(SecretString::from(
+                "s3cr3t-user-token".to_string(),
+            ))),
+            headers: Vec::new(),
+        };
+        let target = AmTarget::service("prometheus", "alertmanager", "9093", "http", "");
+        assert!(matches!(
+            probe(&client, &target, &credentials).await,
+            Probed::NeedsPassword(_)
+        ));
+        let requests = server.await.unwrap();
+        assert!(
+            requests
+                .iter()
+                .all(|r| r.contains("/services/alertmanager:9093/proxy/"))
+        );
+        assert!(!requests.iter().any(|r| r.contains("s3cr3t-user-token")));
+    }
+
     /// A look-alike Service outside the trusted namespaces never gets a token: after its 401 the
     /// probe stops instead of calling its Route. (The fake API server answers 401 to the proxy
     /// request and would record any other request.)
@@ -750,10 +853,11 @@ mod tests {
             other => panic!("{other:?}"),
         }
         let requests = server.await.unwrap();
-        assert_eq!(requests.len(), 1, "only the proxy request: {requests:?}");
-        assert!(requests[0].starts_with(
+        // The proxy request, and the same again to read its challenge (no Basic: no password).
+        assert_eq!(requests.len(), 2, "only proxy requests: {requests:?}");
+        assert!(requests.iter().all(|r| r.starts_with(
             "GET /api/v1/namespaces/monitoring-evil/services/https:alertmanager-main:9094/proxy/api/v2/status"
-        ));
+        )));
         assert!(!requests.iter().any(|r| r.contains("s3cr3t-user-token")));
         assert!(!requests.iter().any(|r| r.contains("/routes")));
     }
