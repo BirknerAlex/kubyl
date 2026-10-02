@@ -37,6 +37,9 @@ pub enum ApiError {
     /// Argo CD's RBAC denied it.
     #[error("Argo CD denied this: {0}")]
     Forbidden(String),
+    /// A sign-in with a username and password that Argo CD doesn't take.
+    #[error("Argo CD denied this: invalid username or password")]
+    InvalidCredentials,
     #[error("not found: {0}")]
     NotFound(String),
     /// The Kubernetes API server refused or couldn't reach the Service (RBAC for
@@ -438,9 +441,7 @@ impl ArgoApi {
             .await
             .map_err(|err| match err {
                 // A wrong password is a 401 too; say it plainly.
-                ApiError::Unauthorized => {
-                    ApiError::Forbidden("invalid username or password".into())
-                }
+                ApiError::Unauthorized => ApiError::InvalidCredentials,
                 other => other,
             })?;
         value

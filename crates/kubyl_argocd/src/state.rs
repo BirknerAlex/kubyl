@@ -9,7 +9,9 @@
 //! API server (which strips them), through a forward they aren't sent at all.
 //!
 //! SSO sessions ([`crate::sso`]) keep their refresh token in the keychain next to the session
-//! token and renew themselves when the token expires or the server rejects it.
+//! token and renew themselves when the token expires or the server rejects it. A sign-in with a
+//! username and password keeps those there too, and signs in again with them when the session
+//! expires; once Argo CD rejects them they're deleted and the dialog asks again.
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
@@ -28,7 +30,8 @@ use kubyl_portforward::manager::{
 };
 use kubyl_portforward::resolve::{ForwardKind, RemotePort};
 use kubyl_resources::{ResourceStores, store};
-use secrecy::SecretString;
+use secrecy::{ExposeSecret as _, SecretString};
+use serde_json::{Value, json};
 
 use crate::api::{ApiError, ArgoApi, Transport, UserInfo};
 use crate::detect::{self, Install};
@@ -420,9 +423,12 @@ impl ArgoCd {
                 let token_key = settings::token_key(&key, &install.namespace, &service);
                 let mut token = read_token(cx, token_key.clone()).await;
                 let refresh = read_token(cx, refresh_key(&token_key)).await;
+                let saved = read_token(cx, password_key(&token_key))
+                    .await
+                    .and_then(|s| SavedPassword::parse(&s));
                 this.update(cx, |this, _| {
                     if let Some(session) = this.session_mut(&id) {
-                        session.renewable = refresh.is_some();
+                        session.renewable = refresh.is_some() || saved.is_some();
                     }
                 })
                 .ok();
@@ -435,6 +441,17 @@ impl ArgoCd {
                     match renew(cx, &api, &token_key, refresh).await {
                         Ok(fresh) => token = Some(fresh),
                         Err(err) => tracing::info!("Argo CD session renewal failed: {err}"),
+                    }
+                }
+                // A password session signs in again once its token is gone or rejected.
+                let mut relogged = false;
+                if token.is_none()
+                    && let Some(saved) = &saved
+                {
+                    relogged = true;
+                    match relogin(cx, &api, &token_key, saved).await {
+                        Ok(fresh) => token = Some(fresh),
+                        Err(state) => return Ok(state),
                     }
                 }
                 let Some(mut token) = token else {
@@ -472,6 +489,14 @@ impl ArgoCd {
                                         "The SSO session couldn't be renewed ({err}). Sign in again."
                                     ))));
                                 }
+                            }
+                        }
+                        Err(ApiError::Unauthorized) if !relogged && saved.is_some() => {
+                            relogged = true;
+                            let saved = saved.as_ref().expect("checked");
+                            match relogin(cx, &api, &token_key, saved).await {
+                                Ok(fresh) => token = fresh,
+                                Err(state) => return Ok(state),
                             }
                         }
                         Err(ApiError::Unauthorized) => {
@@ -577,17 +602,20 @@ impl ArgoCd {
                     }
                 })
                 .ok();
+                let mut saved = None;
                 let (token, session) = match credentials {
                     Credentials::Token(token) => (token, None),
-                    Credentials::Password { username, password } => (
-                        run(cx, {
+                    Credentials::Password { username, password } => {
+                        let token = run(cx, {
                             let api = api.clone();
+                            let (username, password) = (username.clone(), password.clone());
                             async move { api.login(&username, &password).await }
                         })
                         .await
-                        .map_err(|e| e.to_string())?,
-                        None,
-                    ),
+                        .map_err(|e| e.to_string())?;
+                        saved = Some(SavedPassword { username, password });
+                        (token, None)
+                    }
                     Credentials::Sso(urls) => {
                         let tokens = run(cx, {
                             let api = api.clone();
@@ -638,6 +666,19 @@ impl ArgoCd {
                         delete_token(cx, refresh_key(&token_key)).await;
                     }
                 }
+                // The username and password sign in again when the session expires; another
+                // way of signing in replaces them.
+                match &saved {
+                    Some(saved) => {
+                        if let Err(err) =
+                            write_token(cx, password_key(&token_key), saved.to_secret()).await
+                        {
+                            tracing::info!("Argo CD password not stored: {err}");
+                        }
+                    }
+                    None => delete_token(cx, password_key(&token_key)).await,
+                }
+                let renewable = renewable || saved.is_some();
                 let via = api.transport().describe();
                 this.update(cx, |this, cx| {
                     settings::trust(&id, &install, Some(info.username.clone()), cx);
@@ -700,6 +741,7 @@ impl ArgoCd {
             spawn_kube(cx, async move {
                 tokio::task::spawn_blocking(move || {
                     kubyl_kube::auth::store::delete(&refresh_key(&token_key)).ok();
+                    kubyl_kube::auth::store::delete(&password_key(&token_key)).ok();
                     kubyl_kube::auth::store::delete(&token_key)
                 })
                 .await
@@ -730,8 +772,8 @@ impl ArgoCd {
         cx.notify();
     }
 
-    /// An API call said the token is no longer valid. An SSO session renews itself (once a
-    /// minute at most); otherwise the user signs in again.
+    /// An API call said the token is no longer valid. An SSO session renews itself, a password
+    /// session signs in again (once a minute at most); otherwise the user signs in again.
     pub fn unauthorized(&mut self, cluster: &ClusterId, cx: &mut Context<Self>) {
         let renew = self.session_mut(cluster).is_some_and(|s| {
             s.renewable
@@ -798,6 +840,67 @@ async fn read_token(cx: &mut AsyncApp, key: String) -> Option<SecretString> {
 /// Where an SSO session's refresh token is kept, next to its session token.
 fn refresh_key(token_key: &str) -> String {
     format!("{token_key}/refresh")
+}
+
+/// Where a password session's username and password are kept, next to its session token.
+fn password_key(token_key: &str) -> String {
+    format!("{token_key}/password")
+}
+
+/// A local account's username and password, kept to sign in again when the session expires.
+struct SavedPassword {
+    username: String,
+    password: SecretString,
+}
+
+impl SavedPassword {
+    fn to_secret(&self) -> SecretString {
+        SecretString::from(
+            json!({"username": self.username, "password": self.password.expose_secret()})
+                .to_string(),
+        )
+    }
+
+    fn parse(secret: &SecretString) -> Option<Self> {
+        let value: Value = serde_json::from_str(secret.expose_secret()).ok()?;
+        Some(Self {
+            username: value["username"].as_str()?.to_string(),
+            password: SecretString::from(value["password"].as_str()?.to_string()),
+        })
+    }
+}
+
+/// Signs in again with the saved username and password and stores the new token. Rejected
+/// credentials are deleted, so the dialog asks again.
+async fn relogin(
+    cx: &mut AsyncApp,
+    api: &ArgoApi,
+    token_key: &str,
+    saved: &SavedPassword,
+) -> Result<SecretString, ApiState> {
+    let login = run(cx, {
+        let api = api.clone();
+        let (username, password) = (saved.username.clone(), saved.password.clone());
+        async move { api.login(&username, &password).await }
+    })
+    .await;
+    match login {
+        Ok(token) => {
+            if let Err(err) = write_token(cx, token_key.to_string(), token.clone()).await {
+                tracing::info!("Argo CD session token not stored: {err}");
+            }
+            Ok(token)
+        }
+        Err(ApiError::InvalidCredentials) => {
+            delete_token(cx, password_key(token_key)).await;
+            delete_token(cx, token_key.to_string()).await;
+            Err(ApiState::SignInRequired(Some(format!(
+                "Argo CD no longer takes the saved password for {}. Sign in again.",
+                saved.username
+            ))))
+        }
+        Err(err) => Err(ApiState::Failed(err.to_string())),
+    }
 }
 
 async fn delete_token(cx: &mut AsyncApp, key: String) {
@@ -1093,4 +1196,25 @@ pub fn username(cluster: &ClusterId, cx: &App) -> String {
 /// Shows an action's failure as a toast (Argo CD's 403s say so plainly).
 pub fn notify_error(what: &str, error: impl std::fmt::Display, cx: &mut App) {
     NotificationCenter::push(cx, Notification::error(format!("{what}: {error}")));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn saved_passwords_round_trip() {
+        let saved = SavedPassword {
+            username: "admin".into(),
+            password: SecretString::from("p\"ss\\word".to_string()),
+        };
+        let parsed = SavedPassword::parse(&saved.to_secret()).unwrap();
+        assert_eq!(parsed.username, "admin");
+        assert_eq!(parsed.password.expose_secret(), "p\"ss\\word");
+        assert!(SavedPassword::parse(&SecretString::from("a-token".to_string())).is_none());
+        assert_eq!(
+            password_key("argocd/s/c/ns/svc"),
+            "argocd/s/c/ns/svc/password"
+        );
+    }
 }

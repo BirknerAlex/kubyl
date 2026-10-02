@@ -2030,8 +2030,13 @@ impl Render for SignInDialog {
                     .text_color(colors.text_dim)
                     .child(Icon::new(IconName::Lock).size(12.0))
                     .child(div().flex_1().min_w_0().child(format!(
-                        "Signing in confirms this install: Kubyl remembers it for {name} and asks again if its Service is replaced. The token goes to the {}; your Kubernetes credentials are never sent to Argo CD.",
-                        kubyl_kube::auth::store::store_name()
+                        "Signing in confirms this install: Kubyl remembers it for {name} and asks again if its Service is replaced. The token goes to the {store}{}; your Kubernetes credentials are never sent to Argo CD.",
+                        if self.method == Method::Password {
+                            ", with the username and password to sign in again when the session expires (deleted once Argo CD rejects them)"
+                        } else {
+                            ""
+                        },
+                        store = kubyl_kube::auth::store::store_name()
                     ))),
             )
             .children(error_line(&self.error, &colors));
