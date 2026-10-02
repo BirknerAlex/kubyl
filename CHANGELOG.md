@@ -2,6 +2,36 @@
 
 All notable changes to Kubyl are documented here.
 
+## [0.3.9] - 2026-10-02
+
+### Miscellaneous
+
+- Update Flatpak manifest to v0.3.8 ([0dfc6da](https://github.com/BirknerAlex/kubyl/commit/0dfc6da61a86cebfbd85ed5f35836bcc485a5ef7))
+
+### Build
+
+- Link the MSVC runtime statically on Windows ([3127470](https://github.com/BirknerAlex/kubyl/commit/312747019fd246a31e570714bf7d7be072bd2cd5))
+
+### Kubyl_alerts
+
+- Sign in to Alertmanagers behind basic auth ([fda94a2](https://github.com/BirknerAlex/kubyl/commit/fda94a2fc672d8c7cde492e8610234fc91b41b18))
+
+### Kubyl_argocd
+
+- Keep the password of a password sign-in to renew the session ([dd5b720](https://github.com/BirknerAlex/kubyl/commit/dd5b720ef3f3a11ac6e273026ef73edeb5237f61))
+
+### Kubyl_metrics
+
+- Tell a basic-auth 401 apart from other 401s ([aa868c0](https://github.com/BirknerAlex/kubyl/commit/aa868c073e63a1da8b3cdf552e010365e1b71f31))
+
+### Kubyl_prometheus
+
+- Sign in to Prometheus servers behind basic auth ([e1271b3](https://github.com/BirknerAlex/kubyl/commit/e1271b3d7fd0d10ab5d18397d6cd21bff5a982a0))
+
+### Plans
+
+- Decide how basic-auth credentials are handled ([5a31383](https://github.com/BirknerAlex/kubyl/commit/5a31383bd9bf41311ad359365b6c0297a5847a98))
+
 ## [0.3.8] - 2026-09-30
 
 ### Bug Fixes
