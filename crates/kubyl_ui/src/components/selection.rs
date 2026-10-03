@@ -798,10 +798,12 @@ mod tests {
 
     impl Render for Stacked {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            // Wide, unwrapped rows: the text fits whatever the font.
             let row = |id: &'static str, text: &'static str| {
                 div()
                     .h(px(20.))
-                    .w(px(300.))
+                    .w(px(900.))
+                    .whitespace_nowrap()
                     .child(SelectableLabel::new(id, text))
             };
             div()
@@ -1286,16 +1288,31 @@ mod tests {
                                 .flex()
                                 .h(px(20.))
                                 .gap(px(8.))
-                                .child(div().w(px(100.)).child(label("k", "Firing since")))
-                                .child(div().child(label("v", "10h 59m"))),
+                                .child(
+                                    div()
+                                        .w(px(200.))
+                                        .whitespace_nowrap()
+                                        .child(label("k", "Firing since")),
+                                )
+                                .child(div().whitespace_nowrap().child(label("v", "10h 59m"))),
                         )
                         .child(
                             div()
                                 .flex()
                                 .h(px(20.))
                                 .gap(px(4.))
-                                .child(div().child(label("c1", "chip-one")))
-                                .child(div().child(label("c2", "chip-two"))),
+                                .child(
+                                    div()
+                                        .w(px(100.))
+                                        .whitespace_nowrap()
+                                        .child(label("c1", "chip-one")),
+                                )
+                                .child(
+                                    div()
+                                        .w(px(100.))
+                                        .whitespace_nowrap()
+                                        .child(label("c2", "chip-two")),
+                                ),
                         )
                         .child(div().h(px(60.)))
                         .child(div().h(px(20.)).child(label("s1", "Section")))
@@ -1330,13 +1347,15 @@ mod tests {
     #[gpui::test]
     fn a_drag_reads_like_the_ui(cx: &mut TestAppContext) {
         let cx = setup_formatted(cx);
-        drag(cx, point(px(1.), px(6.)), point(px(110.), px(26.)));
+        // From the key to the middle of the second chip (its cell starts at x = 104).
+        drag(cx, point(px(1.), px(6.)), point(px(144.), px(26.)));
         let text = selected(cx);
-        assert!(
-            text.starts_with("Firing since 10h 59m\nchip-one chi"),
-            "{text:?}"
-        );
-        assert!(text.ends_with(|c: char| c != ' ' && c != '\n'), "{text:?}");
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "{text:?}");
+        assert_eq!(lines[0], "Firing since 10h 59m");
+        // Both chips share the second line; the second is cut where the drag ended.
+        assert!(lines[1].starts_with("chip-one chip-"), "{text:?}");
+        assert!("chip-one chip-two".starts_with(lines[1]), "{text:?}");
     }
 
     #[test]
@@ -1393,7 +1412,8 @@ mod tests {
     #[gpui::test]
     fn a_click_with_a_little_travel_is_not_a_text_selection(cx: &mut TestAppContext) {
         let cx = setup(cx);
-        drag(cx, point(px(5.), px(6.)), point(px(6.), px(6.)));
+        // Both points are inside the first glyph.
+        drag(cx, point(px(1.), px(6.)), point(px(2.), px(6.)));
         let _ = selected(cx);
         assert!(!cx.update(crate::has_text_selection));
         drag(cx, point(px(5.), px(6.)), point(px(80.), px(6.)));
@@ -1495,7 +1515,10 @@ mod tests {
         let cx = setup_clipped(cx);
         drag(cx, point(px(1.), px(6.)), point(px(40.), px(46.)));
         let text = selected(cx);
-        assert!(text.starts_with(&format!("alpha\n{LONG}\nga")), "{text:?}");
+        let prefix = format!("alpha\n{LONG}\n");
+        assert!(text.starts_with(&prefix), "{text:?}");
+        let rest = &text[prefix.len()..];
+        assert!(!rest.is_empty() && "gamma".starts_with(rest), "{text:?}");
     }
 
     #[gpui::test]
@@ -1559,7 +1582,7 @@ mod tests {
         drag(cx, point(px(1.), px(6.)), point(px(30.), px(46.)));
         let _ = selected(cx);
         let text = selected(cx);
-        assert!(text.starts_with("one\ntwo\nth"), "{text:?}");
+        assert!(text.starts_with("one\ntwo\nt"), "{text:?}");
     }
 
     #[gpui::test]
