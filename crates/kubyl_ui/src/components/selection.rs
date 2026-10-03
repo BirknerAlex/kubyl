@@ -550,15 +550,19 @@ impl Element for SelectableLabel {
             .prepaint(global_id, inspector_id, bounds, &mut (), window, cx);
         let mut hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
         // gpui-base scrolls drags against the hitbox's content mask. A truncated value clips
-        // to its own row, so every drag in it would scroll; use the surrounding viewport.
-        let viewport = frame(window, cx, |frame| {
-            frame
-                .scopes
-                .last()
-                .map_or(frame.root_viewport, |scope| scope.viewport)
-        });
-        if viewport.size.width > px(0.) && viewport.size.height > px(0.) {
-            hitbox.content_mask = ContentMask { bounds: viewport };
+        // to its own row (a mask a line or two high), so every drag in it would scroll; only
+        // then use the surrounding viewport. Any other mask is a scroll container's: keep it.
+        let line_height = window.text_style().line_height_in_pixels(window.rem_size());
+        if window.content_mask().bounds.size.height <= line_height * 2. {
+            let viewport = frame(window, cx, |frame| {
+                frame
+                    .scopes
+                    .last()
+                    .map_or(frame.root_viewport, |scope| scope.viewport)
+            });
+            if viewport.size.width > px(0.) && viewport.size.height > px(0.) {
+                hitbox.content_mask = ContentMask { bounds: viewport };
+            }
         }
         let (order, scope) = frame(window, cx, |frame| {
             let order = if frame.framed {
@@ -1607,6 +1611,61 @@ mod tests {
         cx.run_until_parked();
         assert!(cx.update(|window, cx| select_all_in_scope(&SCOPE.into(), window, cx)));
         assert_eq!(selected(cx), "Key alphabet bravo charlie delta\nnext");
+    }
+
+    // A scroll container under a header, both inside one scope.
+    struct HeaderAndScroll(gpui::ScrollHandle);
+
+    impl Render for HeaderAndScroll {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let rows = (0..20u64).map(|n| {
+                div()
+                    .h(px(20.))
+                    .w(px(300.))
+                    .child(SelectableLabel::new(("row", n), format!("row {n}")))
+            });
+            div()
+                .size_full()
+                .child(SelectionFrame)
+                .child(SelectionScope::new(
+                    SCOPE,
+                    div()
+                        .child(
+                            div()
+                                .h(px(20.))
+                                .child(SelectableLabel::new("head", "Header")),
+                        )
+                        .child(
+                            div()
+                                .id("scroll")
+                                .h(px(100.))
+                                .overflow_y_scroll()
+                                .track_scroll(&self.0)
+                                .children(rows),
+                        ),
+                ))
+        }
+    }
+
+    #[gpui::test]
+    fn a_drag_past_the_edge_of_a_scroll_container_scrolls_it(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::Theme::dark().apply(cx);
+        });
+        let handle = gpui::ScrollHandle::new();
+        let view_handle = handle.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let view = cx.new(|_| HeaderAndScroll(view_handle));
+            gpui_component::Root::new(view, window, cx)
+        });
+        cx.run_until_parked();
+        let _ = selected(cx);
+        let offset = handle.offset();
+        // From a row in the container to below it (the container ends at y = 120).
+        hold_drag(cx, point(px(2.), px(70.)), point(px(100.), px(160.)));
+        assert!(handle.offset().y < offset.y, "{:?}", handle.offset());
+        release(cx, point(px(100.), px(160.)));
     }
 
     #[test]
