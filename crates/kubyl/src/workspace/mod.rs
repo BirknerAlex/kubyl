@@ -84,6 +84,8 @@ pub struct Workspace {
     /// The tab whose cluster and namespace the title bar last followed.
     followed_tab: Option<EntityId>,
     focus: FocusHandle,
+    /// The title bar's application menus; macOS has the system menu bar instead.
+    menu_bar: Option<Entity<gpui_component::menu::AppMenuBar>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -173,6 +175,8 @@ impl Workspace {
             overlay: None,
             followed_tab,
             focus: cx.focus_handle(),
+            menu_bar: (!cfg!(target_os = "macos"))
+                .then(|| gpui_component::menu::AppMenuBar::new(cx)),
             _subscriptions: subscriptions,
         };
         focus_pane(&this.active_pane, window, cx);
@@ -688,7 +692,8 @@ impl Render for Workspace {
                 TitleBar::new()
                     .cluster(context.cluster.clone())
                     .namespace(context.namespace.clone())
-                    .unread(unread),
+                    .unread(unread)
+                    .menu_bar(self.menu_bar.clone()),
             )
             .child(div().flex_1().min_h_0().flex().child(body))
             .child(status_bar)
