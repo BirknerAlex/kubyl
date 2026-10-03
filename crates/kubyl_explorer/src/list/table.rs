@@ -95,7 +95,11 @@ pub(super) fn render(
             this.publish_selection(cx);
             cx.notify();
         }))
-        .on_action(cx.listener(|this, _: &SelectAll, _, cx| {
+        .on_action(cx.listener(|this, _: &SelectAll, window, cx| {
+            // After a click in a details pane, `⌘A` means that pane's text.
+            if kubyl_ui::select_all_in_pressed_scope(window, cx) {
+                return;
+            }
             this.marked = this.rows.iter().map(|r| r.id()).collect();
             this.publish_selection(cx);
             cx.notify();

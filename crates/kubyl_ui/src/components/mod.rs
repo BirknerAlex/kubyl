@@ -23,7 +23,7 @@ pub use keys::{Kbd, KeyHints, format_keystroke};
 pub use modal::Modal;
 pub use selectable::{
     CopySelectedText, SelectAllText, Selectable, clear_text_selection, copy_selected_text,
-    has_text_selection, select_all_text, selected_text,
+    has_text_selection, select_all_in_pressed_scope, select_all_text, selected_text,
 };
 pub use selection::{SelectionFrame, SelectionScope, select_all_in_scope};
 pub use sidebar::{PanelHeader, SectionHeader, TreeRow};

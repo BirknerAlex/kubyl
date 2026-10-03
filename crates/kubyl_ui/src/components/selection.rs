@@ -295,6 +295,11 @@ impl Element for SelectionScope {
     }
 }
 
+/// Forgets which scope the last press started in.
+pub(crate) fn forget_pressed_scope(window: &mut Window, cx: &mut App) {
+    frame(window, cx, |frame| frame.anchor_scope = None);
+}
+
 /// [`select_all_in_scope`] for the scope the last press started in.
 pub(crate) fn select_all_in_last_scope(window: &mut Window, cx: &mut App) -> bool {
     let scope = frame(window, cx, |frame| frame.anchor_scope.clone().flatten());
@@ -1689,6 +1694,16 @@ mod tests {
         hold_drag(cx, point(px(2.), px(70.)), point(px(100.), px(160.)));
         assert!(handle.offset().y < offset.y, "{:?}", handle.offset());
         release(cx, point(px(100.), px(160.)));
+    }
+
+    #[gpui::test]
+    fn clearing_the_text_selection_forgets_the_scope_of_the_last_press(cx: &mut TestAppContext) {
+        let cx = setup_panels(cx);
+        press(cx, point(px(301.), px(6.)), 1);
+        assert!(cx.update(crate::select_all_in_pressed_scope));
+        // Focus moved elsewhere (the resource list): Cmd+A is that view's again.
+        cx.update(crate::clear_text_selection);
+        assert!(!cx.update(crate::select_all_in_pressed_scope));
     }
 
     #[test]

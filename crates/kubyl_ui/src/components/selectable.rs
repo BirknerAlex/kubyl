@@ -47,9 +47,16 @@ pub fn has_text_selection(window: &mut Window, cx: &mut App) -> bool {
     super::selection::has_selected_text(window, cx)
 }
 
-/// Clears the window's text selection.
+/// Clears the window's text selection, and with it the memory of the pane last pressed in.
 pub fn clear_text_selection(window: &mut Window, cx: &mut App) {
     TextSelection::clear(window, cx);
+    super::selection::forget_pressed_scope(window, cx);
+}
+
+/// Selects all text of the pane last pressed in, if any. A view with its own `⌘A` (the
+/// resource list) calls it first: after a click in a details pane that is what the user means.
+pub fn select_all_in_pressed_scope(window: &mut Window, cx: &mut App) -> bool {
+    select_all_in_last_scope(window, cx)
 }
 
 /// Copies the window's text selection. Attach to the window's root view:
