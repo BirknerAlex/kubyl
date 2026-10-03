@@ -2,6 +2,42 @@
 
 All notable changes to Kubyl are documented here.
 
+## [0.4.0] - 2026-10-03
+
+### Bug Fixes
+
+- Copy buttons for dialog values that can't be selected ([9851100](https://github.com/BirknerAlex/kubyl/commit/985110041678bc02f430fa327fc5a8588f0fd602))
+- Selection bookkeeping resets itself, holds runs weakly ([411dc4d](https://github.com/BirknerAlex/kubyl/commit/411dc4dd37c2b790e6e2948a39a10f9261462402))
+- A value that wraps stays on its key's line when copied ([aacad27](https://github.com/BirknerAlex/kubyl/commit/aacad27f8262ef61ed1ad69348005fe11148f4bd))
+- Only a row-high content mask is replaced for drag scrolling ([7226cfd](https://github.com/BirknerAlex/kubyl/commit/7226cfd37f29b6989c196d94b9450eaca3a93988))
+- Cmd+A in the resource list selects the last pane pressed in ([10c7081](https://github.com/BirknerAlex/kubyl/commit/10c7081915212cdea09d5afa21fa6ce9f0e1a469))
+- No ticking duration for a finished or suspended Job without an end time ([5b69c9f](https://github.com/BirknerAlex/kubyl/commit/5b69c9f611548a7dc15bd22f1337f5243abd9dd7))
+- Job history orders by creation and shows store problems ([9eadfe4](https://github.com/BirknerAlex/kubyl/commit/9eadfe4765ed6b26c755287cd590f4587ecb053a))
+- Dedupe equal ids per frame generation, prune closed scopes ([5df5895](https://github.com/BirknerAlex/kubyl/commit/5df5895f6a81445d590adc5baa17a78602709bc7))
+
+### Documentation
+
+- Selection model and screenshot steps ([dbea448](https://github.com/BirknerAlex/kubyl/commit/dbea448ed3e67e4194599467e85af476fa5f88a1))
+
+### Features
+
+- Selectable text with per-frame document order, scopes and select-all ([49c7774](https://github.com/BirknerAlex/kubyl/commit/49c77748a6c80229debaf06cb417c4fdd005edc6))
+- Selection frame and select-all wiring ([2ae9b5b](https://github.com/BirknerAlex/kubyl/commit/2ae9b5b9455027011dec32379959297693d57e68))
+- Selectable details, Describe tab and table Cmd+C ([d25988b](https://github.com/BirknerAlex/kubyl/commit/d25988b70535a644d1d4ce37c3b3fa8075d9f556))
+- Select text in the alerts, Argo CD, netflow, OperatorHub, updates and web view panes ([cfbd126](https://github.com/BirknerAlex/kubyl/commit/cfbd126b51a84ec3f24b626e53fc8836e587b5a6))
+- Shared job helpers and kubectl status order ([66d117e](https://github.com/BirknerAlex/kubyl/commit/66d117eef8377c8fea8806c369bc7a33267c715a))
+- Job history in CronJob details ([6dcdb3a](https://github.com/BirknerAlex/kubyl/commit/6dcdb3a29d026e618adff2f1bd4ab3c5aaded83e))
+- Double and triple click screenshot steps ([1dc19ae](https://github.com/BirknerAlex/kubyl/commit/1dc19ae4ece673dae44fc552913c007c0f4691fc))
+
+### Miscellaneous
+
+- Update Flatpak manifest to v0.3.10 ([de16e34](https://github.com/BirknerAlex/kubyl/commit/de16e340d83e2f765fa454c1fae565f784727cba))
+- Drop Flathub/Flatpak packaging and point README at the docs site ([b6c906d](https://github.com/BirknerAlex/kubyl/commit/b6c906d34cfe9e636784283464d331f72300f754))
+
+### Testing
+
+- Font-independent selection tests ([9c56430](https://github.com/BirknerAlex/kubyl/commit/9c56430e0c6cc565b1578e89ea4a6872c8f8a2d9))
+
 ## [0.3.10] - 2026-10-03
 
 ### Miscellaneous
