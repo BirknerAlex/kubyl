@@ -8,16 +8,16 @@
 //!
 //! Runs inside a [`SelectionScope`] can also be selected all at once ([`select_all_in_scope`]).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ops::Range;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use gpui::{
     AnyElement, App, BorderStyle, Bounds, ContentMask, Corners, Edges, Element, ElementId,
-    GlobalElementId, HighlightStyle, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement,
-    LayoutId, MouseButton, MouseDownEvent, PaintQuad, Pixels, Point, SharedString, StyledText,
-    Subscription, Window, WindowId, px, transparent_black,
+    EntityId, GlobalElementId, HighlightStyle, Hitbox, HitboxBehavior, Hsla, InspectorElementId,
+    IntoElement, LayoutId, MouseButton, MouseDownEvent, PaintQuad, Pixels, Point, SharedString,
+    StyledText, Subscription, Window, WindowId, px, transparent_black,
 };
 use gpui_base::{TextSelection, TextSelectionHandle, TextSelectionRegistration, TextSelectionRun};
 
@@ -26,20 +26,38 @@ use crate::ActiveColors;
 /// What one window has registered in the frame being drawn.
 #[derive(Default)]
 struct FrameState {
+    /// A `SelectionFrame` numbers the runs; without one they are ordered by position.
+    framed: bool,
     next_order: u64,
     scopes: Vec<OpenScope>,
     root_viewport: Bounds<Pixels>,
     scoped: Vec<ScopedRun>,
     scope_hitboxes: Vec<(ElementId, Hitbox)>,
-    seen_ids: HashMap<GlobalElementId, u32>,
-    // Painted selected text of this frame, for copying.
-    selected: Vec<SelectedRun>,
-    any_selected: bool,
+    // What each run last painted, by participant: nothing needs a frame boundary to reset it,
+    // and a run whose element state is gone (`Weak`) no longer counts.
+    runs: HashMap<EntityId, RunState>,
+    prune_at: usize,
     // The scope the last press started in (`Some(None)`: outside any); kept across frames.
     anchor_scope: Option<Option<ElementId>>,
     select_all: Option<SelectAll>,
 }
 
+impl FrameState {
+    fn has_selected(&self) -> bool {
+        self.runs
+            .values()
+            .any(|r| r.selected.is_some() && r.retained.strong_count() > 0)
+    }
+}
+
+struct RunState {
+    retained: Weak<Retained>,
+    /// The projection reaches some text (maybe of another scope).
+    any: bool,
+    selected: Option<SelectedRun>,
+}
+
+#[derive(Clone)]
 struct SelectedRun {
     order: u64,
     bounds: Bounds<Pixels>,
@@ -58,12 +76,12 @@ struct OpenScope {
 #[derive(Clone)]
 struct SelectAll {
     scope: ElementId,
-    handles: Rc<RefCell<Vec<TextSelectionHandle>>>,
+    handles: Rc<RefCell<Vec<Weak<Retained>>>>,
 }
 
 struct ScopedRun {
     scope: ElementId,
-    handle: TextSelectionHandle,
+    retained: Weak<Retained>,
     text: SharedString,
 }
 
@@ -73,15 +91,32 @@ struct Frames(HashMap<WindowId, FrameState>);
 impl gpui::Global for Frames {}
 
 fn frame<R>(window: &Window, cx: &mut App, f: impl FnOnce(&mut FrameState) -> R) -> R {
-    let frames = cx.default_global::<Frames>();
-    f(frames
-        .0
-        .entry(window.window_handle().window_id())
-        .or_default())
+    let id = window.window_handle().window_id();
+    if !cx.default_global::<Frames>().0.contains_key(&id) {
+        // A new window: forget the closed ones.
+        let open: Vec<WindowId> = cx.windows().iter().map(|w| w.window_id()).collect();
+        cx.global_mut::<Frames>()
+            .0
+            .retain(|id, _| open.contains(id));
+    }
+    f(cx.global_mut::<Frames>().0.entry(id).or_default())
 }
 
-/// Starts the window's frame: resets the document order and the scoped runs. Render one as
-/// the first child of the workspace root, before any content.
+/// How much per-window bookkeeping there is (growth shows as a leak).
+#[cfg(test)]
+fn state_size(window: &Window, cx: &mut App) -> usize {
+    frame(window, cx, |frame| {
+        let all = frame
+            .select_all
+            .as_ref()
+            .map_or(0, |a| a.handles.borrow().len());
+        frame.scoped.len() + frame.scope_hitboxes.len() + frame.runs.len() + all
+    })
+}
+
+/// Starts the window's frame: resets the document order, so runs are numbered in tree (reading)
+/// order. Render one as the first child of the workspace root, before any content. Without
+/// one, runs are ordered by position instead.
 pub struct SelectionFrame;
 
 impl IntoElement for SelectionFrame {
@@ -111,7 +146,6 @@ impl Element for SelectionFrame {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        frame(window, cx, |frame| frame.seen_ids.clear());
         (window.request_layout(gpui::Style::default(), [], cx), ())
     }
 
@@ -125,18 +159,11 @@ impl Element for SelectionFrame {
         cx: &mut App,
     ) -> Self::PrepaintState {
         let viewport = window.content_mask().bounds;
-        let open: Vec<WindowId> = cx.windows().iter().map(|w| w.window_id()).collect();
-        cx.default_global::<Frames>()
-            .0
-            .retain(|id, _| open.contains(id));
         frame(window, cx, |frame| {
+            frame.framed = true;
             frame.next_order = 1;
             frame.scopes.clear();
             frame.root_viewport = viewport;
-            frame.scoped.clear();
-            frame.scope_hitboxes.clear();
-            frame.selected.clear();
-            frame.any_selected = false;
         });
     }
 
@@ -158,7 +185,7 @@ impl Element for SelectionFrame {
             }
             frame(window, cx, |frame| {
                 // Shift extends a selection, which keeps its scope.
-                if event.modifiers.shift && !frame.selected.is_empty() {
+                if event.modifiers.shift && frame.has_selected() {
                     return;
                 }
                 // The innermost (smallest) scope under the pointer.
@@ -236,6 +263,7 @@ impl Element for SelectionScope {
         let viewport = window.content_mask().bounds;
         frame(window, cx, |frame| {
             frame.scoped.retain(|run| run.scope != self.id);
+            frame.scope_hitboxes.retain(|(id, _)| *id != self.id);
             frame.scopes.push(OpenScope {
                 id: self.id.clone(),
                 viewport,
@@ -276,12 +304,12 @@ pub(crate) fn select_all_in_last_scope(window: &mut Window, cx: &mut App) -> boo
 /// Selects all text of the scope's runs (copied in reading order with `⌘C`). Replaces any
 /// other selection; the next mouse press clears it. Returns whether the scope had text.
 pub fn select_all_in_scope(scope: &ElementId, window: &mut Window, cx: &mut App) -> bool {
-    let runs: Vec<(TextSelectionHandle, SharedString)> = frame(window, cx, |frame| {
+    let runs: Vec<(Rc<Retained>, SharedString)> = frame(window, cx, |frame| {
         frame
             .scoped
             .iter()
             .filter(|run| &run.scope == scope)
-            .map(|run| (run.handle.clone(), run.text.clone()))
+            .filter_map(|run| Some((run.retained.upgrade()?, run.text.clone())))
             .collect()
     });
     if runs.is_empty() {
@@ -289,10 +317,10 @@ pub fn select_all_in_scope(scope: &ElementId, window: &mut Window, cx: &mut App)
     }
     TextSelection::clear(window, cx);
     let mut handles = Vec::new();
-    for (handle, text) in runs {
-        handle.set_fallback_copy_text(text.to_string(), cx);
-        handle.set_local_selection(true, cx);
-        handles.push(handle);
+    for (retained, text) in runs {
+        retained.handle.set_fallback_copy_text(text.to_string(), cx);
+        retained.handle.set_local_selection(true, cx);
+        handles.push(Rc::downgrade(&retained));
     }
     frame(window, cx, |frame| {
         frame.select_all = Some(SelectAll {
@@ -309,7 +337,13 @@ pub fn select_all_in_scope(scope: &ElementId, window: &mut Window, cx: &mut App)
 /// `None` when no selectable text is selected.
 pub(crate) fn selected_text(window: &mut Window, cx: &mut App) -> Option<String> {
     let (runs, any) = frame(window, cx, |frame| {
-        (std::mem::take(&mut frame.selected), frame.any_selected)
+        let live = frame
+            .runs
+            .values()
+            .filter(|r| r.retained.strong_count() > 0);
+        let any = live.clone().any(|r| r.any);
+        let runs: Vec<SelectedRun> = live.filter_map(|r| r.selected.clone()).collect();
+        (runs, any)
     });
     let text = if runs.is_empty() {
         // No selectable run is selected: text of other participants (rich text) or a stale
@@ -320,9 +354,7 @@ pub(crate) fn selected_text(window: &mut Window, cx: &mut App) -> Option<String>
             TextSelection::selected_text(window, cx)
         }
     } else {
-        let text = assemble(&runs);
-        frame(window, cx, |frame| frame.selected = runs);
-        text
+        assemble(&runs)
     };
     let text = clean(&text);
     (!text.is_empty()).then_some(text)
@@ -333,13 +365,20 @@ pub(crate) fn selected_text(window: &mut Window, cx: &mut App) -> Option<String>
 pub(crate) fn has_selected_text(window: &mut Window, cx: &mut App) -> bool {
     let (painted, select_all) = frame(window, cx, |frame| {
         (
-            !frame.selected.is_empty(),
+            frame.has_selected(),
             frame.select_all.as_ref().map(|all| all.handles.clone()),
         )
     });
-    painted
-        || select_all
-            .is_some_and(|handles| handles.borrow().iter().any(|h| h.has_local_selection(cx)))
+    painted || select_all.is_some_and(|handles| any_local(&handles, cx))
+}
+
+/// Whether any live run of a select-all still has its local selection.
+fn any_local(handles: &RefCell<Vec<Weak<Retained>>>, cx: &App) -> bool {
+    handles
+        .borrow()
+        .iter()
+        .filter_map(Weak::upgrade)
+        .any(|r| r.handle.has_local_selection(cx))
 }
 
 /// Drops leading blank lines and trailing whitespace; the first line keeps its indentation.
@@ -438,6 +477,9 @@ pub(crate) struct RunInfo {
 
 pub(crate) struct Retained {
     handle: TextSelectionHandle,
+    /// Taken by a laid-out element until it paints: a second element asking for the same
+    /// state (an equal id under one parent) takes another one.
+    claimed: Cell<bool>,
     _refresh: Subscription,
 }
 
@@ -461,14 +503,9 @@ impl Element for SelectableLabel {
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let id = global_id.expect("SelectableLabel has a stable element id");
-        // Safety net: equal ids under one parent (the same key in two rows) get a counter each,
-        // in the order they are laid out, so they never share a participant. Callers should
-        // still pass unique ids; repeats are logged (`RUST_LOG=kubyl_ui=debug`).
-        let seen = frame(window, cx, |frame| {
-            let seen = frame.seen_ids.entry(id.clone()).or_insert(0);
-            *seen += 1;
-            *seen - 1
-        });
+        // Safety net: equal ids under one parent (the same key in two rows) take the next
+        // unclaimed state, so they never share a participant. Callers should still pass unique
+        // ids; repeats are logged (`RUST_LOG=kubyl_ui=debug`).
         let text = self.text.clone();
         let mut retain = |global_id: &GlobalElementId, window: &mut Window| {
             window.with_element_state(global_id, |retained: Option<Rc<Retained>>, window| {
@@ -477,22 +514,22 @@ impl Element for SelectableLabel {
                     let refresh = handle.refresh_window_on_change(window, cx);
                     Rc::new(Retained {
                         handle,
+                        claimed: Cell::new(false),
                         _refresh: refresh,
                     })
                 });
                 (retained.clone(), retained)
             })
         };
-        if seen > 0 {
+        let mut retained = retain(id, window);
+        let mut repeat = 0;
+        while retained.claimed.replace(true) {
+            repeat += 1;
             tracing::debug!(id = ?id, "selectable text id repeats under one parent");
-        }
-        let retained = if seen == 0 {
-            retain(id, window)
-        } else {
-            window.with_global_id(ElementId::Integer(seen as u64), |global_id, window| {
+            retained = window.with_global_id(ElementId::Integer(repeat), |global_id, window| {
                 retain(global_id, window)
-            })
-        };
+            });
+        }
         let (layout_id, ()) = self
             .styled_text
             .request_layout(global_id, inspector_id, window, cx);
@@ -523,13 +560,21 @@ impl Element for SelectableLabel {
             hitbox.content_mask = ContentMask { bounds: viewport };
         }
         let (order, scope) = frame(window, cx, |frame| {
-            let order = frame.next_order;
-            frame.next_order += 1;
+            let order = if frame.framed {
+                frame.next_order += 1;
+                frame.next_order - 1
+            } else {
+                // Reading order as position: top to bottom, then left to right. A counter
+                // nothing resets would renumber every frame and never settle.
+                let y = f32::from(bounds.origin.y).max(0.) as u64;
+                let x = f32::from(bounds.origin.x).max(0.) as u64;
+                (y << 24) | x.min(0xff_ffff)
+            };
             let scope = frame.scopes.last().map(|scope| scope.id.clone());
             if let Some(scope) = &scope {
                 frame.scoped.push(ScopedRun {
                     scope: scope.clone(),
-                    handle: retained.handle.clone(),
+                    retained: Rc::downgrade(retained),
                     text: self.text.clone(),
                 });
             }
@@ -537,21 +582,21 @@ impl Element for SelectableLabel {
         });
         // A run that appears while its scope is selected (new handle after a re-render) joins.
         if let Some(scope) = scope.clone() {
-            let active = frame(window, cx, |frame| frame.select_all.clone())
-                .filter(|all| all.scope == scope)
-                .is_some_and(|all| {
-                    all.handles
-                        .borrow()
-                        .iter()
-                        .any(|h| h.has_local_selection(cx))
-                });
+            let handles = frame(window, cx, |frame| {
+                frame
+                    .select_all
+                    .as_ref()
+                    .filter(|all| all.scope == scope)
+                    .map(|all| all.handles.clone())
+            });
+            let active = handles.as_ref().is_some_and(|h| any_local(h, cx));
             if active && !retained.handle.has_local_selection(cx) {
                 retained.handle.set_local_selection(true, cx);
-                frame(window, cx, |frame| {
-                    if let Some(all) = &mut frame.select_all {
-                        all.handles.borrow_mut().push(retained.handle.clone());
-                    }
-                });
+                if let Some(handles) = &handles {
+                    let mut handles = handles.borrow_mut();
+                    handles.retain(|h| h.strong_count() > 0);
+                    handles.push(Rc::downgrade(retained));
+                }
             } else if !active {
                 frame(window, cx, |frame| {
                     if frame.select_all.as_ref().is_some_and(|a| a.scope == scope) {
@@ -596,6 +641,7 @@ impl Element for SelectableLabel {
             cx,
         );
         let color = cx.colors().accent.opacity(0.3);
+        let mut any = false;
         let selected = if retained.handle.has_local_selection(cx) {
             // Keeps the copy text current; `update_runs` cached an empty projection.
             retained
@@ -611,8 +657,8 @@ impl Element for SelectableLabel {
                 .find(|range| !range.is_empty())
                 .cloned();
             // A drag only selects within the scope it started in.
+            any = range.is_some();
             let own_scope = frame(window, cx, |frame| {
-                frame.any_selected |= range.is_some();
                 frame
                     .anchor_scope
                     .as_ref()
@@ -629,19 +675,27 @@ impl Element for SelectableLabel {
                 (_, range) => range,
             }
         };
-        if let Some(range) = selected {
-            let text = self.text.clone();
-            let line_height = layout.line_height();
-            frame(window, cx, |frame| {
-                frame.selected.push(SelectedRun {
-                    order: info.order,
-                    bounds,
-                    line_height,
-                    text,
-                    range,
-                })
-            });
-        }
+        let line_height = layout.line_height();
+        let selected = selected.map(|range| SelectedRun {
+            order: info.order,
+            bounds,
+            line_height,
+            text: self.text.clone(),
+            range,
+        });
+        let state = RunState {
+            retained: Rc::downgrade(retained),
+            any: any || selected.is_some(),
+            selected,
+        };
+        frame(window, cx, |frame| {
+            frame.runs.insert(retained.handle.entity_id(), state);
+            if frame.runs.len() > frame.prune_at {
+                frame.runs.retain(|_, r| r.retained.strong_count() > 0);
+                frame.prune_at = (frame.runs.len() * 2).max(1024);
+            }
+        });
+        retained.claimed.set(false);
         self.styled_text.paint(
             global_id,
             inspector_id,
@@ -1457,6 +1511,60 @@ mod tests {
         assert_eq!(full_range(shown, full, 0..shown.len()), 0..full.len());
         assert_eq!(full_range(shown, full, 6..shown.len()), 6..full.len());
         assert_eq!(full_range("plain", "plain", 1..3), 1..3);
+    }
+
+    // Rows without a `SelectionFrame`: nothing resets the per-frame bookkeeping.
+    struct Frameless;
+
+    impl Render for Frameless {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let row = |id: &'static str, text: &'static str| {
+                div()
+                    .h(px(20.))
+                    .w(px(300.))
+                    .child(SelectableLabel::new(id, text))
+            };
+            div().size_full().child(SelectionScope::new(
+                SCOPE,
+                div()
+                    .child(row("a", "one"))
+                    .child(row("b", "two"))
+                    .child(row("c", "three")),
+            ))
+        }
+    }
+
+    #[gpui::test]
+    fn without_a_selection_frame_state_stays_bounded_and_drags_persist(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::Theme::dark().apply(cx);
+        });
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|_| Frameless);
+            gpui_component::Root::new(view, window, cx)
+        });
+        cx.run_until_parked();
+        let _ = selected(cx);
+        let size = cx.update(|window, cx| state_size(window, cx));
+        for _ in 0..5 {
+            let _ = selected(cx);
+        }
+        assert_eq!(cx.update(|window, cx| state_size(window, cx)), size);
+        drag(cx, point(px(1.), px(6.)), point(px(30.), px(46.)));
+        let _ = selected(cx);
+        let text = selected(cx);
+        assert!(text.starts_with("one\ntwo\nth"), "{text:?}");
+    }
+
+    #[gpui::test]
+    fn a_replaced_run_does_not_copy_stale_text(cx: &mut TestAppContext) {
+        let age = Rc::new(Cell::new(1));
+        let cx = setup_duplicates(age.clone(), true, cx);
+        cx.update(|window, cx| select_all_in_scope(&SCOPE.into(), window, cx));
+        age.set(2);
+        // Before gpui-base sweeps the replaced participant.
+        assert_eq!(selected(cx), "same\nsame\nthird\nage 2");
     }
 
     #[test]
