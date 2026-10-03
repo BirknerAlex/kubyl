@@ -26,6 +26,9 @@ use crate::ActiveColors;
 /// What one window has registered in the frame being drawn.
 #[derive(Default)]
 struct FrameState {
+    /// Bumped by every `SelectionFrame` layout pass (0: none yet). Equal ids are told apart
+    /// per generation; without a frame there is nothing to count.
+    generation: u64,
     /// A `SelectionFrame` numbers the runs; without one they are ordered by position.
     framed: bool,
     next_order: u64,
@@ -102,6 +105,19 @@ fn frame<R>(window: &Window, cx: &mut App, f: impl FnOnce(&mut FrameState) -> R)
     f(cx.global_mut::<Frames>().0.entry(id).or_default())
 }
 
+// How many selectable states are alive (growth per frame is a leak).
+#[cfg(test)]
+thread_local! {
+    static LIVE: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+impl Drop for Retained {
+    fn drop(&mut self) {
+        LIVE.with(|live| live.set(live.get() - 1));
+    }
+}
+
 /// How much per-window bookkeeping there is (growth shows as a leak).
 #[cfg(test)]
 fn state_size(window: &Window, cx: &mut App) -> usize {
@@ -110,7 +126,12 @@ fn state_size(window: &Window, cx: &mut App) -> usize {
             .select_all
             .as_ref()
             .map_or(0, |a| a.handles.borrow().len());
-        frame.scoped.len() + frame.scope_hitboxes.len() + frame.runs.len() + all
+        let runs = frame
+            .runs
+            .values()
+            .filter(|r| r.retained.strong_count() > 0)
+            .count();
+        frame.scoped.len() + frame.scope_hitboxes.len() + runs + all
     })
 }
 
@@ -146,6 +167,7 @@ impl Element for SelectionFrame {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
+        frame(window, cx, |frame| frame.generation += 1);
         (window.request_layout(gpui::Style::default(), [], cx), ())
     }
 
@@ -262,8 +284,14 @@ impl Element for SelectionScope {
     ) -> Self::PrepaintState {
         let viewport = window.content_mask().bounds;
         frame(window, cx, |frame| {
-            frame.scoped.retain(|run| run.scope != self.id);
-            frame.scope_hitboxes.retain(|(id, _)| *id != self.id);
+            // Runs of scopes that went away (their element state is dropped) go with them.
+            frame
+                .scoped
+                .retain(|run| run.scope != self.id && run.retained.strong_count() > 0);
+            let scoped = &frame.scoped;
+            frame
+                .scope_hitboxes
+                .retain(|(id, _)| *id != self.id && scoped.iter().any(|run| run.scope == *id));
             frame.scopes.push(OpenScope {
                 id: self.id.clone(),
                 viewport,
@@ -483,9 +511,9 @@ pub(crate) struct RunInfo {
 
 pub(crate) struct Retained {
     handle: TextSelectionHandle,
-    /// Taken by a laid-out element until it paints: a second element asking for the same
-    /// state (an equal id under one parent) takes another one.
-    claimed: Cell<bool>,
+    /// The `SelectionFrame` generation this state was last handed out in: a second element
+    /// asking for it in the same one (an equal id under one parent) takes another state.
+    claimed_in: Cell<u64>,
     _refresh: Subscription,
 }
 
@@ -512,15 +540,18 @@ impl Element for SelectableLabel {
         // Safety net: equal ids under one parent (the same key in two rows) take the next
         // unclaimed state, so they never share a participant. Callers should still pass unique
         // ids; repeats are logged (`RUST_LOG=kubyl_ui=debug`).
+        let generation = frame(window, cx, |frame| frame.generation);
         let text = self.text.clone();
         let mut retain = |global_id: &GlobalElementId, window: &mut Window| {
             window.with_element_state(global_id, |retained: Option<Rc<Retained>>, window| {
                 let retained = retained.unwrap_or_else(|| {
+                    #[cfg(test)]
+                    LIVE.with(|live| live.set(live.get() + 1));
                     let handle = TextSelectionHandle::new(text.to_string(), cx);
                     let refresh = handle.refresh_window_on_change(window, cx);
                     Rc::new(Retained {
                         handle,
-                        claimed: Cell::new(false),
+                        claimed_in: Cell::new(0),
                         _refresh: refresh,
                     })
                 });
@@ -529,7 +560,7 @@ impl Element for SelectableLabel {
         };
         let mut retained = retain(id, window);
         let mut repeat = 0;
-        while retained.claimed.replace(true) {
+        while generation != 0 && retained.claimed_in.replace(generation) == generation {
             repeat += 1;
             tracing::debug!(id = ?id, "selectable text id repeats under one parent");
             retained = window.with_global_id(ElementId::Integer(repeat), |global_id, window| {
@@ -558,7 +589,10 @@ impl Element for SelectableLabel {
         // to its own row (a mask a line or two high), so every drag in it would scroll; only
         // then use the surrounding viewport. Any other mask is a scroll container's: keep it.
         let line_height = window.text_style().line_height_in_pixels(window.rem_size());
-        if window.content_mask().bounds.size.height <= line_height * 2. {
+        let mask = window.content_mask().bounds;
+        if bounds.size.height <= line_height * 2.
+            && mask.size.height < bounds.size.height + line_height * 2.
+        {
             let viewport = frame(window, cx, |frame| {
                 frame
                     .scopes
@@ -576,9 +610,9 @@ impl Element for SelectableLabel {
             } else {
                 // Reading order as position: top to bottom, then left to right. A counter
                 // nothing resets would renumber every frame and never settle.
-                let y = f32::from(bounds.origin.y).max(0.) as u64;
-                let x = f32::from(bounds.origin.x).max(0.) as u64;
-                (y << 24) | x.min(0xff_ffff)
+                let y = (f32::from(bounds.origin.y) as i64 + (1 << 38)).max(0) as u64;
+                let x = (f32::from(bounds.origin.x).max(0.) as u64).min(0xff_ffff);
+                (y << 24) | x
             };
             let scope = frame.scopes.last().map(|scope| scope.id.clone());
             if let Some(scope) = &scope {
@@ -705,7 +739,6 @@ impl Element for SelectableLabel {
                 frame.prune_at = (frame.runs.len() * 2).max(1024);
             }
         });
-        retained.claimed.set(false);
         self.styled_text.paint(
             global_id,
             inspector_id,
@@ -958,7 +991,7 @@ mod tests {
                 .child(SelectionScope::new(
                     SCOPE,
                     div()
-                        .w(px(400.))
+                        .w(px(2000.))
                         .line_height(px(20.))
                         .whitespace_nowrap()
                         .child(SelectableLabel::new("describe", LINES)),
@@ -991,7 +1024,7 @@ mod tests {
     #[gpui::test]
     fn drag_across_lines_keeps_newlines_and_indent(cx: &mut TestAppContext) {
         let cx = setup_lines(cx);
-        drag(cx, point(px(0.), px(26.)), point(px(399.), px(46.)));
+        drag(cx, point(px(0.), px(26.)), point(px(1999.), px(46.)));
         assert_eq!(
             selected(cx),
             "Namespace:  logging\n  Image:  docker.io/grafana/alloy"
@@ -1111,7 +1144,7 @@ mod tests {
     }
 
     // A truncated value in a scroll container taller than its viewport.
-    struct Scrolling(gpui::ScrollHandle);
+    struct Scrolling(gpui::ScrollHandle, f32);
 
     impl Render for Scrolling {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -1128,7 +1161,7 @@ mod tests {
                             .overflow_y_scroll()
                             .track_scroll(&self.0)
                             .child(div().h(px(80.)))
-                            .child(div().h(px(18.)).w(px(300.)).truncate().child(
+                            .child(div().h(px(self.1)).w(px(300.)).truncate().child(
                                 SelectableLabel::new("v", "docker.io/grafana/alloy v1.16.1"),
                             ))
                             .child(div().h(px(400.))),
@@ -1137,7 +1170,10 @@ mod tests {
         }
     }
 
-    fn setup_scrolling(cx: &mut TestAppContext) -> (&mut VisualTestContext, gpui::ScrollHandle) {
+    fn setup_scrolling(
+        cx: &mut TestAppContext,
+        row_height: f32,
+    ) -> (&mut VisualTestContext, gpui::ScrollHandle) {
         cx.update(|cx| {
             gpui_component::init(cx);
             crate::Theme::dark().apply(cx);
@@ -1145,7 +1181,7 @@ mod tests {
         let handle = gpui::ScrollHandle::new();
         let view_handle = handle.clone();
         let (_, cx) = cx.add_window_view(move |window, cx| {
-            let view = cx.new(|_| Scrolling(view_handle));
+            let view = cx.new(|_| Scrolling(view_handle, row_height));
             gpui_component::Root::new(view, window, cx)
         });
         cx.run_until_parked();
@@ -1190,7 +1226,7 @@ mod tests {
 
     #[gpui::test]
     fn dragging_inside_a_truncated_value_does_not_scroll(cx: &mut TestAppContext) {
-        let (cx, scroll) = setup_scrolling(cx);
+        let (cx, scroll) = setup_scrolling(cx, 18.);
         let offset = scroll.offset();
         hold_drag(cx, point(px(2.), px(48.)), point(px(100.), px(48.)));
         assert_eq!(scroll.offset(), offset);
@@ -1199,8 +1235,17 @@ mod tests {
     }
 
     #[gpui::test]
+    fn dragging_inside_a_tall_row_with_truncated_text_does_not_scroll(cx: &mut TestAppContext) {
+        let (cx, scroll) = setup_scrolling(cx, 44.);
+        let offset = scroll.offset();
+        hold_drag(cx, point(px(2.), px(52.)), point(px(100.), px(52.)));
+        assert_eq!(scroll.offset(), offset);
+        release(cx, point(px(100.), px(52.)));
+    }
+
+    #[gpui::test]
     fn dragging_past_the_container_scrolls_it(cx: &mut TestAppContext) {
-        let (cx, scroll) = setup_scrolling(cx);
+        let (cx, scroll) = setup_scrolling(cx, 18.);
         let offset = scroll.offset();
         hold_drag(cx, point(px(2.), px(48.)), point(px(100.), px(140.)));
         assert!(scroll.offset().y < offset.y, "{:?}", scroll.offset());
@@ -1359,8 +1404,9 @@ mod tests {
         assert_eq!(lines.len(), 2, "{text:?}");
         assert_eq!(lines[0], "Firing since 10h 59m");
         // Both chips share the second line; the second is cut where the drag ended.
-        assert!(lines[1].starts_with("chip-one chip-"), "{text:?}");
-        assert!("chip-one chip-two".starts_with(lines[1]), "{text:?}");
+        let (first, rest) = lines[1].split_once(' ').expect("two chips on one line");
+        assert_eq!(first, "chip-one", "{text:?}");
+        assert!(!rest.is_empty() && "chip-two".starts_with(rest), "{text:?}");
     }
 
     #[test]
@@ -1704,6 +1750,117 @@ mod tests {
         // Focus moved elsewhere (the resource list): Cmd+A is that view's again.
         cx.update(crate::clear_text_selection);
         assert!(!cx.update(crate::select_all_in_pressed_scope));
+    }
+
+    // Selectable text that is laid out but never painted: hidden, or a measured list row.
+    struct Unpainted;
+
+    // Renders so far; a frame loop runs it away, which fails the test instead of hanging it.
+    static RENDERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    impl Render for Unpainted {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let renders = RENDERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            assert!(renders < 200, "endless redraws");
+            div()
+                .size_full()
+                .child(SelectionFrame)
+                .child(SelectionScope::new(
+                    SCOPE,
+                    div()
+                        .child(
+                            div()
+                                .hidden()
+                                .child(SelectableLabel::new("hidden", "hidden")),
+                        )
+                        .child(
+                            gpui::uniform_list(
+                                "rows",
+                                5,
+                                cx.processor(|_, range: std::ops::Range<usize>, _, _| {
+                                    range
+                                        .map(|ix| {
+                                            div()
+                                                .id(("row", ix))
+                                                .h(px(20.))
+                                                .child(SelectableLabel::new(
+                                                    "label",
+                                                    format!("row {ix}"),
+                                                ))
+                                                .into_any_element()
+                                        })
+                                        .collect()
+                                }),
+                            )
+                            .h(px(100.)),
+                        ),
+                ))
+        }
+    }
+
+    #[gpui::test]
+    fn text_laid_out_but_not_painted_does_not_pile_up_state(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::Theme::dark().apply(cx);
+        });
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|_| Unpainted);
+            gpui_component::Root::new(view, window, cx)
+        });
+        for _ in 0..3 {
+            let _ = selected(cx);
+        }
+        let live = LIVE.with(Cell::get);
+        let size = cx.update(|window, cx| state_size(window, cx));
+        for _ in 0..6 {
+            let _ = selected(cx);
+        }
+        assert_eq!(LIVE.with(Cell::get), live);
+        assert_eq!(cx.update(|window, cx| state_size(window, cx)), size);
+    }
+
+    // A pane whose scope id changes (a closed and reopened details tab).
+    struct Reopened(Rc<Cell<u64>>);
+
+    impl Render for Reopened {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .child(SelectionFrame)
+                .child(SelectionScope::new(
+                    ("pane", self.0.get()),
+                    div().child(
+                        div()
+                            .h(px(20.))
+                            .child(SelectableLabel::new(("label", self.0.get()), "text")),
+                    ),
+                ))
+        }
+    }
+
+    #[gpui::test]
+    fn scopes_that_went_away_leave_no_state_behind(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::Theme::dark().apply(cx);
+        });
+        let generation = Rc::new(Cell::new(0));
+        let view_generation = generation.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let view = cx.new(|_| Reopened(view_generation));
+            gpui_component::Root::new(view, window, cx)
+        });
+        for _ in 0..3 {
+            let _ = selected(cx);
+        }
+        let size = cx.update(|window, cx| state_size(window, cx));
+        for n in 1..=20 {
+            generation.set(n);
+            let _ = selected(cx);
+            cx.run_until_parked();
+        }
+        assert!(cx.update(|window, cx| state_size(window, cx)) <= size + 2);
     }
 
     #[test]
