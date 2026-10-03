@@ -152,8 +152,17 @@ pub fn init(cx: &mut App) {
     .detach();
 }
 
+/// The application menus: the macOS menu bar, and the title bar's menu bar elsewhere (GPUI has
+/// no native menu on Windows and Linux).
 fn set_menus(cx: &mut App) {
-    cx.set_menus([
+    cx.set_menus(menus());
+    #[cfg(not(target_os = "macos"))]
+    gpui_component::GlobalState::global_mut(cx)
+        .set_app_menus(menus().into_iter().map(Menu::owned).collect());
+}
+
+fn menus() -> Vec<Menu> {
+    vec![
         Menu::new("Kubyl").items([
             MenuItem::action("About Kubyl", About),
             MenuItem::separator(),
@@ -198,7 +207,7 @@ fn set_menus(cx: &mut App) {
             MenuItem::action("Previous Tab", ActivatePreviousTab),
         ]),
         Menu::new("Help").items([MenuItem::action("Kubyl on GitHub", OpenRepository)]),
-    ]);
+    ]
 }
 
 /// Opens a workspace window with the persisted layout.

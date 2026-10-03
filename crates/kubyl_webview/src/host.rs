@@ -31,6 +31,8 @@ pub struct Embedded {
     painted: Cell<bool>,
     /// The bounds last applied to the native view.
     applied: Cell<Option<Bounds<Pixels>>>,
+    /// The window scale factor `applied` was placed at.
+    scale: Cell<f32>,
     /// Whether the native view is visible now.
     shown: Cell<bool>,
     /// The tab draws something of its own instead of the page (interstitial, error, menu).
@@ -48,6 +50,7 @@ impl Embedded {
             window,
             painted: Cell::new(false),
             applied: Cell::new(None),
+            scale: Cell::new(0.0),
             shown: Cell::new(false),
             covered: Cell::new(false),
         });
@@ -74,11 +77,12 @@ impl Embedded {
         self.applied.get()
     }
 
-    fn place(&self, bounds: Bounds<Pixels>) {
+    fn place(&self, bounds: Bounds<Pixels>, scale: f32) {
         self.painted.set(true);
-        if self.applied.get() != Some(bounds) {
+        let rescaled = self.scale.replace(scale) != scale;
+        if rescaled || self.applied.get() != Some(bounds) {
             self.applied.set(Some(bounds));
-            self.native.set_bounds(bounds);
+            self.native.set_bounds(bounds, scale);
         }
     }
 }
@@ -256,7 +260,7 @@ impl Element for WebContent {
         if visible.size.width <= px(1.0) || visible.size.height <= px(1.0) {
             return None;
         }
-        self.embedded.place(visible);
+        self.embedded.place(visible, window.scale_factor());
         Some(window.insert_hitbox(visible, HitboxBehavior::BlockMouse))
     }
 

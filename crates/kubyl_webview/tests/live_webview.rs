@@ -116,10 +116,13 @@ fn view(
         tx,
     )
     .expect("web view");
-    native.set_bounds(Bounds::new(
-        point(px(10.0 + 210.0 * index as f32), px(40.0)),
-        size(px(200.0), px(200.0)),
-    ));
+    native.set_bounds(
+        Bounds::new(
+            point(px(10.0 + 210.0 * index as f32), px(40.0)),
+            size(px(200.0), px(200.0)),
+        ),
+        1.0,
+    );
     native.set_visible(true);
     View { native, events: rx }
 }

@@ -1,8 +1,8 @@
 use gpui::{
-    Action, App, FontWeight, IntoElement, MouseButton, RenderOnce, SharedString, Window, div,
-    prelude::*,
+    Action, App, Entity, FontWeight, IntoElement, MouseButton, RenderOnce, SharedString, Window,
+    div, prelude::*,
 };
-use gpui_component::h_flex;
+use gpui_component::{h_flex, menu::AppMenuBar};
 use kubyl_core::ClusterBadge;
 use kubyl_core::actions::{
     ShowNotifications, SwitchCluster, SwitchNamespace, ToggleCommandPalette,
@@ -23,6 +23,7 @@ pub struct TitleBar {
     namespace: Option<SharedString>,
     account: Option<SharedString>,
     unread: usize,
+    menu_bar: Option<Entity<AppMenuBar>>,
 }
 
 impl TitleBar {
@@ -32,7 +33,14 @@ impl TitleBar {
             namespace: None,
             account: None,
             unread: 0,
+            menu_bar: None,
         }
+    }
+
+    /// The application menus (Windows and Linux, which have no system menu bar).
+    pub fn menu_bar(mut self, menu_bar: Option<Entity<AppMenuBar>>) -> Self {
+        self.menu_bar = menu_bar;
+        self
     }
 
     pub fn cluster(mut self, cluster: Option<ClusterBadge>) -> Self {
@@ -209,6 +217,7 @@ impl RenderOnce for TitleBar {
                     .pr(u(10.0))
                     .when(!cfg!(target_os = "macos"), |this| this.pl(u(4.0)))
                     .text_size(u(sizes::UI_FONT))
+                    .children(self.menu_bar.map(|bar| div().flex_none().child(bar)))
                     .child(cluster)
                     .child(div().text_color(colors.text_faint).child("/"))
                     .child(namespace)

@@ -210,3 +210,11 @@ Live tests, all passing:
 - wry's `open_devtools` only exists in debug builds or with its `devtools` feature (enabled).
 - Web view tabs need the kind port-forward to reach pods; `script/webview-dev.sh` adds Grafana,
   Alertmanager, an Ingress, a self-signed HTTPS service and a non-HTTP-looking port.
+
+### Linux/Wayland: XWayland probe
+On a Wayland session `main` checks `$DISPLAY`'s socket in `/tmp/.X11-unix`; when it accepts a connection it
+removes `WAYLAND_DISPLAY`, so GPUI opens an X11 window and web views embed as child windows. Without
+XWayland the Wayland fallback (a window per page) stays. `KUBYL_WAYLAND=1` opts out. `main` also sets
+`WEBKIT_DISABLE_DMABUF_RENDERER=1` (unless set): with it off, NVIDIA on Wayland gets a protocol error
+("Missing acquire timeline") when the first page opens. Trade-off: under XWayland the whole app is an X11
+client (blurry on fractional scaling).
