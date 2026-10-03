@@ -30,7 +30,8 @@ use kubyl_core::{
 };
 use kubyl_kube::ConnectionManager;
 use kubyl_resources::columns::{
-    event_message, event_time, job_status, node_roles, node_status, pod_status, status_tone,
+    event_message, event_time, job_status, job_tone, node_roles, node_status, pod_status,
+    status_tone,
 };
 use kubyl_resources::format::{
     array_at, format_bytes, format_cpu, human_duration, int_at, map_pairs, object_age,
@@ -51,6 +52,7 @@ use crate::catalog;
 use crate::dialogs::{self, ConfirmSpec};
 
 mod data;
+mod jobs;
 mod routes;
 
 /// How long the selection must stay put before related objects are loaded.
@@ -168,6 +170,8 @@ struct Related {
     events: Option<StoreHandle>,
     pods: Option<StoreHandle>,
     replica_sets: Option<StoreHandle>,
+    /// A CronJob's Jobs (its pods are in `pods`).
+    jobs: Option<StoreHandle>,
     endpoints: Option<StoreHandle>,
     volume: Option<StoreHandle>,
     /// A Route's backends: the namespace's Services and the backends' EndpointSlices.
@@ -476,6 +480,15 @@ impl DetailsContent {
                     ns.clone(),
                 );
                 self.related.replica_sets = Some(self.acquire(key, cx));
+            }
+            "CronJob" => {
+                let key =
+                    StoreKey::new(cluster.clone(), Gvr::new("batch", "v1", "jobs"), ns.clone());
+                self.related.jobs = Some(self.acquire(key, cx));
+                if let Some(ns) = &ns {
+                    let pods = StoreKey::new(cluster.clone(), core("pods"), Some(ns.clone()));
+                    self.related.pods = Some(self.acquire(pods, cx));
+                }
             }
             "Service" => {
                 let key = StoreKey::new(cluster.clone(), core("endpoints"), ns.clone())
@@ -950,8 +963,8 @@ impl DetailsContent {
             }
             "Job" => {
                 let status = job_status(object);
-                pills = pills
-                    .child(StatusPill::new(status, status_tone(status)).selectable_as("status"));
+                pills =
+                    pills.child(StatusPill::new(status, job_tone(status)).selectable_as("status"));
             }
             "Deployment" | "StatefulSet" | "ReplicaSet" => {
                 let ready = int_at(object, "/status/readyReplicas");
@@ -1151,6 +1164,7 @@ impl DetailsContent {
         match target.kind.as_str() {
             "Pod" => out.extend(self.render_pod(object, target, &colors, cx)),
             "Deployment" => out.extend(self.render_deployment(object, target, &colors, cx)),
+            "CronJob" => out.extend(self.render_cronjob(object, target, &colors, cx)),
             "Node" => out.extend(self.render_node(object, &colors, cx)),
             "Service" => out.extend(self.render_service(object, target, &colors, cx)),
             "PersistentVolumeClaim" => out.extend(self.render_pvc(object, target, &colors, cx)),
