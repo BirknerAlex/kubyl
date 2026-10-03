@@ -1,7 +1,7 @@
-use gpui::{App, Hsla, IntoElement, RenderOnce, SharedString, Window, prelude::*};
+use gpui::{App, ElementId, Hsla, IntoElement, RenderOnce, SharedString, Window, prelude::*};
 use gpui_component::h_flex;
 
-use crate::{ActiveColors, Icon, IconName, StatusDot, fonts, u};
+use crate::{ActiveColors, Icon, IconName, Selectable, StatusDot, fonts, u};
 
 /// A small label (`.chip`): labels, filters, namespaces.
 #[derive(IntoElement)]
@@ -13,6 +13,7 @@ pub struct Chip {
     icon: Option<IconName>,
     removable: bool,
     color: Option<Hsla>,
+    selectable: Option<ElementId>,
 }
 
 impl Chip {
@@ -25,6 +26,7 @@ impl Chip {
             icon: None,
             removable: false,
             color: None,
+            selectable: None,
         }
     }
 
@@ -58,6 +60,13 @@ impl Chip {
 
     pub fn text_color(mut self, color: Hsla) -> Self {
         self.color = Some(color);
+        self
+    }
+
+    /// The label joins the window's text selection under `id`, which must differ from the other
+    /// selectable labels of the same parent. Not for clickable chips.
+    pub fn selectable_as(mut self, id: impl Into<ElementId>) -> Self {
+        self.selectable = Some(id.into());
         self
     }
 }
@@ -94,7 +103,10 @@ impl RenderOnce for Chip {
             .when_some(self.icon, |this, icon| {
                 this.child(Icon::new(icon).size(11.0).color(fg))
             })
-            .child(self.label)
+            .map(|this| match self.selectable {
+                Some(id) => this.child(Selectable::new(id, self.label)),
+                None => this.child(self.label),
+            })
             .when(self.removable, |this| {
                 this.child(Icon::new(IconName::X).size(10.0).color(fg))
             })
