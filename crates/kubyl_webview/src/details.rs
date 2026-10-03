@@ -135,9 +135,15 @@ impl WebSection {
     }
 }
 
-fn section(title: impl Into<SharedString>, colors: &Colors) -> gpui::Div {
+fn section(title: impl Into<SharedString>, colors: &Colors) -> gpui::Stateful<gpui::Div> {
     let title: SharedString = title.into();
+    // The id scopes the selectable text inside to this section.
+    let id = SharedString::from(format!(
+        "section-{}",
+        title.split(" · ").next().unwrap_or_default()
+    ));
     v_flex()
+        .id(id)
         .px(u(14.0))
         .py(u(12.0))
         .gap(u(8.0))
@@ -159,6 +165,7 @@ fn port_row(
     colors: &Colors,
 ) -> impl IntoElement {
     h_flex()
+        .id(SharedString::from(format!("port-row-{label}")))
         .gap(u(10.0))
         .py(u(4.0))
         .child(
@@ -170,14 +177,14 @@ fn port_row(
                         .font_family(fonts::MONO)
                         .text_size(u(12.0))
                         .truncate()
-                        .child(label),
+                        .child(Selectable::new("port-label", label)),
                 )
                 .child(
                     div()
                         .text_size(u(11.5))
                         .text_color(colors.text_dim)
                         .truncate()
-                        .child(detail),
+                        .child(Selectable::new("port-detail", detail)),
                 ),
         )
         .child(button)
@@ -368,6 +375,7 @@ impl WebSection {
                 let stop = target.clone();
                 forward_section = forward_section.child(
                     h_flex()
+                        .id(("forward-row", index))
                         .gap(u(10.0))
                         .items_start()
                         .child(Icon::new(IconName::Link).size(14.0).color(color))
@@ -376,8 +384,17 @@ impl WebSection {
                                 .flex_1()
                                 .min_w_0()
                                 .text_size(u(12.0))
-                                .child(div().font_family(fonts::MONO).truncate().child(line))
-                                .child(div().text_color(colors.text_dim).child(detail))
+                                .child(
+                                    div()
+                                        .font_family(fonts::MONO)
+                                        .truncate()
+                                        .child(Selectable::new("forward-line", line)),
+                                )
+                                .child(
+                                    div()
+                                        .text_color(colors.text_dim)
+                                        .child(Selectable::new("forward-detail", detail)),
+                                )
                                 .child(div().mt(u(4.0)).text_color(colors.text_muted).child(
                                     "Hidden from saved forwards. Stops when the last web view \
                                      tab closes.",
@@ -450,7 +467,10 @@ impl WebSection {
                         .w(u(84.0))
                         .flex_none()
                         .text_color(colors.text_dim)
-                        .child(label),
+                        .child(Selectable::new(
+                            SharedString::from(format!("{label}-key")),
+                            label,
+                        )),
                 )
                 .child(
                     div()
@@ -572,7 +592,7 @@ impl WebSection {
         Some(section)
     }
 
-    fn render_ingress(&self, object: &Value, cx: &mut Context<Self>) -> gpui::Div {
+    fn render_ingress(&self, object: &Value, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         let colors = cx.colors().clone();
         let backends = ingress_backends(object);
         let mut section = section("Web views", &colors);
@@ -681,7 +701,7 @@ impl WebSection {
     /// One row per backend Service (`host/path → svc:port`, opened through a temporary forward
     /// at the port the Route's target port resolves to, the Route's path as the start page),
     /// then the Route's external URL.
-    fn render_route(&self, object: &Value, cx: &mut Context<Self>) -> gpui::Div {
+    fn render_route(&self, object: &Value, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         let colors = cx.colors().clone();
         let route = Route::parse(object);
         let host = format!(

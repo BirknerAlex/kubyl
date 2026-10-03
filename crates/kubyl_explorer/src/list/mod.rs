@@ -61,6 +61,8 @@ actions!(
         FocusFilter,
         FocusTable,
         ToggleWide,
+        /// Copies the selected text, else the names of the selected rows.
+        CopySelection,
     ]
 );
 
@@ -91,6 +93,7 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("shift-up", ExtendPrevious, list),
         KeyBinding::new("shift-k", ExtendPrevious, list),
         KeyBinding::new("enter", OpenSelected, list),
+        KeyBinding::new("secondary-c", CopySelection, list),
         KeyBinding::new("escape", FocusTable, Some(FILTER_CONTEXT)),
         KeyBinding::new("down", FocusTable, Some(FILTER_CONTEXT)),
     ]);
@@ -339,8 +342,11 @@ impl ResourceListView {
             ));
         }
         let focus = cx.focus_handle();
-        subscriptions
-            .push(cx.on_focus_in(&focus, window, |this, _, cx| this.publish_selection(cx)));
+        subscriptions.push(cx.on_focus_in(&focus, window, |this, window, cx| {
+            // Text selected elsewhere (a details panel) must not win `⌘C` over the rows.
+            kubyl_ui::clear_text_selection(window, cx);
+            this.publish_selection(cx)
+        }));
 
         let ticker = cx.spawn_in(window, async move |this, cx| {
             loop {

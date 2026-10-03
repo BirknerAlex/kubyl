@@ -17,9 +17,9 @@ use kubyl_ui::{
 };
 
 use super::{
-    ExtendNext, ExtendPrevious, FILTER_CONTEXT, FocusFilter, FocusTable, OpenSelected, PAGE,
-    Resize, ResourceListView, SelectAll, SelectFirst, SelectLast, SelectNext, SelectPageDown,
-    SelectPageUp, SelectPrevious, SetFilter, ToggleMark, ToggleWide,
+    CopySelection, ExtendNext, ExtendPrevious, FILTER_CONTEXT, FocusFilter, FocusTable,
+    OpenSelected, PAGE, Resize, ResourceListView, SelectAll, SelectFirst, SelectLast, SelectNext,
+    SelectPageDown, SelectPageUp, SelectPrevious, SetFilter, ToggleMark, ToggleWide,
 };
 
 const ROW_HEIGHT: f32 = 32.0;
@@ -106,6 +106,12 @@ pub(super) fn render(
             focus.focus(window, cx);
         }))
         .on_action(cx.listener(|this, _: &ToggleWide, _, cx| this.toggle_wide(cx)))
+        .on_action(
+            |_: &CopySelection, window, cx| match kubyl_ui::selected_text(window, cx) {
+                Some(text) => cx.write_to_clipboard(gpui::ClipboardItem::new_string(text)),
+                None => window.dispatch_action(Box::new(crate::actions::CopyName), cx),
+            },
+        )
         .on_action(cx.listener(|this, action: &SetFilter, window, cx| {
             this.apply_filter(&action.query, window, cx)
         }))

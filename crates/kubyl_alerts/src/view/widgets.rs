@@ -6,7 +6,7 @@ use gpui::{
 };
 use jiff::Timestamp;
 use kubyl_core::{ColumnDef, ColumnWidth};
-use kubyl_ui::{Colors, Icon, IconName, StatusDot, fonts, h_flex, sizes, u, v_flex};
+use kubyl_ui::{Colors, Icon, IconName, Selectable, StatusDot, fonts, h_flex, sizes, u, v_flex};
 
 use crate::model::{AlertState, Severity};
 
@@ -31,18 +31,37 @@ pub fn state_color(state: AlertState, colors: &Colors) -> Hsla {
 
 /// `● critical`.
 pub fn severity_pill(severity: &Severity, colors: &Colors) -> AnyElement {
+    severity_pill_as(severity, colors, None)
+}
+
+/// [`severity_pill`] whose label joins the text selection under `id`.
+pub fn severity_pill_as(severity: &Severity, colors: &Colors, id: Option<ElementId>) -> AnyElement {
     let color = severity_color(severity, colors);
+    let label = severity.label().to_string();
     h_flex()
         .gap(u(6.0))
         .text_color(color)
         .child(StatusDot::new(color))
-        .child(severity.label().to_string())
+        .child(match id {
+            Some(id) => Selectable::new(id, label).into_any_element(),
+            None => label.into_any_element(),
+        })
         .into_any_element()
 }
 
 /// `● firing`, `○ pending`, `● resolved`. Silenced and inhibited alerts still fire: `● firing`
 /// with a bell-off (silenced) or eye-off (inhibited) icon, and the word too when `long`.
 pub fn state_label(state: AlertState, long: bool, colors: &Colors) -> AnyElement {
+    state_label_as(state, long, colors, None)
+}
+
+/// [`state_label`] whose word joins the text selection under `id`.
+pub fn state_label_as(
+    state: AlertState,
+    long: bool,
+    colors: &Colors,
+    id: Option<ElementId>,
+) -> AnyElement {
     let color = state_color(state, colors);
     let dot = match state {
         AlertState::Pending => div()
@@ -63,10 +82,16 @@ pub fn state_label(state: AlertState, long: bool, colors: &Colors) -> AnyElement
         .gap(u(6.0))
         .text_color(color)
         .child(dot)
-        .child(if suppressed.is_some() {
-            "firing"
-        } else {
-            state.label()
+        .child({
+            let word = if suppressed.is_some() {
+                "firing"
+            } else {
+                state.label()
+            };
+            match id {
+                Some(id) => Selectable::new(id, word).into_any_element(),
+                None => word.into_any_element(),
+            }
         })
         .when_some(suppressed, |this, (icon, label)| {
             this.child(
@@ -227,9 +252,15 @@ pub fn row(
 }
 
 /// A details section: `TITLE` and its content.
-pub fn section(title: impl Into<SharedString>, colors: &Colors) -> gpui::Div {
+pub fn section(title: impl Into<SharedString>, colors: &Colors) -> gpui::Stateful<gpui::Div> {
     let title: SharedString = title.into();
+    // The id scopes the selectable text inside to this section.
+    let id = SharedString::from(format!(
+        "section-{}",
+        title.split(" · ").next().unwrap_or_default()
+    ));
     v_flex()
+        .id(id)
         .px(u(14.0))
         .py(u(12.0))
         .gap(u(8.0))
@@ -258,7 +289,10 @@ pub fn kv(rows: Vec<(&'static str, AnyElement)>, colors: &Colors) -> impl IntoEl
                         .flex_none()
                         .w(u(104.0))
                         .text_color(colors.text_dim)
-                        .child(key),
+                        .child(Selectable::new(
+                            SharedString::from(format!("{key}-key")),
+                            key,
+                        )),
                 )
                 .child(div().id(key).flex_1().min_w_0().child(value))
         }))
@@ -283,8 +317,44 @@ pub fn link(
         .child(label.into())
 }
 
+/// [`link`] whose text joins the text selection: it opens on a click, not after a drag.
+pub fn detail_link(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    colors: &Colors,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id.into())
+        .truncate()
+        .text_color(colors.accent)
+        .cursor_pointer()
+        .hover(|s| s.underline())
+        .on_click(move |event, window, cx| {
+            cx.stop_propagation();
+            if !kubyl_ui::has_text_selection(window, cx) {
+                on_click(event, window, cx)
+            }
+        })
+        .child(Selectable::new("link", label.into()))
+}
+
 /// A muted `name=value` chip.
 pub fn label_chip(name: &str, value: &str, colors: &Colors) -> gpui::Div {
+    chip_frame(colors).child(format!("{name}={value}"))
+}
+
+/// [`label_chip`] whose text joins the text selection under `id`.
+pub fn label_chip_as(
+    id: impl Into<ElementId>,
+    name: &str,
+    value: &str,
+    colors: &Colors,
+) -> gpui::Div {
+    chip_frame(colors).child(Selectable::new(id, format!("{name}={value}")))
+}
+
+fn chip_frame(colors: &Colors) -> gpui::Div {
     div()
         .flex_none()
         .px(u(6.0))
@@ -296,7 +366,6 @@ pub fn label_chip(name: &str, value: &str, colors: &Colors) -> gpui::Div {
         .text_color(colors.text_muted)
         .max_w_full()
         .truncate()
-        .child(format!("{name}={value}"))
 }
 
 pub fn empty(message: impl Into<SharedString>, colors: &Colors) -> AnyElement {

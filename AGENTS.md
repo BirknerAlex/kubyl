@@ -50,7 +50,8 @@ cargo run -p kubyl
   `KUBYL_SCREENSHOT_ACTIONS` takes comma-separated steps: `split`, `bottom`, `zoom`, `light`,
   `about`, `toast` (or `toast=<text>` for an error), `palette=:cert`, `action=pane::GoBack`,
   `keys=: p o enter` (typed through GPUI's key dispatch), `mouse=640:380` (hover),
-  `click=640:380` (logical window pixels), `scroll=640:380:-600` (wheel delta at a point;
+  `click=640:380` (logical window pixels), `dclick=`/`tclick=` (double and triple click at a point,
+  to select a word or a line), `scroll=640:380:-600` (wheel delta at a point;
   negative scrolls down) and `wait=800`, which is enough to click through keyboard flows. Steps
   are comma-separated, so `keys=` can't type commas; type `:`/`#` as themselves (not
   `shift-;`), and close completion menus with `escape` before `enter` when typing into the YAML
@@ -147,3 +148,8 @@ cargo run -p kubyl
 - `window.on_next_frame` doesn't fire while macOS doesn't drive frames (hidden or occluded
   window, screenshot runs). An input only scrolls to its cursor once it was laid out: retry on
   a short timer until `InputState::line_height()` is `Some`.
+- Selectable text: wrap a details pane's content in a `kubyl_ui::SelectionScope` whose id is
+  per instance (`("name", cx.entity_id().as_u64())`; two panes with the same id select
+  together), and give each `Selectable` an id that is unique among its siblings (an equal id
+  shares one selection). Text in gpui-component dialogs can't be selected: give the value a
+  copy button.

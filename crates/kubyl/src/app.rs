@@ -280,7 +280,7 @@ mod screenshot {
             // `palette=:cert` opens the command palette with that query; `action=pane::GoBack`
             // dispatches any action by name.
             // `mouse=640:380` moves the pointer there (hover popups), `click=640:380` clicks,
-            // in logical window pixels.
+            // `dclick=`/`tclick=` double/triple-click, in logical window pixels.
             // `scroll=640:380:-600` scrolls the element under that point by the pixel delta
             // (negative scrolls down, like a trackpad swipe up).
             step if step.starts_with("scroll=") => {
@@ -398,8 +398,17 @@ mod screenshot {
                     window.draw(cx).clear(cx);
                 }
             }
-            step if step.starts_with("mouse=") || step.starts_with("click=") => {
+            step if ["mouse=", "click=", "dclick=", "tclick="]
+                .iter()
+                .any(|p| step.starts_with(p)) =>
+            {
                 let (kind, at) = step.split_once('=').unwrap_or_default();
+                let clicks = match kind {
+                    "click" => 1,
+                    "dclick" => 2,
+                    "tclick" => 3,
+                    _ => 0,
+                };
                 let Some((x, y)) = at.split_once(':').and_then(|(x, y)| {
                     Some((x.trim().parse::<f32>().ok()?, y.trim().parse::<f32>().ok()?))
                 }) else {
@@ -417,7 +426,7 @@ mod screenshot {
                     }),
                     cx,
                 );
-                if kind == "click" {
+                for click_count in 1..=clicks {
                     window.draw(cx).clear(cx);
                     for down in [true, false] {
                         let event = if down {
@@ -425,7 +434,7 @@ mod screenshot {
                                 button: gpui::MouseButton::Left,
                                 position,
                                 modifiers: Default::default(),
-                                click_count: 1,
+                                click_count,
                                 first_mouse: false,
                             })
                         } else {
@@ -433,7 +442,7 @@ mod screenshot {
                                 button: gpui::MouseButton::Left,
                                 position,
                                 modifiers: Default::default(),
-                                click_count: 1,
+                                click_count,
                             })
                         };
                         window.dispatch_event(event, cx);

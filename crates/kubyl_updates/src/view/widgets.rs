@@ -65,7 +65,10 @@ pub fn kv(
                 .flex_none()
                 .w(u(width))
                 .text_color(colors.text_dim)
-                .child(label.clone()),
+                .child(Selectable::new(
+                    SharedString::from(format!("{label}-key")),
+                    label.clone(),
+                )),
         )
         .child(div().id(label).flex_1().min_w_0().child(value))
 }
