@@ -405,11 +405,11 @@ fn assemble(runs: &[SelectedRun]) -> String {
         }
         let multi_line = run.bounds.size.height > run.line_height * 1.5;
         let top = run.bounds.top();
-        let same_row = !multi_line
-            && row.is_some_and(|(row_top, row_bottom)| {
-                let middle = top + run.bounds.size.height / 2.;
-                middle > row_top && middle < row_bottom
-            });
+        // A wrapped value starts on its key's line: look at its first line.
+        let same_row = row.is_some_and(|(row_top, row_bottom)| {
+            let middle = top + run.bounds.size.height.min(run.line_height) / 2.;
+            middle > row_top && middle < row_bottom
+        });
         if same_row {
             out.push(' ');
         } else if !out.is_empty() {
@@ -421,11 +421,12 @@ fn assemble(runs: &[SelectedRun]) -> String {
         }
         out.push_str(piece);
         let run_bottom = run.bounds.bottom();
+        // What follows a multi-line run starts a new line.
         row = match (same_row, multi_line, row) {
+            (_, true, _) => None,
             (true, _, Some((row_top, row_bottom))) => {
                 Some((row_top.min(top), row_bottom.max(run_bottom)))
             }
-            (_, true, _) => None,
             _ => Some((top, run_bottom)),
         };
         bottom = if same_row {
@@ -1565,6 +1566,47 @@ mod tests {
         age.set(2);
         // Before gpui-base sweeps the replaced participant.
         assert_eq!(selected(cx), "same\nsame\nthird\nage 2");
+    }
+
+    // A key beside a value that wraps onto several lines.
+    struct Wrapped;
+
+    impl Render for Wrapped {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .child(SelectionFrame)
+                .child(SelectionScope::new(
+                    SCOPE,
+                    div()
+                        .child(
+                            div()
+                                .flex()
+                                .items_start()
+                                .gap(px(8.))
+                                .child(div().w(px(100.)).child(SelectableLabel::new("k", "Key")))
+                                .child(div().w(px(30.)).whitespace_normal().child(
+                                    SelectableLabel::new("v", "alphabet bravo charlie delta"),
+                                )),
+                        )
+                        .child(div().h(px(20.)).child(SelectableLabel::new("n", "next"))),
+                ))
+        }
+    }
+
+    #[gpui::test]
+    fn a_wrapped_value_stays_on_the_line_of_its_key(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::Theme::dark().apply(cx);
+        });
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|_| Wrapped);
+            gpui_component::Root::new(view, window, cx)
+        });
+        cx.run_until_parked();
+        assert!(cx.update(|window, cx| select_all_in_scope(&SCOPE.into(), window, cx)));
+        assert_eq!(selected(cx), "Key alphabet bravo charlie delta\nnext");
     }
 
     #[test]
