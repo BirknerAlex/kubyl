@@ -875,10 +875,16 @@ impl OperatorHubView {
                                 div()
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_size(u(14.0))
-                                    .child(package.display_name.clone()),
+                                    .child(Selectable::new(
+                                        "display-name",
+                                        package.display_name.clone(),
+                                    )),
                             )
                             .child(div().text_size(u(11.5)).text_color(colors.text_dim).child(
-                                format!("{} · {}", package.provider, package.catalog_display),
+                                Selectable::new(
+                                    "provider",
+                                    format!("{} · {}", package.provider, package.catalog_display),
+                                ),
                             )),
                     )
                     .child(
@@ -890,7 +896,8 @@ impl OperatorHubView {
                             })),
                     ),
             )
-            .child(
+            .child(kubyl_ui::SelectionScope::new(
+                ("hub-details", cx.entity_id().as_u64()),
                 v_flex()
                     .id("hub-details")
                     .flex_1()
@@ -913,7 +920,7 @@ impl OperatorHubView {
                                     .text_size(u(12.5))
                                     .line_height(u(18.0))
                                     .text_color(colors.text_muted)
-                                    .child(shown_description),
+                                    .child(Selectable::new("description", shown_description)),
                             )
                             .when(long, |this| {
                                 this.child(
@@ -940,15 +947,14 @@ impl OperatorHubView {
                                 )
                             }),
                     )
-                    .child(
-                        widgets::section("Provided APIs", &colors).child(
-                            h_flex()
-                                .flex_wrap()
-                                .gap(u(4.0))
-                                .children(owned.into_iter().map(|k| Chip::new(k).mono())),
+                    .child(widgets::section("Provided APIs", &colors).child(
+                        h_flex().flex_wrap().gap(u(4.0)).children(
+                            owned.into_iter().enumerate().map(|(ix, k)| {
+                                Chip::new(k).mono().selectable_as(("api", ix as u64))
+                            }),
                         ),
-                    ),
-            )
+                    )),
+            ))
             .into_any_element()
     }
 }

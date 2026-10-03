@@ -1740,7 +1740,10 @@ impl AppView {
                             .border_l_1()
                             .border_color(colors.border)
                             .bg(colors.panel)
-                            .child(self.render_summary_column(true, cx)),
+                            .child(kubyl_ui::SelectionScope::new(
+                                ("argo-app-summary", cx.entity_id().as_u64()),
+                                self.render_summary_column(true, cx),
+                            )),
                     ),
             )
             .into_any_element()

@@ -1728,7 +1728,8 @@ fn side_panel(
                     .child(div().flex_1().font_weight(FontWeight::MEDIUM).child(title))
                     .child(close),
             )
-            .child(
+            .child(kubyl_ui::SelectionScope::new(
+                ("graph-panel", cx.entity_id().as_u64()),
                 v_flex()
                     .id("graph-panel-body")
                     .flex_1()
@@ -1743,7 +1744,7 @@ fn side_panel(
                             .child(heading),
                     )
                     .children(sections),
-            )
+            ))
             .into_any_element(),
     )
 }

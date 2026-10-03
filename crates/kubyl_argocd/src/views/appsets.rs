@@ -522,7 +522,10 @@ impl Render for AppSetsView {
                             .border_l_1()
                             .border_color(colors.border)
                             .bg(colors.panel)
-                            .child(details),
+                            .child(kubyl_ui::SelectionScope::new(
+                                ("argo-set-details", cx.entity_id().as_u64()),
+                                details,
+                            )),
                     ),
             )
             .child(KeyHints::new(hints))
