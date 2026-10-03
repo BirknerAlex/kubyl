@@ -7,6 +7,7 @@ mod dock;
 mod keys;
 mod modal;
 mod selectable;
+mod selection;
 mod sidebar;
 mod status;
 mod status_bar;
@@ -20,7 +21,11 @@ pub use data_table::{DataTable, DataTableEvent, TableDelegate};
 pub use dock::DockHeader;
 pub use keys::{Kbd, KeyHints, format_keystroke};
 pub use modal::Modal;
-pub use selectable::{CopySelectedText, Selectable, copy_selected_text};
+pub use selectable::{
+    CopySelectedText, SelectAllText, Selectable, clear_text_selection, copy_selected_text,
+    has_text_selection, select_all_in_pressed_scope, select_all_text, selected_text,
+};
+pub use selection::{SelectionFrame, SelectionScope, select_all_in_scope};
 pub use sidebar::{PanelHeader, SectionHeader, TreeRow};
 pub use status::{ProgressBar, StatusDot, StatusPill, tone_color};
 pub use status_bar::{StatusBar, StatusBarText};

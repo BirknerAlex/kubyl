@@ -116,9 +116,15 @@ pub fn mode_chip(state: &ApiState) -> Chip {
 }
 
 /// A details section: an upper-case title and its content.
-pub fn section(title: impl Into<SharedString>, colors: &Colors) -> gpui::Div {
+pub fn section(title: impl Into<SharedString>, colors: &Colors) -> gpui::Stateful<gpui::Div> {
     let title: SharedString = title.into();
+    // The id scopes the selectable text inside to this section.
+    let id = SharedString::from(format!(
+        "section-{}",
+        title.split(" · ").next().unwrap_or_default()
+    ));
     v_flex()
+        .id(id)
         .px(u(14.0))
         .py(u(12.0))
         .gap(u(8.0))
@@ -147,7 +153,10 @@ pub fn kv(rows: Vec<(&'static str, AnyElement)>, colors: &Colors) -> impl IntoEl
                         .flex_none()
                         .w(u(84.0))
                         .text_color(colors.text_dim)
-                        .child(key),
+                        .child(Selectable::new(
+                            SharedString::from(format!("{key}-key")),
+                            key,
+                        )),
                 )
                 .child(div().id(key).flex_1().min_w_0().child(value))
         }))

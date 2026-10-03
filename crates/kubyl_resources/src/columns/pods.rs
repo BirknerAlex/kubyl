@@ -37,9 +37,8 @@ impl PodStatus {
 /// failures red, Completed dim.
 pub fn status_tone(reason: &str) -> Tone {
     match reason {
-        "Running" | "Succeeded" | "Ready" | "Active" | "Bound" | "Available" | "Complete" => {
-            Tone::Good
-        }
+        "Running" | "Succeeded" | "Ready" | "Active" | "Bound" | "Available" | "Complete"
+        | "SuccessCriteriaMet" => Tone::Good,
         "Completed" => Tone::Muted,
         "Pending" | "Terminating" | "Unknown" | "SchedulingGated" | "Suspended" => Tone::Warning,
         "ContainerCreating" | "PodInitializing" => Tone::Info,
@@ -55,6 +54,7 @@ pub fn status_tone(reason: &str) -> Tone {
         | "OOMKilled"
         | "Error"
         | "Failed"
+        | "FailureTarget"
         | "NotReady"
         | "ImagePullBackOff"
         | "ErrImagePull"

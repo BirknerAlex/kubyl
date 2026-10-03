@@ -343,16 +343,29 @@ impl AlertsView {
                     .font_family(fonts::MONO)
                     .text_size(u(13.5))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .child(alert.name.clone()),
+                    .child(Selectable::new("name", alert.name.clone())),
             )
             .child(
                 h_flex()
                     .gap(u(10.0))
                     .text_size(u(12.0))
-                    .child(widgets::severity_pill(&alert.severity, &colors))
-                    .child(widgets::state_label(alert.state, true, &colors))
+                    .child(widgets::severity_pill_as(
+                        &alert.severity,
+                        &colors,
+                        Some("severity".into()),
+                    ))
+                    .child(widgets::state_label_as(
+                        alert.state,
+                        true,
+                        &colors,
+                        Some("state".into()),
+                    ))
                     .when_some(fired, |this, fired| {
-                        this.child(div().text_color(colors.text_dim).child(fired))
+                        this.child(
+                            div()
+                                .text_color(colors.text_dim)
+                                .child(Selectable::new("fired", fired)),
+                        )
                     }),
             )
             .child(self.render_detail_actions(&entry, can_silence, cx));
@@ -422,13 +435,13 @@ impl AlertsView {
                 h_flex()
                     .flex_wrap()
                     .gap(u(4.0))
-                    .children(alert.receivers.iter().map(|r| {
+                    .children(alert.receivers.iter().enumerate().map(|(ix, r)| {
                         div()
                             .px(u(6.0))
                             .rounded(u(4.0))
                             .bg(colors.chip_background)
                             .text_size(u(11.5))
-                            .child(r.clone())
+                            .child(Selectable::new(("receiver", ix as u64), r.clone()))
                     }))
                     .into_any_element(),
             ));
@@ -470,7 +483,11 @@ impl AlertsView {
             };
             widgets::section("Summary", &colors)
                 .when(!summary.is_empty(), |this| {
-                    this.child(div().font_weight(FontWeight::MEDIUM).child(summary.clone()))
+                    this.child(
+                        div()
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(Selectable::new("summary", summary.clone())),
+                    )
                 })
                 .when_some(shown, |this, text| {
                     this.child(
@@ -478,7 +495,7 @@ impl AlertsView {
                             .text_size(u(12.0))
                             .text_color(colors.text_muted)
                             .whitespace_normal()
-                            .child(text),
+                            .child(Selectable::new("description", text)),
                     )
                 })
                 .when(long, |this| {
@@ -545,10 +562,10 @@ impl AlertsView {
                                 .text_color(colors.text_dim)
                                 .line_through()
                                 .whitespace_normal()
-                                .child(target.label())
+                                .child(Selectable::new("target-gone", target.label()))
                                 .into_any_element()
                         } else {
-                            widgets::link(
+                            widgets::detail_link(
                                 "details-target",
                                 target.label(),
                                 &colors,
@@ -575,7 +592,7 @@ impl AlertsView {
                                     .text_size(u(12.0))
                                     .text_color(color)
                                     .child(kubyl_ui::StatusDot::new(color))
-                                    .child(status),
+                                    .child(Selectable::new("target-status", status)),
                             )
                         }),
                 )
@@ -634,7 +651,7 @@ impl AlertsView {
                     div()
                         .id(("label-chip", i))
                         .cursor_pointer()
-                        .child(widgets::label_chip(k, v, &colors))
+                        .child(widgets::label_chip_as(("label", i as u64), k, v, &colors))
                         .tooltip(|window, cx| {
                             gpui_component::tooltip::Tooltip::new(
                                 "Click: filter · Alt-click: exclude",
@@ -643,6 +660,9 @@ impl AlertsView {
                         })
                         .on_click(
                             cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+                                if kubyl_ui::has_text_selection(window, cx) {
+                                    return;
+                                }
                                 let exclude = event.modifiers() == Modifiers::alt();
                                 this.add_label_filter(&name, &value, exclude, window, cx);
                             }),
@@ -660,10 +680,8 @@ impl AlertsView {
             .collect();
         let annotations_section = (!annotations.is_empty()).then(|| {
             widgets::section("Annotations", &colors).child(
-                v_flex()
-                    .gap(u(4.0))
-                    .text_size(u(12.0))
-                    .children(annotations.into_iter().map(|(k, v)| {
+                v_flex().gap(u(4.0)).text_size(u(12.0)).children(
+                    annotations.into_iter().enumerate().map(|(ix, (k, v))| {
                         h_flex()
                             .items_start()
                             .gap(u(8.0))
@@ -672,10 +690,17 @@ impl AlertsView {
                                     .flex_none()
                                     .w(u(104.0))
                                     .text_color(colors.text_dim)
-                                    .child(k),
+                                    .child(Selectable::new(("annotation-key", ix as u64), k)),
                             )
-                            .child(div().flex_1().min_w_0().whitespace_normal().child(v))
-                    })),
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .whitespace_normal()
+                                    .child(Selectable::new(("annotation", ix as u64), v)),
+                            )
+                    }),
+                ),
             )
         });
 
@@ -695,8 +720,12 @@ impl AlertsView {
                             .whitespace_normal()
                             .cursor_pointer()
                             .hover(|s| s.underline())
-                            .child(url)
-                            .on_click(move |_, _, cx| widgets::open_url(&open, cx)),
+                            .child(Selectable::new("runbook", url))
+                            .on_click(move |_, window, cx| {
+                                if !kubyl_ui::has_text_selection(window, cx) {
+                                    widgets::open_url(&open, cx)
+                                }
+                            }),
                     )
                 })
                 .when_some(generator.clone(), |this, url| {
@@ -720,7 +749,7 @@ impl AlertsView {
                                     .text_color(colors.text_dim)
                                     .font_family(fonts::MONO)
                                     .text_size(u(11.0))
-                                    .child(url),
+                                    .child(Selectable::new("generator", url)),
                             ),
                     )
                 })
@@ -745,9 +774,12 @@ impl AlertsView {
                                             .size(12.0)
                                             .color(colors.text_dim),
                                     )
-                                    .child("Silenced by")
+                                    .child(Selectable::new(
+                                        SharedString::from(format!("silenced-by-{id}")),
+                                        "Silenced by",
+                                    ))
                                     .child(
-                                        widgets::link(
+                                        widgets::detail_link(
                                             SharedString::from(format!("silence-{id}")),
                                             format!(
                                                 "silence {}",
@@ -776,19 +808,22 @@ impl AlertsView {
                                         .pl(u(18.0))
                                         .text_color(colors.text_muted)
                                         .whitespace_normal()
-                                        .child(format!(
-                                            "“{}” · {} · ends {}",
-                                            silence.comment,
-                                            silence.created_by,
-                                            silence
-                                                .ends_at
-                                                .map(|t| format!(
-                                                    "in {}",
-                                                    widgets::short_duration(
-                                                        t.duration_since(now).as_secs()
-                                                    )
-                                                ))
-                                                .unwrap_or_default()
+                                        .child(Selectable::new(
+                                            SharedString::from(format!("silence-note-{id}")),
+                                            format!(
+                                                "“{}” · {} · ends {}",
+                                                silence.comment,
+                                                silence.created_by,
+                                                silence
+                                                    .ends_at
+                                                    .map(|t| format!(
+                                                        "in {}",
+                                                        widgets::short_duration(
+                                                            t.duration_since(now).as_secs()
+                                                        )
+                                                    ))
+                                                    .unwrap_or_default()
+                                            ),
                                         )),
                                 )
                             }),
@@ -811,9 +846,12 @@ impl AlertsView {
                                     .size(12.0)
                                     .color(colors.text_dim),
                             )
-                            .child("Inhibited by")
+                            .child(Selectable::new(
+                                SharedString::from(format!("inhibited-by-{fingerprint}")),
+                                "Inhibited by",
+                            ))
                             .child(
-                                widgets::link(
+                                widgets::detail_link(
                                     SharedString::from(format!("inhibitor-{fingerprint}")),
                                     by.map(|a| a.name).unwrap_or_else(|| fingerprint.clone()),
                                     &colors,
@@ -881,7 +919,7 @@ impl AlertsView {
             this.details_open = false;
             cx.notify();
         });
-        v_flex()
+        let panel = v_flex()
             .flex_none()
             .w(u(350.0))
             .h_full()
@@ -923,7 +961,8 @@ impl AlertsView {
                     .children(routing_section)
                     .children(rule_section)
                     .children(timeline_section),
-            )
+            );
+        kubyl_ui::SelectionScope::new(("alert-details", cx.entity_id().as_u64()), panel)
             .into_any_element()
     }
 
@@ -1006,7 +1045,7 @@ impl AlertsView {
         cluster: &ClusterId,
         rule: &Rule,
         cx: &mut Context<Self>,
-    ) -> gpui::Div {
+    ) -> gpui::Stateful<gpui::Div> {
         let colors: Colors = cx.colors().clone();
         let now = Timestamp::now();
         let object = self.rule_objects.find(cluster, &rule.group, &rule.name, cx);
@@ -1080,7 +1119,7 @@ impl AlertsView {
             let open = (ns.clone(), name.clone());
             kv.push((
                 "Defined in",
-                widgets::link(
+                widgets::detail_link(
                     "rule-object",
                     format!("{ns}/{name}"),
                     &colors,
@@ -1106,7 +1145,7 @@ impl AlertsView {
                         .text_size(u(11.5))
                         .text_color(colors.red)
                         .whitespace_normal()
-                        .child(error),
+                        .child(Selectable::new("rule-error", error)),
                 )
             })
             .child(
@@ -1117,7 +1156,7 @@ impl AlertsView {
                     .font_family(fonts::MONO)
                     .text_size(u(11.5))
                     .whitespace_normal()
-                    .child(expression),
+                    .child(Selectable::new("expression", expression)),
             )
             .child(
                 h_flex()

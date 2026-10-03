@@ -18,7 +18,7 @@ use std::sync::Arc;
 use base64::Engine as _;
 use gpui::{
     AnyElement, App, ClipboardItem, Context, Entity, FontStyle, FontWeight, HighlightStyle,
-    IntoElement, SharedString, StyledText, Subscription, Window, div, prelude::*,
+    IntoElement, SharedString, Subscription, Window, div, prelude::*,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -26,7 +26,7 @@ use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 use kubyl_core::actions::OpenView;
 use kubyl_core::{Notification, NotificationCenter, ResourceRef, ViewKind, ViewRequest};
 use kubyl_resources::format::{array_at, format_bytes, str_at};
-use kubyl_ui::{Colors, Icon, IconButton, IconName, fonts, h_flex, u, v_flex};
+use kubyl_ui::{Colors, Icon, IconButton, IconName, Selectable, fonts, h_flex, u, v_flex};
 use serde_json::Value;
 
 use super::{DetailsContent, SECRET_MASK, Target, section};
@@ -776,7 +776,10 @@ impl DetailsContent {
                     .truncate()
                     .font_family(fonts::MONO)
                     .text_size(u(12.0))
-                    .child(entry.key.clone()),
+                    .child(Selectable::new(
+                        SharedString::from(format!("data-key-{ix}")),
+                        entry.key.clone(),
+                    )),
             )
             .child(
                 div()
@@ -842,7 +845,11 @@ impl DetailsContent {
             .pr(u(4.0))
             .gap(u(6.0))
             .cursor_pointer()
-            .on_click(cx.listener(move |this, _, _, cx| {
+            .on_click(cx.listener(move |this, _, window, cx| {
+                // A drag over the key selects it instead of folding the block.
+                if kubyl_ui::has_text_selection(window, cx) {
+                    return;
+                }
                 if !this.data.collapsed.remove(&toggle_key) {
                     this.data.collapsed.insert(toggle_key.clone());
                 }
@@ -865,7 +872,10 @@ impl DetailsContent {
                     .font_family(fonts::MONO)
                     .text_size(u(12.0))
                     .text_color(colors.text)
-                    .child(entry.key.clone()),
+                    .child(Selectable::new(
+                        SharedString::from(format!("data-key-{ix}")),
+                        entry.key.clone(),
+                    )),
             )
             .child(
                 div()
@@ -966,16 +976,17 @@ impl DetailsContent {
         colors: &Colors,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let text = if entry.format == Format::Yaml {
-            let highlights: Vec<(Range<usize>, HighlightStyle)> = yaml_spans(&shown)
+        let highlights: Vec<(Range<usize>, HighlightStyle)> = if entry.format == Format::Yaml {
+            yaml_spans(&shown)
                 .into_iter()
                 .filter(|(range, _)| !range.is_empty())
                 .map(|(range, span)| (range, yaml_style(span, colors)))
-                .collect();
-            StyledText::new(shown).with_highlights(highlights)
+                .collect()
         } else {
-            StyledText::new(shown)
+            Vec::new()
         };
+        let text = Selectable::new(SharedString::from(format!("data-value-{ix}")), shown)
+            .highlights(highlights);
         let lines = div()
             .id(SharedString::from(format!("data-text-{ix}")))
             .font_family(fonts::MONO)
@@ -1100,7 +1111,12 @@ impl DetailsContent {
                     colors,
                 )
                 .into_any_element(),
-                None => div().child(group.name.clone()).into_any_element(),
+                None => div()
+                    .child(Selectable::new(
+                        SharedString::from(format!("used-by-{ix}")),
+                        group.name.clone(),
+                    ))
+                    .into_any_element(),
             };
             list = list.child(
                 h_flex()
@@ -1122,9 +1138,12 @@ impl DetailsContent {
                                 h_flex()
                                     .gap(u(5.0))
                                     .flex_wrap()
-                                    .child(
-                                        div().text_color(colors.text_dim).child(group.kind.clone()),
-                                    )
+                                    .child(div().text_color(colors.text_dim).child(
+                                        Selectable::new(
+                                            SharedString::from(format!("used-by-{ix}-kind")),
+                                            group.kind.clone(),
+                                        ),
+                                    ))
                                     .child(
                                         div()
                                             .font_family(fonts::MONO)
@@ -1133,10 +1152,13 @@ impl DetailsContent {
                                     )
                                     .when(group.kind != "Pod", |this| {
                                         this.child(div().text_color(colors.text_dim).child(
-                                            format!(
-                                                "· {} pod{}",
-                                                group.pods,
-                                                if group.pods == 1 { "" } else { "s" }
+                                            Selectable::new(
+                                                SharedString::from(format!("used-by-{ix}-pods")),
+                                                format!(
+                                                    "· {} pod{}",
+                                                    group.pods,
+                                                    if group.pods == 1 { "" } else { "s" }
+                                                ),
                                             ),
                                         ))
                                     }),
@@ -1146,7 +1168,10 @@ impl DetailsContent {
                                     .font_family(fonts::MONO)
                                     .text_size(u(11.0))
                                     .text_color(colors.text_muted)
-                                    .child(group.uses.join(" · ")),
+                                    .child(Selectable::new(
+                                        SharedString::from(format!("used-by-{ix}-uses")),
+                                        group.uses.join(" · "),
+                                    )),
                             ),
                     ),
             );

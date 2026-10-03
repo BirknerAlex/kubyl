@@ -195,7 +195,7 @@ pub(super) fn render(
                         .gap(u(4.0))
                         .font_family(fonts::MONO)
                         .text_size(u(11.0))
-                        .children(flow.raw.iter().map(|(key, value)| {
+                        .children(flow.raw.iter().enumerate().map(|(ix, (key, value))| {
                             h_flex()
                                 .items_start()
                                 .gap(u(8.0))
@@ -205,9 +205,15 @@ pub(super) fn render(
                                         .w(u(136.0))
                                         .truncate()
                                         .text_color(colors.text_dim)
-                                        .child(key.to_string()),
+                                        .child(Selectable::new(
+                                            ("raw-key", ix as u64),
+                                            key.to_string(),
+                                        )),
                                 )
-                                .child(div().flex_1().min_w_0().child(value.clone()))
+                                .child(div().flex_1().min_w_0().child(Selectable::new(
+                                    ("raw-value", ix as u64),
+                                    value.clone(),
+                                )))
                         })),
                 )
                 .into_any_element(),
@@ -221,14 +227,15 @@ pub(super) fn render(
         .border_l_1()
         .border_color(colors.border)
         .child(head)
-        .child(
+        .child(kubyl_ui::SelectionScope::new(
+            ("flow-details", cx.entity_id().as_u64()),
             v_flex()
                 .id("flow-details-body")
                 .flex_1()
                 .min_h_0()
                 .overflow_y_scroll()
                 .children(sections),
-        )
+        ))
         .into_any_element()
 }
 

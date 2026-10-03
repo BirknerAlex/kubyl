@@ -619,7 +619,10 @@ impl Render for UpdatesView {
                     .min_h_0()
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
-                    .child(body),
+                    .child(kubyl_ui::SelectionScope::new(
+                        ("updates-body", cx.entity_id().as_u64()),
+                        body,
+                    )),
             )
             .child(kubyl_ui::KeyHints::new(hints))
     }

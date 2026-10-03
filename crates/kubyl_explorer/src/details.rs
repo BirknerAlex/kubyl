@@ -17,9 +17,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, AnyView, App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle,
-    Focusable, FontWeight, IntoElement, Render, SharedString, Subscription, Task, Window, div,
-    prelude::*,
+    AnyElement, AnyView, App, AppContext as _, ClipboardItem, Context, ElementId, Entity,
+    FocusHandle, Focusable, FontWeight, IntoElement, Render, SharedString, Subscription, Task,
+    Window, div, prelude::*,
 };
 use kubyl_charts::Sparkline;
 use kubyl_core::actions::{ForwardPort, OpenView, StopForward};
@@ -30,7 +30,8 @@ use kubyl_core::{
 };
 use kubyl_kube::ConnectionManager;
 use kubyl_resources::columns::{
-    event_message, event_time, job_status, node_roles, node_status, pod_status, status_tone,
+    event_message, event_time, job_status, job_tone, node_roles, node_status, pod_status,
+    status_tone,
 };
 use kubyl_resources::format::{
     array_at, format_bytes, format_cpu, human_duration, int_at, map_pairs, object_age,
@@ -42,8 +43,8 @@ use kubyl_resources::{
     ResourceSelection, ResourceStore, ResourceStores, StoreHandle, StoreKey, object_key,
 };
 use kubyl_ui::{
-    ActiveColors, Chip, Colors, Icon, IconButton, IconName, Selectable, StatusDot, StatusPill,
-    fonts, h_flex, tone_color, u, v_flex,
+    ActiveColors, Chip, Colors, Icon, IconButton, IconName, Selectable, SelectionScope, StatusDot,
+    StatusPill, fonts, h_flex, tone_color, u, v_flex,
 };
 use serde_json::Value;
 
@@ -51,6 +52,7 @@ use crate::catalog;
 use crate::dialogs::{self, ConfirmSpec};
 
 mod data;
+mod jobs;
 mod routes;
 
 /// How long the selection must stay put before related objects are loaded.
@@ -168,6 +170,8 @@ struct Related {
     events: Option<StoreHandle>,
     pods: Option<StoreHandle>,
     replica_sets: Option<StoreHandle>,
+    /// A CronJob's Jobs (its pods are in `pods`).
+    jobs: Option<StoreHandle>,
     endpoints: Option<StoreHandle>,
     volume: Option<StoreHandle>,
     /// A Route's backends: the namespace's Services and the backends' EndpointSlices.
@@ -477,6 +481,15 @@ impl DetailsContent {
                 );
                 self.related.replica_sets = Some(self.acquire(key, cx));
             }
+            "CronJob" => {
+                let key =
+                    StoreKey::new(cluster.clone(), Gvr::new("batch", "v1", "jobs"), ns.clone());
+                self.related.jobs = Some(self.acquire(key, cx));
+                if let Some(ns) = &ns {
+                    let pods = StoreKey::new(cluster.clone(), core("pods"), Some(ns.clone()));
+                    self.related.pods = Some(self.acquire(pods, cx));
+                }
+            }
             "Service" => {
                 let key = StoreKey::new(cluster.clone(), core("endpoints"), ns.clone())
                     .fields(format!("metadata.name={}", target.name));
@@ -683,9 +696,15 @@ fn open_details(target: ResourceRef, window: &mut Window, cx: &mut App) {
 
 // ----- Rendering -----
 
-fn section(title: impl Into<SharedString>, colors: &Colors) -> gpui::Div {
+fn section(title: impl Into<SharedString>, colors: &Colors) -> gpui::Stateful<gpui::Div> {
     let title: SharedString = title.into();
+    // The element id scopes the selectable labels inside; it ignores a count after `·`.
+    let id = SharedString::from(format!(
+        "section-{}",
+        title.split(" · ").next().unwrap_or_default()
+    ));
     v_flex()
+        .id(id)
         .px(u(14.0))
         .py(u(12.0))
         .gap(u(8.0))
@@ -704,7 +723,7 @@ fn kv(rows: Vec<(&'static str, String)>, colors: &Colors) -> impl IntoElement {
     v_flex()
         .gap(u(5.0))
         .text_size(u(12.0))
-        .children(rows.into_iter().map(|(k, v)| {
+        .children(rows.into_iter().enumerate().map(|(ix, (k, v))| {
             h_flex()
                 .gap(u(8.0))
                 .child(
@@ -712,7 +731,10 @@ fn kv(rows: Vec<(&'static str, String)>, colors: &Colors) -> impl IntoElement {
                         .flex_none()
                         .w(u(104.0))
                         .text_color(colors.text_dim)
-                        .child(k),
+                        .child(Selectable::new(
+                            ElementId::NamedInteger("kv-key".into(), ix as u64),
+                            k,
+                        )),
                 )
                 .child(
                     div()
@@ -720,17 +742,38 @@ fn kv(rows: Vec<(&'static str, String)>, colors: &Colors) -> impl IntoElement {
                         .min_w_0()
                         .truncate()
                         .text_color(colors.text)
-                        .child(Selectable::new(k, v)),
+                        .child(Selectable::new(
+                            ElementId::NamedInteger("kv-value".into(), ix as u64),
+                            v,
+                        )),
                 )
         }))
+}
+
+/// A value followed by a dimmed tail, as one selectable run.
+fn dim_tail(id: impl Into<ElementId>, head: String, tail: String, colors: &Colors) -> Selectable {
+    let split = head.len();
+    let text = format!("{head}{tail}");
+    let run = Selectable::new(id, text.clone());
+    if tail.is_empty() {
+        return run;
+    }
+    run.highlights(vec![(
+        split..text.len(),
+        gpui::HighlightStyle {
+            color: Some(colors.text_dim),
+            ..Default::default()
+        },
+    )])
 }
 
 fn chips(items: Vec<String>, mono: bool) -> impl IntoElement {
     h_flex()
         .flex_wrap()
         .gap(u(4.0))
-        .children(items.into_iter().map(move |item| {
-            let chip = Chip::new(item);
+        .children(items.into_iter().enumerate().map(move |(ix, item)| {
+            let chip =
+                Chip::new(item).selectable_as(ElementId::NamedInteger("chip".into(), ix as u64));
             if mono { chip.mono() } else { chip }
         }))
 }
@@ -747,8 +790,13 @@ fn link(
         .cursor_pointer()
         .text_color(colors.accent)
         .hover(|s| s.underline())
-        .child(label.into())
-        .on_click(move |_, window, cx| open_details(target.clone(), window, cx))
+        .child(Selectable::new("link", label.into()))
+        // A drag over the text selects it instead of opening the object.
+        .on_click(move |_, window, cx| {
+            if !kubyl_ui::has_text_selection(window, cx) {
+                open_details(target.clone(), window, cx)
+            }
+        })
 }
 
 /// Wraps an element in a tooltip (the kubyl_ui buttons have none).
@@ -892,12 +940,13 @@ impl DetailsContent {
             "Pod" => {
                 let status = pod_status(object);
                 let tone = status.tone();
-                pills = pills.child(StatusPill::new(status.reason.clone(), tone));
+                pills = pills
+                    .child(StatusPill::new(status.reason.clone(), tone).selectable_as("status"));
                 if let Some(qos) = object.pointer("/status/qosClass").and_then(Value::as_str) {
-                    pills = pills.child(Chip::new(qos.to_string()));
+                    pills = pills.child(Chip::new(qos.to_string()).selectable_as("qos"));
                 }
                 if let Some(ip) = object.pointer("/status/podIP").and_then(Value::as_str) {
-                    pills = pills.child(Chip::new(ip.to_string()));
+                    pills = pills.child(Chip::new(ip.to_string()).selectable_as("pod-ip"));
                 }
             }
             "Node" => {
@@ -907,14 +956,15 @@ impl DetailsContent {
                 } else {
                     Tone::Bad
                 };
-                pills = pills.child(StatusPill::new(status, tone));
-                for role in node_roles(object) {
-                    pills = pills.child(Chip::new(role));
+                pills = pills.child(StatusPill::new(status, tone).selectable_as("status"));
+                for (ix, role) in node_roles(object).into_iter().enumerate() {
+                    pills = pills.child(Chip::new(role).selectable_as(("role", ix as u64)));
                 }
             }
             "Job" => {
                 let status = job_status(object);
-                pills = pills.child(StatusPill::new(status, status_tone(status)));
+                pills =
+                    pills.child(StatusPill::new(status, job_tone(status)).selectable_as("status"));
             }
             "Deployment" | "StatefulSet" | "ReplicaSet" => {
                 let ready = int_at(object, "/status/readyReplicas");
@@ -927,7 +977,10 @@ impl DetailsContent {
                 } else {
                     Tone::Warning
                 };
-                pills = pills.child(StatusPill::new(format!("{ready}/{desired} ready"), tone));
+                pills = pills.child(
+                    StatusPill::new(format!("{ready}/{desired} ready"), tone)
+                        .selectable_as("status"),
+                );
                 if self.can_scale(target, cx) {
                     let step = |id: &'static str, icon: IconName, tip: &'static str| {
                         tooltip_wrap(
@@ -972,17 +1025,19 @@ impl DetailsContent {
                 }
                 if let Some(pending) = self.scale_pending {
                     pills = pills.child(
-                        Chip::new(format!("scaling to {}", pending.replicas)).dot(colors.accent),
+                        Chip::new(format!("scaling to {}", pending.replicas))
+                            .dot(colors.accent)
+                            .selectable_as("scaling"),
                     );
                 }
             }
             "ConfigMap" | "Secret" => {
                 let secret = target.kind == "Secret";
                 if secret && let Some(kind) = object.get("type").and_then(Value::as_str) {
-                    pills = pills.child(Chip::new(kind.to_string()));
+                    pills = pills.child(Chip::new(kind.to_string()).selectable_as("secret-type"));
                 }
-                for chip in self.data_chips(object, secret) {
-                    pills = pills.child(Chip::new(chip));
+                for (ix, chip) in self.data_chips(object, secret).into_iter().enumerate() {
+                    pills = pills.child(Chip::new(chip).selectable_as(("data", ix as u64)));
                 }
                 if object.get("immutable").and_then(Value::as_bool) == Some(true) {
                     pills = pills.child(
@@ -1004,11 +1059,15 @@ impl DetailsContent {
             }
             _ => {
                 if let Some(phase) = object.pointer("/status/phase").and_then(Value::as_str) {
-                    pills = pills.child(StatusPill::new(phase.to_string(), status_tone(phase)));
+                    pills = pills.child(
+                        StatusPill::new(phase.to_string(), status_tone(phase))
+                            .selectable_as("status"),
+                    );
                 }
             }
         }
-        pills = pills.child(Chip::new(format!("age {}", object_age(object, now))));
+        pills =
+            pills.child(Chip::new(format!("age {}", object_age(object, now))).selectable_as("age"));
         out.push(
             v_flex()
                 .px(u(14.0))
@@ -1040,7 +1099,7 @@ impl DetailsContent {
                         div()
                             .text_size(u(11.5))
                             .text_color(colors.text_dim)
-                            .child(format!("namespace {ns}")),
+                            .child(Selectable::new("namespace", format!("namespace {ns}"))),
                     )
                 })
                 .child(pills)
@@ -1066,7 +1125,10 @@ impl DetailsContent {
                         row = row.child(
                             h_flex()
                                 .gap(u(4.0))
-                                .child(div().text_color(colors.text_dim).child(owner.kind.clone()))
+                                .child(div().text_color(colors.text_dim).child(Selectable::new(
+                                    SharedString::from(format!("owner-kind-{ix}")),
+                                    owner.kind.clone(),
+                                )))
                                 .child(div().font_family(fonts::MONO).text_size(u(11.5)).child(
                                     link(
                                         SharedString::from(format!("owner-{ix}")),
@@ -1078,7 +1140,10 @@ impl DetailsContent {
                         );
                     }
                     None => {
-                        row = row.child(format!("{} {}", owner.kind, owner.name));
+                        row = row.child(Selectable::new(
+                            SharedString::from(format!("owner-{ix}")),
+                            format!("{} {}", owner.kind, owner.name),
+                        ));
                     }
                 }
             }
@@ -1087,7 +1152,7 @@ impl DetailsContent {
                 .child(
                     div()
                         .text_color(colors.text_muted)
-                        .child(target.kind.clone()),
+                        .child(Selectable::new("owner-self", target.kind.clone())),
                 );
             out.push(
                 section("Owner chain", &colors)
@@ -1099,6 +1164,7 @@ impl DetailsContent {
         match target.kind.as_str() {
             "Pod" => out.extend(self.render_pod(object, target, &colors, cx)),
             "Deployment" => out.extend(self.render_deployment(object, target, &colors, cx)),
+            "CronJob" => out.extend(self.render_cronjob(object, target, &colors, cx)),
             "Node" => out.extend(self.render_node(object, &colors, cx)),
             "Service" => out.extend(self.render_service(object, target, &colors, cx)),
             "PersistentVolumeClaim" => out.extend(self.render_pvc(object, target, &colors, cx)),
@@ -1182,11 +1248,12 @@ impl DetailsContent {
                                     &colors,
                                 )),
                         )
-                        .child(
-                            div()
-                                .text_color(tone_color(status.tone(), &colors))
-                                .child(status.reason),
-                        ),
+                        .child(div().text_color(tone_color(status.tone(), &colors)).child(
+                            Selectable::new(
+                                SharedString::from(format!("pod-{ix}-status")),
+                                status.reason,
+                            ),
+                        )),
                 );
             }
             if matching.len() > 12 {
@@ -1236,7 +1303,7 @@ impl DetailsContent {
         let conditions = array_at(object, "/status/conditions");
         if !conditions.is_empty() {
             let mut grid = h_flex().flex_wrap().gap(u(4.0)).text_size(u(12.0));
-            for condition in conditions {
+            for (ix, condition) in conditions.iter().enumerate() {
                 let ok = str_at(condition, "/status") == "True";
                 let kind = str_at(condition, "/type").to_string();
                 // Node pressure conditions and a claim's `Unused` are healthy when False.
@@ -1260,7 +1327,10 @@ impl DetailsContent {
                                 colors.red
                             }),
                         )
-                        .child(div().truncate().child(kind)),
+                        .child(div().truncate().child(Selectable::new(
+                            SharedString::from(format!("condition-{ix}")),
+                            kind,
+                        ))),
                 );
             }
             out.push(
@@ -1277,7 +1347,7 @@ impl DetailsContent {
             events.sort_by_key(|e| std::cmp::Reverse(event_time(e)));
             if !events.is_empty() {
                 let mut list = v_flex().gap(u(6.0)).text_size(u(12.0));
-                for event in events.iter().take(6) {
+                for (ix, event) in events.iter().take(6).enumerate() {
                     let warning = str_at(event, "/type") == "Warning";
                     let age = event_time(event)
                         .map(|t| human_duration(seconds_since(t, now)))
@@ -1299,7 +1369,10 @@ impl DetailsContent {
                                             } else {
                                                 colors.text
                                             })
-                                            .child(str_at(event, "/reason").to_string()),
+                                            .child(Selectable::new(
+                                                SharedString::from(format!("event-{ix}-reason")),
+                                                str_at(event, "/reason").to_string(),
+                                            )),
                                     )
                                     .child(div().flex_1())
                                     .child(
@@ -1307,15 +1380,18 @@ impl DetailsContent {
                                             .text_color(colors.text_dim)
                                             .font_family(fonts::MONO)
                                             .text_size(u(11.0))
-                                            .child(age),
+                                            .child(Selectable::new(
+                                                SharedString::from(format!("event-{ix}-age")),
+                                                age,
+                                            )),
                                     ),
                             )
-                            .child(
-                                div()
-                                    .pl(u(13.0))
-                                    .text_color(colors.text_muted)
-                                    .child(event_message(event).to_string()),
-                            ),
+                            .child(div().pl(u(13.0)).text_color(colors.text_muted).child(
+                                Selectable::new(
+                                    SharedString::from(format!("event-{ix}-message")),
+                                    event_message(event).to_string(),
+                                ),
+                            )),
                     );
                 }
                 out.push(section("Events", &colors).child(list).into_any_element());
@@ -1335,7 +1411,7 @@ impl DetailsContent {
         let mut out = Vec::new();
         let statuses = array_at(pod, "/status/containerStatuses");
         let mut list = v_flex().gap(u(8.0));
-        for container in array_at(pod, "/spec/containers") {
+        for (ix, container) in array_at(pod, "/spec/containers").iter().enumerate() {
             let name = str_at(container, "/name");
             let status = statuses.iter().find(|s| str_at(s, "/name") == name);
             let (state, tone) = container_state(status, now);
@@ -1387,12 +1463,18 @@ impl DetailsContent {
                             .child(
                                 h_flex()
                                     .justify_between()
-                                    .child(
-                                        div()
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .child(name.to_string()),
-                                    )
-                                    .child(div().text_size(u(12.0)).text_color(color).child(state)),
+                                    .child(div().font_weight(FontWeight::MEDIUM).child(
+                                        Selectable::new(
+                                            SharedString::from(format!("container-{ix}")),
+                                            name.to_string(),
+                                        ),
+                                    ))
+                                    .child(div().text_size(u(12.0)).text_color(color).child(
+                                        Selectable::new(
+                                            SharedString::from(format!("container-{ix}-state")),
+                                            state,
+                                        ),
+                                    )),
                             )
                             .child(
                                 div()
@@ -1400,7 +1482,10 @@ impl DetailsContent {
                                     .font_family(fonts::MONO)
                                     .text_size(u(11.0))
                                     .text_color(colors.text_dim)
-                                    .child(str_at(container, "/image").to_string()),
+                                    .child(Selectable::new(
+                                        SharedString::from(format!("container-{ix}-image")),
+                                        str_at(container, "/image").to_string(),
+                                    )),
                             )
                             .when(
                                 !resources.is_empty() || !probes.is_empty() || restarts > 0,
@@ -1413,10 +1498,14 @@ impl DetailsContent {
                                         parts.push(format!("{restarts} restarts"));
                                     }
                                     this.child(
-                                        div()
-                                            .text_size(u(11.5))
-                                            .text_color(colors.text_dim)
-                                            .child(parts.join(" · ")),
+                                        div().text_size(u(11.5)).text_color(colors.text_dim).child(
+                                            Selectable::new(
+                                                SharedString::from(format!(
+                                                    "container-{ix}-resources"
+                                                )),
+                                                parts.join(" · "),
+                                            ),
+                                        ),
                                     )
                                 },
                             ),
@@ -1535,7 +1624,10 @@ impl DetailsContent {
                                 } else {
                                     colors.text_dim
                                 })
-                                .child(format!("#{number}")),
+                                .child(Selectable::new(
+                                    SharedString::from(format!("rs-{ix}-revision")),
+                                    format!("#{number}"),
+                                )),
                         )
                         .child(
                             v_flex()
@@ -1555,13 +1647,19 @@ impl DetailsContent {
                                         .font_family(fonts::MONO)
                                         .text_size(u(11.0))
                                         .text_color(colors.text_dim)
-                                        .child(images.join(", ")),
+                                        .child(Selectable::new(
+                                            SharedString::from(format!("rs-{ix}-images")),
+                                            images.join(", "),
+                                        )),
                                 ),
                         )
-                        .child(div().text_color(colors.text_dim).child(format!(
-                            "{}/{}",
-                            int_at(rs, "/status/readyReplicas"),
-                            int_at(rs, "/spec/replicas")
+                        .child(div().text_color(colors.text_dim).child(Selectable::new(
+                            SharedString::from(format!("rs-{ix}-ready")),
+                            format!(
+                                "{}/{}",
+                                int_at(rs, "/status/readyReplicas"),
+                                int_at(rs, "/spec/replicas")
+                            ),
                         ))),
                 );
             }
@@ -1638,14 +1736,18 @@ impl DetailsContent {
                             h_flex()
                                 .justify_between()
                                 .text_size(u(12.0))
-                                .child(div().text_color(colors.text_muted).child(label))
-                                .child(
-                                    h_flex()
-                                        .font_family(fonts::MONO)
-                                        .text_size(u(11.5))
-                                        .child(value)
-                                        .child(div().text_color(colors.text_dim).child(detail)),
-                                ),
+                                .child(div().text_color(colors.text_muted).child(Selectable::new(
+                                    SharedString::from(format!("usage-{label}")),
+                                    label,
+                                )))
+                                .child(h_flex().font_family(fonts::MONO).text_size(u(11.5)).child(
+                                    dim_tail(
+                                        SharedString::from(format!("usage-{label}-value")),
+                                        value,
+                                        detail,
+                                        colors,
+                                    ),
+                                )),
                         )
                         .when_some(samples.filter(|s| s.len() >= 2), |this, samples| {
                             this.child(Sparkline::new(samples, color).height(34.0))
@@ -1728,27 +1830,27 @@ impl DetailsContent {
                     h_flex()
                         .justify_between()
                         .text_size(u(12.0))
-                        .child(div().text_color(colors.text_muted).child(label))
-                        .child(
+                        .child(div().text_color(colors.text_muted).child(Selectable::new(
+                            SharedString::from(format!("usage-{label}")),
+                            label,
+                        )))
+                        .child({
+                            let mut tail = allocatable
+                                .map(|a| format!(" / {}", format(a)))
+                                .unwrap_or_default();
+                            if let Some(p) = percent {
+                                tail.push_str(&format!(" · {p:.0}%"));
+                            }
                             h_flex()
                                 .font_family(fonts::MONO)
                                 .text_size(u(11.5))
-                                .child(format(used))
-                                .when_some(allocatable, |this, a| {
-                                    this.child(
-                                        div()
-                                            .text_color(colors.text_dim)
-                                            .child(format!(" / {}", format(a))),
-                                    )
-                                })
-                                .when_some(percent, |this, p| {
-                                    this.child(
-                                        div()
-                                            .text_color(colors.text_dim)
-                                            .child(format!(" · {p:.0}%")),
-                                    )
-                                }),
-                        ),
+                                .child(dim_tail(
+                                    SharedString::from(format!("usage-{label}-value")),
+                                    format(used),
+                                    tail,
+                                    colors,
+                                ))
+                        }),
                 )
                 .when_some(percent, |this, p| this.child(kubyl_ui::ProgressBar::new(p)))
         };
@@ -2180,14 +2282,20 @@ impl DetailsContent {
                             .font_family(fonts::MONO)
                             .text_size(u(11.5))
                             .text_color(colors.text)
-                            .child(row.label),
+                            .child(Selectable::new(
+                                SharedString::from(format!("{id}port-{ix}")),
+                                row.label,
+                            )),
                     )
                     .child(
                         div()
                             .min_w_0()
                             .truncate()
                             .text_color(colors.text_dim)
-                            .child(row.detail),
+                            .child(Selectable::new(
+                                SharedString::from(format!("{id}port-{ix}-detail")),
+                                row.detail,
+                            )),
                     )
                     .children(control),
             );
@@ -2339,18 +2447,22 @@ impl DetailsContent {
             .font_family(fonts::MONO)
             .text_size(u(12.0))
             .text_color(colors.text)
-            .children(text.lines().map(|line| {
-                div()
-                    .whitespace_nowrap()
-                    .min_h(u(17.0))
-                    .child(line.to_string())
-            }))
+            .line_height(u(17.0))
+            .whitespace_nowrap()
+            .child(Selectable::new("describe", text))
             .into_any_element()
     }
 }
 
 impl Render for DetailsContent {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let content = self.render_content(window, cx);
+        SelectionScope::new(ElementId::View(cx.entity_id()), content)
+    }
+}
+
+impl DetailsContent {
+    fn render_content(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         // A sub-tab view that asks to close (a terminal whose shell exited) is dropped: opening
         // the sub-tab again starts a new session.
         let closed: Vec<Mode> = self
@@ -2699,6 +2811,52 @@ impl Render for DetailsView {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // Labels, annotations and the rows of two key/value blocks sit under one parent.
+    struct Sections;
+
+    impl Render for Sections {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let colors = cx.colors().clone();
+            let rows = |a: &'static str| vec![("Key", a.to_string())];
+            div()
+                .size_full()
+                .child(kubyl_ui::SelectionFrame)
+                .child(SelectionScope::new(
+                    "scope",
+                    v_flex()
+                        .child(section("Labels", &colors).child(chips(vec!["l0".into()], true)))
+                        .child(
+                            section("Annotations", &colors).child(chips(vec!["a0".into()], true)),
+                        )
+                        .child(section("One", &colors).child(kv(rows("v1"), &colors)))
+                        .child(section("Two", &colors).child(kv(rows("v2"), &colors))),
+                ))
+        }
+    }
+
+    #[gpui::test]
+    fn sections_under_one_parent_are_all_selectable(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            kubyl_ui::Theme::dark().apply(cx);
+        });
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|_| Sections);
+            gpui_component::Root::new(view, window, cx)
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+            assert!(kubyl_ui::select_all_in_scope(&"scope".into(), window, cx));
+            window.refresh();
+            let _ = window.draw(cx);
+            assert_eq!(
+                kubyl_ui::selected_text(window, cx).as_deref(),
+                Some("l0\n\na0\n\nKey v1\n\nKey v2")
+            );
+        });
+    }
 
     #[test]
     fn logs_and_terminal_applicability_mirrors_context_menu_actions() {

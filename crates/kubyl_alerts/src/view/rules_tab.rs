@@ -12,7 +12,7 @@ use gpui::{
 use gpui_component::input::Input;
 use jiff::Timestamp;
 use kubyl_core::{ClusterId, ColumnDef, ColumnWidth, spawn_kube};
-use kubyl_ui::{ActiveColors, Colors, Icon, IconName, fonts, h_flex, sizes, u, v_flex};
+use kubyl_ui::{ActiveColors, Colors, Icon, IconName, Selectable, fonts, h_flex, sizes, u, v_flex};
 use serde_json::Value;
 
 use super::{AlertsView, widgets};
@@ -582,46 +582,45 @@ impl AlertsView {
         };
         let rule_section = self.render_rule_section(cluster, rule, cx);
         let labels = (!rule.labels.is_empty()).then(|| {
-            widgets::section("Labels", &colors).child(
-                h_flex().flex_wrap().gap(u(5.0)).children(
-                    rule.labels
-                        .iter()
-                        .map(|(k, v)| widgets::label_chip(k, v, &colors)),
-                ),
-            )
+            widgets::section("Labels", &colors).child(h_flex().flex_wrap().gap(u(5.0)).children(
+                rule.labels.iter().enumerate().map(|(ix, (k, v))| {
+                    widgets::label_chip_as(("label", ix as u64), k, v, &colors)
+                }),
+            ))
         });
-        let annotations = (!rule.annotations.is_empty()).then(|| {
-            widgets::section("Annotations", &colors).child(
-                v_flex()
-                    .gap(u(4.0))
-                    .text_size(u(12.0))
-                    .children(rule.annotations.iter().map(|(k, v)| {
-                        h_flex()
-                            .items_start()
-                            .gap(u(8.0))
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .w(u(96.0))
-                                    .text_color(colors.text_dim)
-                                    .child(k.clone()),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .whitespace_normal()
-                                    .child(v.clone()),
-                            )
-                    })),
-            )
-        });
+        let annotations =
+            (!rule.annotations.is_empty()).then(|| {
+                widgets::section("Annotations", &colors).child(
+                    v_flex().gap(u(4.0)).text_size(u(12.0)).children(
+                        rule.annotations.iter().enumerate().map(|(ix, (k, v))| {
+                            h_flex()
+                                .items_start()
+                                .gap(u(8.0))
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .w(u(96.0))
+                                        .text_color(colors.text_dim)
+                                        .child(Selectable::new(
+                                            ("annotation-key", ix as u64),
+                                            k.clone(),
+                                        )),
+                                )
+                                .child(
+                                    div().flex_1().min_w_0().whitespace_normal().child(
+                                        Selectable::new(("annotation", ix as u64), v.clone()),
+                                    ),
+                                )
+                        }),
+                    ),
+                )
+            });
         let show = rule.name.clone();
         let close = cx.listener(|this, _, _, cx| {
             this.rule_details_open = false;
             cx.notify();
         });
-        v_flex()
+        let panel = v_flex()
             .flex_none()
             .w(u(330.0))
             .h_full()
@@ -665,7 +664,7 @@ impl AlertsView {
                                     .font_family(fonts::MONO)
                                     .text_size(u(13.5))
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .child(rule.name.clone()),
+                                    .child(Selectable::new("name", rule.name.clone())),
                             )
                             .child(
                                 h_flex()
@@ -676,13 +675,11 @@ impl AlertsView {
                                             .gap(u(5.0))
                                             .text_color(health.1)
                                             .child(Icon::new(health.2).size(12.0).color(health.1))
-                                            .child(health.0),
+                                            .child(Selectable::new("health", health.0)),
                                     )
-                                    .child(
-                                        div()
-                                            .text_color(colors.text_dim)
-                                            .child(format!("group {}", rule.group)),
-                                    ),
+                                    .child(div().text_color(colors.text_dim).child(
+                                        Selectable::new("group", format!("group {}", rule.group)),
+                                    )),
                             )
                             .child(widgets::text_button(
                                 "rule-show-alerts",
@@ -703,7 +700,8 @@ impl AlertsView {
                     .child(rule_section)
                     .children(labels)
                     .children(annotations),
-            )
+            );
+        kubyl_ui::SelectionScope::new(("rule-details", cx.entity_id().as_u64()), panel)
             .into_any_element()
     }
 

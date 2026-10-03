@@ -231,8 +231,8 @@ fn typed_confirmation(
     v_flex()
         .gap(u(6.0))
         .child(
-            // Wraps: long names (FQDNs) would run out of the dialog. The name can be selected
-            // and copied.
+            // Wraps: long names (FQDNs) would run out of the dialog. Dialog text can't be
+            // selected, so the name has a copy button.
             h_flex()
                 .flex_wrap()
                 .gap_x(u(6.0))
@@ -246,7 +246,16 @@ fn typed_confirmation(
                         .max_w_full()
                         .font_family(fonts::MONO)
                         .text_color(colors.text)
-                        .child(kubyl_ui::Selectable::new("typed", typed)),
+                        .child(typed.clone()),
+                )
+                .child(
+                    kubyl_ui::IconButton::new("typed-copy", kubyl_ui::IconName::Copy)
+                        .icon_size(11.0)
+                        .on_click(move |_, _, cx| {
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                typed.to_string(),
+                            ))
+                        }),
                 )
                 .child("to confirm."),
         )

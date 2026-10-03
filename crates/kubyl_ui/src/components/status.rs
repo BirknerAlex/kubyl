@@ -7,7 +7,7 @@ use gpui::{
 use gpui_component::h_flex;
 use kubyl_core::Tone;
 
-use crate::{ActiveColors, Colors, u};
+use crate::{ActiveColors, Colors, Selectable, u};
 
 /// The theme color for a status tone.
 pub fn tone_color(tone: Tone, colors: &Colors) -> Hsla {
@@ -64,6 +64,7 @@ impl RenderOnce for StatusDot {
 pub struct StatusPill {
     label: SharedString,
     tone: Tone,
+    selectable: Option<ElementId>,
 }
 
 impl StatusPill {
@@ -71,7 +72,14 @@ impl StatusPill {
         Self {
             label: label.into(),
             tone,
+            selectable: None,
         }
+    }
+
+    /// The label joins the window's text selection under `id` (unique among its siblings).
+    pub fn selectable_as(mut self, id: impl Into<ElementId>) -> Self {
+        self.selectable = Some(id.into());
+        self
     }
 }
 
@@ -82,7 +90,15 @@ impl RenderOnce for StatusPill {
             .gap(u(6.0))
             .min_w_0()
             .child(StatusDot::new(color))
-            .child(div().truncate().text_color(color).child(self.label))
+            .child(
+                div()
+                    .truncate()
+                    .text_color(color)
+                    .map(|this| match self.selectable {
+                        Some(id) => this.child(Selectable::new(id, self.label)),
+                        None => this.child(self.label),
+                    }),
+            )
     }
 }
 
