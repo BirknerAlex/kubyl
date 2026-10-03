@@ -2,7 +2,7 @@
 
 **Status:** in progress (manual build pipeline landed 2026-09-24; distribution jobs and
 auto-update landed and verified against a real release 2026-09-27 — v0.3.1, macOS/Linux/silo
-all confirmed working, winget PR awaiting moderator review, Flathub submission not yet filed;
+all confirmed working, winget PR awaiting moderator review;
 hardening and docs site still open)
 **Depends on:** 00 for CI (already running), then feature phases for the release
 **Owns:** `script/bundle-*`, `.github/workflows/release.yml`, bundling metadata in `crates/kubyl`
@@ -24,7 +24,6 @@ a public 1.0: accessibility, performance budgets, crash reporting (opt-in) and d
 - [x] **Linux**: `.deb`, `.rpm`, amd64 Arch `.pkg.tar.zst`. `.desktop` file (`packaging/linux/kubyl.desktop`) plus hicolor icons. Wayland and X11
 - [x] **Linux silo**: `publish-silo` CI job pushes `.deb`/`.rpm`/`.pkg.tar.zst` to silo repo `kubyl` channel `stable` via the reusable `BirknerAlex/silo/.github/actions/publish` action (GitHub Actions, not GitLab). `package.kubyl.dev` CNAME alias still open (needs `kubyl.dev`, itself unregistered — see Docs and site)
 - [x] **Linux AppImage**: `script/build-appimage.sh` (`linuxdeploy` + GTK plugin, both Linux archs, wired into `build-linux`). Not verified on a real Linux desktop yet — see handoff log
-- [ ] **Linux Flatpak (Flathub)**: manifest `io.github.birkneralex.Kubyl.yml` + `io.github.birkneralex.Kubyl.metainfo.xml` in repo, kept current via `release.yml`'s `publish-flathub` job (regenerates sources incl. both Linux archs, commits to `main` — does *not* publish to Flathub by itself, see `docs/FLATHUB.md`). Zed's own Flathub package also ships a prebuilt binary (same GPUI framework), strong precedent the source-build risk is overstated for this app category. Submission to flathub/flathub still open
 - [ ] Per-platform "open with / register URL handler" `kubyl://` for deep links (open a context/namespace/resource)
 - [ ] CLI shim `kubyl` (optional), e.g. `kubyl --context prod -n payments pods`
 
@@ -52,7 +51,7 @@ a public 1.0: accessibility, performance budgets, crash reporting (opt-in) and d
 
 ## Acceptance criteria
 
-- Clean-machine install works from the DMG, Homebrew cask, winget, silo packages, AppImage and Flatpak. The app launches, updates itself (manual installs only — package-manager installs defer to their own tool) and signature checks pass.
+- Clean-machine install works from the DMG, Homebrew cask, winget, silo packages and AppImage. The app launches, updates itself (manual installs only — package-manager installs defer to their own tool) and signature checks pass.
 - Performance budgets are enforced in CI.
 - Docs cover every feature from phases 01–09.
 
@@ -75,7 +74,7 @@ a public 1.0: accessibility, performance budgets, crash reporting (opt-in) and d
   Cert/secret setup for macOS notarization is documented step-by-step in `docs/RELEASING.md`
   (Developer ID Application `.p12` + App Store Connect API key `.p8`) — not yet configured as
   repo secrets, so a real (non-dry-run) release will fail at the macOS signing step until that's
-  done. Not implemented: Windows/EV signing, AppImage/Flatpak/MSI/winget/Homebrew, auto-update,
+  done. Not implemented: Windows/EV signing, AppImage/MSI/winget/Homebrew, auto-update,
   SBOM/provenance, third-party notices — tracked as open checkboxes above.
 - **2026-09-26**: Keychain prompts on every launch/update: the login keychain trusts apps by code
   signature, dev builds (ad-hoc, new cdhash per build) and releases shared the same items, and
@@ -87,7 +86,7 @@ a public 1.0: accessibility, performance budgets, crash reporting (opt-in) and d
   the `MACOS_PROVISIONING_PROFILE` secret or when the profile doesn't grant the entitlements
   (setup: `docs/RELEASING.md`, step 4). Not verified on a signed build yet: the first release
   with the profile is the test.
-- **2026-09-27**: Finalized distribution strategy and Flathub setup. **macOS**: Homebrew formula in homebrew-tap with auto-bumping (similar to silo). Create `kubyl.rb` formula and `bump-kubyl.sh` script to check releases every 3 hours and open PRs. **Windows**: unsigned `.zip` published to GitHub Releases + winget manifest PR to `microsoft/winget-pkgs`. **Linux packages**: `.deb`, `.rpm`, `.pkg.tar.zst` to silo repo `kubyl` channel `stable` via silo CLI (actions helper from `/Users/alexander/Projects/silo`). **Flathub**: Created manifest `io.github.birkneralex.Kubyl.yml` (pre-built binary from releases, references desktop file and icons from repo). Created `.github/workflows/publish-flathub.yml` that triggers on release, runs `script/update-flatpak-manifest.sh` to fetch sha256 and commit updated manifest back to main. Flathub CI automatically rebuilds on tag. **Submission**: Fork `flathub/flathub`, add manifest, submit PR (see `docs/FLATHUB.md`). After approval, Flathub CI watches this repo. Implementation: update `.github/workflows/release.yml` for winget/silo; Homebrew auto-update via homebrew-tap; manifest auto-update via publish-flathub. Setup: add `SILO_KUBYL_TOKEN` secret for Linux package publishing.
+- **2026-09-27**: Finalized distribution strategy. **macOS**: Homebrew formula in homebrew-tap with auto-bumping (similar to silo). Create `kubyl.rb` formula and `bump-kubyl.sh` script to check releases every 3 hours and open PRs. **Windows**: unsigned `.zip` published to GitHub Releases + winget manifest PR to `microsoft/winget-pkgs`. **Linux packages**: `.deb`, `.rpm`, `.pkg.tar.zst` to silo repo `kubyl` channel `stable` via silo CLI (actions helper from `/Users/alexander/Projects/silo`). Implementation: update `.github/workflows/release.yml` for winget/silo; Homebrew auto-update via homebrew-tap. Setup: add `SILO_KUBYL_TOKEN` secret for Linux package publishing.
 - **2026-09-27 (later)**: Implemented distribution jobs and app self-update, on `phase/09-packaging-release`.
   - Corrected the earlier plan: kubyl's macOS package is a Homebrew **cask** (`Casks/kubyl.rb`), not a
     formula — formulae are for CLI tools (silo), casks install `.app` bundles. Since Kubyl already
@@ -129,8 +128,7 @@ a public 1.0: accessibility, performance budgets, crash reporting (opt-in) and d
     (clean), `cargo test --workspace` (all green, `kubyl_selfupdate` alone: 10 unit + 2 integration),
     `cargo deny check` (advisories/bans/licenses/sources all ok).
   - Not done: Windows Authenticode signing (unchanged — winget accepts unsigned zips, so this was
-    deliberately not blocking), SBOM/provenance, third-party notices, AppImage, Flatpak's actual
-    Flathub submission (infra ready, PR not filed), `package.kubyl.dev` (silo alias — `kubyl.dev`
+    deliberately not blocking), SBOM/provenance, third-party notices, AppImage, `package.kubyl.dev` (silo alias — `kubyl.dev`
     itself is registered now, see below), and the whole Hardening section. Nothing in this session
     has run against a real release yet — `build-update-manifest`/`publish-winget`/`publish-silo`
     are new and their first real invocation is the test, same caveat as the macOS provisioning
@@ -159,43 +157,6 @@ a public 1.0: accessibility, performance budgets, crash reporting (opt-in) and d
     states skip re-checking).
   - Fixed a settings-key doc typo (`updates_app` → `self_update`, the real
     `SelfUpdateSettings::KEY`) in `lib.rs` and this file.
-  - **`publish-flathub.yml` had a real bug**: `release: published` checks out the release tag
-    (detached HEAD) by default, so the commit landed nowhere and `git push origin main` pushed
-    the *old* main. Fixed with an explicit `ref: main` checkout — which then needs
-    `RELEASE_PUSH_TOKEN` instead of the default `GITHUB_TOKEN`, same reason the `version` job
-    needs it (main's ruleset requires PRs/status checks and the default token isn't a bypass
-    actor). Skipped CodeRabbit's SHA-pinning/`persist-credentials: false` suggestions — neither
-    matches this repo's existing convention (every other workflow uses tag refs, no job sets
-    `persist-credentials: false`); flagging rather than silently diverging.
-  - **The Flatpak manifest had several real bugs**, found by checking the actual release.yml
-    output against the manifest's assumptions: the Linux archive's binary is nested in a
-    version-named staging directory (`kubyl-$VERSION-linux-$ARCH/kubyl`), not at the archive
-    root — added `strip-components: 1`. Added an `aarch64` source (release.yml builds both
-    Linux archs; the manifest only had x86_64) via `only-arches`. Added the AppStream Metainfo
-    Flathub requires (`io.github.birkneralex.Kubyl.metainfo.xml`, new file). Switched the
-    desktop file and icon sources from local `path:` to `url:` (raw.githubusercontent.com,
-    pinned to the release tag) — a real Flathub submission only ever checks out the manifest
-    itself, not the rest of this repo, so local paths would 404 in that context.
-  - **`update-flatpak-manifest.sh` had three real bugs**: wrong archive filename (guessed
-    `kubyl-v$VERSION-x86_64-unknown-linux-gnu.tar.gz`; release.yml actually produces
-    `kubyl-$VERSION-linux-amd64.tar.gz`), a nonexistent per-file `.sha256` sidecar (release.yml
-    only publishes one combined `SHA256SUMS`), and a placeholder-only `sed` that would silently
-    stop updating anything after the first successful run. Rewrote it to regenerate the whole
-    `sources:` block from scratch each run (both archs, desktop file, icons, Metainfo reference)
-    instead of patching specific strings, and to append a dated `<release>` to the Metainfo file
-    (skipped if one for that version already exists). Verified end-to-end against the real
-    v0.2.5 release: fetched real `SHA256SUMS`, regenerated the manifest, and it byte-matched the
-    hand-written version; confirmed the metainfo append is idempotent and correctly prepends
-    newer releases.
-  - **Flagged, not fixed**: Flathub's own policy prefers apps built from source; a prebuilt
-    binary (the choice made for every other package manager here) needs a case-by-case
-    exception. Documented as a known risk in `docs/FLATHUB.md` rather than silently rewriting to
-    a from-source Flatpak build (a much larger undertaking that would reverse an earlier
-    decision) — the first real submission is what actually tests whether reviewers accept it.
-  - `docs/FLATHUB.md` corrected: Flathub's submission flow branches off `new-pr` (not the
-    default branch), the manifest-copy destination was double-nested and skipped creating the
-    directory, and the "After Approval" section overstated what triggers a Flathub rebuild
-    (it's `flathub/io.github.birkneralex.Kubyl`, a repo Flathub creates after acceptance — not
     anything in this repo).
 - **2026-09-27 (merge + winget submission)**: PR #16 merged to `main` (`gh pr merge --admin` —
   all six checks green: rustfmt, both cargo-deny jobs, macOS/Ubuntu/Windows, CodeRabbit).
@@ -248,12 +209,6 @@ a public 1.0: accessibility, performance budgets, crash reporting (opt-in) and d
     `release`, this also meant **v0.3.0 built everything successfully but was never published**
     — the tag and changelog commit exist, but no GitHub Release. Left as-is (harmless); v0.3.1
     carries the fix and is the first real published release of this phase's work.
-  - `publish-flathub.yml` (the standalone `on: release: published` workflow) never fired at all,
-    for v0.3.0 or v0.3.1 — zero runs, confirmed via `gh run list`. Root cause: the `release` job
-    creates the GitHub Release with the default `GITHUB_TOKEN`, and GitHub's anti-recursion rule
-    means a `GITHUB_TOKEN`-authored event doesn't trigger other workflows' `on:` listeners. This
-    is exactly why `publish-winget` and `publish-silo` were already ordinary jobs inside
-    `release.yml` instead of separate event-triggered workflows — `publish-flathub` gets the same
     treatment now (`needs: [version, release]`), and the standalone workflow file is deleted.
   - What did work on the first try: macOS notarization (real Developer ID sign + notarize +
     staple, not just "the secrets exist" — this is the first actual verification since the
