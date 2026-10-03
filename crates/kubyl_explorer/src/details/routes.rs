@@ -25,9 +25,10 @@ pub(super) const KEY_REVEAL: &str = "route:spec.tls.key";
 /// Admitted / not admitted per router, then the TLS chip.
 pub(super) fn route_pills(route: &Route, mut pills: gpui::Div) -> gpui::Div {
     if route.routers.is_empty() {
-        pills = pills.child(StatusPill::new("Not admitted yet", Tone::Warning));
+        pills = pills
+            .child(StatusPill::new("Not admitted yet", Tone::Warning).selectable_as("router-none"));
     }
-    for router in &route.routers {
+    for (ix, router) in route.routers.iter().enumerate() {
         let (label, tone) = if router.is_admitted() {
             (format!("Admitted · {}", router.router), Tone::Good)
         } else if router.is_rejected() {
@@ -35,12 +36,15 @@ pub(super) fn route_pills(route: &Route, mut pills: gpui::Div) -> gpui::Div {
         } else {
             (format!("Pending · {}", router.router), Tone::Warning)
         };
-        pills = pills.child(StatusPill::new(label, tone));
+        pills = pills.child(StatusPill::new(label, tone).selectable_as(("router", ix as u64)));
     }
-    pills.child(Chip::new(match &route.tls {
-        Some(tls) => tls.label(),
-        None => "no TLS".to_string(),
-    }))
+    pills.child(
+        Chip::new(match &route.tls {
+            Some(tls) => tls.label(),
+            None => "no TLS".to_string(),
+        })
+        .selectable_as("tls"),
+    )
 }
 
 /// A label and a value element, aligned like the details' key/value rows.
@@ -54,17 +58,39 @@ fn kv_row(label: &'static str, value: impl IntoElement, colors: &Colors) -> impl
                 .flex_none()
                 .w(u(104.0))
                 .text_color(colors.text_dim)
-                .child(label),
+                .child(Selectable::new(ElementId::Name(label.into()), label)),
         )
         .child(div().flex_1().min_w_0().child(value))
 }
 
+/// The id of selectable text: the call site, plus the row index for calls in a loop.
+fn site_id(site: &std::panic::Location<'_>, ix: Option<usize>) -> ElementId {
+    let ix = ix.map(|ix| format!(":{ix}")).unwrap_or_default();
+    ElementId::Name(SharedString::from(format!(
+        "{}:{}{ix}",
+        site.line(),
+        site.column()
+    )))
+}
+
+/// Selectable text, identified by its call site.
+#[track_caller]
 fn text(value: impl Into<SharedString>, color: gpui::Hsla) -> gpui::Div {
-    let value = value.into();
+    let id = site_id(std::panic::Location::caller(), None);
     div()
         .truncate()
         .text_color(color)
-        .child(Selectable::new(ElementId::Name(value.clone()), value))
+        .child(Selectable::new(id, value))
+}
+
+/// [`text`] in a loop: the row index tells the rows apart.
+#[track_caller]
+fn text_at(ix: usize, value: impl Into<SharedString>, color: gpui::Hsla) -> gpui::Div {
+    let id = site_id(std::panic::Location::caller(), Some(ix));
+    div()
+        .truncate()
+        .text_color(color)
+        .child(Selectable::new(id, value))
 }
 
 /// `10.244.0.12:8080` for each ready endpoint of `service` in its EndpointSlices. An endpoint
@@ -179,7 +205,7 @@ impl DetailsContent {
                 colors.text_dim,
             ));
         }
-        for router in &route.routers {
+        for (ix, router) in route.routers.iter().enumerate() {
             let admission = router.admitted.as_ref();
             let (icon, color) = if router.is_admitted() {
                 (IconName::CircleCheck, colors.green)
@@ -227,29 +253,37 @@ impl DetailsContent {
                             .child(
                                 h_flex()
                                     .gap(u(8.0))
-                                    .child(
-                                        div()
-                                            .font_family(fonts::MONO)
-                                            .text_size(u(11.5))
-                                            .child(router.router.clone()),
-                                    )
-                                    .child(text(verdict, color))
+                                    .child(div().font_family(fonts::MONO).text_size(u(11.5)).child(
+                                        Selectable::new(
+                                            SharedString::from(format!("router-{ix}")),
+                                            router.router.clone(),
+                                        ),
+                                    ))
+                                    .child(text_at(ix, verdict, color))
                                     .child(div().flex_1())
                                     .child(
                                         div()
                                             .font_family(fonts::MONO)
                                             .text_size(u(11.0))
                                             .text_color(colors.text_dim)
-                                            .child(age),
+                                            .child(Selectable::new(
+                                                SharedString::from(format!("router-{ix}-age")),
+                                                age,
+                                            )),
                                     ),
                             )
-                            .child(text(details.join(" · "), colors.text_dim))
+                            .child(text_at(ix, details.join(" · "), colors.text_dim))
                             .when_some(
                                 admission
                                     .and_then(|a| a.message.clone())
                                     .filter(|_| !router.is_admitted()),
                                 |this, message| {
-                                    this.child(div().text_color(colors.text_muted).child(message))
+                                    this.child(div().text_color(colors.text_muted).child(
+                                        Selectable::new(
+                                            SharedString::from(format!("router-{ix}-message")),
+                                            message,
+                                        ),
+                                    ))
                                 },
                             ),
                     ),
@@ -278,25 +312,27 @@ impl DetailsContent {
                 hosts.push(format!("{host} (admitted by {})", router.router));
             }
         }
-        let mono = |value: String| {
+        #[track_caller]
+        fn mono(value: String, colors: &Colors) -> gpui::Div {
+            let id = site_id(std::panic::Location::caller(), None);
             div()
                 .truncate()
                 .font_family(fonts::MONO)
                 .text_size(u(11.5))
                 .text_color(colors.text)
-                .child(value)
-        };
+                .child(Selectable::new(id, value))
+        }
         let mut body = v_flex().gap(u(5.0)).child(kv_row(
             if hosts.len() > 1 { "Hosts" } else { "Host" },
             if hosts.is_empty() {
                 text("none yet", colors.text_dim).into_any_element()
             } else {
-                mono(hosts.join(", ")).into_any_element()
+                mono(hosts.join(", "), colors).into_any_element()
             },
             colors,
         ));
         if let Some(path) = &route.path {
-            body = body.child(kv_row("Path", mono(path.clone()), colors));
+            body = body.child(kv_row("Path", mono(path.clone(), colors), colors));
         }
         let url = route::url(route);
         body = body.child(kv_row(
@@ -316,8 +352,12 @@ impl DetailsContent {
                                 .text_color(colors.accent)
                                 .cursor_pointer()
                                 .hover(|s| s.underline())
-                                .child(url.clone())
-                                .on_click(move |_, _, cx| cx.open_url(&open)),
+                                .child(Selectable::new("text", url.clone()))
+                                .on_click(move |_, window, cx| {
+                                    if !kubyl_ui::has_text_selection(window, cx) {
+                                        cx.open_url(&open)
+                                    }
+                                }),
                         )
                         .child({
                             let open = url.clone();
@@ -557,11 +597,12 @@ impl DetailsContent {
                 list = list.child(
                     h_flex()
                         .gap(u(8.0))
-                        .child(text(
+                        .child(text_at(
+                            ix,
                             format!("{} {}", backend.kind, backend.name),
                             colors.text,
                         ))
-                        .child(text(share, colors.text_dim)),
+                        .child(text_at(ix, share, colors.text_dim)),
                 );
                 continue;
             }
@@ -599,7 +640,10 @@ impl DetailsContent {
                             .font_family(fonts::MONO)
                             .text_size(u(11.5))
                             .text_color(colors.text_muted)
-                            .child(share.clone()),
+                            .child(Selectable::new(
+                                SharedString::from(format!("route-svc-{ix}-share")),
+                                share.clone(),
+                            )),
                     )
                 });
             let service = self.route_service(&backend.name, cx);
@@ -613,9 +657,10 @@ impl DetailsContent {
                         colors,
                         cx,
                     ),
-                    Err(err) => text(err, colors.yellow).into_any_element(),
+                    Err(err) => text_at(ix, err, colors.yellow).into_any_element(),
                 },
-                (None, Some(true)) => text(
+                (None, Some(true)) => text_at(
+                    ix,
                     format!(
                         "Service {} not found in {}",
                         backend.name,
@@ -624,7 +669,7 @@ impl DetailsContent {
                     colors.yellow,
                 )
                 .into_any_element(),
-                (None, _) => text("Loading…", colors.text_dim).into_any_element(),
+                (None, _) => text_at(ix, "Loading…", colors.text_dim).into_any_element(),
             };
             let ready = ready_endpoints(&slices, &backend.name).len();
             list = list.child(
@@ -633,7 +678,8 @@ impl DetailsContent {
                     .child(head)
                     .child(div().pl(u(68.0)).child(body))
                     .when(self.related.endpoint_slices.is_some(), |this| {
-                        this.child(div().pl(u(68.0)).child(text(
+                        this.child(div().pl(u(68.0)).child(text_at(
+                            ix,
                             endpoints_label(ready),
                             if ready == 0 {
                                 colors.yellow
@@ -658,15 +704,15 @@ impl DetailsContent {
         let slices: Vec<&Arc<Value>> = store.objects().values().collect();
         let mut total = 0;
         let mut list = v_flex().gap(u(6.0)).text_size(u(12.0));
-        for backend in route.services() {
+        for (ix, backend) in route.services().enumerate() {
             let addresses = ready_endpoints(slices.iter().copied(), &backend.name);
             total += addresses.len();
             list = list.child(
                 v_flex()
                     .gap(u(3.0))
-                    .child(text(backend.name.clone(), colors.text_dim))
+                    .child(text_at(ix, backend.name.clone(), colors.text_dim))
                     .child(if addresses.is_empty() {
-                        text("No ready endpoints.", colors.yellow).into_any_element()
+                        text_at(ix, "No ready endpoints.", colors.yellow).into_any_element()
                     } else {
                         chips(addresses, true).into_any_element()
                     }),
