@@ -182,7 +182,7 @@ pub struct NativeWebView {
     #[cfg(target_os = "linux")]
     _context: Option<Rc<RefCell<wry::WebContext>>>,
     #[cfg(target_os = "linux")]
-    bounds: std::cell::Cell<Option<Bounds<Pixels>>>,
+    bounds: std::cell::Cell<Option<(Bounds<Pixels>, f32)>>,
 }
 
 impl NativeWebView {
@@ -357,9 +357,10 @@ impl NativeWebView {
         self.placement
     }
 
-    /// Places the view at `bounds` (logical pixels, relative to the window's content area).
+    /// Places the view at `bounds` (logical pixels, relative to the window's content area);
+    /// `scale` is the window's scale factor.
     #[allow(unused_variables)]
-    pub fn set_bounds(&self, bounds: Bounds<Pixels>) {
+    pub fn set_bounds(&self, bounds: Bounds<Pixels>, scale: f32) {
         if self.placement == Placement::Window {
             return;
         }
@@ -369,8 +370,25 @@ impl NativeWebView {
             return;
         }
         #[cfg(target_os = "linux")]
-        self.bounds.set(Some(bounds));
+        self.bounds.set(Some((bounds, scale)));
         with_wry! {{
+            // On Linux (X11) wry guesses the scale from the screen's physical size, which
+            // disagrees with GPUI's (Xft.dpi): hand it device pixels, which GTK (scale 1)
+            // takes as they are.
+            #[cfg(target_os = "linux")]
+            let rect = wry::Rect {
+                position: wry::dpi::PhysicalPosition::new(
+                    f64::from(f32::from(bounds.origin.x * scale)),
+                    f64::from(f32::from(bounds.origin.y * scale)),
+                )
+                .into(),
+                size: wry::dpi::PhysicalSize::new(
+                    f64::from(f32::from(bounds.size.width * scale)).max(1.0),
+                    f64::from(f32::from(bounds.size.height * scale)).max(1.0),
+                )
+                .into(),
+            };
+            #[cfg(not(target_os = "linux"))]
             let rect = wry::Rect {
                 position: wry::dpi::LogicalPosition::new(
                     f64::from(f32::from(bounds.origin.x)),
@@ -402,8 +420,8 @@ impl NativeWebView {
             // Showing a WebKitGTK child re-runs GTK's size negotiation, which a foreign X11
             // window never finishes (no frame clock): allocate the bounds again.
             #[cfg(target_os = "linux")]
-            if visible && let Some(bounds) = self.bounds.get() {
-                self.set_bounds(bounds);
+            if visible && let Some((bounds, scale)) = self.bounds.get() {
+                self.set_bounds(bounds, scale);
             }
         }}
     }

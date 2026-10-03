@@ -9,6 +9,54 @@ pub fn init(_cx: &mut App) {
     macos::set_dock_icon();
 }
 
+/// Linux: runs Kubyl through XWayland when a Wayland session offers it, so web views can be
+/// child windows of the main window. A Wayland client can't embed WebKitGTK's surface (it
+/// lives on GTK's own connection), so on plain Wayland every page needs a window of its own.
+/// `KUBYL_WAYLAND=1` keeps the native Wayland window. Call first in `main`, before threads
+/// start. Returns whether it switched to X11.
+#[cfg(target_os = "linux")]
+pub fn prefer_xwayland() -> bool {
+    use std::os::unix::net::UnixStream;
+
+    if std::env::var_os("KUBYL_WAYLAND").is_some_and(|v| !v.is_empty()) {
+        return false;
+    }
+    if std::env::var_os("WAYLAND_DISPLAY").is_none_or(|v| v.is_empty()) {
+        return false;
+    }
+    let reachable = std::env::var("DISPLAY")
+        .ok()
+        .and_then(|display| x11_socket(&display))
+        .is_some_and(|socket| UnixStream::connect(socket).is_ok());
+    if !reachable {
+        return false;
+    }
+    // GPUI picks X11 when there is no Wayland display.
+    // SAFETY: nothing else runs yet, so no thread reads the environment concurrently.
+    unsafe { std::env::remove_var("WAYLAND_DISPLAY") };
+    true
+}
+
+/// The Unix socket of a local X display (`:0`, `:1.0`); `None` for remote displays.
+#[cfg(target_os = "linux")]
+fn x11_socket(display: &str) -> Option<std::path::PathBuf> {
+    let number: u32 = display.strip_prefix(':')?.split('.').next()?.parse().ok()?;
+    Some(format!("/tmp/.X11-unix/X{number}").into())
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_displays_map_to_sockets() {
+        assert_eq!(x11_socket(":0"), Some("/tmp/.X11-unix/X0".into()));
+        assert_eq!(x11_socket(":1.0"), Some("/tmp/.X11-unix/X1".into()));
+        assert_eq!(x11_socket("host:0"), None);
+        assert_eq!(x11_socket(""), None);
+    }
+}
+
 /// Raises the open-file soft limit to what the OS allows. Apps launched from the Finder get
 /// 256, which Kubyl outgrows with a few clusters (HTTP/1.1: a socket per watch) and web views;
 /// WebKit aborts the process when it can't open what it needs. Call first in `main`, before

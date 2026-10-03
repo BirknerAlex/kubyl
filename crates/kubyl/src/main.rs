@@ -10,9 +10,22 @@ mod views;
 mod workspace;
 
 fn main() {
+    // Before any thread exists. WebKitGTK's DMA-BUF renderer makes the compositor drop the
+    // connection ("Missing acquire timeline", e.g. NVIDIA on Wayland) as soon as a web view opens.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        // SAFETY: nothing else runs yet, so no thread reads the environment concurrently.
+        unsafe { std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1") };
+    }
+    #[cfg(target_os = "linux")]
+    let xwayland = platform::prefer_xwayland();
     let fd_limit = platform::raise_fd_limit();
     let _log_guard = logging::init();
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "starting Kubyl");
+    #[cfg(target_os = "linux")]
+    if xwayland {
+        tracing::info!("using XWayland so web views can be embedded (KUBYL_WAYLAND=1 opts out)");
+    }
     match fd_limit {
         Ok(Some((old, new))) => tracing::info!(old, new, "raised the open-file limit"),
         Ok(None) => {}
