@@ -622,6 +622,7 @@ impl Render for Workspace {
             .font_family(kubyl_ui::fonts::UI)
             .text_size(u(kubyl_ui::sizes::UI_FONT))
             .on_action(kubyl_ui::copy_selected_text)
+            .on_action(kubyl_ui::select_all_text)
             .on_action(cx.listener(|this, _: &ToggleLeftDock, window, cx| {
                 this.toggle_dock(DockPosition::Left, window, cx)
             }))
@@ -688,6 +689,7 @@ impl Render for Workspace {
                 this.overlay = Some(Overlay::Notifications);
                 cx.notify();
             }))
+            .child(kubyl_ui::SelectionFrame)
             .child(
                 TitleBar::new()
                     .cluster(context.cluster.clone())
