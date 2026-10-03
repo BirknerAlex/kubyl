@@ -28,7 +28,8 @@ fn started(job: &Value) -> Option<Timestamp> {
     timestamp(str_at(job, "/status/startTime")).or_else(|| creation(job))
 }
 
-/// The Jobs owned by the CronJob `uid`, newest first.
+/// The Jobs owned by the CronJob `uid`, newest first by creation (resuming a suspended Job
+/// gives it a new start time but not a new place).
 pub(super) fn owned_jobs<'a>(
     uid: &str,
     jobs: impl IntoIterator<Item = &'a Arc<Value>>,
@@ -42,9 +43,13 @@ pub(super) fn owned_jobs<'a>(
                     .any(|o| str_at(o, "/uid") == uid)
         })
         .collect();
-    owned.sort_by(|a, b| {
-        (started(b), str_at(b, "/metadata/name")).cmp(&(started(a), str_at(a, "/metadata/name")))
-    });
+    let key = |job: &Value| {
+        (
+            creation(job).or_else(|| started(job)),
+            str_at(job, "/metadata/name").to_string(),
+        )
+    };
+    owned.sort_by_cached_key(|job| std::cmp::Reverse(key(job)));
     owned
 }
 
@@ -98,6 +103,16 @@ fn meta(job: &Value, now: Timestamp) -> String {
         parts.push(format!("took {}", human_duration(seconds)));
     }
     parts.join(" · ")
+}
+
+/// What a problem with the Jobs list says; `None` while it works or loads.
+fn status_note(status: &StoreStatus) -> Option<String> {
+    match status {
+        StoreStatus::Forbidden => Some("You may not list Jobs in this namespace.".into()),
+        StoreStatus::Unsupported => Some("This cluster doesn't serve Jobs.".into()),
+        StoreStatus::Error(err) => Some(format!("Watch failed, retrying: {err}")),
+        _ => None,
+    }
 }
 
 /// `*/5 * * * *`, with its time zone when set.
@@ -154,18 +169,21 @@ impl DetailsContent {
         let history = owned_jobs(uid, store.objects().values());
         if history.is_empty() {
             // Nothing to show while the list loads.
-            if matches!(store.status(), StoreStatus::Ready) {
-                out.push(
-                    section("Job history", colors)
-                        .child(
-                            div()
-                                .text_size(u(12.0))
-                                .text_color(colors.text_dim)
-                                .child(Selectable::new("jobs-none", "No Jobs.")),
-                        )
-                        .into_any_element(),
-                );
-            }
+            let (note, color) = match (status_note(store.status()), store.status()) {
+                (Some(note), _) => (note, colors.yellow),
+                (None, StoreStatus::Ready) => ("No Jobs.".to_string(), colors.text_dim),
+                _ => return out,
+            };
+            out.push(
+                section("Job history", colors)
+                    .child(
+                        div()
+                            .text_size(u(12.0))
+                            .text_color(color)
+                            .child(Selectable::new("jobs-note", note)),
+                    )
+                    .into_any_element(),
+            );
             return out;
         }
         let mut pods = self
@@ -277,6 +295,7 @@ mod tests {
     fn job(name: &str, owner: &str, start: &str, status: Value) -> Arc<Value> {
         Arc::new(json!({
             "metadata": {"name": name, "uid": format!("uid-{name}"),
+                "creationTimestamp": start,
                 "ownerReferences": [{"kind": "CronJob", "uid": owner}]},
             "status": {"startTime": start, "conditions": status},
         }))
@@ -305,6 +324,40 @@ mod tests {
         assert_eq!(schedule(&plain), "*/5 * * * *");
         let zoned = json!({"spec": {"schedule": "0 3 * * *", "timeZone": "Europe/Berlin"}});
         assert_eq!(schedule(&zoned), "0 3 * * * (Europe/Berlin)");
+    }
+
+    #[test]
+    fn a_resumed_job_keeps_its_place_by_creation() {
+        // Created first, resumed (new start time) after the newer Job started.
+        let resumed = Arc::new(json!({"metadata": {"name": "old",
+            "creationTimestamp": "2026-01-01T10:00:00Z", "ownerReferences": [{"uid": "cron"}]},
+            "status": {"startTime": "2026-01-01T12:00:00Z"}}));
+        let all = [
+            resumed,
+            job("new", "cron", "2026-01-01T11:00:00Z", json!([])),
+        ];
+        assert_eq!(names(&owned_jobs("cron", all.iter())), ["new", "old"]);
+    }
+
+    #[test]
+    fn store_problems_are_worded() {
+        assert_eq!(status_note(&StoreStatus::Ready), None);
+        assert_eq!(status_note(&StoreStatus::Loading), None);
+        assert!(
+            status_note(&StoreStatus::Forbidden)
+                .unwrap()
+                .contains("may not")
+        );
+        assert!(
+            status_note(&StoreStatus::Unsupported)
+                .unwrap()
+                .contains("doesn't serve")
+        );
+        assert!(
+            status_note(&StoreStatus::Error("boom".into()))
+                .unwrap()
+                .contains("boom")
+        );
     }
 
     #[test]
