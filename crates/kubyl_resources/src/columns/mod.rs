@@ -386,7 +386,8 @@ fn replicaset_cell(object: &Value, column: &str, _: Timestamp) -> CellValue {
     }
 }
 
-/// `Complete`, `Failed`, `Suspended`, `Terminating` or `Running`, like kubectl 1.30+.
+/// `Complete`, `Failed`, `Terminating`, `Suspended`, `FailureTarget`, `SuccessCriteriaMet` or
+/// `Running`, in kubectl's order.
 pub fn job_status(job: &Value) -> &'static str {
     let condition = |kind: &str| {
         array_at(job, "/status/conditions")
@@ -397,13 +398,52 @@ pub fn job_status(job: &Value) -> &'static str {
         "Complete"
     } else if condition("Failed") {
         "Failed"
-    } else if condition("Suspended") {
-        "Suspended"
     } else if job.pointer("/metadata/deletionTimestamp").is_some() {
         "Terminating"
+    } else if condition("Suspended") {
+        "Suspended"
+    } else if condition("FailureTarget") {
+        "FailureTarget"
+    } else if condition("SuccessCriteriaMet") {
+        "SuccessCriteriaMet"
     } else {
         "Running"
     }
+}
+
+/// The tone of a [`job_status`] in the Jobs list (a running Job is `Info`).
+pub fn job_tone(status: &str) -> Tone {
+    match status {
+        "Complete" | "SuccessCriteriaMet" => Tone::Good,
+        "Failed" | "FailureTarget" => Tone::Bad,
+        "Suspended" | "Terminating" => Tone::Warning,
+        _ => Tone::Info,
+    }
+}
+
+/// `succeeded/wanted`, with `X/1 of N` for a work queue (no `completions`, parallelism N).
+pub fn job_completions(job: &Value) -> String {
+    let succeeded = int_at(job, "/status/succeeded");
+    match job.pointer("/spec/completions").and_then(Value::as_i64) {
+        Some(completions) => format!("{succeeded}/{completions}"),
+        None => match int_at(job, "/spec/parallelism") {
+            p if p > 1 => format!("{succeeded}/1 of {p}"),
+            _ => format!("{succeeded}/1"),
+        },
+    }
+}
+
+/// How long a finished Job ran, in seconds: until its completion time, or until the `Failed`
+/// condition. `None` while it runs.
+pub fn job_run_time(job: &Value) -> Option<i64> {
+    let start = timestamp(str_at(job, "/status/startTime"))?;
+    let end = timestamp(str_at(job, "/status/completionTime")).or_else(|| {
+        array_at(job, "/status/conditions")
+            .iter()
+            .find(|c| str_at(c, "/type") == "Failed" && str_at(c, "/status") == "True")
+            .and_then(|c| timestamp(str_at(c, "/lastTransitionTime")))
+    })?;
+    Some(seconds_since(start, end).max(0))
 }
 
 fn job_columns() -> Vec<ColumnDef> {
@@ -422,30 +462,15 @@ fn job_cell(job: &Value, column: &str, now: Timestamp) -> CellValue {
     match column {
         "status" => {
             let label = job_status(job);
-            let tone = match label {
-                "Complete" => Tone::Good,
-                "Failed" => Tone::Bad,
-                "Suspended" | "Terminating" => Tone::Warning,
-                _ => Tone::Info,
-            };
-            status(label, tone)
+            status(label, job_tone(label))
         }
-        "completions" => {
-            let succeeded = int_at(job, "/status/succeeded");
-            match job.pointer("/spec/completions").and_then(Value::as_i64) {
-                Some(completions) => text(format!("{succeeded}/{completions}")),
-                None => match int_at(job, "/spec/parallelism") {
-                    p if p > 1 => text(format!("{succeeded}/1 of {p}")),
-                    _ => text(format!("{succeeded}/1")),
-                },
-            }
-        }
+        "completions" => text(job_completions(job)),
         "duration" => {
             let Some(start) = timestamp(str_at(job, "/status/startTime")) else {
                 return CellValue::Empty;
             };
-            let end = timestamp(str_at(job, "/status/completionTime")).unwrap_or(now);
-            muted(human_duration(seconds_since(start, end)))
+            let seconds = job_run_time(job).unwrap_or_else(|| seconds_since(start, now));
+            muted(human_duration(seconds))
         }
         _ => workload_wide(job, column),
     }
@@ -1150,6 +1175,64 @@ mod tests {
 
     fn cell(kind: &Kind, object: &Value, column: &str) -> CellValue {
         kind.cell(object, column)
+    }
+
+    fn conditions(types: &[&str]) -> Value {
+        json!({"status": {"conditions": types.iter()
+            .map(|t| json!({"type": t, "status": "True"})).collect::<Vec<_>>()}})
+    }
+
+    #[test]
+    fn job_status_follows_kubectl_order() {
+        assert_eq!(job_status(&json!({})), "Running");
+        assert_eq!(
+            job_status(&conditions(&["SuccessCriteriaMet"])),
+            "SuccessCriteriaMet"
+        );
+        assert_eq!(
+            job_status(&conditions(&["SuccessCriteriaMet", "FailureTarget"])),
+            "FailureTarget"
+        );
+        assert_eq!(
+            job_status(&conditions(&["FailureTarget", "Suspended"])),
+            "Suspended"
+        );
+        let mut deleted = conditions(&["Suspended"]);
+        deleted["metadata"] = json!({"deletionTimestamp": "2026-01-01T00:00:00Z"});
+        assert_eq!(job_status(&deleted), "Terminating");
+        assert_eq!(job_status(&conditions(&["Failed", "Complete"])), "Complete");
+        assert_eq!(job_tone("FailureTarget"), Tone::Bad);
+        assert_eq!(job_tone("SuccessCriteriaMet"), Tone::Good);
+        assert_eq!(job_tone("Running"), Tone::Info);
+        assert_eq!(status_tone("FailureTarget"), Tone::Bad);
+        assert_eq!(status_tone("SuccessCriteriaMet"), Tone::Good);
+    }
+
+    #[test]
+    fn job_completions_and_run_time() {
+        assert_eq!(
+            job_completions(&json!({"spec": {"completions": 3}, "status": {"succeeded": 2}})),
+            "2/3"
+        );
+        assert_eq!(
+            job_completions(&json!({"spec": {"parallelism": 4}, "status": {"succeeded": 1}})),
+            "1/1 of 4"
+        );
+        assert_eq!(job_completions(&json!({})), "0/1");
+        let failed = json!({"status": {"startTime": "2026-01-01T10:00:00Z",
+            "conditions": [{"type": "Failed", "status": "True",
+                "lastTransitionTime": "2026-01-01T10:01:00Z"}]}});
+        assert_eq!(job_run_time(&failed), Some(60));
+        let running = json!({"status": {"startTime": "2026-01-01T10:00:00Z"}});
+        assert_eq!(job_run_time(&running), None);
+        let kind = Kind {
+            columns: job_columns,
+            cell: job_cell,
+        };
+        assert_eq!(
+            format!("{:?}", cell(&kind, &failed, "duration")),
+            format!("{:?}", muted("60s"))
+        );
     }
 
     #[test]
