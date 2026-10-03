@@ -501,11 +501,16 @@ jobs:
       - name: Update and submit manifest
         env:
           WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
         run: |
           if (-not $env:WINGET_TOKEN) {
             Write-Error "Secret WINGET_TOKEN is missing (docs/RELEASING.md)"
             exit 1
           }
+          # wingetcreate fails with "forked repository could not be synced" when the fork is
+          # behind upstream; sync it first (--force discards any stray commits on the fork).
+          gh repo sync "$((gh api user --jq .login))/winget-pkgs" --source microsoft/winget-pkgs --force
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $x64 = "https://github.com/BirknerAlex/kubyl/releases/download/v$env:VERSION/kubyl-$env:VERSION-windows-x86_64.zip"
           $arm64 = "https://github.com/BirknerAlex/kubyl/releases/download/v$env:VERSION/kubyl-$env:VERSION-windows-aarch64.zip"
           .\wingetcreate.exe update BirknerAlex.Kubyl --version $env:VERSION `
