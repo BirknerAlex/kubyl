@@ -469,7 +469,15 @@ fn job_cell(job: &Value, column: &str, now: Timestamp) -> CellValue {
             let Some(start) = timestamp(str_at(job, "/status/startTime")) else {
                 return CellValue::Empty;
             };
-            let seconds = job_run_time(job).unwrap_or_else(|| seconds_since(start, now));
+            let seconds = match job_run_time(job) {
+                Some(seconds) => seconds,
+                // Finished (or suspended) without a recorded end: the duration is unknown, not
+                // still growing.
+                None if matches!(job_status(job), "Complete" | "Failed" | "Suspended") => {
+                    return CellValue::Empty;
+                }
+                None => seconds_since(start, now),
+            };
             muted(human_duration(seconds))
         }
         _ => workload_wide(job, column),
@@ -1232,6 +1240,33 @@ mod tests {
         assert_eq!(
             format!("{:?}", cell(&kind, &failed, "duration")),
             format!("{:?}", muted("60s"))
+        );
+    }
+
+    #[test]
+    fn a_finished_or_suspended_job_without_an_end_time_has_no_duration() {
+        let kind = Kind {
+            columns: job_columns,
+            cell: job_cell,
+        };
+        let failed = json!({"status": {"startTime": "2026-01-01T10:00:00Z",
+            "conditions": [{"type": "Failed", "status": "True"}]}});
+        assert_eq!(job_run_time(&failed), None);
+        assert_eq!(
+            format!("{:?}", cell(&kind, &failed, "duration")),
+            format!("{:?}", CellValue::Empty)
+        );
+        let suspended = json!({"status": {"startTime": "2026-01-01T10:00:00Z",
+            "conditions": [{"type": "Suspended", "status": "True"}]}});
+        assert_eq!(
+            format!("{:?}", cell(&kind, &suspended, "duration")),
+            format!("{:?}", CellValue::Empty)
+        );
+        // A running Job's duration still ticks.
+        let running = json!({"status": {"startTime": "2026-01-01T10:00:00Z"}});
+        assert_ne!(
+            format!("{:?}", cell(&kind, &running, "duration")),
+            format!("{:?}", CellValue::Empty)
         );
     }
 
