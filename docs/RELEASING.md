@@ -51,9 +51,9 @@ that tap's own scheduled workflow polls `kubyl`'s GitHub releases and opens its 
   show a SmartScreen warning. Get an EV code-signing cert or set up Azure Trusted Signing, then
   add a signing step to the `build-windows` job.
 - No AppImage or MSI/MSIX yet — see `plans/09-packaging-release.md` for the full packaging
-  backlog. Flatpak (Flathub) is set up — see `docs/FLATHUB.md`.
+  backlog.
 - Self-update (`kubyl_selfupdate`) only replaces the binary in a manual `.dmg`/`.zip`/`.tar.gz`
-  install. Homebrew, winget, apt/dnf/pacman, Flatpak and snap installs defer to their own tool
+  install. Homebrew, winget, apt/dnf/pacman and snap installs defer to their own tool
   (`kubyl_selfupdate::installed::detect`) and never self-update.
 
 ## One-time setup: self-update signing key

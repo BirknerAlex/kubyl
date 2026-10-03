@@ -10,6 +10,7 @@
 
 <p align="center">
   <a href="https://kubyl.dev">Website</a> ·
+  <a href="https://kubyl.dev/docs">Docs</a> ·
   <a href="https://kubyl.dev/download">Download</a> ·
   <a href="CHANGELOG.md">Changelog</a> ·
   <a href="https://github.com/BirknerAlex/kubyl/issues">Issues</a> ·
@@ -66,19 +67,13 @@ do, plus selected OpenShift console features, in a fast, keyboard-first native w
 
 ## Install
 
-Grab the latest build from the [releases page](https://github.com/BirknerAlex/kubyl/releases/latest)
-or from [kubyl.dev/download](https://kubyl.dev/download). Every release ships `SHA256SUMS`.
+Kubyl is available through Homebrew, winget, apt, dnf and pacman, or as a direct download for
+macOS, Windows and Linux. Every release ships `SHA256SUMS`. See
+[kubyl.dev/docs/installation](https://kubyl.dev/docs/installation) for the commands, or grab a
+build from [kubyl.dev/download](https://kubyl.dev/download) or the
+[releases page](https://github.com/BirknerAlex/kubyl/releases/latest).
 
-| Platform | Package | Notes |
-|----------|---------|-------|
-| macOS (Apple silicon and Intel) | `.dmg` (universal) | Signed with a Developer ID and notarized. Drag Kubyl into Applications. |
-| Windows (x86_64, ARM64) | `.zip` | Not code-signed yet: SmartScreen warns on first launch, choose *More info* → *Run anyway*. |
-| Debian, Ubuntu (amd64, arm64) | `.deb` | Wayland and X11. |
-| Fedora, RHEL, openSUSE (x86_64, aarch64) | `.rpm` | |
-| Arch Linux (x86_64) | `.pkg.tar.zst` | |
-| Any Linux (amd64, arm64) | `.tar.gz` | Plain binary. |
-
-Homebrew, winget and Flathub packages are planned.
+Usage, settings and keyboard shortcuts are documented at [kubyl.dev/docs](https://kubyl.dev/docs).
 
 ## Build from source
 
