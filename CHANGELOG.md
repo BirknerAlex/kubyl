@@ -2,6 +2,16 @@
 
 All notable changes to Kubyl are documented here.
 
+## [0.3.10] - 2026-10-03
+
+### Miscellaneous
+
+- Update Flatpak manifest to v0.3.9 ([2abdace](https://github.com/BirknerAlex/kubyl/commit/2abdaceedf043105aaf6ac1d1df9e588d44c89a8))
+
+### Plans
+
+- Note the XWayland probe and DMA-BUF workaround ([76b19ca](https://github.com/BirknerAlex/kubyl/commit/76b19ca69fc78fe770f5a50caba0b8a1cc8968a5))
+
 ## [0.3.9] - 2026-10-02
 
 ### Miscellaneous
