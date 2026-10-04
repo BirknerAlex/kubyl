@@ -13,6 +13,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+kubyl_overview_core.workspace = true
 gpui.workspace = true
 gpui-component.workspace = true
 jiff.workspace = true

@@ -1,7 +1,7 @@
 //! The live events stream: model, feed, the right-dock panel and the Events view.
 
 pub mod feed;
-pub mod model;
+pub use kubyl_overview_core::events::model;
 pub mod panel;
 pub mod ui;
 pub mod view;
