@@ -1,7 +1,7 @@
 //! A single line in the ring buffer.
 
-use gpui::{Hsla, SharedString};
 use jiff::Timestamp;
+use kubyl_base::SharedString;
 
 use crate::level::{LogLevel, detect_level};
 
@@ -76,21 +76,6 @@ pub fn color_index(pod: &str) -> u8 {
         hash = hash.wrapping_mul(16777619);
     }
     (hash % POD_COLORS as u32) as u8
-}
-
-/// Resolves a pod color index to an actual color from the theme's accent palette.
-pub fn pod_color(index: u8, colors: &kubyl_ui::Colors) -> Hsla {
-    let palette = [
-        colors.cyan,
-        colors.purple,
-        colors.orange,
-        colors.green,
-        colors.accent,
-        colors.yellow,
-        colors.red,
-        colors.text_muted,
-    ];
-    palette[index as usize % palette.len()]
 }
 
 /// The distinguishing part of a pod name: the random suffix of workload pods

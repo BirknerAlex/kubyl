@@ -13,15 +13,11 @@
 //! - [`settings`]: the `"logs"` settings section (ring buffer size, default tail/follow/etc).
 
 pub mod dock;
-pub mod json;
-pub mod level;
 pub mod line;
-pub mod ring;
-pub mod search;
 pub mod sessions;
-pub mod settings;
-pub mod stream;
 pub mod view;
+
+pub use kubyl_logs_core::{json, level, ring, search, settings, stream};
 
 use gpui::{App, AppContext as _, Window, actions};
 use kubyl_core::actions::OpenView;
