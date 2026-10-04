@@ -5101,6 +5101,7 @@ dependencies = [
  "kube",
  "kubyl_charts",
  "kubyl_core",
+ "kubyl_explorer_core",
  "kubyl_kube",
  "kubyl_resources",
  "kubyl_settings",
@@ -5110,6 +5111,20 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tracing",
+]
+
+[[package]]
+name = "kubyl_explorer_core"
+version = "0.4.0"
+dependencies = [
+ "jiff",
+ "kubyl_base",
+ "kubyl_kube_core",
+ "kubyl_resources_core",
+ "kubyl_settings_core",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -5126,11 +5141,37 @@ dependencies = [
  "kube",
  "kubyl_core",
  "kubyl_explorer",
+ "kubyl_files_core",
  "kubyl_kube",
  "kubyl_resources",
  "kubyl_settings",
  "kubyl_terminal",
  "kubyl_ui",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tar",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "kubyl_files_core"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "dirs 7.0.0",
+ "futures",
+ "jiff",
+ "k8s-openapi",
+ "kube",
+ "kubyl_base",
+ "kubyl_kube_core",
+ "kubyl_resources_core",
+ "kubyl_settings_core",
+ "kubyl_terminal_core",
  "schemars 1.2.2",
  "serde",
  "serde_json",
@@ -5257,11 +5298,46 @@ dependencies = [
  "kubyl_core",
  "kubyl_explorer",
  "kubyl_kube",
+ "kubyl_kubeconfig_core",
  "kubyl_settings",
  "kubyl_ui",
  "kubyl_yaml",
  "lsp-types",
  "open",
+ "parking_lot",
+ "rustls",
+ "rustls-native-certs",
+ "rustls-pki-types",
+ "schemars 1.2.2",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "similar",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "url",
+ "x509-cert",
+]
+
+[[package]]
+name = "kubyl_kubeconfig_core"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "dirs 7.0.0",
+ "futures",
+ "http",
+ "jiff",
+ "k8s-openapi",
+ "kube",
+ "kubyl_base",
+ "kubyl_kube_core",
+ "kubyl_settings_core",
+ "kubyl_yaml_core",
  "parking_lot",
  "rustls",
  "rustls-native-certs",
@@ -5520,6 +5596,7 @@ dependencies = [
  "kubyl_explorer",
  "kubyl_kube",
  "kubyl_metrics",
+ "kubyl_overview_core",
  "kubyl_resources",
  "kubyl_settings",
  "kubyl_ui",
@@ -5531,6 +5608,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "kubyl_overview_core"
+version = "0.4.0"
+dependencies = [
+ "jiff",
+ "kubyl_base",
+ "kubyl_resources_core",
+ "kubyl_settings_core",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "kubyl_palette"
 version = "0.4.0"
 dependencies = [
@@ -5539,6 +5629,7 @@ dependencies = [
  "kubyl_core",
  "kubyl_explorer",
  "kubyl_kube",
+ "kubyl_palette_core",
  "kubyl_resources",
  "kubyl_settings",
  "kubyl_ui",
@@ -5548,6 +5639,18 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tracing",
+]
+
+[[package]]
+name = "kubyl_palette_core"
+version = "0.4.0"
+dependencies = [
+ "kubyl_base",
+ "kubyl_resources_core",
+ "nucleo-matcher",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -5689,8 +5792,32 @@ dependencies = [
  "gpui-component",
  "gpui-pre",
  "kubyl_core",
+ "kubyl_selfupdate_core",
  "kubyl_settings",
  "kubyl_ui",
+ "minisign-verify",
+ "openidconnect",
+ "schemars 1.2.2",
+ "self-replace",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "zip",
+]
+
+[[package]]
+name = "kubyl_selfupdate_core"
+version = "0.4.0"
+dependencies = [
+ "flate2",
+ "kubyl_base",
+ "kubyl_settings_core",
  "minisign-verify",
  "openidconnect",
  "schemars 1.2.2",
@@ -5889,6 +6016,7 @@ dependencies = [
  "kubyl_resources",
  "kubyl_settings",
  "kubyl_ui",
+ "kubyl_webview_core",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
@@ -5906,6 +6034,21 @@ dependencies = [
  "webview2-com",
  "windows 0.62.2",
  "wry",
+ "x509-cert",
+]
+
+[[package]]
+name = "kubyl_webview_core"
+version = "0.4.0"
+dependencies = [
+ "base64 0.22.1",
+ "kubyl_base",
+ "kubyl_portforward_core",
+ "kubyl_resources_core",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "url",
  "x509-cert",
 ]
 

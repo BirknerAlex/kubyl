@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use kubyl_settings::{SettingsSection, StateSection};
+use kubyl_settings_core::{SettingsSection, StateSection};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -83,7 +83,7 @@ pub struct SidebarGroup {
     pub members: Vec<String>,
 }
 
-/// What state.json stores under `explorer_groups`. See [`crate::groups::SidebarGroups`] for the
+/// What state.json stores under `explorer_groups`. See `kubyl_explorer::groups::SidebarGroups` for the
 /// observable model views use.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
