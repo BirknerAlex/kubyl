@@ -11,11 +11,11 @@
 //!   [`dialogs`]: install, review and approve, uninstall, create instance, helm commands.
 
 pub mod api;
+
+pub use kubyl_operators_core::{errors, olm};
 pub mod dialogs;
-pub mod errors;
 pub mod helm;
 pub mod hub;
-pub mod olm;
 pub mod release;
 pub mod service;
 pub mod view;

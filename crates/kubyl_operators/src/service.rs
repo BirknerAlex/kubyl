@@ -502,6 +502,12 @@ impl Olm {
                 this.update(cx, |this, cx| {
                     let icon = match result {
                         Some((format, bytes)) => {
+                            let format = match format {
+                                hub::IconFormat::Svg => gpui::ImageFormat::Svg,
+                                hub::IconFormat::Png => gpui::ImageFormat::Png,
+                                hub::IconFormat::Jpeg => gpui::ImageFormat::Jpeg,
+                                hub::IconFormat::Gif => gpui::ImageFormat::Gif,
+                            };
                             Icon::Loaded(Arc::new(Image::from_bytes(format, bytes)))
                         }
                         None => Icon::None,

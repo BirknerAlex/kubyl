@@ -1,6 +1,6 @@
 [package]
-name = "kubyl_operators"
-description = "OLM operators, OperatorHub and Helm releases."
+name = "kubyl_operators_core"
+description = "Operators without the UI: OLM v0 and v1 objects, installed operators, upgrade reviews, OperatorHub, installs, and Helm releases."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,35 +13,26 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-kubyl_operators_core.workspace = true
 anyhow.workspace = true
 base64.workspace = true
 flate2.workspace = true
 futures.workspace = true
-gpui.workspace = true
-gpui-component.workspace = true
 http.workspace = true
 http-body-util.workspace = true
 jiff.workspace = true
 k8s-openapi.workspace = true
 kube.workspace = true
-kubyl_core.workspace = true
-kubyl_explorer.workspace = true
-kubyl_kube.workspace = true
-kubyl_resources.workspace = true
-kubyl_settings.workspace = true
-kubyl_ui.workspace = true
-kubyl_yaml.workspace = true
-open.workspace = true
+kubyl_base.workspace = true
+kubyl_kube_core.workspace = true
+kubyl_resources_core.workspace = true
+kubyl_yaml_core.workspace = true
 parking_lot.workspace = true
-schemars.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 serde-saphyr.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-gpui = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
