@@ -36,7 +36,7 @@ use serde_json::{Value, json};
 use crate::api::{ApiError, ArgoApi, Transport, UserInfo};
 use crate::detect::{self, Install};
 use crate::model::GROUP;
-use crate::settings::{self, ApiTransport, ContextKey};
+use crate::settings::{self, ApiTransport};
 use crate::sso::{self, SsoConfig, SsoTokens};
 
 /// How long a temporary forward may take to listen.
@@ -388,7 +388,7 @@ impl ArgoCd {
         let Some(install) = self.trusted_install(cluster, cx) else {
             return;
         };
-        let Some(key) = ContextKey::of(cluster, cx) else {
+        let Some(key) = crate::settings::context_key(cluster, cx) else {
             return;
         };
         let Some(entry) = self.clusters.get_mut(cluster) else {
@@ -560,7 +560,7 @@ impl ArgoCd {
         credentials: Credentials,
         cx: &mut Context<Self>,
     ) -> Task<Result<UserInfo, String>> {
-        let Some(key) = ContextKey::of(cluster, cx) else {
+        let Some(key) = crate::settings::context_key(cluster, cx) else {
             return Task::ready(Err("unknown context".into()));
         };
         let Some(service) = install.server.as_ref().map(|s| s.name.clone()) else {
@@ -734,8 +734,10 @@ impl ArgoCd {
             c.api.take()
         });
         if let Some(session) = &session
-            && let (Some(key), Some(server)) =
-                (ContextKey::of(cluster, cx), &session.install.server)
+            && let (Some(key), Some(server)) = (
+                crate::settings::context_key(cluster, cx),
+                &session.install.server,
+            )
         {
             let token_key = settings::token_key(&key, &session.install.namespace, &server.name);
             spawn_kube(cx, async move {

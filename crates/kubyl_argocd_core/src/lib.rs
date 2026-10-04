@@ -9,12 +9,15 @@
 //! `kubyl_argocd` re-exports these modules and adds the Argo CD state, views, dialogs and dock.
 
 pub mod api;
+pub mod apps;
 pub mod detect;
 pub mod diff;
 pub mod health;
 pub mod links;
 pub mod model;
 pub mod ops;
+pub mod run;
+pub mod settings;
 pub mod sso;
 pub mod tree;
 pub mod windows;
