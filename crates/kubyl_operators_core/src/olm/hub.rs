@@ -351,7 +351,7 @@ pub async fn fetch_icon(
     client: kube::Client,
     namespace: String,
     name: String,
-) -> Option<(gpui::ImageFormat, Vec<u8>)> {
+) -> Option<(IconFormat, Vec<u8>)> {
     use http_body_util::BodyExt as _;
     let path = format!(
         "/apis/packages.operators.coreos.com/v1/namespaces/{namespace}/packagemanifests/{name}/icon"
@@ -378,16 +378,24 @@ pub async fn fetch_icon(
     Some((format, bytes.to_vec()))
 }
 
-fn image_format(content_type: &str, bytes: &[u8]) -> Option<gpui::ImageFormat> {
-    use gpui::ImageFormat;
+/// The image format of an icon.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IconFormat {
+    Svg,
+    Png,
+    Jpeg,
+    Gif,
+}
+
+fn image_format(content_type: &str, bytes: &[u8]) -> Option<IconFormat> {
     if content_type.contains("svg") || bytes.starts_with(b"<?xml") || bytes.starts_with(b"<svg") {
-        Some(ImageFormat::Svg)
+        Some(IconFormat::Svg)
     } else if content_type.contains("png") || bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
-        Some(ImageFormat::Png)
+        Some(IconFormat::Png)
     } else if content_type.contains("jpeg") || bytes.starts_with(&[0xff, 0xd8]) {
-        Some(ImageFormat::Jpeg)
+        Some(IconFormat::Jpeg)
     } else if content_type.contains("gif") {
-        Some(ImageFormat::Gif)
+        Some(IconFormat::Gif)
     } else {
         None
     }

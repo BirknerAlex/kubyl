@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use kubyl_core::Tone;
+use kubyl_base::Tone;
 
 use super::model::{Approval, Csv, InstallPlan, Subscription};
 

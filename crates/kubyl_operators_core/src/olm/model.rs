@@ -7,7 +7,7 @@
 use std::collections::BTreeSet;
 
 use jiff::Timestamp;
-use kubyl_core::Gvr;
+use kubyl_base::Gvr;
 use serde_json::Value;
 
 pub const GROUP: &str = "operators.coreos.com";

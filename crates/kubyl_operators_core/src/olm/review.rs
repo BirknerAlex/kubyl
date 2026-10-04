@@ -12,7 +12,7 @@ use std::io::Read as _;
 use base64::Engine as _;
 use k8s_openapi::api::core::v1::ConfigMap;
 use kube::Api;
-use kubyl_yaml::diff::LineDiff;
+use kubyl_yaml_core::diff::LineDiff;
 use serde_json::Value;
 
 use super::model::{BundleRef, Csv, InstallMode, InstallPlan, Permission};
@@ -122,7 +122,7 @@ fn normalize_spec(crd: &Value) -> Value {
             }
         }
     }
-    kubyl_yaml::render::sorted(spec)
+    kubyl_yaml_core::render::sorted(spec)
 }
 
 /// Versions a CRD serves and stores: `(name, served, storage)`.
@@ -146,9 +146,9 @@ fn versions(crd: &Value) -> Vec<(String, bool, bool)> {
 
 /// Compares the live CRD (if any) with the bundle's.
 pub fn crd_change(name: &str, live: Option<&Value>, new: &Value) -> CrdChange {
-    let new_yaml = kubyl_yaml::render::to_yaml(&normalize_spec(new));
+    let new_yaml = kubyl_yaml_core::render::to_yaml(&normalize_spec(new));
     let Some(live) = live else {
-        let diff = kubyl_yaml::diff::diff("", &new_yaml, 3);
+        let diff = kubyl_yaml_core::diff::diff("", &new_yaml, 3);
         return CrdChange {
             name: name.to_string(),
             status: CrdStatus::New,
@@ -157,8 +157,8 @@ pub fn crd_change(name: &str, live: Option<&Value>, new: &Value) -> CrdChange {
             warnings: Vec::new(),
         };
     };
-    let old_yaml = kubyl_yaml::render::to_yaml(&normalize_spec(live));
-    let diff = kubyl_yaml::diff::diff(&old_yaml, &new_yaml, 3);
+    let old_yaml = kubyl_yaml_core::render::to_yaml(&normalize_spec(live));
+    let diff = kubyl_yaml_core::diff::diff(&old_yaml, &new_yaml, 3);
     let mut warnings = Vec::new();
     let mut notes = Vec::new();
     let old_versions = versions(live);

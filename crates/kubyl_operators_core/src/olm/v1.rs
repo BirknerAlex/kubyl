@@ -2,7 +2,7 @@
 //! the YAML template that installs one.
 
 use jiff::Timestamp;
-use kubyl_core::{Gvr, Tone};
+use kubyl_base::{Gvr, Tone};
 use serde_json::Value;
 
 use super::model::{Condition, conditions, string_at, time_at};

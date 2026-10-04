@@ -41,7 +41,7 @@ fn span(text: impl Into<String>, tone: Tone) -> Span {
 /// Values as YAML lines, keys sorted. With `mask`, strings and numbers show as [`MASK`]:
 /// values commonly hold passwords and tokens; keys, booleans and `null` stay readable.
 pub fn value_lines(value: &Value, mask: bool) -> Vec<Line> {
-    let value = &kubyl_yaml::render::sorted(value.clone());
+    let value = &kubyl_yaml_core::render::sorted(value.clone());
     let mut out = Vec::new();
     match value {
         Value::Object(map) if map.is_empty() => out.push(vec![span("{}", Tone::Punct)]),
@@ -107,7 +107,7 @@ fn is_nested(value: &Value) -> bool {
 }
 
 fn key_text(key: &str) -> String {
-    kubyl_yaml::render::yaml_scalar(key, 0)
+    kubyl_yaml_core::render::yaml_scalar(key, 0)
 }
 
 /// Appends a scalar to `line` (multi-line strings continue on the next lines).
@@ -115,7 +115,7 @@ fn push_scalar(line: &mut Line, value: &Value, indent: usize, mask: bool, out: &
     let spans = scalar_spans(value, indent, mask);
     match value {
         Value::String(s) if !mask && s.contains('\n') => {
-            let text = kubyl_yaml::render::yaml_scalar(s, indent);
+            let text = kubyl_yaml_core::render::yaml_scalar(s, indent);
             let mut lines = text.split('\n');
             line.push(span(lines.next().unwrap_or_default(), Tone::Punct));
             out.push(std::mem::take(line));
@@ -138,7 +138,10 @@ fn scalar_spans(value: &Value, indent: usize, mask: bool) -> Line {
         Value::Array(_) => vec![span("[]", Tone::Punct)],
         _ if mask => vec![span(MASK, Tone::Masked)],
         Value::Number(n) => vec![span(n.to_string(), Tone::Number)],
-        Value::String(s) => vec![span(kubyl_yaml::render::yaml_scalar(s, indent), Tone::Str)],
+        Value::String(s) => vec![span(
+            kubyl_yaml_core::render::yaml_scalar(s, indent),
+            Tone::Str,
+        )],
     }
 }
 
@@ -224,7 +227,7 @@ fn mask_document(doc: &str) -> String {
     if !secret && !route_key {
         return doc.to_string();
     }
-    let parsed = kubyl_yaml::parse::parse(doc);
+    let parsed = kubyl_yaml_core::parse::parse(doc);
     if parsed.error.is_some() {
         return if secret {
             "# A Secret Kubyl couldn't parse: hidden.\n".to_string()
@@ -232,7 +235,7 @@ fn mask_document(doc: &str) -> String {
             "# A Route Kubyl couldn't parse: hidden.\n".to_string()
         };
     }
-    let mut edits = kubyl_yaml::render::mask_route_key_edits(doc);
+    let mut edits = kubyl_yaml_core::render::mask_route_key_edits(doc);
     for root in parsed.roots() {
         if root.get("kind").and_then(|n| n.as_str()) != Some("Secret") {
             continue;
@@ -242,14 +245,14 @@ fn mask_document(doc: &str) -> String {
                 continue;
             };
             for entry in entries {
-                edits.push(kubyl_yaml::render::Edit {
+                edits.push(kubyl_yaml_core::render::Edit {
                     range: entry.value.span.clone(),
                     text: MASK.to_string(),
                 });
             }
         }
     }
-    kubyl_yaml::render::apply_edits(doc, edits)
+    kubyl_yaml_core::render::apply_edits(doc, edits)
 }
 
 /// An object the release manages (from its manifest).
@@ -266,12 +269,12 @@ pub struct ManifestObject {
 
 /// The objects in a manifest, in order.
 pub fn manifest_objects(manifest: &str) -> Vec<ManifestObject> {
-    let parsed = kubyl_yaml::parse::parse(manifest);
+    let parsed = kubyl_yaml_core::parse::parse(manifest);
     parsed
         .roots()
         .filter_map(|root| {
             let text = |path: &[&str]| {
-                root.find(&kubyl_yaml::parse::Path::keys(path))
+                root.find(&kubyl_yaml_core::parse::Path::keys(path))
                     .and_then(|n| n.as_str())
                     .map(str::to_string)
             };
