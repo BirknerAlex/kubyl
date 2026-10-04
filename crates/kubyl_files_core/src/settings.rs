@@ -1,6 +1,6 @@
 //! The `"files"` section of settings.json.
 
-use kubyl_settings::SettingsSection;
+use kubyl_settings_core::SettingsSection;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 

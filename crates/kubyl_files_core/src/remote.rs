@@ -230,7 +230,7 @@ pub async fn probe(api: &Api<Pod>, pod: &str, container: &str) -> anyhow::Result
 /// Where remote operations run, and how to reach the browsed container's files.
 #[derive(Clone)]
 pub struct RemoteTarget {
-    pub cluster: kubyl_core::ClusterId,
+    pub cluster: kubyl_base::ClusterId,
     pub client: kube::Client,
     pub namespace: String,
     pub pod: String,
@@ -448,7 +448,7 @@ pub const DEBUG_PREFIX: &str = "kubyl-files-";
 /// Connects to `container` of `pod` and probes it. Images without a shell come back with
 /// `caps.shell == false`; [`through_debug_container`] reaches them.
 pub async fn open(
-    cluster: kubyl_core::ClusterId,
+    cluster: kubyl_base::ClusterId,
     client: kube::Client,
     namespace: String,
     pod: String,
@@ -527,7 +527,7 @@ pub async fn through_debug_container(
             )
             .await
             .context("adding the debug container")?;
-            kubyl_terminal::exec::wait_running(
+            kubyl_terminal_core::exec::wait_running(
                 &api,
                 &target.pod,
                 &name,
