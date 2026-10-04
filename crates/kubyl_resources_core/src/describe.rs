@@ -10,11 +10,11 @@ use std::fmt::Write as _;
 use jiff::Timestamp;
 use serde_json::Value;
 
-use crate::columns::{event_message, event_time, node_roles, node_status, pod_status};
 use crate::format::{
     array_at, human_duration, int_at, map_pairs, seconds_since, str_at, timestamp,
 };
 use crate::route::{self, Route};
+use crate::status::{event_message, event_time, node_roles, node_status, pod_status};
 
 const KEY_WIDTH: usize = 20;
 

@@ -1,10 +1,11 @@
 //! Pod status exactly like `kubectl get pods` (`printPod` in kubectl's printers).
 
 use jiff::Timestamp;
-use kubyl_core::Tone;
+use kubyl_base::Tone;
 use serde_json::Value;
 
-use crate::format::{array_at, str_at, timestamp};
+use crate::format::{array_at, int_at, seconds_since, str_at, timestamp};
+use crate::route::Route;
 
 /// What `kubectl get pods` shows in READY, STATUS and RESTARTS.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -226,6 +227,162 @@ pub fn pod_status(pod: &Value) -> PodStatus {
         total,
         restarts,
         last_restart,
+    }
+}
+
+/// `Complete`, `Failed`, `Terminating`, `Suspended`, `FailureTarget`, `SuccessCriteriaMet` or
+/// `Running`, in kubectl's order.
+pub fn job_status(job: &Value) -> &'static str {
+    let condition = |kind: &str| {
+        array_at(job, "/status/conditions")
+            .iter()
+            .any(|c| str_at(c, "/type") == kind && str_at(c, "/status") == "True")
+    };
+    if condition("Complete") {
+        "Complete"
+    } else if condition("Failed") {
+        "Failed"
+    } else if job.pointer("/metadata/deletionTimestamp").is_some() {
+        "Terminating"
+    } else if condition("Suspended") {
+        "Suspended"
+    } else if condition("FailureTarget") {
+        "FailureTarget"
+    } else if condition("SuccessCriteriaMet") {
+        "SuccessCriteriaMet"
+    } else {
+        "Running"
+    }
+}
+
+/// The tone of a [`job_status`] in the Jobs list (a running Job is `Info`).
+pub fn job_tone(status: &str) -> Tone {
+    match status {
+        "Complete" | "SuccessCriteriaMet" => Tone::Good,
+        "Failed" | "FailureTarget" => Tone::Bad,
+        "Suspended" | "Terminating" => Tone::Warning,
+        _ => Tone::Info,
+    }
+}
+
+/// `succeeded/wanted`, with `X/1 of N` for a work queue (no `completions`, parallelism N).
+pub fn job_completions(job: &Value) -> String {
+    let succeeded = int_at(job, "/status/succeeded");
+    match job.pointer("/spec/completions").and_then(Value::as_i64) {
+        Some(completions) => format!("{succeeded}/{completions}"),
+        None => match int_at(job, "/spec/parallelism") {
+            p if p > 1 => format!("{succeeded}/1 of {p}"),
+            _ => format!("{succeeded}/1"),
+        },
+    }
+}
+
+/// How long a finished Job ran, in seconds: until its completion time, or until the `Failed`
+/// condition. `None` while it runs.
+pub fn job_run_time(job: &Value) -> Option<i64> {
+    let start = timestamp(str_at(job, "/status/startTime"))?;
+    let end = timestamp(str_at(job, "/status/completionTime")).or_else(|| {
+        array_at(job, "/status/conditions")
+            .iter()
+            .find(|c| str_at(c, "/type") == "Failed" && str_at(c, "/status") == "True")
+            .and_then(|c| timestamp(str_at(c, "/lastTransitionTime")))
+    })?;
+    Some(seconds_since(start, end).max(0))
+}
+
+/// `Ready`, `NotReady` or `Unknown`, plus `,SchedulingDisabled` when cordoned.
+pub fn node_status(node: &Value) -> String {
+    let ready = array_at(node, "/status/conditions")
+        .iter()
+        .find(|c| str_at(c, "/type") == "Ready")
+        .map(|c| match str_at(c, "/status") {
+            "True" => "Ready",
+            "False" => "NotReady",
+            _ => "Unknown",
+        })
+        .unwrap_or("Unknown");
+    if node.pointer("/spec/unschedulable").and_then(Value::as_bool) == Some(true) {
+        format!("{ready},SchedulingDisabled")
+    } else {
+        ready.to_string()
+    }
+}
+
+/// Node roles from `node-role.kubernetes.io/<role>` and `kubernetes.io/role` labels.
+pub fn node_roles(node: &Value) -> Vec<String> {
+    let mut roles: Vec<String> = node
+        .pointer("/metadata/labels")
+        .and_then(Value::as_object)
+        .map(|labels| {
+            labels
+                .iter()
+                .filter_map(|(k, v)| {
+                    if let Some(role) = k.strip_prefix("node-role.kubernetes.io/") {
+                        Some(role.to_string()).filter(|r| !r.is_empty())
+                    } else if k == "kubernetes.io/role" {
+                        v.as_str().map(String::from)
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    roles.sort();
+    roles.dedup();
+    roles
+}
+
+/// When an event last happened (core/v1 and events.k8s.io/v1).
+pub fn event_time(event: &Value) -> Option<Timestamp> {
+    [
+        "/series/lastObservedTime",
+        "/lastTimestamp",
+        "/deprecatedLastTimestamp",
+        "/eventTime",
+        "/firstTimestamp",
+        "/metadata/creationTimestamp",
+    ]
+    .iter()
+    .find_map(|p| timestamp(str_at(event, p)))
+}
+
+/// `Kind/name` of the object an event is about.
+pub fn event_object(event: &Value) -> String {
+    let object = event
+        .get("involvedObject")
+        .or_else(|| event.get("regarding"))
+        .unwrap_or(&Value::Null);
+    format!(
+        "{}/{}",
+        str_at(object, "/kind").to_lowercase(),
+        str_at(object, "/name")
+    )
+}
+
+pub fn event_message(event: &Value) -> &str {
+    match str_at(event, "/message") {
+        "" => str_at(event, "/note"),
+        message => message,
+    }
+}
+
+/// Whether an object of `group`/`kind` needs attention (toolbar "failing" count, sidebar).
+pub fn is_failing(group: &str, kind: &str, object: &Value) -> bool {
+    match (group, kind) {
+        ("", "Pod") => pod_status(object).tone() == Tone::Bad,
+        ("apps", "Deployment" | "StatefulSet" | "ReplicaSet") => {
+            int_at(object, "/status/readyReplicas") < int_at(object, "/spec/replicas")
+        }
+        ("apps", "DaemonSet") => {
+            int_at(object, "/status/numberReady") < int_at(object, "/status/desiredNumberScheduled")
+        }
+        ("batch", "Job") => job_status(object) == "Failed",
+        ("", "Node") => !node_status(object).starts_with("Ready"),
+        ("", "PersistentVolumeClaim") => str_at(object, "/status/phase") != "Bound",
+        ("" | "events.k8s.io", "Event") => str_at(object, "/type") == "Warning",
+        (crate::route::GROUP, crate::route::KIND) => Route::parse(object).is_rejected(),
+        _ => false,
     }
 }
 

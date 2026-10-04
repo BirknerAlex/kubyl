@@ -1,6 +1,6 @@
 [package]
-name = "kubyl_resources"
-description = "Resource registry, watch caches, columns and actions."
+name = "kubyl_resources_core"
+description = "The resource engine without the UI: watch caches, kubectl status, filters, describe and operations."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -15,20 +15,15 @@ workspace = true
 [dependencies]
 anyhow.workspace = true
 futures.workspace = true
-gpui.workspace = true
 http.workspace = true
 jiff.workspace = true
 k8s-openapi.workspace = true
 kube.workspace = true
-kubyl_core.workspace = true
-kubyl_kube.workspace = true
-kubyl_resources_core.workspace = true
+kubyl_base.workspace = true
+kubyl_kube_core.workspace = true
 regex.workspace = true
 serde.workspace = true
 serde-saphyr.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-
-[dev-dependencies]
-gpui = { workspace = true, features = ["test-support"] }

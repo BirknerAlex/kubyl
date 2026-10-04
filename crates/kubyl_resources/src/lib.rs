@@ -16,17 +16,16 @@
 //! - [`describe`]: `kubectl describe`-like text.
 //! - [`format`]: ages, quantities and JSON helpers.
 //! - [`route`]: OpenShift Routes (model, URL, weights, target port resolution, key masking).
+//!
+//! The parts without UI live in `kubyl_resources_core` and are re-exported here.
 
 pub mod columns;
-pub mod describe;
-pub mod filter;
-pub mod format;
 pub mod metrics;
-pub mod ops;
-pub mod route;
 pub mod selection;
 pub mod store;
 pub mod table;
+
+pub use kubyl_resources_core::{describe, filter, format, ops, route};
 
 pub use filter::Filter;
 pub use selection::{ResourceSelection, Selected};
