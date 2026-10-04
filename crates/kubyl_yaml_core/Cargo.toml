@@ -1,0 +1,31 @@
+[package]
+name = "kubyl_yaml_core"
+description = "YAML without the UI: a lossless YAML model, rendering, diffs, schema validation, completion data, templates and server-side apply."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+base64.workspace = true
+granit-parser.workspace = true
+jiff.workspace = true
+k8s-openapi.workspace = true
+kube.workspace = true
+kubyl_base.workspace = true
+kubyl_kube_core.workspace = true
+kubyl_resources_core.workspace = true
+kubyl_settings_core.workspace = true
+regex.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde-saphyr.workspace = true
+similar.workspace = true
+tracing.workspace = true
