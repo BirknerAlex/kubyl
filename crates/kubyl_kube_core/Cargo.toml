@@ -27,6 +27,7 @@ jiff.workspace = true
 k8s-openapi.workspace = true
 keyring.workspace = true
 kube.workspace = true
+notify.workspace = true
 kubyl_base.workspace = true
 kubyl_settings_core.workspace = true
 open.workspace = true

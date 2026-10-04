@@ -63,20 +63,7 @@ impl ActiveContext {
     }
 }
 
-/// The cluster and namespace a tab shows, for the title bar to follow when it's activated.
-#[derive(Clone, Debug, PartialEq)]
-pub struct TabContext {
-    pub cluster: ClusterId,
-    pub namespace: TabNamespace,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum TabNamespace {
-    /// The view follows the title bar's namespace (or has none): leave it.
-    Keep,
-    All,
-    One(String),
-}
+pub use kubyl_base::types::{TabContext, TabNamespace};
 
 pub(crate) fn init(cx: &mut App) {
     cx.default_global::<ActiveContext>();

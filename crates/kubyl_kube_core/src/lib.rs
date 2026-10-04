@@ -8,6 +8,8 @@
 //! - [`client`], [`transport`]: building and probing clients on Kubyl's HTTP/2 stack.
 //! - [`discovery`], [`cluster_info`], [`access`], [`openapi`], [`watches`]: what the cluster
 //!   serves and the watches every connection runs.
+//! - [`manager`]: [`ManagerCore`](manager::ManagerCore), the sources, contexts and connections
+//!   state machine.
 //!
 //! `kubyl_kube` re-exports these modules and adds the GPUI `ConnectionManager` and the UI.
 
@@ -18,6 +20,7 @@ pub mod cluster_info;
 pub mod discovery;
 pub mod groups;
 pub mod kubeconfig;
+pub mod manager;
 pub mod openapi;
 pub mod settings;
 pub mod transport;

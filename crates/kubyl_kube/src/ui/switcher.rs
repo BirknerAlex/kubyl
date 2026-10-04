@@ -11,9 +11,9 @@ use kubyl_core::ClusterId;
 use kubyl_ui::{ActiveColors, Icon, IconName, Kbd, StatusDot, fonts, h_flex, u, v_flex};
 
 use super::{open_clusters, switch_to};
-use crate::ConnectionManager;
 use crate::kubeconfig::SourceKind;
 use crate::settings::display_path;
+use crate::{ConnectionManager, ConnectionStateExt as _};
 
 actions!(cluster_switcher, [SelectNext, SelectPrevious, Confirm]);
 
