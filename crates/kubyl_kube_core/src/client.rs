@@ -452,13 +452,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("config");
         // A fake client certificate can't be loaded into rustls; use a token here.
-        let dev = crate::kubeconfig::tests::DEV.replace(
+        let dev = crate::kubeconfig::fixtures::DEV.replace(
             "client-certificate-data: Zm9v\n      client-key-data: Zm9v",
             "token: abc",
         );
-        assert_ne!(dev, crate::kubeconfig::tests::DEV);
+        assert_ne!(dev, crate::kubeconfig::fixtures::DEV);
         std::fs::write(&file, dev).unwrap();
-        std::fs::write(dir.path().join("other"), crate::kubeconfig::tests::OTHER).unwrap();
+        std::fs::write(dir.path().join("other"), crate::kubeconfig::fixtures::OTHER).unwrap();
         let specs = crate::kubeconfig::source_specs(
             &crate::settings::KubeSettings {
                 load_default_kubeconfig: false,

@@ -134,7 +134,7 @@ static PROMPTS: OnceLock<mpsc::UnboundedSender<ExecPrompt>> = OnceLock::new();
 
 /// Receives interactive plugins that need the user. Called once by the UI; without a receiver
 /// interactive plugins run like non-interactive ones.
-pub(crate) fn prompt_receiver() -> Option<mpsc::UnboundedReceiver<ExecPrompt>> {
+pub fn prompt_receiver() -> Option<mpsc::UnboundedReceiver<ExecPrompt>> {
     let (tx, rx) = mpsc::unbounded();
     PROMPTS.set(tx).ok().map(|_| rx)
 }

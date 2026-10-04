@@ -36,7 +36,7 @@ fn backend() -> &'static Backend {
     BACKEND.get_or_init(
         || match std::env::var("KUBYL_CREDENTIAL_STORE").as_deref() {
             Ok("file") => {
-                let path = kubyl_settings::config_dir().join("dev-credentials.json");
+                let path = kubyl_settings_core::config_dir().join("dev-credentials.json");
                 tracing::warn!(
                     "KUBYL_CREDENTIAL_STORE=file: storing credentials in plain text at {}",
                     path.display()

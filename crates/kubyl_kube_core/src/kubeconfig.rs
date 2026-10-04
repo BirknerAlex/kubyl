@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use kube::config::{Kubeconfig, NamedAuthInfo, NamedCluster};
-use kubyl_core::ClusterId;
+use kubyl_base::ClusterId;
 
 use crate::auth::AuthMethod;
 use crate::settings::{KubeSettings, expand_home};
@@ -610,10 +610,9 @@ pub fn save_pasted(dir: &Path, name: &str, yaml: &str) -> std::io::Result<PathBu
     Ok(path)
 }
 
-#[cfg(test)]
-pub(crate) mod tests {
-    use super::*;
-
+/// Kubeconfigs for tests, here and in `kubyl_kube`.
+#[cfg(any(test, feature = "test-support"))]
+pub mod fixtures {
     pub const DEV: &str = r#"
 apiVersion: v1
 kind: Config
@@ -664,6 +663,12 @@ users:
           idp-issuer-url: https://sso.example.com/realms/platform
           client-id: kubernetes
 "#;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fixtures::{DEV, OTHER};
+    use super::*;
 
     fn file_spec(kind: SourceKind, path: &str) -> SourceSpec {
         SourceSpec {

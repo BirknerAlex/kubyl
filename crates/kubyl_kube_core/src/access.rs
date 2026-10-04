@@ -9,7 +9,7 @@ use k8s_openapi::api::authorization::v1::{
     SelfSubjectRulesReview, SelfSubjectRulesReviewSpec, SubjectRulesReviewStatus,
 };
 use kube::{Api, Client};
-use kubyl_core::Gvr;
+use kubyl_base::Gvr;
 
 /// How long an answer is reused.
 pub const TTL: Duration = Duration::from_secs(300);

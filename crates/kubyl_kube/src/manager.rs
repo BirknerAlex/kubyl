@@ -2172,7 +2172,7 @@ fn build_watcher(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kubeconfig::tests::{DEV, OTHER};
+    use crate::kubeconfig::fixtures::{DEV, OTHER};
     use gpui::TestAppContext;
 
     fn setup(cx: &mut TestAppContext) -> (tempfile::TempDir, Entity<ConnectionManager>) {
@@ -2601,7 +2601,10 @@ mod tests {
             assert!(m.caps(&group).production);
             assert_eq!(
                 m.color(&group, cx),
-                crate::settings::ColorTag::Green.color(kubyl_ui::ActiveColors::colors(cx))
+                crate::settings::ColorTagExt::color(
+                    crate::settings::ColorTag::Green,
+                    kubyl_ui::ActiveColors::colors(cx)
+                )
             );
             let keys = m.settings_keys(&group);
             assert_eq!(keys[0], group.to_string());

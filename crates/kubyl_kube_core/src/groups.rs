@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use kube::config::Kubeconfig;
-use kubyl_core::ClusterId;
+use kubyl_base::ClusterId;
 
 use crate::kubeconfig::{ContextInfo, Member};
 

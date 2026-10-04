@@ -13,7 +13,7 @@ use gpui_component::input::{InputEvent, InputState, Textarea, TextareaState};
 use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 use kubyl_core::{Notification, NotificationCenter};
 use kubyl_kube::ConnectionManager;
-use kubyl_kube::settings::ColorTag;
+use kubyl_kube::settings::{ColorTag, ColorTagExt as _};
 use kubyl_ui::{ActiveColors, Button, Colors, Icon, IconName, fonts, h_flex, u, v_flex};
 use serde_json::{Map, Value, json};
 

@@ -39,6 +39,8 @@
 //!
 //! # What lives where
 //!
+//! The modules without UI live in `kubyl_kube_core` and are re-exported here.
+//!
 //! - [`kubeconfig`]: sources (`~/.kube/config`, `$KUBECONFIG`, added files/folders, pasted),
 //!   loading and merging contexts (collisions get `@<file-stem>`).
 //! - [`settings`]: the `"kubernetes"` settings.json section (sources, per-context overrides).
@@ -47,19 +49,13 @@
 //! - [`discovery`], [`cluster_info`], [`access`], [`openapi`]: what the cluster serves.
 //! - [`ui`]: the Clusters & kubeconfigs tab, switcher, sign-in and exec prompt modals.
 
-pub mod access;
-pub mod auth;
-pub mod client;
-pub mod cluster_info;
-pub mod discovery;
-pub mod groups;
-pub mod kubeconfig;
 pub mod manager;
-pub mod openapi;
 pub mod settings;
-pub mod transport;
 pub mod ui;
-pub mod watches;
+
+pub use kubyl_kube_core::{
+    access, auth, client, cluster_info, discovery, groups, kubeconfig, openapi, transport, watches,
+};
 
 pub use manager::{Cluster, ConnectionEvent, ConnectionManager, ConnectionState, Namespaces};
 
