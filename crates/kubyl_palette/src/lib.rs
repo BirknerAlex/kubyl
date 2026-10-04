@@ -17,14 +17,11 @@
 //! Results are fuzzy-matched (`nucleo-matcher`), grouped, highlighted and boosted by recency
 //! (`state.json` → `palette`). `↵` opens, `⌘↵` opens in a split, `⇥` toggles all namespaces.
 
-mod command;
 mod items;
-mod matcher;
 mod palette;
 mod recent;
-/// What an object refers to; also used by the YAML editor's related-objects list.
-pub mod references;
 
+/// What an object refers to; also used by the YAML editor's related-objects list.
 use gpui::{
     Action, App, AppContext as _, Global, KeyBinding, KeyContext, Keymap, ParentElement as _,
     Styled as _, WeakEntity, Window, actions,
@@ -32,6 +29,7 @@ use gpui::{
 use gpui_component::WindowExt as _;
 use kubyl_core::actions::ToggleCommandPalette;
 use kubyl_core::{ActionRegistry, ActionSpec, ActiveContext, Notification, NotificationCenter};
+pub use kubyl_palette_core::{command, matcher, references};
 use kubyl_resources::ResourceSelection;
 use kubyl_ui::ActiveColors;
 use schemars::JsonSchema;

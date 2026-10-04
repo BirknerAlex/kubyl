@@ -4,7 +4,7 @@
 
 use std::collections::BTreeSet;
 
-use kubyl_core::Gvk;
+use kubyl_base::Gvk;
 use serde_json::Value;
 
 /// Where a reference points.
@@ -221,7 +221,7 @@ pub fn references(kind: &str, object: &Value) -> Vec<Reference> {
         // OpenShift Routes (`spec.to` + alternate backends); other groups' `Route` kinds have no
         // `spec.to`.
         "Route" => {
-            let route = kubyl_resources::route::Route::parse(object);
+            let route = kubyl_resources_core::route::Route::parse(object);
             for backend in route.services() {
                 add(
                     "Backend",
@@ -303,7 +303,7 @@ pub fn service_routes<'a>(
     };
     let mut out = BTreeSet::new();
     for object in known {
-        let route = kubyl_resources::route::Route::parse(object);
+        let route = kubyl_resources_core::route::Route::parse(object);
         if route.namespace.as_deref() != namespace
             || route.backends.first().is_some_and(|to| to.name == service)
         {
