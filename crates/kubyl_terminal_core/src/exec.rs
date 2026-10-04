@@ -456,7 +456,7 @@ pub async fn create_node_shell(
     let (tx, rx) = futures::channel::oneshot::channel();
     let (client, namespace) = (client.clone(), namespace.to_string());
     let (node, image) = (node.to_string(), image.to_string());
-    kubyl_core::runtime::handle().spawn(async move {
+    kubyl_base::runtime::handle().spawn(async move {
         let result = create_node_shell_pod(&client, &namespace, &node, &image).await;
         // A receiver that is gone drops the pod guard along with the result.
         tx.send(result).ok();
@@ -548,7 +548,7 @@ impl Drop for NodeShellPod {
     fn drop(&mut self) {
         if let Some(name) = self.name.take() {
             let (client, namespace) = (self.client.clone(), self.namespace.clone());
-            kubyl_core::runtime::handle().spawn(async move {
+            kubyl_base::runtime::handle().spawn(async move {
                 delete_pod(&client, &namespace, &name).await;
             });
         }
