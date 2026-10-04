@@ -183,10 +183,7 @@ impl MemoryStores {
     /// Sets the status of the store of `key` (a watch that was refused, say), as a batch would.
     pub fn set_status(&mut self, key: &StoreKey, status: StoreStatus) {
         if let Some(store) = self.stores.get_mut(key) {
-            store.apply(
-                vec![crate::store::Change::Status(status)],
-                &mut kubyl_base::host::TestHost::new(),
-            );
+            store.set_status_by_hand(status);
         }
     }
 

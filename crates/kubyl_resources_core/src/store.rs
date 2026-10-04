@@ -341,16 +341,26 @@ impl StoreCore {
                 }
                 Change::Status(status) => {
                     touched = Touched::All;
-                    if status == StoreStatus::Forbidden || status == StoreStatus::Unsupported {
-                        self.objects.clear();
-                        self.running = false;
-                    }
-                    self.status = status;
+                    self.take_status(status);
                 }
             }
         }
         self.bump(touched);
         host.notify();
+    }
+
+    /// What `apply` does for a [`Change::Status`] batch, without a host (hand-filled stores).
+    pub(crate) fn set_status_by_hand(&mut self, status: StoreStatus) {
+        self.take_status(status);
+        self.bump(Touched::All);
+    }
+
+    fn take_status(&mut self, status: StoreStatus) {
+        if status == StoreStatus::Forbidden || status == StoreStatus::Unsupported {
+            self.objects.clear();
+            self.running = false;
+        }
+        self.status = status;
     }
 
     fn stop(&mut self, status: StoreStatus, host: &mut dyn Host<Self>) {

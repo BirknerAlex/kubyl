@@ -548,8 +548,23 @@ impl UpdatesCore {
         if let Some(mut state) = self.clusters.remove(from) {
             // The provider holds the connection's client, which moved with it.
             state.facts = None;
+            // The old poll round looks up `from` and ends: start the loop again under `to`.
+            let was_polling = std::mem::replace(&mut state.polling, false);
             self.clusters.insert(to.clone(), state);
+            // The Helm watches hold the old id; waiting pre-flight runs need them under `to`.
+            host.effect(UpdatesEffect::ReleaseHelm(from.clone()));
+            let mut moved = false;
+            for run in self.runs.values_mut().filter(|r| r.cluster == *from) {
+                run.cluster = to.clone();
+                moved = true;
+            }
+            if moved {
+                host.effect(UpdatesEffect::WatchHelm(to.clone()));
+            }
             self.detect(to, conns, host);
+            if was_polling && self.poll {
+                self.start_poll(to, host);
+            }
         }
         host.notify();
     }
@@ -1183,6 +1198,48 @@ mod tests {
         assert!(!finished.running());
         assert_eq!(finished.checks.len(), 1);
         assert_eq!(finished.checks[0].status, check::CheckStatus::Unknown);
+    }
+
+    /// A pre-flight run that waits while its cluster is rekeyed finishes under the new id.
+    #[test]
+    fn a_pre_flight_run_follows_a_rekey() {
+        let (from, to) = (ClusterId::new("old-id"), ClusterId::new("new-id"));
+        let mut host = TestHost::new();
+        let mut core = UpdatesCore::new(false);
+        let fixed = Fixed {
+            version: "4.17.8",
+            started: Ok("never"),
+        };
+        seeded(&mut core, &from, fixed);
+        core.run_preflight(&from, "4.17.12", &mut host);
+
+        host.effects.clear();
+        core.rekeyed(&from, &to, &Conns::new(), &mut host);
+        assert!(matches!(
+            host.effects.as_slice(),
+            [UpdatesEffect::ReleaseHelm(released), UpdatesEffect::WatchHelm(watched)]
+                if *released == from && *watched == to
+        ));
+
+        host.run_until(&mut core, |_, host| {
+            host.effects
+                .iter()
+                .any(|e| matches!(e, UpdatesEffect::ProbePreflight { .. }))
+        });
+        let run = host
+            .effects
+            .iter()
+            .find_map(|e| match e {
+                UpdatesEffect::ProbePreflight { run, cluster, .. } => {
+                    assert_eq!(*cluster, to);
+                    Some(*run)
+                }
+                _ => None,
+            })
+            .unwrap();
+        core.preflight_probe(run, Probe::Go(None), &mut host);
+        host.run_until_idle(&mut core);
+        assert!(!core.preflight(&to, "4.17.12").unwrap().running());
     }
 
     /// A write that finishes after its cluster was rekeyed clears `busy` on the new id.

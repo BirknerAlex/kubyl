@@ -1,6 +1,6 @@
 # Phase 19: Split domain logic from the UI (GPUI-free `*_core` crates)
 
-**Status:** done (orchestration of the coordinating services: see "Later")
+**Status:** done (orchestration of the coordinating services moved in phase 20)
 **Depends on:** all feature phases (it moves their code); 18 done
 **Owns:** new `crates/kubyl_base`, `crates/kubyl_*_core`; per step, the crate being split (one
 crate at a time, see "Working rules")
