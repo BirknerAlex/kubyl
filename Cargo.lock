@@ -5450,6 +5450,20 @@ dependencies = [
  "futures",
  "gpui-pre",
  "kubyl_core",
+ "kubyl_settings_core",
+ "notify 8.2.0",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
+name = "kubyl_settings_core"
+version = "0.4.0"
+dependencies = [
+ "dirs 7.0.0",
  "notify 8.2.0",
  "schemars 1.2.2",
  "serde",

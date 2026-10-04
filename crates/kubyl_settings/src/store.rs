@@ -1,49 +1,15 @@
-use std::any::{Any, TypeId};
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use futures::StreamExt as _;
 use gpui::{App, AsyncApp, BorrowAppContext as _, Global, Subscription};
 use kubyl_core::{Notification, NotificationCenter};
-use notify::Watcher as _;
-use schemars::JsonSchema;
-use serde::Serialize;
-use serde::de::DeserializeOwned;
-use serde_json::{Map, Value};
-
-use crate::paths::{WriteTicket, write_atomic};
-
-pub(crate) const SETTINGS_FILE: &str = "settings.json";
-pub(crate) const SCHEMA_FILE: &str = "settings.schema.json";
-const DEFAULT_SETTINGS: &str = "{\n  \"$schema\": \"./settings.schema.json\"\n}\n";
-
-/// A typed part of `settings.json`.
-///
-/// Use `#[serde(default)]` on the struct so missing fields fall back to their defaults.
-pub trait SettingsSection:
-    Serialize + DeserializeOwned + Default + JsonSchema + Clone + PartialEq + 'static
-{
-    /// `None`: the fields live at the top level (`"theme": "dark"`), like Zed.
-    /// `Some(key)`: they live in an object under `key` (`"logs": { "wrap_lines": true }`).
-    const KEY: Option<&'static str>;
-}
-
-struct Entry {
-    value: Box<dyn Any>,
-    key: Option<&'static str>,
-    parse: fn(&Value) -> Result<Box<dyn Any>, String>,
-    schema: fn() -> Value,
-}
+pub use kubyl_settings_core::SettingsSection;
+use kubyl_settings_core::{SettingsStore, Write, WriteTicket, watch_dir, write_atomic};
 
 /// The loaded `settings.json`. See the crate docs.
 pub struct Settings {
-    path: PathBuf,
-    raw: Value,
-    /// The file on disk could not be read or parsed. `raw` does not reflect it, so writing it
-    /// back would destroy what the user has there; changes stay in memory until it is fixed.
-    unreadable: bool,
-    entries: HashMap<TypeId, Entry>,
+    store: SettingsStore,
     _watcher: Option<notify::RecommendedWatcher>,
 }
 
@@ -53,26 +19,7 @@ impl Settings {
     /// Parses `T` from the loaded file and makes it available to [`Settings::get`].
     /// Registering twice is a no-op.
     pub fn register<T: SettingsSection>(cx: &mut App) {
-        let settings = cx.global_mut::<Self>();
-        if settings.entries.contains_key(&TypeId::of::<T>()) {
-            return;
-        }
-        let value = match parse::<T>(&settings.raw) {
-            Ok(value) => value,
-            Err(err) => {
-                tracing::warn!("settings.json: {err}");
-                Box::new(T::default())
-            }
-        };
-        settings.entries.insert(
-            TypeId::of::<T>(),
-            Entry {
-                value,
-                key: T::KEY,
-                parse: parse::<T>,
-                schema: schema::<T>,
-            },
-        );
+        cx.global_mut::<Self>().store.register::<T>();
     }
 
     /// The current value of `T`.
@@ -80,16 +27,7 @@ impl Settings {
     /// # Panics
     /// If `T` was not registered with [`Settings::register`].
     pub fn get<T: SettingsSection>(cx: &App) -> &T {
-        cx.global::<Self>()
-            .entries
-            .get(&TypeId::of::<T>())
-            .and_then(|entry| entry.value.downcast_ref())
-            .unwrap_or_else(|| {
-                panic!(
-                    "Settings::register::<{}>() was not called",
-                    std::any::type_name::<T>()
-                )
-            })
+        cx.global::<Self>().store.get::<T>()
     }
 
     /// Calls `on_change` whenever `T` changes (file edited, or [`Settings::update`]).
@@ -109,24 +47,17 @@ impl Settings {
 
     /// Changes `T` and writes the fields that differ from their defaults back to settings.json.
     pub fn update<T: SettingsSection>(cx: &mut App, f: impl FnOnce(&mut T)) {
-        let mut value = Self::get::<T>(cx).clone();
-        f(&mut value);
-        let contents = cx.update_global::<Self, _>(|settings, _| {
-            merge_section(&mut settings.raw, T::KEY, &value);
-            if let Some(entry) = settings.entries.get_mut(&TypeId::of::<T>()) {
-                entry.value = Box::new(value);
+        let write = cx.update_global::<Self, _>(|settings, _| settings.store.update::<T>(f));
+        let (path, contents) = match write {
+            Write::File { path, contents } => (path, contents),
+            Write::Unreadable(path) => {
+                tracing::warn!(
+                    "not saving to {}: it has errors; fix or delete it first",
+                    path.display()
+                );
+                return;
             }
-            serde_json::to_vec_pretty(&settings.raw).expect("settings serialize")
-        });
-        let settings = cx.global::<Self>();
-        if settings.unreadable {
-            tracing::warn!(
-                "not saving to {}: it has errors; fix or delete it first",
-                settings.path.display()
-            );
-            return;
-        }
-        let path = settings.path.clone();
+        };
         let ticket = WriteTicket::new();
         cx.background_executor()
             .spawn(async move {
@@ -139,15 +70,13 @@ impl Settings {
 
     /// Path of `settings.json`.
     pub fn path(cx: &App) -> &Path {
-        &cx.global::<Self>().path
+        cx.global::<Self>().store.path()
     }
 
     /// Writes `settings.schema.json` for all registered sections. Call once after every
     /// crate's `init`.
     pub fn write_schema(cx: &App) {
-        let settings = cx.global::<Self>();
-        let schema = combined_schema(settings.entries.values());
-        let path = settings.path.with_file_name(SCHEMA_FILE);
+        let (path, schema) = cx.global::<Self>().store.schema();
         cx.background_executor()
             .spawn(async move {
                 let json = serde_json::to_vec_pretty(&schema).expect("schema serialize");
@@ -161,34 +90,10 @@ impl Settings {
     /// Replaces the file contents and re-parses every section. Invalid JSON keeps the old values
     /// (and stops [`Settings::update`] from writing until the file is valid again).
     pub fn reload_from_str(cx: &mut App, contents: &str) {
-        let raw: Value = match serde_json::from_str(contents) {
-            Ok(raw @ Value::Object(_)) => raw,
-            Ok(_) => {
-                cx.global_mut::<Self>().unreadable = true;
-                return report(cx, "settings.json must contain a JSON object".into());
-            }
-            Err(err) => {
-                cx.global_mut::<Self>().unreadable = true;
-                return report(cx, format!("settings.json is not valid JSON: {err}"));
-            }
-        };
-        cx.global_mut::<Self>().unreadable = false;
-        if raw == cx.global::<Self>().raw {
-            return;
-        }
-        let errors = cx.update_global::<Self, _>(|settings, _| {
-            let mut errors = Vec::new();
-            for entry in settings.entries.values_mut() {
-                match (entry.parse)(&raw) {
-                    Ok(value) => entry.value = value,
-                    Err(err) => errors.push(err),
-                }
-            }
-            settings.raw = raw;
-            errors
-        });
+        let errors =
+            cx.update_global::<Self, _>(|settings, _| settings.store.reload_from_str(contents));
         for err in errors {
-            report(cx, format!("settings.json: {err}"));
+            report(cx, err);
         }
     }
 }
@@ -198,149 +103,20 @@ fn report(cx: &mut App, message: String) {
     NotificationCenter::push(cx, Notification::error(message));
 }
 
-fn parse<T: SettingsSection>(raw: &Value) -> Result<Box<dyn Any>, String> {
-    let section = match T::KEY {
-        None => raw.clone(),
-        Some(key) => raw.get(key).cloned().unwrap_or(Value::Null),
-    };
-    if section.is_null() {
-        return Ok(Box::new(T::default()));
-    }
-    T::deserialize(section)
-        .map(|value| Box::new(value) as Box<dyn Any>)
-        .map_err(|err| match T::KEY {
-            Some(key) => format!("\"{key}\": {err}"),
-            None => err.to_string(),
-        })
-}
-
-fn schema<T: SettingsSection>() -> Value {
-    serde_json::to_value(schemars::schema_for!(T)).expect("schema serialize")
-}
-
-/// Writes the fields of `value` into `raw`, skipping default-valued fields that the user never set.
-fn merge_section<T: SettingsSection>(raw: &mut Value, key: Option<&str>, value: &T) {
-    let Value::Object(new) = serde_json::to_value(value).expect("settings serialize") else {
-        return;
-    };
-    let Value::Object(defaults) = serde_json::to_value(T::default()).expect("settings serialize")
-    else {
-        return;
-    };
-    let root = raw.as_object_mut().expect("settings root is an object");
-    let target = match key {
-        None => root,
-        Some(key) => {
-            let section = root.entry(key).or_insert_with(|| Value::Object(Map::new()));
-            // `null`, `[]` etc. typed by hand: replace with an object.
-            if !section.is_object() {
-                *section = Value::Object(Map::new());
-            }
-            section.as_object_mut().expect("just made an object")
-        }
-    };
-    for (field, value) in new {
-        if defaults.get(&field) == Some(&value) && !target.contains_key(&field) {
-            continue;
-        }
-        target.insert(field, value);
-    }
-}
-
-fn combined_schema<'a>(entries: impl Iterator<Item = &'a Entry>) -> Value {
-    let mut properties = Map::new();
-    let mut defs = Map::new();
-    properties.insert("$schema".into(), serde_json::json!({ "type": "string" }));
-    for entry in entries {
-        let mut schema = (entry.schema)();
-        let Some(obj) = schema.as_object_mut() else {
-            continue;
-        };
-        obj.remove("$schema");
-        if let Some(Value::Object(d)) = obj.remove("$defs") {
-            defs.extend(d);
-        }
-        match entry.key {
-            None => {
-                if let Some(Value::Object(props)) = obj.remove("properties") {
-                    properties.extend(props);
-                }
-            }
-            Some(key) => {
-                properties.insert(key.into(), schema);
-            }
-        }
-    }
-    serde_json::json!({
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": "Kubyl settings",
-        "type": "object",
-        "properties": properties,
-        "$defs": defs,
-    })
-}
-
 /// Loads settings.json from `dir`; with `watch`, reloads it when it changes on disk.
 pub(crate) fn init(cx: &mut App, dir: &Path, watch: bool) {
-    let path = dir.join(SETTINGS_FILE);
-    let mut unreadable = false;
-    let contents = match std::fs::read_to_string(&path) {
-        Ok(contents) => contents,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            if let Err(err) = write_atomic(&path, DEFAULT_SETTINGS.as_bytes()) {
-                tracing::warn!("failed to create {}: {err}", path.display());
-            }
-            DEFAULT_SETTINGS.to_string()
-        }
-        Err(err) => {
-            tracing::warn!("failed to read {}: {err}", path.display());
-            unreadable = true;
-            DEFAULT_SETTINGS.to_string()
-        }
-    };
-    let (raw, error) = match serde_json::from_str::<Value>(&contents) {
-        Ok(raw @ Value::Object(_)) => (raw, None),
-        Ok(_) => (
-            Value::Object(Map::new()),
-            Some("settings.json must contain a JSON object".to_string()),
-        ),
-        Err(err) => (
-            Value::Object(Map::new()),
-            Some(format!("settings.json is not valid JSON: {err}")),
-        ),
-    };
-
-    if error.is_some() {
-        unreadable = true;
-        // Keep a copy in case the user's next edit replaces it.
-        let backup = path.with_file_name(format!("{SETTINGS_FILE}.bak"));
-        if let Err(err) = std::fs::copy(&path, &backup) {
-            tracing::warn!("failed to back up {}: {err}", path.display());
-        }
-    }
-
+    let (store, error) = SettingsStore::load(dir);
+    let path = store.path().to_path_buf();
     let (tx, rx) = futures::channel::mpsc::unbounded();
-    let watcher = if !watch {
-        None
+    let watcher = if watch {
+        watch_dir(dir, move || {
+            tx.unbounded_send(()).ok();
+        })
     } else {
-        notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-            if event.is_ok_and(|e| !e.kind.is_access()) {
-                tx.unbounded_send(()).ok();
-            }
-        })
-        .and_then(|mut watcher| {
-            watcher.watch(dir, notify::RecursiveMode::NonRecursive)?;
-            Ok(watcher)
-        })
-        .inspect_err(|err| tracing::warn!("not watching settings.json: {err}"))
-        .ok()
+        None
     };
-
     cx.set_global(Settings {
-        path: path.clone(),
-        raw,
-        unreadable,
-        entries: HashMap::new(),
+        store,
         _watcher: watcher,
     });
     if let Some(error) = error {
@@ -371,7 +147,10 @@ pub(crate) fn init(cx: &mut App, dir: &Path, watch: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde::Deserialize;
+    use kubyl_settings_core::SETTINGS_FILE;
+    use schemars::JsonSchema;
+    use serde::{Deserialize, Serialize};
+    use serde_json::Value;
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -536,7 +315,7 @@ mod tests {
     fn schema_combines_sections(cx: &mut gpui::TestAppContext) {
         let _dir = setup(cx, "{}");
         cx.update(|cx| {
-            let schema = combined_schema(cx.global::<Settings>().entries.values());
+            let (_, schema) = cx.global::<Settings>().store.schema();
             let props = schema["properties"].as_object().unwrap();
             assert!(props.contains_key("theme"));
             assert!(props.contains_key("font_size"));
