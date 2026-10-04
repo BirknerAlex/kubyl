@@ -6,13 +6,17 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
+use futures::future::BoxFuture;
+
 use gpui::{App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, Global};
+use kubyl_base::host::TaskHandle;
 use kubyl_core::forwards::ActiveForward;
 use kubyl_core::host::{Hosts, hosted};
 use kubyl_core::{ClusterId, Notification, NotificationCenter, ResourceRef, Tone};
 use kubyl_logs::sessions::{SessionButton, SessionId, SessionKind, SessionRegistry};
 pub use kubyl_portforward_core::manager::{ForwardInfo, ForwardState, human_bytes};
 use kubyl_portforward_core::manager::{ForwardsCore, ForwardsEffect, Target};
+use kubyl_portforward_core::reach::{self, ChannelReach, Reach, ReachRequest, Reached};
 use kubyl_ui::IconName;
 
 use crate::favorites::{SavedForward, SavedForwards};
@@ -99,10 +103,12 @@ struct Row {
     ephemeral: Option<Ephemeral>,
 }
 
-#[derive(Default)]
 pub struct PortForwardManager {
     core: ForwardsCore,
     rows: HashMap<u64, Row>,
+    /// Hands out forwards to features that ask to reach a Service.
+    reach: ChannelReach,
+    _serving: TaskHandle,
 }
 
 impl EventEmitter<()> for PortForwardManager {}
@@ -116,7 +122,22 @@ impl Hosts<ForwardsCore> for PortForwardManager {
         match effect {
             ForwardsEffect::Changed(id) => self.refresh_row(id, cx),
             ForwardsEffect::OpenUrl(url) => cx.open_url(&url),
+            ForwardsEffect::Reaching(id) => self.add_reach_row(id, cx),
+            ForwardsEffect::Released(id) => {
+                if let Some(row) = self.rows.remove(&id) {
+                    SessionRegistry::remove(cx, row.session_id);
+                }
+            }
         }
+    }
+}
+
+/// Refuses every request: the app has no port-forward manager.
+struct NoReach;
+
+impl Reach for NoReach {
+    fn reach(&self, _request: ReachRequest) -> BoxFuture<'static, Result<Reached, String>> {
+        Box::pin(async { Err("port-forwards aren't available".to_string()) })
     }
 }
 
@@ -126,13 +147,79 @@ impl Global for GlobalManager {}
 
 impl PortForwardManager {
     pub fn install(cx: &mut App) -> Entity<Self> {
-        let entity = cx.new(|_| Self::default());
+        let entity = cx.new(|cx| {
+            let (reach, inbox) = reach::channel();
+            let mut this = Self {
+                core: ForwardsCore::default(),
+                rows: HashMap::new(),
+                reach,
+                _serving: TaskHandle::none(),
+            };
+            this._serving = hosted(&mut this, cx, |core, host| core.serve(inbox, host));
+            this
+        });
         cx.set_global(GlobalManager(entity.clone()));
         entity
     }
 
     pub fn global(cx: &App) -> Entity<Self> {
         cx.global::<GlobalManager>().0.clone()
+    }
+
+    /// The manager, `None` where none was installed (tests of features that use forwards).
+    pub fn try_global(cx: &App) -> Option<Entity<Self>> {
+        cx.try_global::<GlobalManager>().map(|g| g.0.clone())
+    }
+
+    /// How features reach a Service without knowing about forwards: each request is a temporary
+    /// loopback forward, listed in Active Sessions until the feature lets go of it.
+    pub fn reach(&self) -> ChannelReach {
+        self.reach.clone()
+    }
+
+    /// [`Self::reach`] of the app's manager, or a [`Reach`] that refuses every request when the
+    /// app has none (tests).
+    pub fn app_reach(cx: &App) -> Arc<dyn Reach> {
+        match Self::try_global(cx) {
+            Some(manager) => Arc::new(manager.read(cx).reach()),
+            None => Arc::new(NoReach),
+        }
+    }
+
+    /// A forward opened for a feature (see [`Self::reach`]) gets a row like the others.
+    fn add_reach_row(&mut self, id: u64, cx: &mut Context<Self>) {
+        let Some(forward) = self.core.forward(id) else {
+            return;
+        };
+        let (label, namespace, title) = (
+            forward.target().session_label(),
+            forward.target().namespace.clone(),
+            forward.title(),
+        );
+        let session_id = SessionRegistry::add(
+            cx,
+            SessionKind::PortForward,
+            label,
+            namespace,
+            "starting…",
+            Tone::Info,
+            move |cx| {
+                Self::global(cx).update(cx, |this, cx| this.stopped_by_user(id, cx));
+            },
+        );
+        self.rows.insert(
+            id,
+            Row {
+                session_id,
+                saved: false,
+                ephemeral: Some(Ephemeral {
+                    title,
+                    buttons: Vec::new(),
+                    on_stop: Arc::new(|_| {}),
+                }),
+            },
+        );
+        self.refresh_row(id, cx);
     }
 
     /// Starts a forward and returns its id.

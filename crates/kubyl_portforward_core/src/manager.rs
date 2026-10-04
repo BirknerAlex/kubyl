@@ -12,12 +12,13 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use futures::channel::mpsc;
+use futures::channel::{mpsc, oneshot};
 use kubyl_base::host::{Flow, Host, HostExt as _, Pace, Service, TaskHandle};
 use kubyl_base::types::ActiveForward;
-use kubyl_base::{ClusterId, Notice, ResourceRef, Tone};
+use kubyl_base::{ClusterId, Gvr, Notice, ResourceRef, Tone};
 
 use crate::listener::{self, ForwardEvent};
+use crate::reach::{Opened, ReachCommand, ReachInbox, ReachPort, ReachRequest};
 use crate::resolve::{self, ForwardKind, RemotePort};
 
 /// How often a reconnecting forward re-resolves its target.
@@ -220,6 +221,11 @@ pub enum ForwardsEffect {
     Changed(u64),
     /// Open `url` in the browser.
     OpenUrl(String),
+    /// A forward started because a feature asked to reach a Service ([`ForwardsCore::serve`]):
+    /// show it like one started by the user.
+    Reaching(u64),
+    /// The feature that asked for forward `id` let go of it; it is gone.
+    Released(u64),
 }
 
 /// The running forwards.
@@ -227,6 +233,17 @@ pub enum ForwardsEffect {
 pub struct ForwardsCore {
     forwards: HashMap<u64, Forward>,
     next_id: u64,
+    /// Requests of [`ForwardsCore::serve`] waiting for their forward to listen.
+    waiting: HashMap<u64, Waiting>,
+    /// Told when a forward asked for through [`ForwardsCore::serve`] goes away.
+    watchers: HashMap<u64, oneshot::Sender<()>>,
+}
+
+struct Waiting {
+    reply: oneshot::Sender<Result<Opened, String>>,
+    reconnect_grace: Option<Duration>,
+    /// The timeout, and the grace period once the forward is reconnecting.
+    _timers: Vec<TaskHandle>,
 }
 
 impl Service for ForwardsCore {
@@ -329,6 +346,13 @@ impl ForwardsCore {
     /// Drops a forward. Returns it, so the host can clean up what it kept for it.
     pub fn remove(&mut self, id: u64, host: &mut dyn Host<Self>) -> Option<Target> {
         let forward = self.forwards.remove(&id)?;
+        self.watchers.remove(&id);
+        if let Some(waiting) = self.waiting.remove(&id) {
+            waiting
+                .reply
+                .send(Err("the port-forward stopped".into()))
+                .ok();
+        }
         host.emit(());
         host.notify();
         Some(forward.target)
@@ -453,6 +477,7 @@ impl ForwardsCore {
             Err(err) => {
                 forward.state = ForwardState::Reconnecting(err);
                 host.effect(ForwardsEffect::Changed(id));
+                self.settle(id, host);
                 let probe = host.after(PROBE_INTERVAL, move |this, host| {
                     if let Some(client) = this.forwards.get(&id).map(|f| f.client.clone()) {
                         this.check_target(id, client, host);
@@ -469,6 +494,7 @@ impl ForwardsCore {
         if let Some(forward) = self.forwards.get_mut(&id) {
             forward.state = state;
             host.effect(ForwardsEffect::Changed(id));
+            self.settle(id, host);
         }
     }
 
@@ -515,7 +541,154 @@ impl ForwardsCore {
             }
         }
         host.effect(ForwardsEffect::Changed(id));
+        self.settle(id, host);
         true
+    }
+
+    /// Answers the request waiting for forward `id` once it listens or failed to bind, and starts
+    /// the grace period of one that is reconnecting.
+    fn settle(&mut self, id: u64, host: &mut dyn Host<Self>) {
+        let Some(forward) = self.forwards.get(&id) else {
+            return;
+        };
+        match &forward.state {
+            ForwardState::Listening if forward.local_port != 0 => {
+                let local_port = forward.local_port;
+                if let Some(waiting) = self.waiting.remove(&id) {
+                    let (stopped_tx, stopped) = oneshot::channel();
+                    let opened = Opened {
+                        id,
+                        local_port,
+                        stopped,
+                    };
+                    if waiting.reply.send(Ok(opened)).is_ok() {
+                        self.watchers.insert(id, stopped_tx);
+                    } else {
+                        // Nobody waits any more.
+                        self.release(id, host);
+                    }
+                }
+            }
+            ForwardState::Failed(err) => {
+                let err = format!("port-forward: {err}");
+                self.give_up(id, err, host);
+            }
+            ForwardState::Reconnecting(_) => {
+                let Some(waiting) = self.waiting.get_mut(&id) else {
+                    return;
+                };
+                if let Some(grace) = waiting.reconnect_grace.take() {
+                    let timer = host.after(grace, move |this, host| {
+                        if let Some(ForwardState::Reconnecting(err)) =
+                            this.forwards.get(&id).map(|f| f.state.clone())
+                        {
+                            this.give_up(id, format!("port-forward: {err}"), host);
+                        }
+                    });
+                    waiting._timers.push(timer);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Fails the request waiting for forward `id` and stops the forward.
+    fn give_up(&mut self, id: u64, error: String, host: &mut dyn Host<Self>) {
+        if let Some(waiting) = self.waiting.remove(&id) {
+            waiting.reply.send(Err(error)).ok();
+            self.release(id, host);
+        }
+    }
+
+    /// Drops a forward a feature asked for and tells the host to forget its row.
+    fn release(&mut self, id: u64, host: &mut dyn Host<Self>) {
+        self.remove(id, host);
+        host.effect(ForwardsEffect::Released(id));
+    }
+
+    /// Answers the requests of a [`crate::reach::ChannelReach`] on `host`: opens a loopback
+    /// forward per request and stops it when the feature drops what it got. Keep the handle
+    /// for as long as the service should answer.
+    pub fn serve(&mut self, inbox: ReachInbox, host: &mut dyn Host<Self>) -> TaskHandle {
+        host.batches(
+            inbox,
+            Pace::IMMEDIATE,
+            |this, commands: Vec<ReachCommand>, host| {
+                for command in commands {
+                    this.handle(command, host);
+                }
+                Flow::Continue
+            },
+        )
+    }
+
+    /// Carries out one request of a [`crate::reach::ChannelReach`].
+    pub fn handle(&mut self, command: ReachCommand, host: &mut dyn Host<Self>) {
+        match command {
+            ReachCommand::Stop(id) => {
+                if self.forwards.contains_key(&id) {
+                    self.release(id, host);
+                }
+            }
+            ReachCommand::Open { request, reply } => {
+                let ReachRequest {
+                    client,
+                    cluster,
+                    namespace,
+                    service,
+                    port,
+                    title,
+                    https,
+                    timeout,
+                    reconnect_grace,
+                } = *request;
+                let ReachPort::Number(number) = port else {
+                    reply.send(Err("the port isn't resolved".into())).ok();
+                    return;
+                };
+                let target = Target {
+                    cluster: cluster.clone(),
+                    namespace: namespace.clone(),
+                    kind: ForwardKind::Service {
+                        service: service.clone(),
+                    },
+                    port: RemotePort::Service(Some(number)),
+                    // Loopback only.
+                    bind_address: "127.0.0.1".into(),
+                    local_port: 0,
+                    target: ResourceRef::object(
+                        cluster,
+                        Gvr::new("", "v1", "services"),
+                        Some(namespace),
+                        service,
+                    ),
+                    remote_port: Some(number),
+                    http: false,
+                    https,
+                    open_browser: false,
+                    ephemeral: Some(title),
+                };
+                let id = self.next_id();
+                self.start(id, client, target, false, host);
+                host.effect(ForwardsEffect::Reaching(id));
+                let expire = host.after(timeout, move |this, host| {
+                    this.give_up(
+                        id,
+                        "the port-forward didn't start (needs create pods/portforward)".into(),
+                        host,
+                    );
+                });
+                self.waiting.insert(
+                    id,
+                    Waiting {
+                        reply,
+                        reconnect_grace,
+                        _timers: vec![expire],
+                    },
+                );
+                self.settle(id, host);
+            }
+        }
     }
 
     /// The most recently started live HTTP forward's URL, for "open last forward".
@@ -565,5 +738,224 @@ mod tests {
         assert_eq!(human_bytes(500), "500 B");
         assert_eq!(human_bytes(2048), "2.0 KB");
         assert_eq!(human_bytes(5 * 1024 * 1024), "5.0 MB");
+    }
+}
+
+#[cfg(test)]
+mod reach_tests {
+    use kubyl_base::host::TestHost;
+
+    use super::*;
+    use crate::reach::{self, Reach as _};
+
+    fn request(runtime: &tokio::runtime::Runtime, timeout: Duration) -> ReachRequest {
+        // A client for a cluster that isn't there; its buffer needs a runtime.
+        let _guard = runtime.enter();
+        let client =
+            kube::Client::try_from(kube::Config::new("http://127.0.0.1:1".parse().unwrap()))
+                .expect("client");
+        ReachRequest {
+            client,
+            cluster: ClusterId::new("c"),
+            namespace: "monitoring".into(),
+            service: "alertmanager-main".into(),
+            port: ReachPort::Number(9093),
+            title: "Alertmanager · svc/alertmanager-main".into(),
+            https: false,
+            timeout,
+            reconnect_grace: None,
+        }
+    }
+
+    /// Opens a request through the channel and returns what the owner receives.
+    fn open(
+        runtime: &tokio::runtime::Runtime,
+        reach: &reach::ChannelReach,
+        request: ReachRequest,
+    ) -> std::sync::mpsc::Receiver<Result<reach::Reached, String>> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let future = reach.reach(request);
+        runtime.spawn(async move {
+            tx.send(future.await).ok();
+        });
+        rx
+    }
+
+    fn serve(
+        core: &mut ForwardsCore,
+        host: &mut TestHost<ForwardsCore>,
+    ) -> (reach::ChannelReach, TaskHandle) {
+        let (reach, inbox) = reach::channel();
+        let task = core.serve(inbox, host);
+        (reach, task)
+    }
+
+    fn started(core: &ForwardsCore) -> u64 {
+        core.forwards().map(|(id, _)| id).next().expect("a forward")
+    }
+
+    #[test]
+    fn a_request_gets_its_port_once_the_forward_listens_and_stops_it_when_dropped() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let mut host = TestHost::default();
+        let mut core = ForwardsCore::default();
+        let (reach, _serving) = serve(&mut core, &mut host);
+        let answer = open(&runtime, &reach, request(&runtime, Duration::from_secs(30)));
+
+        host.run_until(&mut core, |core, _| core.forwards().count() == 1);
+        let id = started(&core);
+        assert!(matches!(
+            host.effects.as_slice(),
+            [.., ForwardsEffect::Reaching(opened)] if *opened == id
+        ));
+        let target = core.forward(id).unwrap().target();
+        assert_eq!(target.bind_address, "127.0.0.1");
+        assert_eq!(
+            target.ephemeral.as_deref(),
+            Some("Alertmanager · svc/alertmanager-main")
+        );
+        assert!(core.active().is_empty(), "temporary forwards aren't listed");
+
+        // The listener says it listens.
+        core.forwards.get_mut(&id).unwrap().state = ForwardState::Starting;
+        core.apply_event(
+            id,
+            &ForwardEvent::Listening { local_port: 40123 },
+            &mut host,
+        );
+        let mut reached = answer
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
+        assert_eq!(reached.local_port, 40123);
+
+        // The user stops it: the feature hears about it.
+        let stopped = reached.take_stopped();
+        core.remove(id, &mut host);
+        runtime.block_on(stopped);
+
+        // Dropping what the feature got stops its forward.
+        let answer = open(&runtime, &reach, request(&runtime, Duration::from_secs(30)));
+        host.run_until(&mut core, |core, _| core.forwards().count() == 1);
+        let id = started(&core);
+        core.forwards.get_mut(&id).unwrap().state = ForwardState::Starting;
+        core.apply_event(
+            id,
+            &ForwardEvent::Listening { local_port: 40124 },
+            &mut host,
+        );
+        drop(
+            answer
+                .recv_timeout(Duration::from_secs(10))
+                .unwrap()
+                .unwrap(),
+        );
+        host.run_until(&mut core, |core, _| core.forwards().count() == 0);
+        assert!(
+            host.effects
+                .iter()
+                .any(|e| matches!(e, ForwardsEffect::Released(released) if *released == id))
+        );
+    }
+
+    #[test]
+    fn a_forward_that_cannot_bind_fails_the_request() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let mut host = TestHost::default();
+        let mut core = ForwardsCore::default();
+        let (reach, _serving) = serve(&mut core, &mut host);
+        let answer = open(&runtime, &reach, request(&runtime, Duration::from_secs(30)));
+
+        host.run_until(&mut core, |core, _| core.forwards().count() == 1);
+        let id = started(&core);
+        core.set_state(id, ForwardState::Failed("address in use".into()), &mut host);
+        let error = answer
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+            .err()
+            .unwrap();
+        assert_eq!(error, "port-forward: address in use");
+        assert_eq!(core.forwards().count(), 0);
+    }
+
+    /// A forward that never reports back: no listener events, no probes.
+    fn silence(core: &mut ForwardsCore, id: u64, state: ForwardState) {
+        let forward = core.forwards.get_mut(&id).unwrap();
+        forward._tasks.clear();
+        forward.probe = None;
+        forward.state = state;
+    }
+
+    #[test]
+    fn a_forward_that_does_not_listen_in_time_fails_the_request() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let mut host = TestHost::default();
+        let mut core = ForwardsCore::default();
+        let (reach, _serving) = serve(&mut core, &mut host);
+        let answer = open(
+            &runtime,
+            &reach,
+            request(&runtime, Duration::from_millis(100)),
+        );
+
+        host.run_until(&mut core, |core, _| core.forwards().count() == 1);
+        let id = started(&core);
+        silence(&mut core, id, ForwardState::Starting);
+        host.run_until(&mut core, |core, _| core.forwards().count() == 0);
+        let error = answer
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+            .err()
+            .unwrap();
+        assert_eq!(
+            error,
+            "the port-forward didn't start (needs create pods/portforward)"
+        );
+    }
+
+    #[test]
+    fn a_forward_that_keeps_reconnecting_fails_the_request_after_the_grace_period() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let mut host = TestHost::default();
+        let mut core = ForwardsCore::default();
+        let (reach, _serving) = serve(&mut core, &mut host);
+        let mut grace = request(&runtime, Duration::from_secs(60));
+        grace.reconnect_grace = Some(Duration::from_millis(100));
+        let answer = open(&runtime, &reach, grace);
+
+        host.run_until(&mut core, |core, _| core.forwards().count() == 1);
+        let id = started(&core);
+        silence(&mut core, id, ForwardState::Starting);
+        core.set_state(
+            id,
+            ForwardState::Reconnecting("no ready endpoints".into()),
+            &mut host,
+        );
+        host.run_until(&mut core, |core, _| core.forwards().count() == 0);
+        let error = answer
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+            .err()
+            .unwrap();
+        assert_eq!(error, "port-forward: no ready endpoints");
+    }
+
+    #[test]
+    fn named_ports_are_looked_up_before_the_host_hears_about_the_request() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let mut host = TestHost::default();
+        let mut core = ForwardsCore::default();
+        let (reach, _serving) = serve(&mut core, &mut host);
+        let mut named = request(&runtime, Duration::from_secs(1));
+        named.port = ReachPort::Name("web".into());
+        // The Service can't be read (nothing listens), so there is no such port.
+        let answer = open(&runtime, &reach, named);
+        let error = answer
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+            .err()
+            .unwrap();
+        assert_eq!(error, "svc/alertmanager-main has no port web");
+        assert_eq!(core.forwards().count(), 0);
     }
 }
