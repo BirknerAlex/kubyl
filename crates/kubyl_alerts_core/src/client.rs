@@ -14,10 +14,10 @@
 
 use std::time::Duration;
 
-use kubyl_kube::auth::BearerToken;
-use kubyl_metrics::openshift::{self, Bearer, ServiceAccountToken};
-use kubyl_metrics::prometheus::{PromClient, PromError};
-use kubyl_metrics::transport::{ExternalTls, Transport};
+use kubyl_kube_core::auth::BearerToken;
+use kubyl_metrics_core::openshift::{self, Bearer, ServiceAccountToken};
+use kubyl_metrics_core::prometheus::{PromClient, PromError};
+use kubyl_metrics_core::transport::{ExternalTls, Transport};
 use secrecy::SecretString;
 use serde_json::{Value, json};
 
@@ -386,7 +386,7 @@ pub async fn probe_forward(
     let server_name = format!("{service}.{namespace}.svc");
     let url = format!(
         "https://127.0.0.1:{local_port}{}",
-        kubyl_metrics::transport::normalize_prefix(path)
+        kubyl_metrics_core::transport::normalize_prefix(path)
     );
     let mut bearers = Vec::new();
     if let Some(user) = &credentials.user_token {
@@ -461,7 +461,7 @@ pub async fn probe_password(
     let url = format!(
         "{}://127.0.0.1:{local_port}{}",
         if https { "https" } else { "http" },
-        kubyl_metrics::transport::normalize_prefix(path)
+        kubyl_metrics_core::transport::normalize_prefix(path)
     );
     let tls = ExternalTls {
         insecure: https,

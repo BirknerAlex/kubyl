@@ -4,7 +4,7 @@
 
 mod alerts_tab;
 mod details;
-pub mod rows;
+pub use crate::rows;
 mod rules_tab;
 mod sign_in;
 mod silences_tab;

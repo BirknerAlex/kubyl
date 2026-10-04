@@ -124,7 +124,7 @@ pub fn token_allowed(target: &AmTarget) -> bool {
 }
 
 fn normalize(path: &str) -> String {
-    kubyl_metrics::transport::normalize_prefix(path)
+    kubyl_metrics_core::transport::normalize_prefix(path)
 }
 
 /// A candidate and how it was found (for "what was tried").
