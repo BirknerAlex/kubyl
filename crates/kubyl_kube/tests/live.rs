@@ -10,6 +10,14 @@
 //!   cargo test -p kubyl_kube --test live -- --ignored oidc --nocapture
 //! ```
 //!
+//! The exec test turns the client certificate of a kind kubeconfig into an exec plugin's
+//! output (PEM in an ExecCredential) and connects with it:
+//!
+//! ```sh
+//! KUBYL_TEST_KUBECONFIG=<kind kubeconfig> KUBYL_TEST_CONTEXT=kind-kubyl-dev \
+//!   cargo test -p kubyl_kube --test live -- --ignored exec_plugin --nocapture
+//! ```
+//!
 //! The OIDC test prints the sign-in URL (and writes it to `$KUBYL_TEST_URL_FILE` if set); sign
 //! in as admin@kubyl.dev / password. It then waits for the 2-minute ID token to expire and
 //! checks that the refresh token keeps the client working.
@@ -115,6 +123,98 @@ async fn kind_connects_discovers_and_lists_namespaces() {
         matches!(first, kubyl_kube::watches::NamespaceUpdate::Names(ref n) if n.contains(&"kube-system".to_string()))
     );
     watch.abort();
+}
+
+/// A plugin that prints the kind admin's client certificate and key as PEM, which the kubeconfig
+/// itself holds base64-encoded.
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "needs a kind cluster (script/dev-cluster.sh)"]
+async fn exec_plugin_with_a_client_certificate_connects() {
+    use base64::Engine as _;
+    use kube::config::Kubeconfig;
+    use secrecy::ExposeSecret as _;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let path = expand(std::env::var("KUBYL_TEST_KUBECONFIG").expect("KUBYL_TEST_KUBECONFIG"));
+    let source = Kubeconfig::read_from(&path).unwrap();
+    let context_name = std::env::var("KUBYL_TEST_CONTEXT").ok();
+    let kind_context = source
+        .contexts
+        .iter()
+        .find(|c| context_name.as_deref().is_none_or(|n| c.name == n))
+        .and_then(|c| c.context.clone())
+        .expect("context not found");
+    let cluster = source
+        .clusters
+        .iter()
+        .find(|c| c.name == kind_context.cluster)
+        .and_then(|c| c.cluster.clone())
+        .unwrap();
+    let user = source
+        .auth_infos
+        .iter()
+        .find(|u| Some(&u.name) == kind_context.user.as_ref())
+        .and_then(|u| u.auth_info.clone())
+        .unwrap();
+    let pem = |data: &str| {
+        String::from_utf8(
+            base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .unwrap(),
+        )
+        .unwrap()
+    };
+    let credential = serde_json::json!({
+        "apiVersion": "client.authentication.k8s.io/v1",
+        "kind": "ExecCredential",
+        "status": {
+            "clientCertificateData": pem(&user.client_certificate_data.expect("kind uses a client certificate")),
+            "clientKeyData": pem(user.client_key_data.expect("kind uses a client key").expose_secret()),
+        },
+    });
+
+    let dir = tempfile::tempdir().unwrap();
+    let output = dir.path().join("credential.json");
+    std::fs::write(&output, credential.to_string()).unwrap();
+    let plugin = dir.path().join("plugin.sh");
+    std::fs::write(
+        &plugin,
+        format!("#!/bin/sh\nexec cat '{}'\n", output.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&plugin, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    let kubeconfig = serde_json::json!({
+        "apiVersion": "v1",
+        "kind": "Config",
+        "current-context": "exec",
+        "clusters": [{"name": "kind", "cluster": {
+            "server": cluster.server,
+            "certificate-authority-data": cluster.certificate_authority_data,
+        }}],
+        "users": [{"name": "plugin", "user": {"exec": {
+            "apiVersion": "client.authentication.k8s.io/v1",
+            "command": plugin.display().to_string(),
+            "interactiveMode": "Never",
+        }}}],
+        "contexts": [{"name": "exec", "context": {"cluster": "kind", "user": "plugin"}}],
+    });
+    let file = dir.path().join("kubeconfig.json");
+    std::fs::write(&file, kubeconfig.to_string()).unwrap();
+
+    let loaded = load(&file.display().to_string());
+    let info = context(&loaded, Some("exec"));
+    let built = client::build(info, loaded.configs[&info.file].clone())
+        .await
+        .unwrap();
+    let probe = client::probe(&built.client).await.unwrap();
+    println!(
+        "exec plugin: {} user={:?}",
+        probe.version.git_version, probe.user
+    );
+    let namespaces = discovery::discover(&built.client).await.unwrap();
+    assert!(namespaces.resolve("po").is_some());
 }
 
 #[tokio::test]

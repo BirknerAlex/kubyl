@@ -7,6 +7,7 @@ use http::Uri;
 use k8s_openapi::api::authentication::v1::SelfSubjectReview;
 use kube::config::{AuthInfo, ExecAuthCluster, KubeConfigOptions, Kubeconfig};
 use kube::{Api, Client, Config};
+use secrecy::{ExposeSecret as _, SecretString};
 use tower::buffer::BufferLayer;
 use tower::filter::AsyncFilterLayer;
 
@@ -177,8 +178,7 @@ pub async fn build(
             let auth = Arc::new(ExecAuth::new(info.name.clone(), exec_config, cluster));
             match auth.credential().await {
                 Ok(exec::Credential::ClientCertificate { certificate, key }) => {
-                    config.auth_info.client_certificate_data = Some(certificate);
-                    config.auth_info.client_key_data = Some(key);
+                    set_client_certificate(&mut config.auth_info, &certificate, &key);
                     rebuild_at = auth.expires_at().await;
                 }
                 Ok(exec::Credential::Token(_)) => {
@@ -229,6 +229,15 @@ pub async fn build(
         rebuild_at,
         connections,
     })
+}
+
+/// Puts a plugin's PEM client certificate and key into `user`. An ExecCredential carries PEM text,
+/// but kube's `*_data` fields hold it base64-encoded, as in a kubeconfig.
+fn set_client_certificate(user: &mut AuthInfo, certificate: &str, key: &SecretString) {
+    use base64::Engine as _;
+    let encode = |pem: &str| base64::engine::general_purpose::STANDARD.encode(pem);
+    user.client_certificate_data = Some(encode(certificate));
+    user.client_key_data = Some(SecretString::from(encode(key.expose_secret())));
 }
 
 impl ConnectError {
@@ -398,6 +407,61 @@ pub async fn ping(client: &Client) -> Result<Duration, ConnectError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A throwaway self-signed P-256 certificate and its PKCS#8 key (CN=kubyl-test).
+    const TEST_CERT: &str = "-----BEGIN CERTIFICATE-----
+MIIBgTCCASegAwIBAgIUYH63n18wRp5wLVv1QPeE1/MqDY4wCgYIKoZIzj0EAwIw
+FTETMBEGA1UEAwwKa3VieWwtdGVzdDAgFw0yNjEwMDQxODEzMzFaGA8yMTI2MDkx
+MDE4MTMzMVowFTETMBEGA1UEAwwKa3VieWwtdGVzdDBZMBMGByqGSM49AgEGCCqG
+SM49AwEHA0IABA8LmHVxErfKVa0RqciGOBMac5XXlrZneU/FAoY+jVIqszBIUuSl
+A4LtVg4Xjv9zWPs+FiXfoYfTsnfPI2Pr05CjUzBRMB0GA1UdDgQWBBRwRpRjMm5u
+DG/zwfREdruIrrBzzjAfBgNVHSMEGDAWgBRwRpRjMm5uDG/zwfREdruIrrBzzjAP
+BgNVHRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0gAMEUCIQDfAP5c7OQzjQtmxJ0D
+FVSemIBvlY2Apv/umeSyYthq3wIgCaIl7UgcsYc7/1/uQfxek4n7wLDyesRmRjLa
+9OsnoXY=
+-----END CERTIFICATE-----
+";
+    const TEST_KEY: &str = "-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgSIxI7j7EboI78ORo
+g7QDJ/1BvzPiuJ0tG3DdBz0ReLKhRANCAAQPC5h1cRK3ylWtEanIhjgTGnOV15a2
+Z3lPxQKGPo1SKrMwSFLkpQOC7VYOF47/c1j7PhYl36GH07J3zyNj69OQ
+-----END PRIVATE KEY-----
+";
+
+    #[test]
+    fn exec_client_certificate_is_base64_encoded_for_kube() {
+        use base64::Engine as _;
+        let decode = |data: &str| {
+            String::from_utf8(
+                base64::engine::general_purpose::STANDARD
+                    .decode(data)
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        let mut user = AuthInfo::default();
+        set_client_certificate(&mut user, TEST_CERT, &SecretString::from(TEST_KEY));
+        assert_eq!(decode(&user.client_certificate_data.unwrap()), TEST_CERT);
+        assert_eq!(
+            decode(user.client_key_data.unwrap().expose_secret()),
+            TEST_KEY
+        );
+    }
+
+    #[test]
+    fn kube_reads_the_exec_client_certificate() {
+        use kube::client::ConfigExt as _;
+        // kube decodes the identity when it builds the TLS connector.
+        let mut config = Config::new("https://127.0.0.1:6443".parse().unwrap());
+        set_client_certificate(
+            &mut config.auth_info,
+            TEST_CERT,
+            &SecretString::from(TEST_KEY),
+        );
+        config
+            .rustls_https_connector()
+            .expect("kube accepts the encoded certificate");
+    }
 
     #[test]
     fn no_proxy_rules() {
