@@ -13,9 +13,9 @@
 
 pub mod dialog;
 pub mod favorites;
-pub mod listener;
 pub mod manager;
-pub mod resolve;
+
+pub use kubyl_portforward_core::{listener, resolve};
 
 use gpui::{App, Window, actions};
 use kubyl_core::actions::{ForwardPort, StopForward};
