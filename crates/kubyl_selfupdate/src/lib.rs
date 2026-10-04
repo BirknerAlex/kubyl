@@ -16,14 +16,10 @@
 //! never checks. A manual `.dmg`/`.zip`/`.tar.gz` install self-updates on a 6-hour poll when
 //! `self_update.auto_check` is on (the default).
 
-pub mod apply;
-pub mod download;
-pub mod installed;
-pub mod manifest;
 pub mod service;
-pub mod settings;
 pub mod ui;
-pub mod verify;
+
+pub use kubyl_selfupdate_core::{apply, download, installed, manifest, settings, verify};
 
 use gpui::App;
 use kubyl_core::ChromeRegistry;
