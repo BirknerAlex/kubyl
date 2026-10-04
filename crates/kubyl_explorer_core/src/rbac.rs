@@ -3,11 +3,11 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
-use kubyl_core::ClusterId;
-use kubyl_kube::access::AccessQuery;
+use kubyl_base::ClusterId;
+use kubyl_kube_core::access::AccessQuery;
 
 /// How long after a failed check the query may be asked again.
-pub(crate) const RBAC_RETRY: Duration = Duration::from_secs(30);
+pub const RBAC_RETRY: Duration = Duration::from_secs(30);
 
 /// The `(cluster, query)` pairs a view asked for, so a render doesn't repeat a request in
 /// flight. Forget them when the answer may change: a reconnect (the cache starts empty) or a
@@ -34,7 +34,7 @@ impl RbacRequests {
 
 #[cfg(test)]
 mod tests {
-    use kubyl_core::Gvr;
+    use kubyl_base::Gvr;
 
     use super::*;
 

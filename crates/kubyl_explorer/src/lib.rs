@@ -18,9 +18,9 @@ pub mod favorites;
 pub mod groups;
 pub mod list;
 pub mod namespaces;
-mod rbac;
-pub mod settings;
 pub mod sidebar;
+
+pub use kubyl_explorer_core::{rbac, settings};
 
 use gpui::{App, AppContext as _, actions};
 use kubyl_core::actions::{FilterSidebar, OpenView, SwitchNamespace};

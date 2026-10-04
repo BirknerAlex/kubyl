@@ -23,11 +23,14 @@ kubyl_argocd = { path = "crates/kubyl_argocd" }
 kubyl_argocd_core = { path = "crates/kubyl_argocd_core" }
 kubyl_core = { path = "crates/kubyl_core" }
 kubyl_explorer = { path = "crates/kubyl_explorer" }
+kubyl_explorer_core = { path = "crates/kubyl_explorer_core" }
 kubyl_files = { path = "crates/kubyl_files" }
+kubyl_files_core = { path = "crates/kubyl_files_core" }
 kubyl_keymap = { path = "crates/kubyl_keymap" }
 kubyl_kube = { path = "crates/kubyl_kube" }
 kubyl_kube_core = { path = "crates/kubyl_kube_core" }
 kubyl_kubeconfig = { path = "crates/kubyl_kubeconfig" }
+kubyl_kubeconfig_core = { path = "crates/kubyl_kubeconfig_core" }
 kubyl_logs = { path = "crates/kubyl_logs" }
 kubyl_logs_core = { path = "crates/kubyl_logs_core" }
 kubyl_metrics = { path = "crates/kubyl_metrics" }
@@ -37,7 +40,9 @@ kubyl_netflow_core = { path = "crates/kubyl_netflow_core" }
 kubyl_operators = { path = "crates/kubyl_operators" }
 kubyl_operators_core = { path = "crates/kubyl_operators_core" }
 kubyl_overview = { path = "crates/kubyl_overview" }
+kubyl_overview_core = { path = "crates/kubyl_overview_core" }
 kubyl_palette = { path = "crates/kubyl_palette" }
+kubyl_palette_core = { path = "crates/kubyl_palette_core" }
 kubyl_portforward = { path = "crates/kubyl_portforward" }
 kubyl_portforward_core = { path = "crates/kubyl_portforward_core" }
 kubyl_prometheus = { path = "crates/kubyl_prometheus" }
@@ -45,6 +50,7 @@ kubyl_prometheus_core = { path = "crates/kubyl_prometheus_core" }
 kubyl_resources = { path = "crates/kubyl_resources" }
 kubyl_resources_core = { path = "crates/kubyl_resources_core" }
 kubyl_selfupdate = { path = "crates/kubyl_selfupdate" }
+kubyl_selfupdate_core = { path = "crates/kubyl_selfupdate_core" }
 kubyl_settings = { path = "crates/kubyl_settings" }
 kubyl_settings_core = { path = "crates/kubyl_settings_core" }
 kubyl_terminal = { path = "crates/kubyl_terminal" }
@@ -53,6 +59,7 @@ kubyl_ui = { path = "crates/kubyl_ui" }
 kubyl_updates = { path = "crates/kubyl_updates" }
 kubyl_updates_core = { path = "crates/kubyl_updates_core" }
 kubyl_webview = { path = "crates/kubyl_webview" }
+kubyl_webview_core = { path = "crates/kubyl_webview_core" }
 kubyl_yaml = { path = "crates/kubyl_yaml" }
 kubyl_yaml_core = { path = "crates/kubyl_yaml_core" }
 
