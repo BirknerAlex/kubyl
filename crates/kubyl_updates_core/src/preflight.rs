@@ -12,11 +12,11 @@ use std::collections::{BTreeMap, HashMap};
 
 use futures::StreamExt as _;
 use kube::api::{ApiResource, DynamicObject, ListParams};
-use kubyl_core::Gvr;
-use kubyl_metrics::prometheus::PromClient;
-use kubyl_operators::api::Installed;
-use kubyl_operators::helm::decode::Driver;
-use kubyl_resources::format::parse_quantity;
+use kubyl_base::Gvr;
+use kubyl_metrics_core::prometheus::PromClient;
+use kubyl_operators_core::api::Installed;
+use kubyl_operators_core::helm::decode::Driver;
+use kubyl_resources_core::format::parse_quantity;
 use serde_json::Value;
 
 use crate::check::{Check, CheckStatus, Detail, Fix};
@@ -84,7 +84,7 @@ pub fn target_kube_minor(provider: ProviderKind, target: &str) -> Option<(u64, u
 }
 
 /// The kinds of the removal table the cluster serves in another version, to scan.
-pub fn scan_kinds(discovery: &kubyl_kube::discovery::Discovery) -> Vec<ScanKind> {
+pub fn scan_kinds(discovery: &kubyl_kube_core::discovery::Discovery) -> Vec<ScanKind> {
     let mut seen: Vec<String> = Vec::new();
     let mut out = Vec::new();
     for removal in removed::REMOVED.iter().filter(|r| r.stored) {
@@ -104,7 +104,7 @@ pub fn scan_kinds(discovery: &kubyl_kube::discovery::Discovery) -> Vec<ScanKind>
             .find(|r| kind_group(removal, &r.gvr.group));
         if let Some(info) = served {
             out.push(ScanKind {
-                resource: kubyl_resources::store::api_resource(info),
+                resource: kubyl_resources_core::store::api_resource(info),
                 namespaced: info.namespaced,
             });
         }
@@ -640,7 +640,7 @@ async fn helm(
         futures::stream::iter(releases.into_iter().map(|release| {
             let client = client.clone();
             async move {
-                let loaded = kubyl_operators::helm::service::load(
+                let loaded = kubyl_operators_core::helm::release::load(
                     client,
                     release.driver,
                     release.namespace.clone(),
@@ -680,7 +680,7 @@ pub fn helm_findings(
 ) -> Vec<HelmFinding> {
     let mut out = Vec::new();
     for manifest in manifests {
-        for object in kubyl_operators::helm::present::manifest_objects(manifest) {
+        for object in kubyl_operators_core::helm::present::manifest_objects(manifest) {
             let Some(removal) = removed::lookup(&object.api_version, &object.kind) else {
                 continue;
             };
@@ -1578,8 +1578,8 @@ mod tests {
     /// Ingresses: the scan must pick `networking.k8s.io` whatever the server's order.
     #[test]
     fn scan_kinds_pick_the_kind_s_own_group() {
-        use kubyl_core::{Gvk, Gvr};
-        use kubyl_kube::discovery::{ApiResourceInfo, Discovery};
+        use kubyl_base::{Gvk, Gvr};
+        use kubyl_kube_core::discovery::{ApiResourceInfo, Discovery};
         let info = |group: &str, namespaced: bool| ApiResourceInfo {
             gvk: Gvk::new(group, "v1", "Ingress"),
             gvr: Gvr::new(group, "v1", "ingresses"),
@@ -1665,7 +1665,7 @@ mod tests {
 
     #[test]
     fn operator_versions() {
-        use kubyl_operators::api::InstalledOperator;
+        use kubyl_operators_core::api::InstalledOperator;
         let op = InstalledOperator {
             name: "cert-utils-operator".into(),
             package: None,
@@ -1676,7 +1676,7 @@ mod tests {
             min_kube_version: None,
             max_kube_version: Some("1.30".into()),
             max_openshift_version: Some("4.17".into()),
-            status: kubyl_operators::olm::join::OperatorStatus::Succeeded,
+            status: kubyl_operators_core::olm::join::OperatorStatus::Succeeded,
         };
         let installed = Installed::Ready(vec![op]);
         let check = operators(&installed, Some((1, 31)), Some((4, 18)));

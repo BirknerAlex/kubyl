@@ -14,11 +14,12 @@ workspace = true
 
 [features]
 # Cloud providers (decided in phase 13): off by default to keep the binary small.
-updates-eks = ["dep:hmac", "dep:secrecy"]
-updates-gke = ["dep:secrecy"]
-updates-aks = ["dep:secrecy"]
+updates-eks = ["kubyl_updates_core/updates-eks"]
+updates-gke = ["kubyl_updates_core/updates-gke"]
+updates-aks = ["kubyl_updates_core/updates-aks"]
 
 [dependencies]
+kubyl_updates_core.workspace = true
 futures.workspace = true
 gpui.workspace = true
 gpui-component.workspace = true
@@ -45,10 +46,6 @@ sha2.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 url.workspace = true
-
-# Cloud providers.
-hmac = { workspace = true, optional = true }
-secrecy = { workspace = true, optional = true }
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }

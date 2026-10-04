@@ -1,0 +1,50 @@
+[package]
+name = "kubyl_updates_core"
+description = "Cluster updates without the UI: detecting the distribution, update providers (OpenShift, Cluster API, system-upgrade-controller, EKS, GKE, AKS), removed APIs and pre-flight checks."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Cloud providers: off by default to keep the binary small.
+updates-eks = ["dep:hmac", "dep:secrecy"]
+updates-gke = ["dep:secrecy"]
+updates-aks = ["dep:secrecy"]
+
+[dependencies]
+futures.workspace = true
+http.workspace = true
+jiff.workspace = true
+k8s-openapi.workspace = true
+kube.workspace = true
+kubyl_base.workspace = true
+kubyl_kube_core.workspace = true
+kubyl_metrics_core.workspace = true
+kubyl_operators_core.workspace = true
+kubyl_resources_core.workspace = true
+kubyl_settings_core.workspace = true
+kubyl_yaml_core.workspace = true
+openidconnect.workspace = true
+regex.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+url.workspace = true
+
+# Cloud providers.
+hmac = { workspace = true, optional = true }
+secrecy = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

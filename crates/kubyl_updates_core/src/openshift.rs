@@ -8,7 +8,7 @@
 //!   `oc adm upgrade --to` sends; `--allow-not-recommended` picks from the conditional updates).
 //! - Channel: a merge patch of `spec.channel` (`oc adm upgrade channel`).
 
-use kubyl_core::Gvr;
+use kubyl_base::Gvr;
 use regex::Regex;
 use serde_json::{Value, json};
 

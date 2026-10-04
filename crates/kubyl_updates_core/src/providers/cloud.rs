@@ -1,7 +1,7 @@
 //! Shared by the cloud providers: their CLIs for credentials, HTTP, error mapping, and the
 //! kubeconfig's exec plugin (where the cluster, region and profile come from).
 //!
-//! CLIs (`aws`, `gcloud`, `az`) run on Tokio like exec plugins do (`kubyl_kube::auth::exec`):
+//! CLIs (`aws`, `gcloud`, `az`) run on Tokio like exec plugins do (`kubyl_kube_core::auth::exec`):
 //! the login shell's `PATH`, no stdin (never interactive), a timeout and no console window on
 //! Windows. Their stdout holds credentials and never goes into errors or logs; stderr does (it
 //! says why a login expired). HTTP goes through the `reqwest` that `openidconnect` brings
@@ -200,7 +200,7 @@ async fn run_program(
 ) -> Result<Vec<u8>, CliError> {
     // The first call asks the login shell (usually prefetched at startup): not on a runtime
     // thread.
-    let path = tokio::task::spawn_blocking(kubyl_kube::auth::shell_env::path)
+    let path = tokio::task::spawn_blocking(kubyl_kube_core::auth::shell_env::path)
         .await
         .ok()
         .flatten();

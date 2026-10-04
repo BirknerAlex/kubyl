@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use kubyl_core::Gvr;
+use kubyl_base::Gvr;
 use serde_json::{Value, json};
 
 use crate::kube_api::{self, array_at, conditions, items, str_at};
@@ -547,8 +547,8 @@ mod tests {
         let err = plan(&busy, &Scope::AllPools, "v1.33.6+k3s1", "k3s-edge").unwrap_err();
         assert!(err.contains("applying"), "{err}");
         let yaml = plan_templates(ProviderKind::K3s, "v1.33.6+k3s1");
-        assert!(kubyl_yaml::parse::parse(&yaml).error.is_none());
-        assert_eq!(kubyl_yaml::parse::parse(&yaml).roots().count(), 2);
+        assert!(kubyl_yaml_core::parse::parse(&yaml).error.is_none());
+        assert_eq!(kubyl_yaml_core::parse::parse(&yaml).roots().count(), 2);
     }
 
     #[test]
