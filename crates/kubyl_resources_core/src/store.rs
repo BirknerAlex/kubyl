@@ -7,7 +7,7 @@
 //! most ~60 applies (and re-renders) per second. `kubyl_resources` shares stores between views
 //! (`ResourceStores`) and keeps each in an entity.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
@@ -132,6 +132,20 @@ impl StoreStatus {
     }
 }
 
+/// How many applied batches (and keys in them) a store remembers for
+/// [`StoreCore::changes_since`].
+const HISTORY_BATCHES: usize = 256;
+const HISTORY_KEYS: usize = 20_000;
+
+/// The objects applied batches touched.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Touched {
+    /// Only these objects (changed, added or removed).
+    Keys(HashSet<ObjectKey>),
+    /// Anything: the store was listed again or its status changed.
+    All,
+}
+
 /// One change sent from the watch task.
 #[derive(Debug)]
 pub enum Change {
@@ -148,6 +162,8 @@ pub struct StoreCore {
     objects: HashMap<ObjectKey, Arc<Value>>,
     status: StoreStatus,
     generation: u64,
+    /// What the last applied batches touched, newest last (see [`StoreCore::changes_since`]).
+    history: VecDeque<(u64, Touched)>,
     running: bool,
     /// Set by [`Self::pause`]; reconnects don't restart the watch until [`Self::resume`].
     paused: bool,
@@ -173,6 +189,7 @@ impl StoreCore {
             objects: HashMap::new(),
             status: StoreStatus::Waiting,
             generation: 0,
+            history: VecDeque::new(),
             running: false,
             paused: false,
             tasks: Vec::new(),
@@ -192,6 +209,11 @@ impl StoreCore {
 
     pub fn key(&self) -> &StoreKey {
         &self.key
+    }
+
+    pub(crate) fn set_generation(&mut self, generation: u64) {
+        self.generation = generation;
+        self.history.clear();
     }
 
     pub fn objects(&self) -> &HashMap<ObjectKey, Arc<Value>> {
@@ -219,6 +241,50 @@ impl StoreCore {
         self.generation
     }
 
+    /// What changed since `generation` (an earlier value of [`Self::generation`]): the keys of
+    /// the objects batches added, changed or removed, or [`Touched::All`] when anything may
+    /// have (a relist, a status change). `None` when `generation` is older than the batches
+    /// the store still remembers: compare everything.
+    pub fn changes_since(&self, generation: u64) -> Option<Touched> {
+        if generation >= self.generation {
+            return Some(Touched::Keys(HashSet::new()));
+        }
+        let first = self.history.front()?.0;
+        // The batch that produced `first` is in the history; the one before it isn't.
+        if generation + 1 < first {
+            return None;
+        }
+        let mut keys = HashSet::new();
+        for (after, touched) in &self.history {
+            if *after <= generation {
+                continue;
+            }
+            match touched {
+                Touched::All => return Some(Touched::All),
+                Touched::Keys(batch) => keys.extend(batch.iter().cloned()),
+            }
+        }
+        Some(Touched::Keys(keys))
+    }
+
+    /// Moves to the next generation, remembering what it touched.
+    fn bump(&mut self, touched: Touched) {
+        self.generation += 1;
+        self.history.push_back((self.generation, touched));
+        let size = |touched: &Touched| match touched {
+            Touched::All => 1,
+            Touched::Keys(keys) => keys.len().max(1),
+        };
+        let mut total: usize = self.history.iter().map(|(_, t)| size(t)).sum();
+        while self.history.len() > 1
+            && (self.history.len() > HISTORY_BATCHES || total > HISTORY_KEYS)
+        {
+            if let Some((_, oldest)) = self.history.pop_front() {
+                total -= size(&oldest);
+            }
+        }
+    }
+
     /// Whether the watch is running (listing or watching).
     pub fn is_running(&self) -> bool {
         self.running
@@ -238,7 +304,7 @@ impl StoreCore {
         }
         self.paused = false;
         self.status = StoreStatus::Waiting;
-        self.generation += 1;
+        self.bump(Touched::All);
         host.notify();
         true
     }
@@ -253,19 +319,28 @@ impl StoreCore {
 
     pub fn apply(&mut self, changes: Vec<Change>, host: &mut dyn Host<Self>) {
         tracing::trace!(resource = %self.key.gvr, changes = changes.len(), "store batch");
+        let mut touched = Touched::Keys(HashSet::new());
         for change in changes {
             match change {
                 Change::Reset(objects) => {
                     self.objects = objects.into_iter().collect();
                     self.status = StoreStatus::Ready;
+                    touched = Touched::All;
                 }
                 Change::Upsert(key, object) => {
+                    if let Touched::Keys(keys) = &mut touched {
+                        keys.insert(key.clone());
+                    }
                     self.objects.insert(key, object);
                 }
                 Change::Delete(key) => {
+                    if let Touched::Keys(keys) = &mut touched {
+                        keys.insert(key.clone());
+                    }
                     self.objects.remove(&key);
                 }
                 Change::Status(status) => {
+                    touched = Touched::All;
                     if status == StoreStatus::Forbidden || status == StoreStatus::Unsupported {
                         self.objects.clear();
                         self.running = false;
@@ -274,7 +349,7 @@ impl StoreCore {
                 }
             }
         }
-        self.generation += 1;
+        self.bump(touched);
         host.notify();
     }
 
@@ -283,7 +358,7 @@ impl StoreCore {
         self.running = false;
         if self.status != status {
             self.status = status;
-            self.generation += 1;
+            self.bump(Touched::All);
             host.notify();
         }
     }
@@ -350,7 +425,7 @@ impl StoreCore {
         self.tasks = vec![watch, apply];
         self.running = true;
         self.status = StoreStatus::Loading;
-        self.generation += 1;
+        self.bump(Touched::All);
         host.notify();
     }
 }
@@ -496,6 +571,66 @@ mod tests {
 
     fn pod(ns: &str, name: &str) -> Value {
         json!({"metadata": {"namespace": ns, "name": name}})
+    }
+
+    #[test]
+    fn batches_remember_which_objects_they_touched() {
+        let key = StoreKey::new(ClusterId::new("c"), Gvr::new("", "v1", "pods"), None);
+        let mut host = TestHost::new();
+        let mut store = StoreCore::new(key);
+        let keys = |names: &[&str]| {
+            Some(Touched::Keys(
+                names.iter().map(|n| object_key(Some("a"), n)).collect(),
+            ))
+        };
+        let upsert =
+            |name: &str| Change::Upsert(object_key(Some("a"), name), Arc::new(pod("a", name)));
+        store.apply(vec![Change::Reset(vec![])], &mut host);
+        let listed = store.generation();
+
+        store.apply(vec![upsert("one"), upsert("two")], &mut host);
+        let first = store.generation();
+        store.apply(
+            vec![
+                Change::Delete(object_key(Some("a"), "one")),
+                upsert("three"),
+            ],
+            &mut host,
+        );
+
+        assert_eq!(store.changes_since(store.generation()), keys(&[]));
+        assert_eq!(store.changes_since(first), keys(&["one", "three"]));
+        assert_eq!(store.changes_since(listed), keys(&["one", "two", "three"]));
+        // A relist (or a status change) may have changed anything.
+        let before = store.generation();
+        store.apply(vec![Change::Reset(vec![])], &mut host);
+        assert_eq!(store.changes_since(before), Some(Touched::All));
+        assert_eq!(store.changes_since(listed), Some(Touched::All));
+    }
+
+    #[test]
+    fn only_recent_batches_are_remembered() {
+        let key = StoreKey::new(ClusterId::new("c"), Gvr::new("", "v1", "pods"), None);
+        let mut host = TestHost::new();
+        let mut store = StoreCore::new(key);
+        let start = store.generation();
+        for i in 0..(HISTORY_BATCHES + 10) {
+            let name = format!("pod-{i}");
+            store.apply(
+                vec![Change::Upsert(
+                    object_key(Some("a"), &name),
+                    Arc::new(pod("a", &name)),
+                )],
+                &mut host,
+            );
+        }
+        // Too old: compare everything.
+        assert_eq!(store.changes_since(start), None);
+        let recent = store.generation() - 5;
+        let Some(Touched::Keys(keys)) = store.changes_since(recent) else {
+            panic!("recent changes are remembered");
+        };
+        assert_eq!(keys.len(), 5);
     }
 
     #[test]

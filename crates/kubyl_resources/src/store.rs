@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 use gpui::{App, AppContext as _, Context, Entity, EventEmitter, Global};
 use kubyl_core::host::{Hosts, hosted};
 use kubyl_kube::{ConnectionEvent, ConnectionManager};
+use kubyl_resources_core::source::{StoreLease, StoreReader, StoreSource, StoreView};
 pub use kubyl_resources_core::store::{
     Change, FRAME, GRACE, ObjectKey, StoreKey, StoreMode, StoreStatus, api_resource, find_resource,
     key_of, object_key, to_json,
@@ -185,6 +186,25 @@ impl ResourceStores {
         }
     }
 
+    /// Registers a store filled by hand (tests, previews) under `key`, replacing the one there.
+    /// It never watches; handles to the replaced store keep it alive.
+    pub fn insert(cx: &mut App, key: StoreKey, store: Entity<ResourceStore>) -> StoreHandle {
+        let lease = Rc::new(());
+        cx.default_global::<Self>().entries.insert(
+            key,
+            Entry {
+                store: store.clone(),
+                lease: lease.clone(),
+                idle_since: None,
+            },
+        );
+        Self::schedule_sweep(cx);
+        StoreHandle {
+            store,
+            _lease: lease,
+        }
+    }
+
     /// An existing store for `key`, without creating one.
     pub fn peek(cx: &App, key: &StoreKey) -> Option<Entity<ResourceStore>> {
         cx.try_global::<Self>()?
@@ -300,6 +320,41 @@ impl ResourceStores {
     }
 }
 
+/// The desktop's [`StoreSource`]: [`ResourceStores`] for core services. Make one around the
+/// `App` for the duration of a call into a service; the service's leases outlive it.
+pub struct AppStores<'a>(pub &'a mut App);
+
+impl StoreSource for AppStores<'_> {
+    fn acquire(&mut self, key: StoreKey) -> StoreLease {
+        let handle = ResourceStores::acquire(self.0, key.clone());
+        StoreLease::new(key, Rc::new(handle))
+    }
+
+    fn view(&self, key: &StoreKey) -> Option<&dyn StoreView> {
+        let store = ResourceStores::peek(self.0, key)?;
+        let core: &StoreCore = store.read(self.0);
+        Some(core as &dyn StoreView)
+    }
+
+    fn keys(&self) -> Vec<StoreKey> {
+        ResourceStores::all(self.0)
+            .iter()
+            .map(|store| store.read(self.0).key().clone())
+            .collect()
+    }
+}
+
+/// A read-only [`StoreReader`] over `ResourceStores`, for answering reads with a shared `&App`.
+pub struct AppStoresRef<'a>(pub &'a App);
+
+impl StoreReader for AppStoresRef<'_> {
+    fn read(&self, key: &StoreKey) -> Option<&dyn StoreView> {
+        let store = ResourceStores::peek(self.0, key)?;
+        let core: &StoreCore = store.read(self.0);
+        Some(core as &dyn StoreView)
+    }
+}
+
 pub(crate) fn init(cx: &mut App) {
     cx.default_global::<ResourceStores>();
     if let Some(manager) = ConnectionManager::try_global(cx) {
@@ -319,6 +374,38 @@ mod tests {
 
     fn pod(ns: &str, name: &str) -> Value {
         json!({"metadata": {"namespace": ns, "name": name}})
+    }
+
+    #[gpui::test]
+    fn core_services_acquire_and_read_stores_through_the_app(cx: &mut gpui::TestAppContext) {
+        let key = StoreKey::new(ClusterId::new("c"), Gvr::new("", "v1", "pods"), None);
+        cx.update(|cx| {
+            let mut stores = AppStores(cx);
+            let lease = stores.acquire(key.clone());
+            let view = stores.view(lease.key()).expect("the store exists");
+            assert_eq!(view.status(), &StoreStatus::Waiting);
+            assert!(view.objects().is_empty());
+            assert_eq!(stores.keys(), std::slice::from_ref(&key));
+            assert_eq!(ResourceStores::watches(cx)[0].users, 1);
+            drop(lease);
+            assert_eq!(ResourceStores::watches(cx)[0].users, 0);
+        });
+    }
+
+    #[gpui::test]
+    fn hand_filled_stores_are_read_through_the_app(cx: &mut gpui::TestAppContext) {
+        let key = StoreKey::new(ClusterId::new("c"), Gvr::new("", "v1", "pods"), None);
+        cx.update(|cx| {
+            let store = cx.new(|_| ResourceStore::from_objects(key.clone(), [pod("a", "one")]));
+            let handle = ResourceStores::insert(cx, key.clone(), store);
+            let reader = AppStoresRef(cx);
+            let view = reader.read(&key).expect("the store is registered");
+            assert!(view.status().is_ready());
+            assert!(view.get("a/one").is_some());
+            assert_eq!(ResourceStores::watches(cx)[0].users, 1);
+            drop(handle);
+            assert_eq!(ResourceStores::watches(cx)[0].users, 0);
+        });
     }
 
     #[gpui::test]
