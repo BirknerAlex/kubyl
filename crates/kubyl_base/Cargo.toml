@@ -1,6 +1,6 @@
 [package]
-name = "kubyl_core"
-description = "Shared types, the Tokio bridge, notifications and extension-point registries."
+name = "kubyl_base"
+description = "GPUI-free foundation: shared types, the error type, the Tokio runtime and the Host trait core services run on."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -14,16 +14,9 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
-kubyl_base.workspace = true
 futures.workspace = true
-gpui.workspace = true
-parking_lot.workspace = true
-serde.workspace = true
+serde = { workspace = true, features = ["rc"] }
 serde_json.workspace = true
-smallvec.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-
-[dev-dependencies]
-gpui = { workspace = true, features = ["test-support"] }

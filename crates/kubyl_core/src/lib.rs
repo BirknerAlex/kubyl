@@ -1,8 +1,10 @@
 //! Shared foundation for every Kubyl crate.
 //!
 //! - [`runtime`]: the Tokio runtime and [`spawn_kube`], the bridge from GPUI to Kubernetes work.
-//! - [`types`]: IDs and references shared across crates ([`ClusterId`], [`ResourceRef`], [`ViewKind`]…).
-//! - [`error`] and [`notify`]: the error type and the user-facing notification pipeline.
+//! - [`types`], [`error`], [`notice`]: re-exported from `kubyl_base`, the GPUI-free foundation
+//!   ([`ClusterId`], [`ResourceRef`], [`ViewKind`]…, the error type, plain notices).
+//! - [`notify`]: the user-facing notification pipeline (toasts).
+//! - [`host`]: [`GpuiHost`](host::GpuiHost), which runs `kubyl_base` core services in entities.
 //! - [`registry`]: extension points that feature crates register into from their `init(cx)`.
 //! - [`context`]: the active cluster/namespace shown in the window chrome.
 //! - [`actions`]: app-wide actions that several crates dispatch or handle.
@@ -12,16 +14,17 @@
 pub mod actions;
 pub mod cluster_ids;
 pub mod context;
-pub mod error;
 pub mod forwards;
+pub mod host;
 pub mod notify;
 pub mod registry;
 pub mod runtime;
-pub mod types;
+
+pub use kubyl_base::{error, notice, types};
 
 pub use cluster_ids::ClusterIds;
 pub use context::{ActiveContext, ClusterBadge, TabContext, TabNamespace};
-pub use error::{Error, Result};
+pub use kubyl_base::{Error, Notice, Result};
 pub use notify::{
     Notification, NotificationAction, NotificationCenter, NotificationLevel, NotifyResultExt,
 };

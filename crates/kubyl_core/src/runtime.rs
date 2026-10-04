@@ -19,28 +19,9 @@
 //! before calling `cx.notify()` (≤ 60 Hz) so large watch streams don't re-render per event.
 
 use std::future::Future;
-use std::sync::OnceLock;
 
 use gpui::{App, Task};
-use tokio::runtime::{Handle, Runtime};
-
-static RUNTIME: OnceLock<Runtime> = OnceLock::new();
-
-/// The shared Tokio runtime. Created on first use.
-pub fn runtime() -> &'static Runtime {
-    RUNTIME.get_or_init(|| {
-        tokio::runtime::Builder::new_multi_thread()
-            .thread_name("kubyl-tokio")
-            .enable_all()
-            .build()
-            .expect("failed to start the Tokio runtime")
-    })
-}
-
-/// A handle to the shared runtime, for code that must spawn Tokio tasks itself.
-pub fn handle() -> Handle {
-    runtime().handle().clone()
-}
+pub use kubyl_base::runtime::{handle, runtime};
 
 /// Runs `future` on the Tokio runtime and returns a GPUI task that resolves to its output.
 ///
@@ -78,6 +59,7 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
+    use tokio::runtime::Handle;
 
     #[gpui::test]
     async fn spawn_kube_resolves_on_tokio(cx: &mut gpui::TestAppContext) {

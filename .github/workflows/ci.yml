@@ -28,6 +28,16 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all --check
 
+  core-crates:
+    name: core crates are GPUI-free
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - run: ./script/check-core-crates.sh
+
   check:
     name: clippy, test, build (${{ matrix.os }})
     strategy:

@@ -10,14 +10,7 @@ use std::sync::Arc;
 
 use gpui::{App, Global, SharedString, Window};
 
-/// Severity of a notification. Drives the toast's icon and color.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NotificationLevel {
-    Info,
-    Success,
-    Warning,
-    Error,
-}
+pub use kubyl_base::NotificationLevel;
 
 /// One toast.
 #[derive(Clone, Debug, PartialEq)]
@@ -95,6 +88,17 @@ impl Notification {
             run: Arc::new(run),
         });
         self
+    }
+}
+
+/// A core service's [`Notice`](kubyl_base::Notice) as a toast.
+impl From<kubyl_base::Notice> for Notification {
+    fn from(notice: kubyl_base::Notice) -> Self {
+        let notification = Notification::new(notice.level, notice.message);
+        match notice.title {
+            Some(title) => notification.title(title),
+            None => notification,
+        }
     }
 }
 
