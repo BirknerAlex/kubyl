@@ -1,6 +1,6 @@
 [package]
-name = "kubyl_files"
-description = "Pod filesystem browser and transfers."
+name = "kubyl_files_core"
+description = "Pod files without the UI: listing directories through exec, local and remote entries, mounts and tar transfers."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,22 +13,17 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-kubyl_files_core.workspace = true
 anyhow.workspace = true
 dirs.workspace = true
 futures.workspace = true
-gpui.workspace = true
-gpui-component.workspace = true
 jiff.workspace = true
 k8s-openapi.workspace = true
 kube.workspace = true
-kubyl_core.workspace = true
-kubyl_explorer.workspace = true
-kubyl_kube.workspace = true
-kubyl_resources.workspace = true
-kubyl_settings.workspace = true
-kubyl_terminal.workspace = true
-kubyl_ui.workspace = true
+kubyl_base.workspace = true
+kubyl_kube_core.workspace = true
+kubyl_resources_core.workspace = true
+kubyl_settings_core.workspace = true
+kubyl_terminal_core.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -39,5 +34,4 @@ tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-gpui = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

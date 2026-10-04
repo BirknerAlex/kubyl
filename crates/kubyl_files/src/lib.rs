@@ -9,15 +9,10 @@
 //! - [`listing`], [`entry`], [`mounts`], [`local`]: pure helpers, unit-tested without a cluster.
 
 pub mod dialogs;
-pub mod entry;
-pub mod listing;
-pub mod local;
-pub mod mounts;
 pub mod queue;
-pub mod remote;
-pub mod settings;
-pub mod transfer;
 pub mod view;
+
+pub use kubyl_files_core::{entry, listing, local, mounts, remote, settings, transfer};
 
 use gpui::{App, AppContext as _, Window, actions};
 use kubyl_core::actions::OpenView;
