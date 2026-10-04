@@ -8,6 +8,7 @@ use std::time::Duration;
 use anyhow::Context as _;
 use futures::channel::mpsc;
 use k8s_openapi::api::core::v1::{ContainerStatus, Pod};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::Status;
 use kube::Api;
 use kube::api::{AttachParams, DeleteParams, Patch, PatchParams, PostParams};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -132,11 +133,34 @@ pub async fn pod_info(
 pub async fn run(
     client: kube::Client,
     target: ExecTarget,
+    input: mpsc::UnboundedReceiver<Vec<u8>>,
+    output: mpsc::Sender<Vec<u8>>,
+    resize: mpsc::UnboundedReceiver<(u16, u16)>,
+    connected: futures::channel::oneshot::Sender<Result<(), String>>,
+) -> anyhow::Result<bool> {
+    let ending = run_to_end(client, target, input, output, resize, connected).await?;
+    Ok(matches!(ending, Ending::Exited { .. }))
+}
+
+/// How a session ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ending {
+    /// The connection dropped or `input` closed before the process reported its status.
+    Dropped,
+    /// The process exited. `code` is `None` when the status doesn't carry one (the runtime was
+    /// killed, or it reported another failure).
+    Exited { code: Option<i32> },
+}
+
+/// [`run`], reporting how the session ended, with the process's exit code when it has one.
+pub async fn run_to_end(
+    client: kube::Client,
+    target: ExecTarget,
     mut input: mpsc::UnboundedReceiver<Vec<u8>>,
     mut output: mpsc::Sender<Vec<u8>>,
     mut resize: mpsc::UnboundedReceiver<(u16, u16)>,
     connected: futures::channel::oneshot::Sender<Result<(), String>>,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<Ending> {
     use futures::StreamExt as _;
 
     let api: Api<Pod> = Api::namespaced(client, &target.namespace);
@@ -243,11 +267,32 @@ pub async fn run(
     drop(stdin);
     attached.join().await.ok();
     // Sent when the process ends (`exit`); dropped with the connection otherwise.
-    let exited = match status {
-        Some(status) => status.await.is_some(),
-        None => false,
+    let status = match status {
+        Some(status) => status.await,
+        None => None,
     };
-    Ok(exited)
+    Ok(match status {
+        Some(status) => Ending::Exited {
+            code: exit_code(&status),
+        },
+        None => Ending::Dropped,
+    })
+}
+
+/// The exit code in a process's final status: `0` on success, the `ExitCode` cause of a
+/// `NonZeroExitCode` failure.
+pub fn exit_code(status: &Status) -> Option<i32> {
+    if status.status.as_deref() == Some("Success") {
+        return Some(0);
+    }
+    status
+        .details
+        .as_ref()?
+        .causes
+        .as_ref()?
+        .iter()
+        .find(|cause| cause.reason.as_deref() == Some("ExitCode"))
+        .and_then(|cause| cause.message.as_deref()?.parse().ok())
 }
 
 /// A short random-looking suffix for generated names (`debugger-k3x9q`).
@@ -568,6 +613,30 @@ pub async fn delete_pod(client: &kube::Client, namespace: &str, name: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn exit_codes_come_from_the_final_status() {
+        let status = |json: serde_json::Value| -> Status { serde_json::from_value(json).unwrap() };
+        assert_eq!(
+            exit_code(&status(serde_json::json!({"status": "Success"}))),
+            Some(0)
+        );
+        assert_eq!(
+            exit_code(&status(serde_json::json!({
+                "status": "Failure",
+                "reason": "NonZeroExitCode",
+                "message": "command terminated with non-zero exit code: exit status 137",
+                "details": {"causes": [{"reason": "ExitCode", "message": "137"}]},
+            }))),
+            Some(137)
+        );
+        assert_eq!(
+            exit_code(&status(
+                serde_json::json!({"status": "Failure", "message": "gone"})
+            )),
+            None
+        );
+    }
+
     use super::*;
 
     #[test]
