@@ -4982,6 +4982,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "kubyl_base"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "kubyl_charts"
 version = "0.4.0"
 dependencies = [
@@ -4999,6 +5012,7 @@ dependencies = [
  "anyhow",
  "futures",
  "gpui-pre",
+ "kubyl_base",
  "parking_lot",
  "serde",
  "serde_json",
