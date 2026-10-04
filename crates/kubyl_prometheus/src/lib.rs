@@ -24,7 +24,8 @@ pub use view::{Tab, open};
 
 /// Registers settings, installs the service, the view, actions and the sidebar row.
 ///
-/// Must run after `kubyl_kube::init`, `kubyl_explorer::init` and `kubyl_metrics::init`.
+/// Must run after `kubyl_kube::init`, `kubyl_explorer::init`, `kubyl_portforward::init` and
+/// `kubyl_metrics::init`.
 pub fn init(cx: &mut App) {
     Settings::register::<settings::PrometheusSettings>(cx);
     PrometheusService::install(true, cx);
