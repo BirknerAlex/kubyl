@@ -45,6 +45,7 @@ Each phase file is written so one Claude Code session can own it from start to f
 | 16 | [Network flows: Cilium/Hubble, NetObserv, Calico/Whisker](16-network-flows.md) | 02, 05, 07 | `kubyl_netflow` (new) | 18 · Network flows |
 | 17 | [Code-review fixes: 96 findings, all fixed](17-review-fixes.md) | all | per work package | none |
 | 18 | [Prometheus: web UI for Prometheus, Thanos Query, VictoriaMetrics](18-prometheus.md) | 02, 07 | `kubyl_prometheus` (new) | none yet |
+| 19 | [Split domain logic from the UI: GPUI-free `*_core` crates](19-core-split.md) | all | `kubyl_base`, `kubyl_*_core` (new); one split crate at a time | none |
 
 ```
 00 ─▶ 01 ─▶ 02 ─┬─▶ 03
