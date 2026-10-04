@@ -1,96 +1,84 @@
-//! [`Updates`]: the app-wide update state. Per cluster it detects the provider, reads it while
-//! a view (or another crate) wants it (every 15 s, every 5 s while an update runs), runs
-//! pre-flight checks and the writes that outlive a dialog.
+//! [`Updates`]: the app-wide update state ([`UpdatesCore`] from `kubyl_updates_core`) in an
+//! entity. The core detects the provider per cluster, reads it while a view (or another crate)
+//! wants it (every 15 s, every 5 s while an update runs), runs pre-flight checks and the writes
+//! that outlive a dialog. This adds what needs GPUI: it hands the core snapshots of the
+//! connections, holds the Helm watches the checks read, and looks at the Helm and metrics
+//! services for the pre-flight inputs.
 
 use std::collections::HashMap;
-use std::rc::Rc;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::convert::Infallible;
+use std::ops::Deref;
 
-use gpui::{App, AppContext as _, Context, Entity, Global, Task};
-use kubyl_core::{ClusterId, Notification, NotificationCenter, spawn_kube};
+use gpui::{App, AppContext as _, Context, Entity, EventEmitter, Global};
+use kubyl_core::ClusterId;
+use kubyl_core::host::{Hosts, hosted};
 use kubyl_kube::{ConnectionEvent, ConnectionManager};
 use kubyl_operators::helm::service::{Helm, HelmLease};
 
 pub use kubyl_updates_core::service::*;
 
 use crate::check::{self, Check};
-use crate::detect::{self, Detected, Facts};
-use crate::model::{Plan, ProviderKind, Status};
+use crate::model::{Plan, ProviderKind};
 use crate::preflight::{self, HelmInput, Inputs, ReleaseRef};
-use crate::provider::UpdateProvider;
 use crate::settings::UpdatesSettings;
 
-/// Keeps a cluster's reads going while held (views hold one).
-#[derive(Clone)]
-pub struct UpdatesLease(#[allow(dead_code)] Rc<()>);
-
-struct ClusterUpdates {
-    detected: Option<Detected>,
-    /// The facts the provider was built from (a change rebuilds it).
-    facts: Option<Facts>,
-    provider: Option<Arc<dyn UpdateProvider>>,
-    read: ReadState,
-    last: Option<Arc<Status>>,
-    fetched_at: Option<Instant>,
-    reading: bool,
-    /// Bumped when the provider is rebuilt; older reads are dropped.
-    generation: u64,
-    lease: Rc<()>,
-    wanted_until: Instant,
-    preflight: HashMap<String, Preflight>,
-    busy: Option<String>,
-    /// Which write `busy` belongs to (the state moves when the cluster is rekeyed, so a write
-    /// finds it again by this and not by the id it started under).
-    busy_token: u64,
-    helm: Option<HelmLease>,
-    /// Reads, pre-flight runs, the poll loop. Finished ones are pruned (a task must not drop
-    /// itself).
-    tasks: Vec<Task<()>>,
-    /// The poll loop; `polling` says whether it still runs (it ends by itself and must not
-    /// drop its own handle).
-    poll: Option<Task<()>>,
-    polling: bool,
-}
-
-impl ClusterUpdates {
-    fn new(lease: Rc<()>) -> Self {
-        Self {
-            detected: None,
-            facts: None,
-            provider: None,
-            read: ReadState::Loading,
-            last: None,
-            fetched_at: None,
-            reading: false,
-            generation: 0,
-            lease,
-            wanted_until: Instant::now() + KEEP,
-            preflight: HashMap::new(),
-            busy: None,
-            busy_token: 0,
-            helm: None,
-            tasks: Vec::new(),
-            poll: None,
-            polling: false,
-        }
-    }
-
-    fn status(&self) -> Option<&Arc<Status>> {
-        match &self.read {
-            ReadState::Ready(status) => Some(status),
-            _ => self.last.as_ref(),
-        }
-    }
-}
-
+/// The app-wide update state. Reads go to the [`UpdatesCore`]; observe the entity to re-render.
 pub struct Updates {
-    clusters: HashMap<ClusterId, ClusterUpdates>,
-    /// Poll on timers (off in GPUI tests).
-    poll: bool,
-    /// The last write token handed out.
-    writes: u64,
+    core: UpdatesCore,
+    /// The Helm releases of clusters with pre-flight checks (they read them).
+    helm: HashMap<ClusterId, HelmLease>,
     _subscriptions: Vec<gpui::Subscription>,
+}
+
+impl Deref for Updates {
+    type Target = UpdatesCore;
+
+    fn deref(&self) -> &UpdatesCore {
+        &self.core
+    }
+}
+
+impl EventEmitter<Infallible> for Updates {}
+
+impl Hosts<UpdatesCore> for Updates {
+    fn service(&mut self) -> &mut UpdatesCore {
+        &mut self.core
+    }
+
+    fn apply(&mut self, effect: UpdatesEffect, cx: &mut Context<Self>) {
+        match effect {
+            UpdatesEffect::Read(cluster) => self.read(&cluster, cx),
+            UpdatesEffect::WatchHelm(cluster) => {
+                if !self.helm.contains_key(&cluster)
+                    && let Some(lease) = Helm::watch(&cluster, cx)
+                {
+                    self.helm.insert(cluster, lease);
+                }
+            }
+            UpdatesEffect::ReleaseHelm(cluster) => {
+                self.helm.remove(&cluster);
+            }
+            UpdatesEffect::ProbePreflight {
+                run,
+                cluster,
+                kind,
+                target,
+            } => {
+                // The Helm list must have listed, or its check would pass on nothing; and
+                // phase 07 must have looked for Prometheus, or deprecated APIs come from
+                // /metrics only.
+                let ready = preflight_ready(&cluster, cx);
+                let probe = if ready || self.core.preflight_overdue(run) {
+                    Probe::Go(inputs(&cluster, kind, &target, cx).map(Box::new))
+                } else {
+                    Probe::Waiting
+                };
+                hosted(self, cx, |core, host| {
+                    core.preflight_probe(run, probe, host)
+                });
+            }
+        }
+    }
 }
 
 struct GlobalUpdates(Entity<Updates>);
@@ -111,20 +99,14 @@ impl Updates {
                 // A provider override or cloud settings changed: build the providers again.
                 subscriptions.push(cx.observe_global::<kubyl_settings::Settings>(
                     |this: &mut Self, cx| {
-                        let ids: Vec<ClusterId> = this.clusters.keys().cloned().collect();
-                        for id in ids {
-                            if let Some(state) = this.clusters.get_mut(&id) {
-                                state.facts = None;
-                            }
-                            this.detect(&id, cx);
-                        }
+                        let conns = conns(this.core.tracked(), cx);
+                        hosted(this, cx, |core, host| core.settings_changed(&conns, host));
                     },
                 ));
             }
             Self {
-                clusters: HashMap::new(),
-                poll,
-                writes: 0,
+                core: UpdatesCore::new(poll),
+                helm: HashMap::new(),
                 _subscriptions: subscriptions,
             }
         });
@@ -140,202 +122,31 @@ impl Updates {
     pub fn watch(cluster: &ClusterId, cx: &mut App) -> Option<UpdatesLease> {
         let updates = Self::global(cx)?;
         Some(updates.update(cx, |this, cx| {
-            this.ensure(cluster, cx);
-            UpdatesLease(this.clusters[cluster].lease.clone())
+            let conns = conns([cluster.clone()], cx);
+            hosted(this, cx, |core, host| core.watch(cluster, &conns, host))
         }))
     }
 
     fn connection_event(&mut self, event: &ConnectionEvent, cx: &mut Context<Self>) {
         match event {
             ConnectionEvent::StateChanged(id) | ConnectionEvent::DiscoveryChanged(id) => {
-                if self.clusters.contains_key(id) {
-                    self.detect(id, cx);
-                }
-                cx.notify();
+                let conns = conns([id.clone()], cx);
+                hosted(self, cx, |core, host| {
+                    core.connection_changed(id, &conns, host)
+                });
             }
             ConnectionEvent::Rekeyed { from, to } => {
-                if let Some(mut state) = self.clusters.remove(from) {
-                    // The provider holds the connection's client, which moved with it.
-                    state.facts = None;
-                    self.clusters.insert(to.clone(), state);
-                    self.detect(to, cx);
-                }
-                cx.notify();
+                let conns = conns([to.clone()], cx);
+                hosted(self, cx, |core, host| core.rekeyed(from, to, &conns, host));
             }
             _ => {}
         }
     }
 
-    /// Starts tracking `cluster` (detection, reads, the poll loop) and marks it wanted.
-    fn ensure(&mut self, cluster: &ClusterId, cx: &mut Context<Self>) {
-        if let Some(state) = self.clusters.get_mut(cluster) {
-            state.wanted_until = Instant::now() + KEEP;
-            if !state.polling && self.poll {
-                self.start_poll(cluster, cx);
-            }
-            return;
-        }
-        self.clusters
-            .insert(cluster.clone(), ClusterUpdates::new(Rc::new(())));
-        self.detect(cluster, cx);
-        if self.poll {
-            self.start_poll(cluster, cx);
-        }
-    }
-
-    fn start_poll(&mut self, cluster: &ClusterId, cx: &mut Context<Self>) {
-        let id = cluster.clone();
-        let task = cx.spawn(async move |this, cx| {
-            loop {
-                let delay = this
-                    .update(cx, |this, cx| {
-                        let state = this.clusters.get_mut(&id)?;
-                        let wanted = Rc::strong_count(&state.lease) > 1
-                            || Instant::now() < state.wanted_until;
-                        if !wanted {
-                            // Nobody looks: stop, and drop the Helm watches.
-                            state.polling = false;
-                            state.helm = None;
-                            return None;
-                        }
-                        let updating = state.status().is_some_and(|s| s.updating());
-                        this.read(&id, cx);
-                        Some(if updating { UPDATING } else { IDLE })
-                    })
-                    .ok()
-                    .flatten();
-                let Some(delay) = delay else {
-                    break;
-                };
-                cx.background_executor().timer(delay).await;
-            }
-        });
-        if let Some(state) = self.clusters.get_mut(cluster) {
-            // A previous loop has ended by now: replacing its handle is fine.
-            state.poll = Some(task);
-            state.polling = true;
-        }
-    }
-
-    /// Detects (again) and rebuilds the provider when its inputs changed.
-    fn detect(&mut self, cluster: &ClusterId, cx: &mut Context<Self>) {
-        let manager = ConnectionManager::try_global(cx);
-        let client = manager.as_ref().and_then(|m| m.read(cx).client(cluster));
-        let facts = manager.as_ref().and_then(|m| facts(m.read(cx), cluster));
-        let Some(state) = self.clusters.get_mut(cluster) else {
-            return;
-        };
-        let (Some(client), Some(facts)) = (client, facts) else {
-            // Disconnected or not discovered yet: nothing to read.
-            state.detected = None;
-            state.facts = None;
-            state.provider = None;
-            state.read = ReadState::Loading;
-            state.generation += 1;
-            cx.notify();
-            return;
-        };
-        if state.facts.as_ref() == Some(&facts) && state.provider.is_some() {
-            return;
-        }
-        let overridden = ConnectionManager::try_global(cx).and_then(|m| {
-            kubyl_settings::Settings::get::<UpdatesSettings>(cx)
-                .for_keys(&m.read(cx).settings_keys(cluster))
-                .provider
-        });
-        let detected = match overridden {
-            Some(setting) => Detected {
-                kind: setting.kind(),
-                reason: "picked in settings (updates.clusters.<cluster>.provider)".into(),
-            },
-            None => detect::detect(&facts),
-        };
-        let settings = kubyl_settings::Settings::get::<UpdatesSettings>(cx);
-        let provider = build(
-            manager.as_ref().map(|m| &**m.read(cx)),
-            settings,
-            cluster,
-            &detected,
-            &facts,
-            client,
-        );
-        let Some(state) = self.clusters.get_mut(cluster) else {
-            return;
-        };
-        let changed = state.detected.as_ref().map(|d| d.kind) != Some(detected.kind);
-        state.detected = Some(detected);
-        state.facts = Some(facts);
-        state.provider = Some(provider);
-        state.generation += 1;
-        state.reading = false;
-        if changed {
-            state.read = ReadState::Loading;
-            state.last = None;
-            state.preflight.clear();
-        }
-        self.read(cluster, cx);
-    }
-
     /// Reads the provider now (unless a read runs).
     pub fn read(&mut self, cluster: &ClusterId, cx: &mut Context<Self>) {
-        let Some(state) = self.clusters.get_mut(cluster) else {
-            return;
-        };
-        state.tasks.retain(|t| !t.is_ready());
-        let Some(provider) = state.provider.clone() else {
-            return;
-        };
-        if state.reading {
-            return;
-        }
-        state.reading = true;
-        let generation = state.generation;
-        let manager = ConnectionManager::try_global(cx);
-        let fallback = fallback_for(manager.as_ref().map(|m| &**m.read(cx)), cluster, &provider);
-        let work = spawn_kube(cx, async move {
-            match provider.read().await {
-                Ok(status) => Ok(status),
-                // A cloud without credentials still shows the Kubernetes side.
-                Err(err) if fallback.is_some() && cloud_unavailable(&err) => {
-                    let (fallback, note) = fallback.expect("checked");
-                    match fallback.read().await {
-                        Ok(mut status) => {
-                            status.notes.insert(0, note(&err));
-                            Ok(status)
-                        }
-                        Err(_) => Err(err),
-                    }
-                }
-                Err(err) => Err(err),
-            }
-        });
-        let id = cluster.clone();
-        let task = cx.spawn(async move |this, cx| {
-            let result = work.await;
-            this.update(cx, |this, cx| {
-                let Some(state) = this.clusters.get_mut(&id) else {
-                    return;
-                };
-                if state.generation != generation {
-                    return;
-                }
-                state.reading = false;
-                state.fetched_at = Some(Instant::now());
-                state.read = match result {
-                    Ok(status) => {
-                        let status = Arc::new(status);
-                        state.last = Some(status.clone());
-                        ReadState::Ready(status)
-                    }
-                    Err(err) => ReadState::Failed(err),
-                };
-                cx.notify();
-            })
-            .ok();
-        });
-        if let Some(state) = self.clusters.get_mut(cluster) {
-            state.tasks.push(task);
-        }
+        let conns = conns([cluster.clone()], cx);
+        hosted(self, cx, |core, host| core.read(cluster, &conns, host));
     }
 
     /// What a view shows for `cluster`.
@@ -345,53 +156,14 @@ impl Updates {
         if !connected {
             return UpdateState::NotConnected;
         }
-        let Some(state) = self.clusters.get(cluster) else {
-            return UpdateState::Detecting;
-        };
-        let Some(detected) = state.detected.clone() else {
-            return UpdateState::Detecting;
-        };
-        UpdateState::Known {
-            detected,
-            read: state.read.clone(),
-            last: state.last.clone(),
-            fetched_at: state.fetched_at,
-        }
-    }
-
-    /// The last good status of `cluster` (for other crates: badges, the title bar).
-    pub fn status(&self, cluster: &ClusterId) -> Option<Arc<Status>> {
-        self.clusters.get(cluster)?.status().cloned()
-    }
-
-    pub fn provider(&self, cluster: &ClusterId) -> Option<Arc<dyn UpdateProvider>> {
-        self.clusters.get(cluster)?.provider.clone()
-    }
-
-    pub fn is_reading(&self, cluster: &ClusterId) -> bool {
-        self.clusters.get(cluster).is_some_and(|s| s.reading)
-    }
-
-    /// The write in flight, if any.
-    pub fn busy(&self, cluster: &ClusterId) -> Option<&str> {
-        self.clusters.get(cluster)?.busy.as_deref()
-    }
-
-    /// The pre-flight run of `target`, if one ran against the current version.
-    pub fn preflight(&self, cluster: &ClusterId, target: &str) -> Option<&Preflight> {
-        let state = self.clusters.get(cluster)?;
-        let current = state.status()?.current.version.clone();
-        state
-            .preflight
-            .get(target)
-            .filter(|run| run.current == current)
+        self.core.known(cluster)
     }
 
     /// Every check of `target`: the run's plus the operators check, computed now from phase
     /// 12's live state (so it follows installs and removals without a re-run).
     pub fn checks(&self, cluster: &ClusterId, target: &str, cx: &mut App) -> Option<Vec<Check>> {
-        let run = self.preflight(cluster, target)?.clone();
-        let kind = self.clusters.get(cluster)?.detected.as_ref()?.kind;
+        let run = self.core.preflight(cluster, target)?.clone();
+        let kind = self.core.detected(cluster)?.kind;
         let installed = kubyl_operators::api::installed(cluster, cx);
         let openshift = (kind == ProviderKind::OpenShift)
             .then(|| crate::version::minor_of(target))
@@ -408,142 +180,17 @@ impl Updates {
 
     /// Runs the pre-flight checks for `target` (again).
     pub fn run_preflight(&mut self, cluster: &ClusterId, target: &str, cx: &mut Context<Self>) {
-        let Some(state) = self.clusters.get_mut(cluster) else {
-            return;
-        };
-        state.tasks.retain(|t| !t.is_ready());
-        let (Some(provider), Some(status), Some(detected)) = (
-            state.provider.clone(),
-            state.status().cloned(),
-            state.detected.clone(),
-        ) else {
-            return;
-        };
-        if state.helm.is_none() {
-            state.helm = Helm::watch(cluster, cx);
-        }
-        let current = status.current.version.clone();
-        state.preflight.insert(
-            target.to_string(),
-            Preflight {
-                target: target.to_string(),
-                current: current.clone(),
-                started: Instant::now(),
-                finished: None,
-                checks: Vec::new(),
-            },
-        );
-        cx.notify();
-        let id = cluster.clone();
-        let target = target.to_string();
-        let task = cx.spawn(async move |this, cx| {
-            // The Helm list must have listed, or its check would pass on nothing; and phase 07
-            // must have looked for Prometheus, or deprecated APIs come from /metrics only.
-            let deadline = Instant::now() + HELM_WAIT;
-            loop {
-                let ready = cx.update(|cx| {
-                    let helm = Helm::global(cx)
-                        .and_then(|h| h.read(cx).snapshot(&id, cx))
-                        .is_none_or(|s| !s.loading);
-                    let metrics = kubyl_metrics::MetricsService::global(cx).is_none_or(|m| {
-                        !matches!(
-                            m.read(cx).source(&id),
-                            kubyl_metrics::Source::Unknown | kubyl_metrics::Source::Detecting
-                        )
-                    });
-                    helm && metrics
-                });
-                if ready || Instant::now() > deadline {
-                    break;
-                }
-                cx.background_executor()
-                    .timer(Duration::from_millis(300))
-                    .await;
-            }
-            let work = cx.update(|cx| {
-                let inputs = inputs(&id, detected.kind, &target, cx)?;
-                let extras = provider.preflight_extras(&status, &target);
-                Some(spawn_kube(cx, async move {
-                    let (mut checks, extras) = futures::join!(preflight::run(inputs), extras);
-                    checks.extend(extras);
-                    checks
-                }))
-            });
-            let checks = match work {
-                Some(work) => work.await,
-                // The cluster went away while waiting: finish the run, don't leave it
-                // "running" forever.
-                None => vec![Check::new(
-                    "inputs",
-                    "Pre-flight checks",
-                    check::CheckStatus::Unknown,
-                    "The cluster disconnected before the checks could run. Re-run them.",
-                )],
-            };
-            this.update(cx, |this, cx| {
-                if let Some(run) = this
-                    .clusters
-                    .get_mut(&id)
-                    .and_then(|s| s.preflight.get_mut(&target))
-                    .filter(|run| run.current == current)
-                {
-                    run.checks = checks;
-                    run.finished = Some(Instant::now());
-                }
-                cx.notify();
-            })
-            .ok();
+        hosted(self, cx, |core, host| {
+            core.run_preflight(cluster, target, host)
         });
-        if let Some(state) = self.clusters.get_mut(cluster) {
-            state.tasks.push(task);
-        }
     }
 
     /// Runs a confirmed plan once. Refuses on read-only clusters; never retries.
     pub fn start(&mut self, cluster: &ClusterId, plan: Plan, cx: &mut Context<Self>) {
-        let read_only =
-            ConnectionManager::try_global(cx).is_some_and(|m| m.read(cx).caps(cluster).read_only);
-        if read_only {
-            NotificationCenter::push(
-                cx,
-                Notification::error("This cluster is read-only in Kubyl."),
-            );
-            return;
-        }
-        let Some(state) = self.clusters.get_mut(cluster) else {
-            return;
-        };
-        let Some(provider) = state.provider.clone() else {
-            return;
-        };
-        if state.busy.is_some() {
-            return;
-        }
-        state.busy = Some(plan.title.clone());
-        self.writes += 1;
-        let token = self.writes;
-        state.busy_token = token;
-        cx.notify();
-        let work = spawn_kube(cx, async move { provider.start(&plan).await });
-        let task = cx.spawn(async move |this, cx| {
-            let result = work.await;
-            this.update(cx, |this, cx| {
-                // The cluster may have been rekeyed meanwhile: `id` is then the old one.
-                let current = finish_write(&mut this.clusters, token);
-                match result {
-                    Ok(message) => NotificationCenter::push(cx, Notification::info(message)),
-                    Err(err) => NotificationCenter::push(cx, Notification::error(err.to_string())),
-                }
-                if let Some(current) = current {
-                    this.read(&current, cx);
-                }
-                cx.notify();
-            })
-            .ok();
+        let conns = conns([cluster.clone()], cx);
+        hosted(self, cx, |core, host| {
+            core.start(cluster, plan, &conns, host)
         });
-        if let Some(state) = self.clusters.get_mut(cluster) {
-            state.tasks.push(task);
-        }
     }
 
     /// Puts a status in place without a provider (GPUI tests).
@@ -551,16 +198,11 @@ impl Updates {
     pub(crate) fn insert_for_test(
         &mut self,
         cluster: &ClusterId,
-        detected: Detected,
-        status: Status,
+        detected: crate::detect::Detected,
+        status: crate::model::Status,
         cx: &mut Context<Self>,
     ) {
-        let mut state = ClusterUpdates::new(Rc::new(()));
-        state.detected = Some(detected);
-        let status = Arc::new(status);
-        state.last = Some(status.clone());
-        state.read = ReadState::Ready(status);
-        self.clusters.insert(cluster.clone(), state);
+        self.core.seed(cluster, detected, status);
         cx.notify();
     }
 
@@ -573,22 +215,7 @@ impl Updates {
         checks: Option<Vec<Check>>,
         cx: &mut Context<Self>,
     ) {
-        let Some(state) = self.clusters.get_mut(cluster) else {
-            return;
-        };
-        let Some(current) = state.status().map(|s| s.current.version.clone()) else {
-            return;
-        };
-        state.preflight.insert(
-            target.to_string(),
-            Preflight {
-                target: target.to_string(),
-                current,
-                started: Instant::now(),
-                finished: checks.is_some().then(Instant::now),
-                checks: checks.unwrap_or_default(),
-            },
-        );
+        self.core.seed_preflight(cluster, target, checks);
         cx.notify();
     }
 
@@ -597,25 +224,40 @@ impl Updates {
     pub(crate) fn set_provider_for_test(
         &mut self,
         cluster: &ClusterId,
-        provider: Arc<dyn UpdateProvider>,
+        provider: std::sync::Arc<dyn crate::provider::UpdateProvider>,
     ) {
-        if let Some(state) = self.clusters.get_mut(cluster) {
-            state.provider = Some(provider);
-        }
+        self.core.seed_provider(cluster, provider);
     }
 }
 
-/// Clears the busy mark of write `token` wherever its cluster is now, and returns that id.
-fn finish_write(
-    clusters: &mut HashMap<ClusterId, ClusterUpdates>,
-    token: u64,
-) -> Option<ClusterId> {
-    let (id, state) = clusters
-        .iter_mut()
-        .find(|(_, state)| state.busy_token == token)?;
-    state.busy = None;
-    state.busy_token = 0;
-    Some(id.clone())
+/// The connections of `clusters` as the core sees them (empty without a connection manager).
+fn conns(clusters: impl IntoIterator<Item = ClusterId>, cx: &App) -> Conns {
+    let Some(manager) = ConnectionManager::try_global(cx) else {
+        return Conns::new();
+    };
+    let manager = manager.read(cx);
+    let settings = kubyl_settings::Settings::get::<UpdatesSettings>(cx);
+    clusters
+        .into_iter()
+        .map(|id| {
+            let conn = ClusterConn::from_manager(manager, &id, settings);
+            (id, conn)
+        })
+        .collect()
+}
+
+/// Whether the Helm releases listed and metrics detection finished (or nothing runs them).
+fn preflight_ready(cluster: &ClusterId, cx: &App) -> bool {
+    let helm = Helm::global(cx)
+        .and_then(|h| h.read(cx).snapshot(cluster, cx))
+        .is_none_or(|s| !s.loading);
+    let metrics = kubyl_metrics::MetricsService::global(cx).is_none_or(|m| {
+        !matches!(
+            m.read(cx).source(cluster),
+            kubyl_metrics::Source::Unknown | kubyl_metrics::Source::Detecting
+        )
+    });
+    helm && metrics
 }
 
 /// The inputs of a pre-flight run, from the connection, discovery, Prometheus and Helm.
@@ -668,8 +310,12 @@ fn inputs(cluster: &ClusterId, kind: ProviderKind, target: &str, cx: &mut App) -
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
-    use crate::provider::ProviderError;
+    use crate::detect::Detected;
+    use crate::model::Status;
+    use crate::provider::{ProviderError, UpdateProvider};
     use gpui::TestAppContext;
 
     struct Idle;
@@ -718,24 +364,5 @@ mod tests {
             assert_eq!(run.checks.len(), 1);
             assert_eq!(run.checks[0].status, check::CheckStatus::Unknown);
         });
-    }
-
-    /// A write that finishes after its cluster was rekeyed clears `busy` on the new id.
-    #[test]
-    fn a_write_finishing_after_a_rekey_clears_busy() {
-        let mut state = ClusterUpdates::new(Rc::new(()));
-        state.busy = Some("Update".into());
-        state.busy_token = 7;
-        let mut clusters = HashMap::new();
-        // `Rekeyed` moved the state from the old id to the new one.
-        clusters.insert(ClusterId::new("new-id"), state);
-        clusters.insert(ClusterId::new("other"), ClusterUpdates::new(Rc::new(())));
-        assert_eq!(
-            finish_write(&mut clusters, 7),
-            Some(ClusterId::new("new-id"))
-        );
-        assert!(clusters[&ClusterId::new("new-id")].busy.is_none());
-        // Nothing left to clear.
-        assert_eq!(finish_write(&mut clusters, 7), None);
     }
 }
