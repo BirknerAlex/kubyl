@@ -1,6 +1,6 @@
 # Phase 19: Split domain logic from the UI (GPUI-free `*_core` crates)
 
-**Status:** in progress (code done; app check against the dev cluster pending)
+**Status:** done (orchestration of the coordinating services: see "Later")
 **Depends on:** all feature phases (it moves their code); 18 done
 **Owns:** new `crates/kubyl_base`, `crates/kubyl_*_core`; per step, the crate being split (one
 crate at a time, see "Working rules")
@@ -104,9 +104,9 @@ in `kubyl_base` runs the same core code on Tokio, without GPUI.
 
 ### Wrap-up
 - [x] `plans/README.md`: workspace layout, the decision; `AGENTS.md`: where logic goes.
-- [ ] App checked against `script/dev-cluster.sh` after the feature steps (screenshots of the
-      main views) and the live tests of metrics, alerts, operators, updates, flows. Done for kube,
-      resources and port-forward; the rest is blocked on Docker (see the handoff log).
+- [x] App checked against `script/dev-cluster.sh`: pods, deployments, overview, alerts,
+      Prometheus, Argo CD, operators and updates (screenshots), and the live tests of 13 crates
+      (see the handoff log). Flows' live tests need the `netflow-dev.sh` clusters: not run.
 
 ## Acceptance criteria
 
@@ -148,3 +148,11 @@ in `kubyl_base` runs the same core code on Tokio, without GPUI.
     flows, operators, updates and Prometheus.
   - The metrics live tests failed with "no Prometheus found" while the cluster was already
     unreachable; run them again after the restart before trusting either result.
+- 2026-10-04: Checked after Docker was restarted. Live tests on `kubyl-dev` pass for kube, logs,
+  terminal, port-forward, files, metrics (7/7), overview, kubeconfig, web views, operators and
+  Argo CD's UI test. Five fail identically on `main` (checked in a worktree), so they're the
+  cluster's, not this phase's: resources `drain_control_plane` (`kubyl-updates/ledger-writer-pdb`
+  blocks it) and `workload_actions` (a concurrent-modification conflict), alerts
+  `a_silence_round_trip` and `firing_and_pending_alerts_have_the_right_times` (alert states after
+  the restart), Argo CD `api_mode_signs_in_through_the_proxy_and_a_forward`. The updates view's
+  Nodes table squeezes its first header into one letter per line; not compared with `main`.
