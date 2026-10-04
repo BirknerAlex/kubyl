@@ -15,6 +15,8 @@ pub mod runtime;
 pub mod types;
 
 pub use error::{Error, Result};
+/// GPUI's cheap-to-clone string (the same type as `gpui::SharedString`), without GPUI.
+pub use gpui_shared_string::SharedString;
 pub use host::{Flow, Host, HostExt, Pace, Service, TaskHandle};
 pub use notice::{Notice, NotificationLevel};
 pub use types::{
