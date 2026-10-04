@@ -27,7 +27,9 @@ pub fn installed(cluster: &ClusterId, cx: &mut App) -> Installed {
     let Some(olm) = Olm::global(cx) else {
         return Installed::NotConnected;
     };
-    olm.update(cx, |olm, cx| olm.ensure(cluster, None, cx));
+    olm.update(cx, |olm, cx| {
+        olm.ensure(cluster, cx);
+    });
     let olm = olm.read(cx);
     match olm.availability(cluster, cx) {
         Availability::NotConnected => return Installed::NotConnected,
