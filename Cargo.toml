@@ -28,6 +28,7 @@ kubyl_kubeconfig = { path = "crates/kubyl_kubeconfig" }
 kubyl_logs = { path = "crates/kubyl_logs" }
 kubyl_logs_core = { path = "crates/kubyl_logs_core" }
 kubyl_metrics = { path = "crates/kubyl_metrics" }
+kubyl_metrics_core = { path = "crates/kubyl_metrics_core" }
 kubyl_netflow = { path = "crates/kubyl_netflow" }
 kubyl_operators = { path = "crates/kubyl_operators" }
 kubyl_overview = { path = "crates/kubyl_overview" }
@@ -46,6 +47,7 @@ kubyl_ui = { path = "crates/kubyl_ui" }
 kubyl_updates = { path = "crates/kubyl_updates" }
 kubyl_webview = { path = "crates/kubyl_webview" }
 kubyl_yaml = { path = "crates/kubyl_yaml" }
+kubyl_yaml_core = { path = "crates/kubyl_yaml_core" }
 
 # GPUI. `gpui-pre-*` are crates.io snapshots of zed-industries/zed (0.3.6 = zed@bcf6582),
 # the exact snapshot gpui-component 0.6.6 is built against. Bump all of these together, in their own PR.

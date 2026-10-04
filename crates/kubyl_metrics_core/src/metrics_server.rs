@@ -3,9 +3,9 @@
 
 use std::collections::HashMap;
 
-use kubyl_resources::format::parse_quantity;
-use kubyl_resources::metrics::Usage;
-use kubyl_resources::{ObjectKey, object_key};
+use kubyl_resources_core::format::parse_quantity;
+use kubyl_resources_core::store::{ObjectKey, object_key};
+use kubyl_resources_core::usage::Usage;
 use serde_json::Value;
 
 const BASE: &str = "/apis/metrics.k8s.io/v1beta1";

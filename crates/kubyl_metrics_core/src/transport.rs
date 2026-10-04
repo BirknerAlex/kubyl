@@ -650,9 +650,9 @@ mod tests {
             }
             requests
         });
-        let bearer = Bearer::User(kubyl_kube::auth::BearerToken::Static(SecretString::from(
-            "s3cr3t".to_string(),
-        )));
+        let bearer = Bearer::User(kubyl_kube_core::auth::BearerToken::Static(
+            SecretString::from("s3cr3t".to_string()),
+        ));
         let transport = Transport::direct(&format!("http://{address}"), None, None, bearer)
             .unwrap()
             .with_header("x-scope-orgid", "tenant-a")

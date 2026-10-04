@@ -9,44 +9,12 @@
 
 use std::rc::Rc;
 
-use gpui::{App, BorrowAppContext as _, Global, SharedString};
+use gpui::{App, BorrowAppContext as _, Global};
 use kubyl_core::{CellValue, ClusterId};
+pub use kubyl_resources_core::usage::{SourceStatus, Usage, UsageHistory, pod_resource};
 use serde_json::Value;
 
-use crate::format::{array_at, format_bytes, format_cpu, parse_quantity, str_at};
-
-/// Current usage of a pod or node.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Usage {
-    /// CPU in cores (0.184 = 184m).
-    pub cpu: f64,
-    /// Memory in bytes.
-    pub memory: f64,
-}
-
-/// A series of samples for sparklines (oldest first, evenly spaced).
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct UsageHistory {
-    /// CPU in cores.
-    pub cpu: Vec<f64>,
-    /// Memory in bytes.
-    pub memory: Vec<f64>,
-    /// Time covered by the samples, e.g. `last 1h`.
-    pub window: SharedString,
-    /// e.g. `Prometheus` or `metrics-server`.
-    pub source: SharedString,
-}
-
-/// What a provider knows about a cluster's metrics source, for "why is there no usage" hints.
-#[derive(Clone, Debug, PartialEq)]
-pub enum SourceStatus {
-    /// Still looking (or the cluster isn't connected).
-    Detecting,
-    /// Usage is available; the label names the source (`Prometheus`, `metrics-server`).
-    Ready(SharedString),
-    /// No source; the text says why and what to install.
-    Unavailable(SharedString),
-}
+use crate::format::{format_bytes, format_cpu, parse_quantity, str_at};
 
 /// Supplies usage data. Implemented by `kubyl_metrics`.
 pub trait MetricsProvider: 'static {
@@ -101,19 +69,6 @@ impl Metrics {
     pub fn revision(cx: &App) -> u64 {
         cx.try_global::<Self>().map_or(0, |m| m.revision)
     }
-}
-
-/// Sum of a resource's requests or limits over a pod's containers (`resource` = `cpu`/`memory`).
-/// A pod is unlimited (`None`) when any container lacks a limit, since the partial sum would
-/// understate what the pod may use.
-pub fn pod_resource(pod: &Value, kind: &str, resource: &str) -> Option<f64> {
-    let containers = array_at(pod, "/spec/containers");
-    let values: Vec<f64> = containers
-        .iter()
-        .filter_map(|c| parse_quantity(str_at(c, &format!("/resources/{kind}/{resource}"))))
-        .collect();
-    let complete = kind != "limits" || values.len() == containers.len();
-    (!values.is_empty() && complete).then(|| values.iter().sum())
 }
 
 /// The CPU or memory cell (`column` = `cpu` or `memory`) of a pod or node, from the provider.

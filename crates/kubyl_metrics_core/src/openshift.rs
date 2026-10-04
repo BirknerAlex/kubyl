@@ -12,8 +12,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
-use kubyl_kube::auth::BearerToken;
-use kubyl_resources::route::Route;
+use kubyl_kube_core::auth::BearerToken;
+use kubyl_resources_core::route::Route;
 use secrecy::SecretString;
 use serde_json::Value;
 use tokio::sync::Mutex;

@@ -19,19 +19,15 @@
 //!   pressure, OOM kills… for pods, nodes, namespaces, workloads and PVCs).
 //! - [`settings`]: the `"metrics"` settings.json section.
 
-pub mod basic_auth;
 pub mod details;
-pub mod discover;
-pub mod metrics_server;
-pub mod openshift;
-pub mod panels;
-pub mod prometheus;
 pub mod provider;
-pub mod queries;
 pub mod service;
-pub mod settings;
 mod status;
-pub mod transport;
+
+pub use kubyl_metrics_core::{
+    basic_auth, discover, metrics_server, openshift, panels, prometheus, queries, settings,
+    transport,
+};
 
 use gpui::{App, Window, actions};
 use kubyl_core::{
