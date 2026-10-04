@@ -15,6 +15,7 @@ workspace = true
 [dependencies]
 anyhow.workspace = true
 futures.workspace = true
+gpui_shared_string.workspace = true
 serde = { workspace = true, features = ["rc"] }
 serde_json.workspace = true
 thiserror.workspace = true

@@ -272,6 +272,21 @@ pub enum Tone {
     Muted,
 }
 
+/// One forward, as other crates see it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ActiveForward {
+    /// Pass to `kubyl_core::actions::StopForward`.
+    pub id: u64,
+    /// The pod, Service or workload that was forwarded.
+    pub target: ResourceRef,
+    /// The forwarded port as picked (`None` = the first port of the target).
+    pub remote_port: Option<u16>,
+    /// `localhost:18080` once the local port listens.
+    pub local: Option<String>,
+    /// `http://localhost:18080` for HTTP ports.
+    pub url: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

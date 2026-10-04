@@ -6,20 +6,7 @@ use gpui::{App, Global};
 
 use crate::ResourceRef;
 
-/// One forward, as other crates see it.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ActiveForward {
-    /// Pass to [`crate::actions::StopForward`].
-    pub id: u64,
-    /// The pod, Service or workload that was forwarded.
-    pub target: ResourceRef,
-    /// The forwarded port as picked (`None` = the first port of the target).
-    pub remote_port: Option<u16>,
-    /// `localhost:18080` once the local port listens.
-    pub local: Option<String>,
-    /// `http://localhost:18080` for HTTP ports.
-    pub url: Option<String>,
-}
+pub use kubyl_base::types::ActiveForward;
 
 /// The forwards running now. Observe it with `cx.observe_global::<ActiveForwards>`.
 #[derive(Clone, Debug, Default)]

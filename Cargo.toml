@@ -26,12 +26,14 @@ kubyl_kube = { path = "crates/kubyl_kube" }
 kubyl_kube_core = { path = "crates/kubyl_kube_core" }
 kubyl_kubeconfig = { path = "crates/kubyl_kubeconfig" }
 kubyl_logs = { path = "crates/kubyl_logs" }
+kubyl_logs_core = { path = "crates/kubyl_logs_core" }
 kubyl_metrics = { path = "crates/kubyl_metrics" }
 kubyl_netflow = { path = "crates/kubyl_netflow" }
 kubyl_operators = { path = "crates/kubyl_operators" }
 kubyl_overview = { path = "crates/kubyl_overview" }
 kubyl_palette = { path = "crates/kubyl_palette" }
 kubyl_portforward = { path = "crates/kubyl_portforward" }
+kubyl_portforward_core = { path = "crates/kubyl_portforward_core" }
 kubyl_prometheus = { path = "crates/kubyl_prometheus" }
 kubyl_resources = { path = "crates/kubyl_resources" }
 kubyl_resources_core = { path = "crates/kubyl_resources_core" }
@@ -39,6 +41,7 @@ kubyl_selfupdate = { path = "crates/kubyl_selfupdate" }
 kubyl_settings = { path = "crates/kubyl_settings" }
 kubyl_settings_core = { path = "crates/kubyl_settings_core" }
 kubyl_terminal = { path = "crates/kubyl_terminal" }
+kubyl_terminal_core = { path = "crates/kubyl_terminal_core" }
 kubyl_ui = { path = "crates/kubyl_ui" }
 kubyl_updates = { path = "crates/kubyl_updates" }
 kubyl_webview = { path = "crates/kubyl_webview" }
@@ -49,6 +52,8 @@ kubyl_yaml = { path = "crates/kubyl_yaml" }
 gpui = { package = "gpui-pre", version = "=0.3.6" }
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.6", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
 gpui-base = "=0.6.6"
+# `gpui::SharedString` on its own (no UI), for GPUI-free core crates. Bump with gpui.
+gpui_shared_string = { package = "gpui-pre-shared-string", version = "=0.3.6" }
 gpui-component = "=0.6.6"
 
 # Kubernetes

@@ -4987,6 +4987,7 @@ version = "0.4.0"
 dependencies = [
  "anyhow",
  "futures",
+ "gpui-pre-shared-string",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -5229,6 +5230,7 @@ dependencies = [
  "kubyl_core",
  "kubyl_explorer",
  "kubyl_kube",
+ "kubyl_logs_core",
  "kubyl_resources",
  "kubyl_settings",
  "kubyl_ui",
@@ -5237,6 +5239,25 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "kubyl_logs_core"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "jiff",
+ "k8s-openapi",
+ "kube",
+ "kubyl_base",
+ "kubyl_settings_core",
+ "regex",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
  "tokio",
  "tracing",
 ]
@@ -5397,10 +5418,27 @@ dependencies = [
  "kubyl_explorer",
  "kubyl_kube",
  "kubyl_logs",
+ "kubyl_portforward_core",
  "kubyl_resources",
  "kubyl_settings",
  "kubyl_ui",
  "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "kubyl_portforward_core"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "k8s-openapi",
+ "kube",
+ "kubyl_base",
+ "kubyl_resources_core",
  "serde",
  "serde_json",
  "tokio",
@@ -5551,7 +5589,27 @@ dependencies = [
  "kubyl_logs",
  "kubyl_resources",
  "kubyl_settings",
+ "kubyl_terminal_core",
  "kubyl_ui",
+ "regex",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "kubyl_terminal_core"
+version = "0.4.0"
+dependencies = [
+ "alacritty_terminal",
+ "anyhow",
+ "futures",
+ "k8s-openapi",
+ "kube",
+ "kubyl_base",
+ "kubyl_settings_core",
  "regex",
  "schemars 1.2.2",
  "serde",
