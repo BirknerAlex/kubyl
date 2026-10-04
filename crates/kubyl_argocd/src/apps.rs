@@ -265,7 +265,7 @@ pub fn last_failed(app: &Application) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::tests::guestbook;
+    use crate::model::fixtures::guestbook;
     use serde_json::json;
 
     fn row(name: &str, project: &str, sync: &str, health: &str) -> AppRow {

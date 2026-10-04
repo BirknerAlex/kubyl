@@ -364,7 +364,7 @@ impl ArgoApi {
     }
 
     /// The session token (for the web UI's cookie).
-    pub(crate) fn token(&self) -> Option<&SecretString> {
+    pub fn token(&self) -> Option<&SecretString> {
         self.token.as_ref()
     }
 

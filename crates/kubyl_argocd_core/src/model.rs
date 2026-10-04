@@ -1154,13 +1154,13 @@ impl Project {
     }
 }
 
-#[cfg(test)]
-pub(crate) mod tests {
-    use super::*;
-    use serde_json::json;
+/// Applications for tests, here and in `kubyl_argocd`.
+#[cfg(any(test, feature = "test-support"))]
+pub mod fixtures {
+    use serde_json::{Value, json};
 
     /// The guestbook from `script/argocd-dev.sh` as Argo CD 3.5 reports it.
-    pub(crate) fn guestbook() -> Value {
+    pub fn guestbook() -> Value {
         json!({
             "apiVersion": "argoproj.io/v1alpha1",
             "kind": "Application",
@@ -1204,6 +1204,13 @@ pub(crate) mod tests {
             }
         })
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fixtures::guestbook;
+    use super::*;
+    use serde_json::json;
 
     #[test]
     fn parses_an_application() {

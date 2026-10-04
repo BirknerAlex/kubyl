@@ -16,27 +16,19 @@
 //!   notice. [`columns`]: the explorer's generic tables. [`actions`]: palette and keys.
 
 pub mod actions;
-pub mod api;
 pub mod apps;
 pub mod columns;
-pub mod detect;
 pub mod dialogs;
-pub mod diff;
 pub mod dock;
-pub mod health;
-pub mod links;
-pub mod model;
 pub mod nav;
-pub mod ops;
 pub mod run;
 pub mod settings;
-pub mod sso;
 pub mod state;
-pub mod tree;
 pub mod views;
 pub mod web;
 pub mod widgets;
-pub mod windows;
+
+pub use kubyl_argocd_core::{api, detect, diff, health, links, model, ops, sso, tree, windows};
 
 use std::sync::Arc;
 

@@ -2647,7 +2647,7 @@ mod tests {
 
     #[test]
     fn controller_log_query_matches_both_formats() {
-        let app = Application::parse(&crate::model::tests::guestbook()).unwrap();
+        let app = Application::parse(&crate::model::fixtures::guestbook()).unwrap();
         let query = controller_query(&app);
         let re = regex_lite(&query);
         assert!(re(

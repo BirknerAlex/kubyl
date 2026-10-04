@@ -10,7 +10,7 @@
 
 use std::time::Duration;
 
-use kubyl_kube::auth::oidc::{bind_loopback, wait_for_code};
+use kubyl_kube_core::auth::oidc::{bind_loopback, wait_for_code};
 use openidconnect::core::{CoreAuthenticationFlow, CoreClient, CoreProviderMetadata};
 use openidconnect::{
     AuthorizationCode, ClientId, CsrfToken, IssuerUrl, Nonce, OAuth2TokenResponse as _,
@@ -298,7 +298,7 @@ pub async fn refresh(
 
 /// Whether a session token expires within a minute (or already has).
 pub fn expiring(token: &SecretString) -> bool {
-    kubyl_kube::auth::jwt_expiry(token.expose_secret())
+    kubyl_kube_core::auth::jwt_expiry(token.expose_secret())
         .is_some_and(|exp| exp.as_second() - jiff::Timestamp::now().as_second() < 60)
 }
 

@@ -580,7 +580,7 @@ pub async fn delete(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::tests::guestbook;
+    use crate::model::fixtures::guestbook;
 
     #[test]
     fn delete_is_bound_to_the_object_it_prepared() {
