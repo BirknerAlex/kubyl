@@ -11,7 +11,7 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector;
 use kube::Api;
 use kube::api::{DynamicObject, ListParams};
 use kube::discovery::ApiResource;
-use kubyl_resources::route;
+use kubyl_resources_core::route;
 use serde_json::Value;
 
 /// What to forward to.
@@ -453,7 +453,7 @@ pub async fn resolve(
 }
 
 /// Builds the workload's label selector for Deployment/StatefulSet/DaemonSet forwards, mirroring
-/// `kubyl_logs::view::resolve_source`'s approach for the log source.
+/// `kubyl_logs_core::view::resolve_source`'s approach for the log source.
 pub async fn workload_selector(
     client: kube::Client,
     namespace: &str,

@@ -94,17 +94,7 @@ impl SavedForward {
     }
 }
 
-/// `svc`, `pod`, `deploy`, `sts`, `ds`.
-pub fn short_kind(resource: &str) -> &str {
-    match resource {
-        "services" => "svc",
-        "pods" => "pod",
-        "deployments" => "deploy",
-        "statefulsets" => "sts",
-        "daemonsets" => "ds",
-        other => other,
-    }
-}
+pub use kubyl_portforward_core::manager::short_kind;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
