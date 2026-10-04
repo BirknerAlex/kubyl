@@ -15,10 +15,12 @@ publish = false
 [workspace.dependencies]
 # Internal crates
 kubyl_alerts = { path = "crates/kubyl_alerts" }
+kubyl_alerts_core = { path = "crates/kubyl_alerts_core" }
 kubyl_base = { path = "crates/kubyl_base" }
 kubyl_charts = { path = "crates/kubyl_charts" }
 kubyl_charts_core = { path = "crates/kubyl_charts_core" }
 kubyl_argocd = { path = "crates/kubyl_argocd" }
+kubyl_argocd_core = { path = "crates/kubyl_argocd_core" }
 kubyl_core = { path = "crates/kubyl_core" }
 kubyl_explorer = { path = "crates/kubyl_explorer" }
 kubyl_files = { path = "crates/kubyl_files" }
@@ -31,12 +33,15 @@ kubyl_logs_core = { path = "crates/kubyl_logs_core" }
 kubyl_metrics = { path = "crates/kubyl_metrics" }
 kubyl_metrics_core = { path = "crates/kubyl_metrics_core" }
 kubyl_netflow = { path = "crates/kubyl_netflow" }
+kubyl_netflow_core = { path = "crates/kubyl_netflow_core" }
 kubyl_operators = { path = "crates/kubyl_operators" }
+kubyl_operators_core = { path = "crates/kubyl_operators_core" }
 kubyl_overview = { path = "crates/kubyl_overview" }
 kubyl_palette = { path = "crates/kubyl_palette" }
 kubyl_portforward = { path = "crates/kubyl_portforward" }
 kubyl_portforward_core = { path = "crates/kubyl_portforward_core" }
 kubyl_prometheus = { path = "crates/kubyl_prometheus" }
+kubyl_prometheus_core = { path = "crates/kubyl_prometheus_core" }
 kubyl_resources = { path = "crates/kubyl_resources" }
 kubyl_resources_core = { path = "crates/kubyl_resources_core" }
 kubyl_selfupdate = { path = "crates/kubyl_selfupdate" }
@@ -46,6 +51,7 @@ kubyl_terminal = { path = "crates/kubyl_terminal" }
 kubyl_terminal_core = { path = "crates/kubyl_terminal_core" }
 kubyl_ui = { path = "crates/kubyl_ui" }
 kubyl_updates = { path = "crates/kubyl_updates" }
+kubyl_updates_core = { path = "crates/kubyl_updates_core" }
 kubyl_webview = { path = "crates/kubyl_webview" }
 kubyl_yaml = { path = "crates/kubyl_yaml" }
 kubyl_yaml_core = { path = "crates/kubyl_yaml_core" }

@@ -608,13 +608,3 @@ fn hubble_command(flow: &Flow) -> String {
     ));
     command
 }
-
-impl Flow {
-    /// `TCP :80` (without the L7 summary).
-    fn protocol_label_short(&self) -> String {
-        match self.destination.port {
-            Some(port) => format!("{} :{port}", self.protocol.label()),
-            None => self.protocol.label(),
-        }
-    }
-}

@@ -27,7 +27,7 @@ pub struct Served {
 }
 
 impl Served {
-    pub fn from_discovery(discovery: &kubyl_kube::discovery::Discovery) -> Self {
+    pub fn from_discovery(discovery: &kubyl_kube_core::discovery::Discovery) -> Self {
         let mut served = Served::default();
         for resource in discovery.preferred() {
             let group = resource.gvr.group.as_str();

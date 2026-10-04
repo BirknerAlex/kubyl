@@ -1,7 +1,7 @@
 //! The backend abstraction (README "Flow providers"): every flow source maps its own API onto
 //! the [`crate::model::Flow`] model behind a [`FlowProvider`].
 //!
-//! Calls return futures that run on the shared Tokio runtime (`kubyl_core::spawn_kube`), never
+//! Calls return futures that run on the shared Tokio runtime (`kubyl_base::spawn_kube`), never
 //! on the UI thread. A stream sends batches of parsed, sanitized flows into a bounded channel;
 //! the service drains it at most 60 times a second.
 

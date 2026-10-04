@@ -3,7 +3,7 @@
 
 mod details;
 mod filter_bar;
-pub mod rows;
+pub use crate::rows;
 mod states;
 mod table;
 pub mod topology;

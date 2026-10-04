@@ -569,6 +569,16 @@ macro_rules! redacted_debug {
 
 redacted_debug!(Flow, Endpoint, Workload, PolicyRef, Policies, L7);
 
+impl Flow {
+    /// `TCP :80` (without the L7 summary).
+    pub fn protocol_label_short(&self) -> String {
+        match self.destination.port {
+            Some(port) => format!("{} :{port}", self.protocol.label()),
+            None => self.protocol.label(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
