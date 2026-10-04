@@ -7,7 +7,7 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 
 /// An update channel. Each has its own manifest (`updates-<channel>.json`) and its own
-/// `settings.json` opt-in (`kubyl_selfupdate::settings::SelfUpdateSettings::channel`).
+/// `settings.json` opt-in (`crate::settings::SelfUpdateSettings::channel`).
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
 )]

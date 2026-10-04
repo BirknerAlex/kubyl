@@ -1,6 +1,6 @@
 [package]
-name = "kubyl_selfupdate"
-description = "App self-update: signed manifest checks, background download, restart-to-apply."
+name = "kubyl_selfupdate_core"
+description = "Self-update without the UI: the signed update manifest, downloads, signature checks, installed-version detection and replacing the binary."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,14 +13,9 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-kubyl_selfupdate_core.workspace = true
-gpui.workspace = true
-gpui-component.workspace = true
-kubyl_core.workspace = true
-kubyl_settings.workspace = true
-kubyl_ui.workspace = true
+kubyl_base.workspace = true
+kubyl_settings_core.workspace = true
 minisign-verify.workspace = true
-# Its reqwest (already in the tree through kubyl_kube): the manifest and artifact downloads.
 openidconnect.workspace = true
 schemars.workspace = true
 self-replace.workspace = true
@@ -41,5 +36,4 @@ flate2.workspace = true
 tar.workspace = true
 
 [dev-dependencies]
-gpui = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

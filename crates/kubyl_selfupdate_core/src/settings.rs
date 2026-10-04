@@ -1,6 +1,6 @@
 //! The `updates` section of `settings.json`.
 
-use kubyl_settings::SettingsSection;
+use kubyl_settings_core::SettingsSection;
 use serde::{Deserialize, Serialize};
 
 use crate::manifest::Channel;
