@@ -88,6 +88,19 @@ impl CertInfo {
     }
 }
 
+/// The DER bytes of the first certificate in a PEM text.
+pub fn pem_to_der(pem: &str) -> Option<Vec<u8>> {
+    use base64::Engine as _;
+    const BEGIN: &str = "-----BEGIN CERTIFICATE-----";
+    let start = pem.find(BEGIN)? + BEGIN.len();
+    let end = start + pem[start..].find("-----END CERTIFICATE-----")?;
+    let body: String = pem[start..end]
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    base64::engine::general_purpose::STANDARD.decode(body).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,7 +109,7 @@ mod tests {
 
     #[test]
     fn parses_a_self_signed_certificate() {
-        let der = crate::native::pem_to_der(PEM).unwrap();
+        let der = pem_to_der(PEM).unwrap();
         let info = CertInfo::parse(&der);
         assert!(
             info.subject.contains("CN=argocd-server"),

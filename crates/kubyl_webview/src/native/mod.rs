@@ -633,18 +633,7 @@ pub fn is_loopback_url(url: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// The DER bytes of the first certificate in a PEM text.
-pub fn pem_to_der(pem: &str) -> Option<Vec<u8>> {
-    use base64::Engine as _;
-    const BEGIN: &str = "-----BEGIN CERTIFICATE-----";
-    let start = pem.find(BEGIN)? + BEGIN.len();
-    let end = start + pem[start..].find("-----END CERTIFICATE-----")?;
-    let body: String = pem[start..end]
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .collect();
-    base64::engine::general_purpose::STANDARD.decode(body).ok()
-}
+pub use crate::cert::pem_to_der;
 
 /// Whether a key pressed in the page is one of Kubyl's shortcuts.
 pub fn is_shortcut(shortcuts: &[Keystroke], pressed: &Keystroke) -> bool {
