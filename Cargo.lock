@@ -5448,6 +5448,27 @@ dependencies = [
  "kube",
  "kubyl_core",
  "kubyl_kube",
+ "kubyl_resources_core",
+ "regex",
+ "serde",
+ "serde-saphyr 1.3.0",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "kubyl_resources_core"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "http",
+ "jiff",
+ "k8s-openapi",
+ "kube",
+ "kubyl_base",
+ "kubyl_kube_core",
  "regex",
  "serde",
  "serde-saphyr 1.3.0",

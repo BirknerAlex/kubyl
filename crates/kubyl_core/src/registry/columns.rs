@@ -22,22 +22,7 @@ pub enum Align {
     End,
 }
 
-/// Semantic color of a status value; the UI maps it to theme colors.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Tone {
-    #[default]
-    Neutral,
-    /// Running, Ready, Succeeded.
-    Good,
-    /// Pending, Upgrade available.
-    Warning,
-    /// CrashLoopBackOff, Failed, NotReady.
-    Bad,
-    /// ContainerCreating, Installing.
-    Info,
-    /// Completed, disabled.
-    Muted,
-}
+pub use kubyl_base::types::Tone;
 
 /// One table column.
 #[derive(Clone, Debug, PartialEq)]

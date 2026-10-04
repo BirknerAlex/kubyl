@@ -1,5 +1,5 @@
 //! Mutating operations behind the first batch of actions. All of them are async and run on the
-//! Tokio runtime (`kubyl_core::spawn_kube`); errors are user-facing strings.
+//! Tokio runtime (`kubyl_core::spawn_kube` in the app); errors are user-facing strings.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
