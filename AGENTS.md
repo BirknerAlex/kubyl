@@ -30,14 +30,18 @@ desktop client (macOS, Windows, Linux) in Rust on GPUI, styled like Zed.
 - New dependencies: latest release, declared once in `[workspace.dependencies]`.
 
 ## Git
-- The repo is private and single-owner: committing and pushing straight to `main` is fine. Phase
-  branches (`phase/NN-name`) and PRs are optional; use them for parallel sessions.
-- Push over HTTPS (SSH keys aren't loaded in agent sessions):
-  `git -c credential.helper='!gh auth git-credential' push origin <branch>`.
-  Always name the branch explicitly, and check `git branch --show-current` before committing:
-  the IDE may switch the checkout under you.
-- Small, logical commits. CI (`.github/workflows/ci.yml`) must pass on macOS, Windows and Linux;
-  fix failures, don't skip them.
+- The repo is public. Changes go through a PR from a branch (`phase/NN-name` for phase work,
+  `fix/…`, `chore/…` otherwise). Core maintainers (currently @BirknerAlex) may push small fixes
+  straight to `main`; everything else is a PR. Parallel sessions use one git worktree per branch.
+- Before pushing a PR branch: update `main`, `git rebase main`, push with
+  `--force-with-lease`. No merge commits from `main`.
+- CI (`.github/workflows/ci.yml`) must pass on macOS, Windows and Linux, plus `cargo-deny`, the
+  `core-crates` job and the CLA check. Fix failures, don't skip them.
+- CodeRabbit reviews PRs (it skips PRs with more than 100 changed files). Don't push while its
+  review runs; answer its findings in a separate commit ending in "(review)".
+- Outside contributors sign the CLA at kubyl.dev/cla; the `CLA` status links there.
+- Small, logical commits. Always name the branch explicitly, and check
+  `git branch --show-current` before committing: the IDE may switch the checkout under you.
 
 ## Commands
 ```sh
