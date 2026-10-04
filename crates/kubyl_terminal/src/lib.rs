@@ -16,13 +16,10 @@
 //! `kubyl_logs::sessions` for why that crate owns it).
 
 pub mod dialog;
-pub mod exec;
-pub mod grid;
-pub mod input;
 pub mod panel;
-pub mod settings;
-pub mod shell;
 pub mod view;
+
+pub use kubyl_terminal_core::{exec, grid, input, settings, shell};
 
 use gpui::{App, AppContext as _, KeyBinding, Window, actions};
 use kubyl_core::actions::{ActivateDockPanel, OpenView};
