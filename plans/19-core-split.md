@@ -1,6 +1,6 @@
 # Phase 19: Split domain logic from the UI (GPUI-free `*_core` crates)
 
-**Status:** in progress
+**Status:** in progress (code done; app check against the dev cluster pending)
 **Depends on:** all feature phases (it moves their code); 18 done
 **Owns:** new `crates/kubyl_base`, `crates/kubyl_*_core`; per step, the crate being split (one
 crate at a time, see "Working rules")
@@ -88,15 +88,25 @@ in `kubyl_base` runs the same core code on Tokio, without GPUI.
 - [x] `kubyl_files_core`, `kubyl_kubeconfig_core`, `kubyl_webview_core`, `kubyl_palette_core`,
       `kubyl_explorer_core`, `kubyl_overview_core`, `kubyl_selfupdate_core`.
 
-### Features: services on `Host`
-- [x] `ConnectionManager`, `ResourceStore`, `PortForwardManager`, `MetricsService`.
-- [ ] Alerts service and silences, Argo CD state and runs, flows service, OLM/Helm caches,
-      updates service, Prometheus service, self-update service, file transfer queue.
+### Features: services
+- [x] On `Host` (the whole state machine in the core): `ConnectionManager`, `ResourceStore`,
+      `PortForwardManager`, `MetricsService`, `SelfUpdate`.
+- [x] Domain parts in the core, orchestration in the GPUI crate: alerts (`cache`: counts,
+      sources, fetch-and-merge), Prometheus (`servers`), updates (`service`: states, facts,
+      building providers), flows (`state`), Argo CD (`settings`, `apps`, `run`), OLM
+      (`olm::snapshot`), Helm (`helm::release`).
+- [ ] Later (needs port-forward and store seams in the core): the orchestration of the services
+      above. They start temporary port-forwards through `PortForwardManager`, hold
+      `ResourceStores` leases and read `MetricsService`, all GPUI entities. Moving them on `Host`
+      means a "reach this service" trait (forward or proxy) and store snapshots fed in by the
+      adapter. Silences, the file transfer queue, log sessions and the remaining view state are
+      UI.
 
 ### Wrap-up
-- [ ] `plans/README.md`: workspace layout, crate ownership, the decision.
-- [ ] App checked against `script/dev-cluster.sh` (screenshots of the main views) and the live
-      tests.
+- [x] `plans/README.md`: workspace layout, the decision; `AGENTS.md`: where logic goes.
+- [ ] App checked against `script/dev-cluster.sh` after the feature steps (screenshots of the
+      main views) and the live tests of metrics, alerts, operators, updates, flows. Done for kube,
+      resources and port-forward; the rest is blocked on Docker (see the handoff log).
 
 ## Acceptance criteria
 
@@ -127,3 +137,14 @@ in `kubyl_base` runs the same core code on Tokio, without GPUI.
     (`kubyl_kube_core`, `kubyl_argocd_core`) or in the core crate's `tests/fixtures`.
   - Commits that add a core crate don't all build on their own: the root `Cargo.toml` entries
     landed with the last crate of each batch.
+- 2026-10-04: Feature crates done: every crate with logic has a `*_core` (23), the self-contained
+  services run on `Host`, the coordinating ones keep only their orchestration in the GPUI crate
+  (see "Features: services"). 978 tests pass (two self-update GPUI tests became one core test);
+  clippy with all features, `cargo deny` and the core-crates check are clean.
+  - Not yet checked in the app: the feature steps after metrics. Docker's VM went read-only when
+    the disk filled up (the build cache had grown to 157 GB; `target/debug/incremental` was
+    deleted, and test runs now use `CARGO_INCREMENTAL=0`). Restart Docker Desktop, then
+    `script/dev-cluster.sh`, the live tests (`--ignored`) and screenshots of alerts, Argo CD,
+    flows, operators, updates and Prometheus.
+  - The metrics live tests failed with "no Prometheus found" while the cluster was already
+    unreachable; run them again after the restart before trusting either result.
