@@ -24,6 +24,7 @@ kubyl_base.workspace = true
 kubyl_kube_core.workspace = true
 kubyl_resources_core.workspace = true
 kubyl_yaml_core.workspace = true
+kubyl_settings_core.workspace = true
 open.workspace = true
 openidconnect.workspace = true
 parking_lot.workspace = true
