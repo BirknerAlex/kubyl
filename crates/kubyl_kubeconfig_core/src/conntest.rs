@@ -23,8 +23,8 @@ use k8s_openapi::api::core::v1::Namespace;
 use kube::api::{ListParams, PostParams};
 use kube::config::{ExecAuthCluster, Kubeconfig};
 use kube::{Api, Client};
-use kubyl_kube::auth::{AuthError, AuthMethod, CredentialSource, ExecAuth, OidcAuth, exec};
-use kubyl_kube::client::{self, ConnectError};
+use kubyl_kube_core::auth::{AuthError, AuthMethod, CredentialSource, ExecAuth, OidcAuth, exec};
+use kubyl_kube_core::client::{self, ConnectError};
 use secrecy::ExposeSecret as _;
 
 use crate::certs;
@@ -326,7 +326,7 @@ pub async fn run(input: Input, tx: mpsc::UnboundedSender<Report>) -> Report {
         doc.absolutize_paths(dir);
     }
     let prepared = doc.to_kube().and_then(|kube| {
-        let info = kubyl_kube::kubeconfig::context_info(&kube, &input.context, &input.file)
+        let info = kubyl_kube_core::kubeconfig::context_info(&kube, &input.context, &input.file)
             .ok_or_else(|| format!("no context named \"{}\"", input.context))?;
         match &info.error {
             Some(err) => Err(err.clone()),
@@ -621,7 +621,7 @@ async fn network(run: &mut Run, target: &Target) -> bool {
 /// The cluster entry of the context.
 fn cluster_of<'a>(
     kube: &'a Kubeconfig,
-    info: &kubyl_kube::kubeconfig::ContextInfo,
+    info: &kubyl_kube_core::kubeconfig::ContextInfo,
 ) -> Option<&'a kube::config::Cluster> {
     kube.clusters
         .iter()
@@ -631,7 +631,7 @@ fn cluster_of<'a>(
 
 fn user_of<'a>(
     kube: &'a Kubeconfig,
-    info: &kubyl_kube::kubeconfig::ContextInfo,
+    info: &kubyl_kube_core::kubeconfig::ContextInfo,
 ) -> Option<&'a kube::config::AuthInfo> {
     let user = info.user.as_deref()?;
     kube.auth_infos
@@ -644,7 +644,7 @@ async fn tls_step(
     run: &mut Run,
     target: &Target,
     kube: &Kubeconfig,
-    info: &kubyl_kube::kubeconfig::ContextInfo,
+    info: &kubyl_kube_core::kubeconfig::ContextInfo,
 ) -> bool {
     let t = run.start(StepKind::Tls);
     if !target.https {
@@ -741,7 +741,7 @@ async fn credentials(
     run: &mut Run,
     input: &Input,
     kube: &Kubeconfig,
-    info: &kubyl_kube::kubeconfig::ContextInfo,
+    info: &kubyl_kube_core::kubeconfig::ContextInfo,
 ) -> Option<client::BuiltClient> {
     let t = run.start(StepKind::Credentials);
     let user = user_of(kube, info);
@@ -777,7 +777,7 @@ async fn credentials(
                     let expires = auth
                         .expires_at()
                         .await
-                        .or_else(|| kubyl_kube::auth::jwt_expiry(token.expose_secret()));
+                        .or_else(|| kubyl_kube_core::auth::jwt_expiry(token.expose_secret()));
                     lines.push(format!(
                         "{} · token{}",
                         summary_line(summary),
@@ -834,7 +834,7 @@ async fn credentials(
             let token = user
                 .and_then(|u| u.token.as_ref())
                 .map(|t| t.expose_secret().to_string());
-            let expiry = token.as_deref().and_then(kubyl_kube::auth::jwt_expiry);
+            let expiry = token.as_deref().and_then(kubyl_kube_core::auth::jwt_expiry);
             if let Some(exp) = expiry.filter(|e| *e < jiff::Timestamp::now()) {
                 status = Status::Warn;
                 lines.push(format!(
@@ -959,7 +959,7 @@ pub fn format_latency(latency: Duration) -> String {
     }
 }
 
-fn summary_line(summary: &kubyl_kube::auth::ExecSummary) -> String {
+fn summary_line(summary: &kubyl_kube_core::auth::ExecSummary) -> String {
     let mut line = summary.command.clone();
     if !summary.subcommands.is_empty() {
         line.push(' ');
@@ -987,7 +987,7 @@ fn expiry_note(expires: Option<jiff::Timestamp>) -> String {
 /// Why a 401 happened, in words, for the auth method in use.
 fn unauthorized_message(
     _doc: &Doc,
-    info: &kubyl_kube::kubeconfig::ContextInfo,
+    info: &kubyl_kube_core::kubeconfig::ContextInfo,
     kube: &Kubeconfig,
 ) -> (String, Option<Fix>) {
     let user = user_of(kube, info);
@@ -995,7 +995,7 @@ fn unauthorized_message(
         AuthMethod::Token | AuthMethod::OpenShift => {
             let expired = user
                 .and_then(|u| u.token.as_ref())
-                .and_then(|t| kubyl_kube::auth::jwt_expiry(t.expose_secret()))
+                .and_then(|t| kubyl_kube_core::auth::jwt_expiry(t.expose_secret()))
                 .filter(|e| *e < jiff::Timestamp::now());
             match expired {
                 Some(at) => (

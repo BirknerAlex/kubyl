@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use kubyl_yaml::parse::{self, Node, NodeValue};
+use kubyl_yaml_core::parse::{self, Node, NodeValue};
 use serde_json::{Map, Value};
 
 /// Parses a kubeconfig. An empty file is an empty document.

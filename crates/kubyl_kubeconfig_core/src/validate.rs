@@ -314,7 +314,7 @@ fn user(name: &str, body: &Map<String, Value>, dir: Option<&Path>, out: &mut Vec
                     Some("token"),
                     "the token is empty".into(),
                 ));
-            } else if let Some(exp) = kubyl_kube::auth::jwt_expiry(&token)
+            } else if let Some(exp) = kubyl_kube_core::auth::jwt_expiry(&token)
                 && exp < jiff::Timestamp::now()
             {
                 out.push(Problem::new(
@@ -476,7 +476,7 @@ pub fn find_command(command: &str, dir: Option<&Path>) -> Option<PathBuf> {
         let path = model::resolve_path(command, dir);
         return path.is_file().then_some(path);
     }
-    let path = kubyl_kube::auth::shell_env::path()?;
+    let path = kubyl_kube_core::auth::shell_env::path()?;
     for dir in std::env::split_paths(&path) {
         let candidate = dir.join(command);
         if candidate.is_file() {
@@ -513,8 +513,8 @@ pub fn worst(problems: &[Problem], entry: &EntryRef) -> Option<Severity> {
 }
 
 /// The YAML path of a problem: the entry's list item, then its body field.
-pub fn yaml_path(doc: &Doc, problem: &Problem) -> kubyl_yaml::parse::Path {
-    use kubyl_yaml::parse::{Path as YPath, Seg};
+pub fn yaml_path(doc: &Doc, problem: &Problem) -> kubyl_yaml_core::parse::Path {
+    use kubyl_yaml_core::parse::{Path as YPath, Seg};
     let mut segs = Vec::new();
     match &problem.entry {
         Some(entry) => {
