@@ -3,8 +3,8 @@
 
 use std::fmt;
 
-use kubyl_core::{ClusterId, Gvr, ResourceRef};
-use kubyl_portforward::resolve::http_kind;
+use kubyl_base::{ClusterId, Gvr, ResourceRef};
+use kubyl_portforward_core::resolve::http_kind;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
