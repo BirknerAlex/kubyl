@@ -12,33 +12,13 @@
 //!   details section; `actions`: keys and palette actions.
 
 mod actions;
-pub mod aggregate;
-pub mod backends;
-pub mod buffer;
 mod chrome;
-pub mod detect;
-pub mod filter;
-pub mod model;
-pub mod provider;
-pub mod sanitize;
 pub mod service;
-pub mod settings;
 pub mod view;
 
-pub mod proto {
-    //! The generated Hubble API (`proto/`, Cilium v1.20.2).
-    #![allow(clippy::all, clippy::pedantic, missing_docs)]
-
-    pub mod flow {
-        tonic::include_proto!("flow");
-    }
-    pub mod relay {
-        tonic::include_proto!("relay");
-    }
-    pub mod observer {
-        tonic::include_proto!("observer");
-    }
-}
+pub use kubyl_netflow_core::{
+    aggregate, backends, buffer, detect, filter, model, proto, provider, rows, sanitize, settings,
+};
 
 use gpui::App;
 

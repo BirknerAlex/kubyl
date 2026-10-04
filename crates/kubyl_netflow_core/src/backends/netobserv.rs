@@ -14,8 +14,8 @@ use std::net::IpAddr;
 use std::time::Duration;
 
 use jiff::Timestamp;
-use kubyl_metrics::prometheus::PromClient;
-use kubyl_metrics::transport::Transport;
+use kubyl_metrics_core::prometheus::PromClient;
+use kubyl_metrics_core::transport::Transport;
 use serde_json::Value;
 
 use crate::aggregate::{self, Topology, Zoom};
@@ -72,9 +72,9 @@ impl NetObserv {
     }
 }
 
-fn loki_error(err: kubyl_metrics::transport::PromError, label: &str) -> ProviderError {
+fn loki_error(err: kubyl_metrics_core::transport::PromError, label: &str) -> ProviderError {
     match err {
-        kubyl_metrics::transport::PromError::Http(403, _) => ProviderError::Other(format!(
+        kubyl_metrics_core::transport::PromError::Http(403, _) => ProviderError::Other(format!(
             "{label}: forbidden (needs get services/proxy in Loki's namespace)"
         )),
         other => ProviderError::Unavailable(format!("{label}: {other}")),

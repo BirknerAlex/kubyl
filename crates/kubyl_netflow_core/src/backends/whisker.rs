@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use futures::StreamExt as _;
 use jiff::Timestamp;
-use kubyl_metrics::transport::{PromError, Transport};
+use kubyl_metrics_core::transport::{PromError, Transport};
 use serde::Deserialize;
 use serde_json::json;
 
