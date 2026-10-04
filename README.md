@@ -162,8 +162,11 @@ clusters we don't test on, and pull requests all help.
 - New UI should match the [mockups](https://claude.ai/artifact/VfLbzAtjsCjQJgVM1cEW4H)
   (source: `design/mockups/generate.py`).
 
-Unless you state otherwise, any contribution you submit is dual licensed as below, without any
-additional terms or conditions.
+Before your first pull request is merged, you sign the
+[Contributor License Agreement](https://kubyl.dev/cla) once, on kubyl.dev with your GitHub
+account; the `CLA` check on your pull request links there. You keep the copyright in your work;
+the CLA grants the license the project needs to ship it. Contributions are licensed as below
+and under the CLA.
 
 ## Sponsoring
 
