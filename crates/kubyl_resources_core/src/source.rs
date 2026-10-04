@@ -128,24 +128,32 @@ impl StoreView for StoreCopy {
 }
 
 impl StoreCopies {
+    /// Copies of the stores in `views`, for an app whose stores live somewhere the service can't
+    /// borrow from (another thread's actor): read them there, pass the copies in.
+    pub fn from_views<'a>(views: impl IntoIterator<Item = &'a dyn StoreView>) -> Self {
+        let mut copies = Self::default();
+        for view in views {
+            copies.insert(view);
+        }
+        copies
+    }
+
+    /// Adds a copy of `store`, replacing an earlier one of the same key.
+    pub fn insert(&mut self, store: &dyn StoreView) {
+        self.0.insert(
+            store.key().clone(),
+            StoreCopy {
+                key: store.key().clone(),
+                status: store.status().clone(),
+                generation: store.generation(),
+                objects: store.objects().clone(),
+            },
+        );
+    }
+
     /// Copies the stores of `keys` that `reader` has.
     pub fn of(reader: &dyn StoreReader, keys: &[StoreKey]) -> Self {
-        Self(
-            keys.iter()
-                .filter_map(|key| {
-                    let store = reader.read(key)?;
-                    Some((
-                        key.clone(),
-                        StoreCopy {
-                            key: key.clone(),
-                            status: store.status().clone(),
-                            generation: store.generation(),
-                            objects: store.objects().clone(),
-                        },
-                    ))
-                })
-                .collect(),
-        )
+        Self::from_views(keys.iter().filter_map(|key| reader.read(key)))
     }
 }
 

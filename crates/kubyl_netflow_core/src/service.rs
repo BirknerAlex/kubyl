@@ -12,7 +12,6 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::convert::Infallible;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -104,7 +103,7 @@ pub struct FlowStream {
     /// The backend's history has arrived.
     pub caught_up: bool,
     window: Duration,
-    lease: Rc<()>,
+    lease: Arc<()>,
     idle_since: Option<Instant>,
     arrivals: VecDeque<(Instant, usize)>,
     failures: u32,
@@ -132,8 +131,8 @@ impl FlowStream {
 /// Keeps a cluster's stream (and its backend) going while held.
 #[derive(Clone)]
 pub struct FlowLease {
-    _cluster: Rc<()>,
-    _stream: Rc<()>,
+    _cluster: Arc<()>,
+    _stream: Arc<()>,
 }
 
 /// The metrics topology of one (zoom, window, filter).
@@ -163,7 +162,7 @@ struct ClusterFlows {
     streams: HashMap<String, FlowStream>,
     graphs: HashMap<String, MetricsGraph>,
     graph_tasks: HashMap<String, TaskHandle>,
-    lease: Rc<()>,
+    lease: Arc<()>,
     idle_since: Option<Instant>,
     status_read: Option<Instant>,
     /// Bumped when the backend is rebuilt; older work is dropped.
@@ -187,7 +186,7 @@ impl ClusterFlows {
             streams: HashMap::new(),
             graphs: HashMap::new(),
             graph_tasks: HashMap::new(),
-            lease: Rc::new(()),
+            lease: Arc::new(()),
             idle_since: None,
             status_read: None,
             generation: 0,
@@ -302,7 +301,7 @@ impl FlowsCore {
                 status: StreamStatus::Starting,
                 caught_up: false,
                 window,
-                lease: Rc::new(()),
+                lease: Arc::new(()),
                 idle_since: None,
                 arrivals: VecDeque::new(),
                 failures: 0,
@@ -349,7 +348,7 @@ impl FlowsCore {
         state.idle_since = None;
         FlowLease {
             _cluster: state.lease.clone(),
-            _stream: Rc::new(()),
+            _stream: Arc::new(()),
         }
     }
 
@@ -859,7 +858,7 @@ impl FlowsCore {
             // Streams nobody holds.
             let mut idle = Vec::new();
             for (key, stream) in &mut state.streams {
-                if Rc::strong_count(&stream.lease) > 1 {
+                if Arc::strong_count(&stream.lease) > 1 {
                     stream.idle_since = None;
                 } else if stream.idle_since.is_none() {
                     stream.idle_since = Some(now);
@@ -884,7 +883,7 @@ impl FlowsCore {
             let graphs = &state.graphs;
             state.graph_tasks.retain(|key, _| graphs.contains_key(key));
             // The cluster nobody looks at: stop the backend and its forward.
-            if Rc::strong_count(&state.lease) > 1 {
+            if Arc::strong_count(&state.lease) > 1 {
                 state.idle_since = None;
             } else if state.idle_since.is_none() {
                 state.idle_since = Some(now);
@@ -898,7 +897,7 @@ impl FlowsCore {
                 continue;
             }
             // Status (nodes, buffered flows) now and then.
-            if Rc::strong_count(&state.lease) > 1
+            if Arc::strong_count(&state.lease) > 1
                 && state
                     .status_read
                     .is_some_and(|t| now.duration_since(t) >= STATUS_EVERY)
