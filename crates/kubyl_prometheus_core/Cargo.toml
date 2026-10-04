@@ -1,0 +1,30 @@
+[package]
+name = "kubyl_prometheus_core"
+description = "The Prometheus web UI without the UI: API reads, the lenient model of its answers and PromQL completion."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+futures.workspace = true
+jiff.workspace = true
+kube.workspace = true
+kubyl_base.workspace = true
+kubyl_metrics_core.workspace = true
+kubyl_settings_core.workspace = true
+schemars.workspace = true
+secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -11,12 +11,10 @@
 
 mod actions;
 mod chrome;
-pub mod complete;
-pub mod fetch;
-pub mod model;
 pub mod service;
-pub mod settings;
 pub mod view;
+
+pub use kubyl_prometheus_core::{complete, fetch, model, settings};
 
 use gpui::App;
 use kubyl_settings::Settings;

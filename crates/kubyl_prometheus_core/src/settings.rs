@@ -1,6 +1,6 @@
 //! The `"prometheus"` section of settings.json. Query text and results are never stored.
 
-use kubyl_settings::SettingsSection;
+use kubyl_settings_core::SettingsSection;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
