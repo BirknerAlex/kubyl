@@ -1,88 +1,32 @@
-//! [`Olm`]: the app-wide OLM state. Per cluster it keeps the watches of the OLM objects while a
-//! view (or phase 13's check) wants them, and serves a [`Snapshot`] joined from them; it also
-//! caches OperatorHub's packages and icons, upgrade reviews, and runs the writes that outlive a
-//! dialog (install, approve, uninstall).
+//! [`Olm`]: the app-wide OLM state ([`OlmCore`] from `kubyl_operators_core`) in an entity. Per
+//! cluster the core keeps the watches of the OLM objects while a view (or phase 13's check)
+//! wants them, and serves a [`Snapshot`] joined from them; it also caches OperatorHub's
+//! packages and icons, upgrade reviews, and runs the writes that outlive a dialog (install,
+//! approve, uninstall).
+//!
+//! The core doesn't own watches: this acquires them from `ResourceStores` (and acquires others
+//! when the cluster starts or stops serving OLM), and hands the core the cluster's connection.
 
-use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
+use std::collections::HashMap;
+use std::convert::Infallible;
+use std::ops::Deref;
 use std::sync::Arc;
-use std::time::Instant;
 
-use gpui::{App, AppContext as _, Context, Entity, Global, Image, Task};
-use kubyl_core::{ClusterId, Notification, NotificationCenter, spawn_kube};
+use gpui::{App, AppContext as _, Context, Entity, EventEmitter, Global, Image, Task};
+use kubyl_core::ClusterId;
+use kubyl_core::host::{Hosts, hosted};
 use kubyl_kube::{ConnectionEvent, ConnectionManager};
-use kubyl_resources::{ObjectKey, ResourceStores, StoreHandle, StoreKey, StoreStatus};
-use serde_json::Value;
+use kubyl_resources::ResourceStores;
+use kubyl_resources::store::{AppStores, AppStoresRef};
 
-pub use kubyl_operators_core::olm::snapshot::*;
-
-use crate::olm::hub::{self, Package};
-use crate::olm::join;
-use crate::olm::model::{
-    self, COPIED_LABEL, CatalogSource, Csv, InstallPlan, OperatorGroup, Subscription,
+pub use kubyl_operators_core::olm::service::{
+    Availability, HubState, OlmConn, OlmCore, OlmLease, OlmStores, ReviewState, Snapshot,
+    WatchProblems, watch_problems,
 };
-use crate::olm::review::{self, ClusterFacts, Review};
-use crate::olm::v1::{self, ClusterCatalog, ClusterExtension};
 
-/// Keeps a cluster's OLM watches running while held (views hold one).
-#[derive(Clone)]
-pub struct OlmLease(#[allow(dead_code)] Rc<()>);
-
-struct Stores {
-    subscriptions: Option<StoreHandle>,
-    csvs: Option<StoreHandle>,
-    plans: Option<StoreHandle>,
-    catalogs: Option<StoreHandle>,
-    groups: Option<StoreHandle>,
-    extensions: Option<StoreHandle>,
-    cluster_catalogs: Option<StoreHandle>,
-}
-
-impl Stores {
-    fn all(&self) -> impl Iterator<Item = &StoreHandle> {
-        [
-            &self.subscriptions,
-            &self.csvs,
-            &self.plans,
-            &self.catalogs,
-            &self.groups,
-            &self.extensions,
-            &self.cluster_catalogs,
-        ]
-        .into_iter()
-        .flatten()
-    }
-}
-
-struct ClusterOlm {
-    stores: Stores,
-    v0: bool,
-    v1: bool,
-    /// Whether discovery was known when the watches started: until then the (empty) snapshot
-    /// is loading, not a cluster without operators.
-    discovered: bool,
-    lease: Rc<()>,
-    wanted_until: Instant,
-    /// The snapshot and the store generations it was built from.
-    snapshot: RefCell<Option<(Vec<u64>, Arc<Snapshot>)>>,
-    /// Parsed CSVs by object, reused while the object is unchanged (CSVs are big).
-    csv_cache: RefCell<CsvCache>,
-    _observers: Vec<gpui::Subscription>,
-}
-
-/// A CSV object and what it parsed into.
-type CsvCache = HashMap<ObjectKey, (Arc<Value>, Arc<Csv>)>;
-
-/// OperatorHub's packages of a cluster.
-#[derive(Default)]
-pub struct HubState {
-    pub packages: Option<Arc<Vec<Arc<Package>>>>,
-    pub fetched_at: Option<Instant>,
-    pub error: Option<String>,
-    pub loading: bool,
-    task: Option<Task<()>>,
-}
+use crate::olm::hub::{IconFormat, Package};
+use crate::olm::model::{Csv, InstallPlan};
+use crate::olm::v1;
 
 /// A package icon: loading, loaded, or none.
 #[derive(Clone)]
@@ -92,30 +36,35 @@ pub enum Icon {
     None,
 }
 
-/// An upgrade review of a plan.
-#[derive(Clone)]
-pub enum ReviewState {
-    Loading,
-    Ready(Arc<Review>),
-}
-
-struct ReviewEntry {
-    state: ReviewState,
-    at: Instant,
-    _task: Option<Task<()>>,
-}
-
+/// The OLM state of every cluster a view asked about. Reads go to the [`OlmCore`]; observe the
+/// entity to re-render.
 pub struct Olm {
-    clusters: HashMap<ClusterId, ClusterOlm>,
-    hub: HashMap<ClusterId, HubState>,
-    icons: HashMap<(ClusterId, String), Icon>,
-    icon_tasks: HashMap<(ClusterId, String), Task<()>>,
-    reviews: HashMap<(ClusterId, String), ReviewEntry>,
-    /// Writes in flight, by operator or plan key (the views show them busy).
-    busy: HashSet<String>,
-    tasks: Vec<Task<()>>,
-    _sweep: Option<Task<()>>,
+    core: OlmCore,
+    /// Observers of each cluster's watches.
+    observers: HashMap<ClusterId, Vec<gpui::Subscription>>,
+    /// Decoded icons, kept so an icon is the same image every frame.
+    images: HashMap<(ClusterId, String), Arc<Image>>,
     _subscriptions: Vec<gpui::Subscription>,
+}
+
+impl Deref for Olm {
+    type Target = OlmCore;
+
+    fn deref(&self) -> &OlmCore {
+        &self.core
+    }
+}
+
+impl EventEmitter<Infallible> for Olm {}
+
+impl Hosts<OlmCore> for Olm {
+    fn service(&mut self) -> &mut OlmCore {
+        &mut self.core
+    }
+
+    fn apply(&mut self, effect: Infallible, _cx: &mut Context<Self>) {
+        match effect {}
+    }
 }
 
 struct GlobalOlm(Entity<Olm>);
@@ -132,27 +81,16 @@ impl Olm {
                     this.connection_event(event, cx)
                 }));
             }
-            let sweep = sweep.then(|| {
-                cx.spawn(async move |this, cx| {
-                    loop {
-                        cx.background_executor().timer(SWEEP).await;
-                        if this.update(cx, |this, cx| this.sweep(cx)).is_err() {
-                            break;
-                        }
-                    }
-                })
-            });
-            Self {
-                clusters: HashMap::new(),
-                hub: HashMap::new(),
-                icons: HashMap::new(),
-                icon_tasks: HashMap::new(),
-                reviews: HashMap::new(),
-                busy: HashSet::new(),
-                tasks: Vec::new(),
-                _sweep: sweep,
+            let mut this = Self {
+                core: OlmCore::new(),
+                observers: HashMap::new(),
+                images: HashMap::new(),
                 _subscriptions: subscriptions,
+            };
+            if sweep {
+                hosted(&mut this, cx, |core, host| core.start(host));
             }
+            this
         });
         cx.set_global(GlobalOlm(entity.clone()));
         entity
@@ -166,15 +104,8 @@ impl Olm {
         match event {
             ConnectionEvent::DiscoveryChanged(id) => {
                 // OLM may have been installed or removed: rebuild the watches.
-                if let Some(state) = self.clusters.get(id) {
-                    let served = served(id, cx);
-                    if served.is_some() != state.discovered
-                        || served.unwrap_or_default() != (state.v0, state.v1)
-                    {
-                        let lease = state.lease.clone();
-                        self.clusters.remove(id);
-                        self.ensure(id, Some(lease), cx);
-                    }
+                if self.core.needs_rewatch(id, served(id, cx)) {
+                    self.rewatch(id, cx);
                 }
                 cx.notify();
             }
@@ -182,19 +113,20 @@ impl Olm {
                 let connected = ConnectionManager::try_global(cx)
                     .and_then(|m| m.read(cx).client(id))
                     .is_some();
-                if !connected {
-                    self.hub.remove(id);
-                    self.reviews.retain(|(c, _), _| c != id);
+                if connected {
+                    cx.notify();
+                } else {
+                    self.images.retain(|(c, _), _| c != id);
+                    hosted(self, cx, |core, host| core.disconnected(id, host));
                 }
-                cx.notify();
             }
             ConnectionEvent::Rekeyed { from, to } => {
                 // The stores carry the old id: start over under the new one.
-                if let Some(state) = self.clusters.remove(from) {
-                    self.ensure(to, Some(state.lease), cx);
+                self.observers.remove(from);
+                self.images.retain(|(c, _), _| c != from);
+                if hosted(self, cx, |core, host| core.rekeyed(from, to, host)) {
+                    self.rewatch(to, cx);
                 }
-                rekey_hub(&mut self.hub, from, to);
-                cx.notify();
             }
             _ => {}
         }
@@ -203,125 +135,65 @@ impl Olm {
     /// Keeps `cluster`'s watches while the returned lease lives.
     pub fn watch(cluster: &ClusterId, cx: &mut App) -> Option<OlmLease> {
         let olm = Self::global(cx)?;
-        Some(olm.update(cx, |olm, cx| olm.lease(cluster, cx)))
-    }
-
-    fn lease(&mut self, cluster: &ClusterId, cx: &mut Context<Self>) -> OlmLease {
-        self.ensure(cluster, None, cx);
-        OlmLease(self.clusters[cluster].lease.clone())
+        Some(olm.update(cx, |olm, cx| olm.ensure(cluster, cx)))
     }
 
     /// Starts the watches of `cluster` (if the cluster serves OLM) and marks it wanted.
-    pub(crate) fn ensure(
-        &mut self,
-        cluster: &ClusterId,
-        lease: Option<Rc<()>>,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(state) = self.clusters.get_mut(cluster) {
-            state.wanted_until = Instant::now() + KEEP;
-            return;
-        }
+    pub(crate) fn ensure(&mut self, cluster: &ClusterId, cx: &mut Context<Self>) -> OlmLease {
         let served = served(cluster, cx);
-        let (v0, v1) = served.unwrap_or_default();
-        let key = |gvr: kubyl_core::Gvr| StoreKey::new(cluster.clone(), gvr, None);
-        let mut acquire = |key: StoreKey, on: bool| on.then(|| ResourceStores::acquire(cx, key));
-        let stores = Stores {
-            subscriptions: acquire(key(model::subscriptions()), v0),
-            // OLM copies each CSV into every namespace its operator watches; the originals are
-            // enough (and much smaller on clusters with many namespaces).
-            csvs: acquire(key(model::csvs()).labels(format!("!{COPIED_LABEL}")), v0),
-            plans: acquire(key(model::install_plans()), v0),
-            catalogs: acquire(key(model::catalog_sources()), v0),
-            groups: acquire(key(model::operator_groups()), v0),
-            extensions: acquire(key(v1::cluster_extensions()), v1),
-            cluster_catalogs: acquire(key(v1::cluster_catalogs()), v1),
-        };
-        let observers = stores
-            .all()
-            .map(|handle| cx.observe(handle.entity(), |_, _, cx| cx.notify()))
-            .collect();
-        self.clusters.insert(
-            cluster.clone(),
-            ClusterOlm {
-                stores,
-                v0,
-                v1,
-                discovered: served.is_some(),
-                lease: lease.unwrap_or_default(),
-                wanted_until: Instant::now() + KEEP,
-                snapshot: RefCell::new(None),
-                csv_cache: RefCell::new(HashMap::new()),
-                _observers: observers,
-            },
-        );
+        let stores = (!self.core.tracks(cluster)).then(|| {
+            let (v0, v1) = served.unwrap_or_default();
+            let stores = OlmStores::acquire(cluster, v0, v1, &mut AppStores(cx));
+            self.observe(cluster, &stores, cx);
+            stores
+        });
+        self.core
+            .watch(cluster, stores, served)
+            .expect("the watches were acquired")
     }
 
-    fn sweep(&mut self, cx: &mut Context<Self>) {
-        let now = Instant::now();
-        let before = self.clusters.len();
-        self.clusters
-            .retain(|_, state| Rc::strong_count(&state.lease) > 1 || state.wanted_until > now);
-        self.reviews
-            .retain(|_, r| now.duration_since(r.at) < REVIEW_TTL * 5);
-        if self.clusters.len() != before {
-            cx.notify();
-        }
+    /// Replaces the watches of `cluster` with ones that fit what it serves.
+    fn rewatch(&mut self, cluster: &ClusterId, cx: &mut Context<Self>) {
+        let served = served(cluster, cx);
+        let (v0, v1) = served.unwrap_or_default();
+        let stores = OlmStores::acquire(cluster, v0, v1, &mut AppStores(cx));
+        self.observe(cluster, &stores, cx);
+        hosted(self, cx, |core, host| {
+            core.rewatch(cluster, stores, served, host)
+        });
+    }
+
+    /// Re-renders when one of the cluster's watches changes.
+    fn observe(&mut self, cluster: &ClusterId, stores: &OlmStores, cx: &mut Context<Self>) {
+        let entities: Vec<_> = stores
+            .keys()
+            .iter()
+            .filter_map(|key| ResourceStores::peek(cx, key))
+            .collect();
+        let observers = entities
+            .into_iter()
+            .map(|store| cx.observe(&store, |_, _, cx| cx.notify()))
+            .collect();
+        self.observers.insert(cluster.clone(), observers);
     }
 
     /// What `cluster` has of OLM.
     pub fn availability(&self, cluster: &ClusterId, cx: &App) -> Availability {
-        match ConnectionManager::try_global(cx) {
-            Some(manager) => {
-                let manager = manager.read(cx);
-                if manager.client(cluster).is_none() {
-                    return Availability::NotConnected;
-                }
-                let Some(discovery) = manager.discovery(cluster) else {
-                    return Availability::Loading;
-                };
-                if !discovery.has_group(model::GROUP) && !discovery.has_group(v1::GROUP) {
-                    return Availability::NoOlm;
-                }
-            }
-            // Without connections (GPUI tests) only filled-in clusters exist.
-            None if !self.clusters.contains_key(cluster) => return Availability::NotConnected,
-            None => {}
-        }
-        match self.snapshot(cluster, cx) {
-            Some(s) if !s.loading => Availability::Ready,
-            _ => Availability::Loading,
-        }
+        let conn = ConnectionManager::try_global(cx).map(|_| conn(cluster, cx));
+        self.core
+            .availability(cluster, conn.as_ref(), &AppStoresRef(cx))
     }
 
     /// The joined state of `cluster`, if its watches run ([`Self::watch`]). Built again only
     /// when a watch changed.
     pub fn snapshot(&self, cluster: &ClusterId, cx: &App) -> Option<Arc<Snapshot>> {
-        let state = self.clusters.get(cluster)?;
-        let generations: Vec<u64> = state
-            .stores
-            .all()
-            .map(|h| {
-                let store = h.read(cx);
-                store.generation() * 16 + status_code(store.status())
-            })
-            .collect();
-        if let Some((gens, snapshot)) = state.snapshot.borrow().as_ref()
-            && *gens == generations
-        {
-            return Some(snapshot.clone());
-        }
-        let snapshot = Arc::new(build(state, cx));
-        *state.snapshot.borrow_mut() = Some((generations, snapshot.clone()));
-        Some(snapshot)
+        self.core.snapshot(cluster, &AppStoresRef(cx))
     }
 
     /// Fills a cluster's OperatorHub packages by hand (GPUI tests: nothing is fetched).
     #[cfg(test)]
     pub(crate) fn insert_hub_for_test(&mut self, cluster: &ClusterId, packages: Vec<Package>) {
-        let state = self.hub.entry(cluster.clone()).or_default();
-        state.packages = Some(Arc::new(packages.into_iter().map(Arc::new).collect()));
-        state.fetched_at = Some(Instant::now());
+        self.core.seed_hub(cluster, packages);
     }
 
     /// Fills a cluster's watches by hand (GPUI tests: no cluster, no network).
@@ -329,128 +201,67 @@ impl Olm {
     pub(crate) fn insert_for_test(
         &mut self,
         cluster: &ClusterId,
-        subscriptions: Vec<Value>,
-        csvs: Vec<Value>,
-        plans: Vec<Value>,
+        subscriptions: Vec<serde_json::Value>,
+        csvs: Vec<serde_json::Value>,
+        plans: Vec<serde_json::Value>,
         cx: &mut Context<Self>,
     ) {
-        use kubyl_resources::ResourceStore;
-        let mut store = |gvr: kubyl_core::Gvr, objects: Vec<Value>| {
-            let key = StoreKey::new(cluster.clone(), gvr, None);
-            Some(StoreHandle::detached(
-                cx.new(|_| ResourceStore::from_objects(key, objects)),
-            ))
+        use kubyl_operators_core::olm::service::Kind;
+        use kubyl_resources::{ResourceStore, StoreKey};
+        let mut fill = |kind: Kind, objects: Vec<serde_json::Value>| {
+            let key: StoreKey = kind.key(cluster);
+            let store = cx.new(|_| ResourceStore::from_objects(key.clone(), objects));
+            ResourceStores::insert(cx, key, store);
         };
-        let stores = Stores {
-            subscriptions: store(model::subscriptions(), subscriptions),
-            csvs: store(model::csvs(), csvs),
-            plans: store(model::install_plans(), plans),
-            catalogs: store(model::catalog_sources(), Vec::new()),
-            groups: store(model::operator_groups(), Vec::new()),
-            extensions: None,
-            cluster_catalogs: None,
-        };
-        self.clusters.insert(
-            cluster.clone(),
-            ClusterOlm {
-                stores,
-                v0: true,
-                v1: false,
-                discovered: true,
-                lease: Rc::new(()),
-                wanted_until: Instant::now() + KEEP,
-                snapshot: RefCell::new(None),
-                csv_cache: RefCell::new(HashMap::new()),
-                _observers: Vec::new(),
-            },
-        );
-        cx.notify();
+        fill(Kind::Subscriptions, subscriptions);
+        fill(Kind::Csvs, csvs);
+        fill(Kind::Plans, plans);
+        fill(Kind::Catalogs, Vec::new());
+        fill(Kind::Groups, Vec::new());
+        let stores = OlmStores::acquire(cluster, true, false, &mut AppStores(cx));
+        self.observe(cluster, &stores, cx);
+        hosted(self, cx, |core, host| {
+            core.rewatch_or_watch(cluster, stores, Some((true, false)), host)
+        });
     }
 
     // ----- OperatorHub -----
 
     /// OperatorHub's packages of `cluster`, fetched when missing or older than
-    /// [`HUB_REFRESH`] (or when `force`).
+    /// [`kubyl_operators_core::olm::snapshot::HUB_REFRESH`] (or when `force`).
     pub fn hub(&mut self, cluster: &ClusterId, force: bool, cx: &mut Context<Self>) -> &HubState {
-        let state = self.hub.entry(cluster.clone()).or_default();
-        let stale = state.fetched_at.is_none_or(|at| at.elapsed() > HUB_REFRESH);
-        if (stale || force) && !state.loading {
-            let client = ConnectionManager::try_global(cx).and_then(|m| m.read(cx).client(cluster));
-            if let Some(client) = client {
-                state.loading = true;
-                state.error = None;
-                let fetch = spawn_kube(cx, hub::fetch(client));
-                let cluster = cluster.clone();
-                state.task = Some(cx.spawn(async move |this, cx| {
-                    let result = fetch.await;
-                    this.update(cx, |this, cx| {
-                        let state = this.hub.entry(cluster).or_default();
-                        state.loading = false;
-                        state.fetched_at = Some(Instant::now());
-                        match result {
-                            Ok(packages) => {
-                                state.packages = Some(Arc::new(packages));
-                                state.error = None;
-                            }
-                            Err(err) => state.error = Some(err),
-                        }
-                        cx.notify();
-                    })
-                    .ok();
-                }));
-            }
-        }
-        &self.hub[cluster]
-    }
-
-    /// The cached hub state, without fetching.
-    pub fn hub_state(&self, cluster: &ClusterId) -> Option<&HubState> {
-        self.hub.get(cluster)
+        let conn = conn(cluster, cx);
+        hosted(self, cx, |core, host| {
+            core.hub(cluster, force, &conn, host);
+        });
+        self.core
+            .hub_state(cluster)
+            .expect("the hub entry was made")
     }
 
     /// A package's icon from the packageserver; loads it on first ask.
     pub fn icon(&mut self, cluster: &ClusterId, package: &Package, cx: &mut Context<Self>) -> Icon {
-        let key = (cluster.clone(), package.key());
-        if let Some(icon) = self.icons.get(&key) {
-            return icon.clone();
-        }
-        let Some(client) =
-            ConnectionManager::try_global(cx).and_then(|m| m.read(cx).client(cluster))
-        else {
-            return Icon::None;
-        };
-        self.icons.insert(key.clone(), Icon::Loading);
-        // Finished fetches (a task never drops itself: that would cancel it).
-        self.icon_tasks.retain(|_, task| !task.is_ready());
-        let fetch = spawn_kube(
-            cx,
-            hub::fetch_icon(client, package.namespace.clone(), package.name.clone()),
-        );
-        let task_key = key.clone();
-        self.icon_tasks.insert(
-            task_key,
-            cx.spawn(async move |this, cx| {
-                let result = fetch.await;
-                this.update(cx, |this, cx| {
-                    let icon = match result {
-                        Some((format, bytes)) => {
-                            let format = match format {
-                                hub::IconFormat::Svg => gpui::ImageFormat::Svg,
-                                hub::IconFormat::Png => gpui::ImageFormat::Png,
-                                hub::IconFormat::Jpeg => gpui::ImageFormat::Jpeg,
-                                hub::IconFormat::Gif => gpui::ImageFormat::Gif,
-                            };
-                            Icon::Loaded(Arc::new(Image::from_bytes(format, bytes)))
-                        }
-                        None => Icon::None,
+        let conn = conn(cluster, cx);
+        let state = hosted(self, cx, |core, host| {
+            core.icon(cluster, package, &conn, host)
+        });
+        match state {
+            kubyl_operators_core::olm::service::IconState::Loading => Icon::Loading,
+            kubyl_operators_core::olm::service::IconState::None => Icon::None,
+            kubyl_operators_core::olm::service::IconState::Loaded { format, bytes } => {
+                let key = (cluster.clone(), package.key());
+                let image = self.images.entry(key).or_insert_with(|| {
+                    let format = match format {
+                        IconFormat::Svg => gpui::ImageFormat::Svg,
+                        IconFormat::Png => gpui::ImageFormat::Png,
+                        IconFormat::Jpeg => gpui::ImageFormat::Jpeg,
+                        IconFormat::Gif => gpui::ImageFormat::Gif,
                     };
-                    this.icons.insert(key.clone(), icon);
-                    cx.notify();
-                })
-                .ok();
-            }),
-        );
-        Icon::Loading
+                    Arc::new(Image::from_bytes(format, bytes.to_vec()))
+                });
+                Icon::Loaded(image.clone())
+            }
+        }
     }
 
     // ----- Reviews -----
@@ -463,82 +274,16 @@ impl Olm {
         installed: Option<Arc<Csv>>,
         cx: &mut Context<Self>,
     ) -> ReviewState {
-        let key = (
-            cluster.clone(),
-            format!(
-                "{}/{}/{}",
-                plan.namespace,
-                plan.name,
-                plan.csv_names.join(",")
-            ),
-        );
-        if let Some(entry) = self.reviews.get(&key)
-            && entry.at.elapsed() < REVIEW_TTL
-        {
-            return entry.state.clone();
-        }
-        let Some(manager) = ConnectionManager::try_global(cx) else {
-            return ReviewState::Loading;
-        };
-        let (client, facts, openshift) = {
-            let manager = manager.read(cx);
-            let facts = ClusterFacts {
-                kube_version: manager
-                    .cluster(cluster)
-                    .and_then(|c| c.info.as_ref())
-                    .map(|i| i.version.clone()),
-                openshift_version: None,
-            };
-            (
-                manager.client(cluster),
-                facts,
-                manager.caps(cluster).openshift,
-            )
-        };
-        let Some(client) = client else {
-            return ReviewState::Loading;
-        };
-        let work = spawn_kube(
-            cx,
-            review::review(
-                client,
-                (**plan).clone(),
-                installed.map(|c| (*c).clone()),
-                facts,
-                openshift,
-            ),
-        );
-        let task_key = key.clone();
-        let task = cx.spawn(async move |this, cx| {
-            let result = work.await;
-            this.update(cx, |this, cx| {
-                // The task stays in the entry (a task must not drop itself).
-                if let Some(entry) = this.reviews.get_mut(&task_key) {
-                    entry.state = ReviewState::Ready(Arc::new(result));
-                }
-                cx.notify();
-            })
-            .ok();
-        });
-        self.reviews.insert(
-            key,
-            ReviewEntry {
-                state: ReviewState::Loading,
-                at: Instant::now(),
-                _task: Some(task),
-            },
-        );
-        ReviewState::Loading
+        let conn = conn(cluster, cx);
+        hosted(self, cx, |core, host| {
+            core.review(cluster, plan, installed, &conn, host)
+        })
     }
 
     // ----- Writes -----
 
-    pub fn is_busy(&self, key: &str) -> bool {
-        self.busy.contains(key)
-    }
-
     /// Runs a write on Tokio, marks `key` busy meanwhile and reports the outcome as a toast.
-    /// The task belongs to the service: closing the dialog doesn't cancel it.
+    /// The write belongs to the service: closing the dialog doesn't cancel it.
     pub fn run(
         &mut self,
         key: String,
@@ -546,40 +291,12 @@ impl Olm {
         success: String,
         cx: &mut Context<Self>,
     ) -> Task<Result<(), String>> {
-        self.busy.insert(key.clone());
-        cx.notify();
-        let task = spawn_kube(cx, work);
-        let (done_tx, done_rx) = futures::channel::oneshot::channel();
-        let runner = cx.spawn(async move |this, cx| {
-            let result = task.await;
-            this.update(cx, |this, cx| {
-                this.busy.remove(&key);
-                match &result {
-                    Ok(()) => NotificationCenter::push(cx, Notification::success(success)),
-                    Err(err) => NotificationCenter::push(cx, Notification::error(err.clone())),
-                }
-                cx.notify();
-            })
-            .ok();
-            done_tx.send(result).ok();
-        });
-        self.tasks.retain(|t| !t.is_ready());
-        self.tasks.push(runner);
+        let answer = hosted(self, cx, |core, host| core.run(key, work, success, host));
         cx.background_executor().spawn(async move {
-            done_rx
+            answer
                 .await
                 .unwrap_or_else(|_| Err("Cancelled.".to_string()))
         })
-    }
-}
-
-/// Moves a finished hub fetch to the new id. One in flight is dropped (with its task, which
-/// would report under the old id): the next ask fetches again.
-fn rekey_hub(hub: &mut HashMap<ClusterId, HubState>, from: &ClusterId, to: &ClusterId) {
-    if let Some(state) = hub.remove(from)
-        && !state.loading
-    {
-        hub.insert(to.clone(), state);
     }
 }
 
@@ -587,138 +304,35 @@ fn rekey_hub(hub: &mut HashMap<ClusterId, HubState>, from: &ClusterId, to: &Clus
 fn served(cluster: &ClusterId, cx: &App) -> Option<(bool, bool)> {
     ConnectionManager::try_global(cx)
         .and_then(|m| m.read(cx).discovery(cluster))
-        .map(|d| (d.has_group(model::GROUP), d.has_group(v1::GROUP)))
+        .map(|d| {
+            (
+                d.has_group(crate::olm::model::GROUP),
+                d.has_group(v1::GROUP),
+            )
+        })
 }
 
-fn build(state: &ClusterOlm, cx: &App) -> Snapshot {
-    let mut snapshot = Snapshot {
-        v0: state.v0,
-        v1: state.v1,
-        loading: !state.discovered,
-        ..Default::default()
+/// What the core reads from the cluster's connection.
+fn conn(cluster: &ClusterId, cx: &App) -> OlmConn {
+    let Some(manager) = ConnectionManager::try_global(cx) else {
+        return OlmConn::default();
     };
-    let s = &state.stores;
-    let watches: Vec<(&str, StoreStatus, bool)> = [
-        (&s.subscriptions, "subscriptions"),
-        (&s.csvs, "clusterserviceversions"),
-        (&s.plans, "installplans"),
-        (&s.catalogs, "catalogsources"),
-        (&s.groups, "operatorgroups"),
-        (&s.extensions, "clusterextensions"),
-        (&s.cluster_catalogs, "clustercatalogs"),
-    ]
-    .into_iter()
-    .filter_map(|(handle, what)| {
-        let store = handle.as_ref()?.read(cx);
-        Some((what, store.status().clone(), store.is_empty()))
-    })
-    .collect();
-    let watched = watch_problems(&watches);
-    snapshot.loading |= watched.loading;
-    snapshot.problems = watched.problems;
-    snapshot.operators_problem = watched.operators;
-    let values = |handle: &Option<StoreHandle>| -> Vec<Arc<Value>> {
-        handle
-            .as_ref()
-            .map(|h| h.read(cx).objects().values().cloned().collect())
-            .unwrap_or_default()
-    };
-    snapshot.subscriptions = values(&s.subscriptions)
-        .iter()
-        .filter_map(|v| Subscription::parse(v).map(Arc::new))
-        .collect();
-    {
-        let mut cache = state.csv_cache.borrow_mut();
-        let mut next = HashMap::new();
-        if let Some(handle) = &s.csvs {
-            for (key, value) in handle.read(cx).objects() {
-                let parsed = match cache.get(key) {
-                    Some((old, parsed)) if Arc::ptr_eq(old, value) => Some(parsed.clone()),
-                    _ => Csv::parse(value).map(Arc::new),
-                };
-                if let Some(parsed) = parsed {
-                    next.insert(key.clone(), (value.clone(), parsed));
-                }
-            }
-        }
-        snapshot.csvs = next.values().map(|(_, c)| c.clone()).collect();
-        *cache = next;
+    let manager = manager.read(cx);
+    OlmConn {
+        client: manager.client(cluster),
+        served: served(cluster, cx),
+        kube_version: manager
+            .cluster(cluster)
+            .and_then(|c| c.info.as_ref())
+            .map(|i| i.version.clone()),
+        openshift: manager.caps(cluster).openshift,
     }
-    snapshot
-        .csvs
-        .sort_by(|a, b| (&a.namespace, &a.name).cmp(&(&b.namespace, &b.name)));
-    snapshot.plans = values(&s.plans)
-        .iter()
-        .filter_map(|v| InstallPlan::parse(v).map(Arc::new))
-        .collect();
-    snapshot.plans.sort_by(|a, b| {
-        b.needs_approval()
-            .cmp(&a.needs_approval())
-            .then(b.created.cmp(&a.created))
-            .then(a.name.cmp(&b.name))
-    });
-    snapshot.catalogs = values(&s.catalogs)
-        .iter()
-        .filter_map(|v| CatalogSource::parse(v).map(Arc::new))
-        .collect();
-    snapshot
-        .catalogs
-        .sort_by(|a, b| (&a.namespace, &a.name).cmp(&(&b.namespace, &b.name)));
-    snapshot.groups = values(&s.groups)
-        .iter()
-        .filter_map(|v| OperatorGroup::parse(v))
-        .collect();
-    snapshot
-        .subscriptions
-        .sort_by(|a, b| (&a.namespace, &a.name).cmp(&(&b.namespace, &b.name)));
-    snapshot.operators = join::join(&snapshot.subscriptions, &snapshot.csvs, &snapshot.plans);
-    snapshot.extensions = values(&s.extensions)
-        .iter()
-        .filter_map(|v| ClusterExtension::parse(v))
-        .collect();
-    snapshot.extensions.sort_by(|a, b| a.name.cmp(&b.name));
-    snapshot.cluster_catalogs = values(&s.cluster_catalogs)
-        .iter()
-        .filter_map(|v| ClusterCatalog::parse(v))
-        .collect();
-    snapshot
-        .cluster_catalogs
-        .sort_by(|a, b| a.name.cmp(&b.name));
-    snapshot
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn rekey_moves_finished_hub_and_drops_one_in_flight() {
-        let (from, to) = (ClusterId::new("a"), ClusterId::new("b"));
-        let mut hub = HashMap::new();
-        hub.insert(
-            from.clone(),
-            HubState {
-                fetched_at: Some(Instant::now()),
-                ..Default::default()
-            },
-        );
-        rekey_hub(&mut hub, &from, &to);
-        assert!(!hub.contains_key(&from) && hub[&to].fetched_at.is_some());
-
-        let mut hub = HashMap::new();
-        hub.insert(
-            from.clone(),
-            HubState {
-                loading: true,
-                ..Default::default()
-            },
-        );
-        rekey_hub(&mut hub, &from, &to);
-        assert!(
-            hub.is_empty(),
-            "a fetch in flight must restart, not stay loading"
-        );
-    }
+    use kubyl_resources::StoreStatus;
 
     /// A watch the installed operators don't come from (OLM v1, catalogs) is a problem to show,
     /// not one that hides the operators; a failing Subscription or CSV watch is.

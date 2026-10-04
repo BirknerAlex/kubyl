@@ -6,5 +6,6 @@ pub mod join;
 pub mod model;
 pub mod ops;
 pub mod review;
+pub mod service;
 pub mod snapshot;
 pub mod v1;

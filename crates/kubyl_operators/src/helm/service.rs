@@ -1,59 +1,65 @@
-//! [`Helm`]: the Helm releases of each cluster a view shows.
+//! [`Helm`]: the Helm releases of each cluster a view shows ([`HelmCore`] from
+//! `kubyl_operators_core`) in an entity.
 //!
 //! Releases come from **metadata-only** watches of the Secrets and ConfigMaps labelled
 //! `owner=helm`: names, revisions, status and times are labels, so the list needs no Secret
 //! data. What the labels don't say (chart, versions, description) comes from the latest
 //! revision's object, fetched and decoded on Tokio; only that summary is kept. A release's
 //! values and manifest are loaded by its tab ([`load`]) and live there.
+//!
+//! The core doesn't own watches: this acquires them from `ResourceStores`, tells the core when
+//! they changed (with copies of their contents) and lists the namespace it asks for when
+//! listing cluster-wide is forbidden.
 
-use std::cell::RefCell;
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::rc::Rc;
+use std::collections::HashMap;
+use std::convert::Infallible;
+use std::ops::Deref;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
-use gpui::{App, AppContext as _, Context, Entity, Global, Task};
-use kubyl_core::{ActiveContext, ClusterId, Gvr, spawn_kube};
+use gpui::{App, AppContext as _, Context, Entity, EventEmitter, Global};
+use kubyl_core::host::{Hosts, hosted};
+use kubyl_core::{ActiveContext, ClusterId};
 use kubyl_kube::{ConnectionEvent, ConnectionManager};
-use kubyl_resources::{ResourceStores, StoreHandle, StoreKey, StoreStatus};
-use serde_json::Value;
+use kubyl_resources::ResourceStores;
+use kubyl_resources::source::StoreCopies;
+use kubyl_resources::store::{AppStores, AppStoresRef};
 
-use kubyl_operators_core::helm::decode::Driver;
 pub use kubyl_operators_core::helm::release::*;
+pub use kubyl_operators_core::helm::service::{
+    HelmCore, HelmEffect, HelmInputs, HelmLease, HelmStores,
+};
 
-const KEEP: Duration = Duration::from_secs(120);
-const SWEEP: Duration = Duration::from_secs(30);
-/// Summaries fetched at once per cluster.
-const PARALLEL: usize = 6;
-
-/// Keeps a cluster's Helm watches while held.
-#[derive(Clone)]
-pub struct HelmLease(#[allow(dead_code)] Rc<()>);
-
-type ObjectId = (Driver, String, String);
-
-struct ClusterHelm {
-    lease: Rc<()>,
-    wanted_until: Instant,
-    scope: Option<String>,
-    secrets: StoreHandle,
-    config_maps: StoreHandle,
-    /// Summaries by storage object and its resourceVersion.
-    summaries: HashMap<ObjectId, (String, SummaryState)>,
-    queue: VecDeque<(ObjectId, String)>,
-    /// Objects being fetched, and the fetches (finished ones are pruned, never dropped from
-    /// inside: a task must not drop itself).
-    in_flight: HashSet<ObjectId>,
-    tasks: Vec<Task<()>>,
-    snapshot: RefCell<Option<(u64, Arc<Snapshot>)>>,
-    revision: u64,
-    _observers: Vec<gpui::Subscription>,
+/// The Helm releases of every cluster a view asked about. Reads go to the [`HelmCore`]; observe
+/// the entity to re-render.
+pub struct Helm {
+    core: HelmCore,
+    /// Observers of each cluster's watches.
+    observers: HashMap<ClusterId, Vec<gpui::Subscription>>,
+    _subscriptions: Vec<gpui::Subscription>,
 }
 
-pub struct Helm {
-    clusters: HashMap<ClusterId, ClusterHelm>,
-    _sweep: Option<Task<()>>,
-    _subscriptions: Vec<gpui::Subscription>,
+impl Deref for Helm {
+    type Target = HelmCore;
+
+    fn deref(&self) -> &HelmCore {
+        &self.core
+    }
+}
+
+impl EventEmitter<Infallible> for Helm {}
+
+impl Hosts<HelmCore> for Helm {
+    fn service(&mut self) -> &mut HelmCore {
+        &mut self.core
+    }
+
+    fn apply(&mut self, effect: HelmEffect, cx: &mut Context<Self>) {
+        match effect {
+            HelmEffect::Rescope { cluster, namespace } => {
+                self.set_scope(&cluster, Some(namespace), cx)
+            }
+        }
+    }
 }
 
 struct GlobalHelm(Entity<Helm>);
@@ -61,6 +67,7 @@ struct GlobalHelm(Entity<Helm>);
 impl Global for GlobalHelm {}
 
 impl Helm {
+    /// Installs the global. `sweep`: drop unused watches periodically (off in GPUI tests).
     pub fn install(sweep: bool, cx: &mut App) -> Entity<Self> {
         let entity = cx.new(|cx: &mut Context<Self>| {
             let mut subscriptions = Vec::new();
@@ -68,30 +75,25 @@ impl Helm {
                 subscriptions.push(cx.subscribe(&manager, |this: &mut Self, _, event, cx| {
                     match event {
                         ConnectionEvent::Rekeyed { from, .. } => {
-                            // Start over under the new id (the stores carry the old one).
-                            this.clusters.remove(from);
-                            cx.notify();
+                            this.observers.remove(from);
+                            hosted(this, cx, |core, host| core.rekeyed(from, host));
                         }
-                        ConnectionEvent::StateChanged(_) => cx.notify(),
+                        ConnectionEvent::StateChanged(_) => {
+                            hosted(this, cx, |core, host| core.connection_changed(host));
+                        }
                         _ => {}
                     }
                 }));
             }
-            let sweep = sweep.then(|| {
-                cx.spawn(async move |this, cx| {
-                    loop {
-                        cx.background_executor().timer(SWEEP).await;
-                        if this.update(cx, |this, _| this.sweep()).is_err() {
-                            break;
-                        }
-                    }
-                })
-            });
-            Self {
-                clusters: HashMap::new(),
-                _sweep: sweep,
+            let mut this = Self {
+                core: HelmCore::new(),
+                observers: HashMap::new(),
                 _subscriptions: subscriptions,
+            };
+            if sweep {
+                hosted(&mut this, cx, |core, host| core.start(host));
             }
+            this
         });
         cx.set_global(GlobalHelm(entity.clone()));
         entity
@@ -104,57 +106,17 @@ impl Helm {
     /// Keeps `cluster`'s Helm watches while the returned lease lives.
     pub fn watch(cluster: &ClusterId, cx: &mut App) -> Option<HelmLease> {
         let helm = Self::global(cx)?;
-        Some(helm.update(cx, |helm, cx| {
-            helm.ensure(cluster, None, cx);
-            HelmLease(helm.clusters[cluster].lease.clone())
-        }))
-    }
-
-    fn sweep(&mut self) {
-        let now = Instant::now();
-        self.clusters
-            .retain(|_, state| Rc::strong_count(&state.lease) > 1 || state.wanted_until > now);
-    }
-
-    fn ensure(&mut self, cluster: &ClusterId, scope: Option<String>, cx: &mut Context<Self>) {
-        if let Some(state) = self.clusters.get_mut(cluster) {
-            state.wanted_until = Instant::now() + KEEP;
-            return;
-        }
-        let key = |resource: &str| {
-            StoreKey::new(cluster.clone(), Gvr::new("", "v1", resource), scope.clone())
-                .labels(SELECTOR)
-                .metadata()
-        };
-        let secrets = ResourceStores::acquire(cx, key("secrets"));
-        let config_maps = ResourceStores::acquire(cx, key("configmaps"));
-        let observers = [&secrets, &config_maps]
-            .into_iter()
-            .map(|handle| {
-                let cluster = cluster.clone();
-                cx.observe(handle.entity(), move |this: &mut Self, _, cx| {
-                    this.changed(&cluster, cx)
-                })
+        helm.update(cx, |helm, cx| {
+            let new = !helm.core.tracks(cluster);
+            let stores = new.then(|| HelmStores::acquire(cluster, None, &mut AppStores(cx)));
+            if new {
+                helm.observe(cluster, None, cx);
+            }
+            let inputs = helm.inputs(cluster, cx);
+            hosted(helm, cx, |core, host| {
+                core.watch(cluster, stores, &inputs, host)
             })
-            .collect();
-        self.clusters.insert(
-            cluster.clone(),
-            ClusterHelm {
-                lease: Rc::new(()),
-                wanted_until: Instant::now() + KEEP,
-                scope,
-                secrets,
-                config_maps,
-                summaries: HashMap::new(),
-                queue: VecDeque::new(),
-                in_flight: HashSet::new(),
-                tasks: Vec::new(),
-                snapshot: RefCell::new(None),
-                revision: 0,
-                _observers: observers,
-            },
-        );
-        self.changed(cluster, cx);
+        })
     }
 
     /// Lists only `namespace` (when listing Secrets cluster-wide isn't allowed), or every
@@ -165,175 +127,56 @@ impl Helm {
         scope: Option<String>,
         cx: &mut Context<Self>,
     ) {
-        let Some(old) = self.clusters.remove(cluster) else {
+        if !self.core.tracks(cluster) {
             return;
-        };
-        let lease = old.lease.clone();
-        self.ensure(cluster, scope, cx);
-        if let Some(state) = self.clusters.get_mut(cluster) {
-            state.lease = lease;
         }
-        cx.notify();
+        let stores = HelmStores::acquire(cluster, scope.clone(), &mut AppStores(cx));
+        self.observe(cluster, scope.as_deref(), cx);
+        let inputs = self.inputs_for(cluster, scope.as_deref(), cx);
+        hosted(self, cx, |core, host| {
+            core.rescope(cluster, stores, &inputs, host)
+        });
+    }
+
+    /// Tells the core when one of the cluster's watches changes.
+    fn observe(&mut self, cluster: &ClusterId, scope: Option<&str>, cx: &mut Context<Self>) {
+        let stores: Vec<_> = HelmStores::keys(cluster, scope)
+            .iter()
+            .filter_map(|key| ResourceStores::peek(cx, key))
+            .collect();
+        let observers = stores
+            .into_iter()
+            .map(|store| {
+                let cluster = cluster.clone();
+                cx.observe(&store, move |this: &mut Self, _, cx| {
+                    this.changed(&cluster, cx)
+                })
+            })
+            .collect();
+        self.observers.insert(cluster.clone(), observers);
     }
 
     fn changed(&mut self, cluster: &ClusterId, cx: &mut Context<Self>) {
-        let Some(state) = self.clusters.get_mut(cluster) else {
-            return;
-        };
-        state.revision += 1;
-        // Listing cluster-wide is forbidden: fall back to the active namespace.
-        if state.scope.is_none() && *state.secrets.read(cx).status() == StoreStatus::Forbidden {
-            let namespace = fallback_namespace(cluster, cx);
-            if let Some(namespace) = namespace {
-                let lease = state.lease.clone();
-                self.clusters.remove(cluster);
-                self.ensure(cluster, Some(namespace), cx);
-                if let Some(state) = self.clusters.get_mut(cluster) {
-                    state.lease = lease;
-                }
-                cx.notify();
-                return;
-            }
-        }
-        let objects: Vec<(Driver, Arc<Value>)> = state
-            .secrets
-            .read(cx)
-            .objects()
-            .values()
-            .map(|o| (Driver::Secret, o.clone()))
-            .chain(
-                state
-                    .config_maps
-                    .read(cx)
-                    .objects()
-                    .values()
-                    .map(|o| (Driver::ConfigMap, o.clone())),
-            )
-            .collect();
-        let releases = group(&objects);
-        let mut wanted = HashMap::new();
-        for (namespace, _, driver, revisions, resource_version) in &releases {
-            let id: ObjectId = (*driver, namespace.clone(), revisions[0].object.clone());
-            wanted.insert(id, resource_version.clone());
-        }
-        // Forget summaries of objects that are gone; queue new or changed ones.
-        state.summaries.retain(|id, _| wanted.contains_key(id));
-        state.in_flight.retain(|id| wanted.contains_key(id));
-        state.queue.retain(|(id, _)| wanted.contains_key(id));
-        for (id, resource_version) in wanted {
-            let current = state.summaries.get(&id).map(|(rv, _)| rv);
-            if current != Some(&resource_version)
-                && !state
-                    .queue
-                    .iter()
-                    .any(|(q, rv)| q == &id && rv == &resource_version)
-            {
-                state.summaries.insert(
-                    id.clone(),
-                    (resource_version.clone(), SummaryState::Loading),
-                );
-                state.in_flight.remove(&id);
-                state.queue.push_back((id, resource_version));
-            }
-        }
-        self.pump(cluster, cx);
-        cx.notify();
+        let inputs = self.inputs(cluster, cx);
+        hosted(self, cx, |core, host| core.changed(cluster, &inputs, host));
     }
 
-    /// Starts queued summary fetches, a few at a time.
-    fn pump(&mut self, cluster: &ClusterId, cx: &mut Context<Self>) {
-        let Some(client) =
-            ConnectionManager::try_global(cx).and_then(|m| m.read(cx).client(cluster))
-        else {
-            return;
-        };
-        let Some(state) = self.clusters.get_mut(cluster) else {
-            return;
-        };
-        state.tasks.retain(|task| !task.is_ready());
-        while state.in_flight.len() < PARALLEL {
-            let Some((id, resource_version)) = state.queue.pop_front() else {
-                break;
-            };
-            let (driver, namespace, object) = id.clone();
-            let fetch = spawn_kube(cx, fetch_summary(client.clone(), driver, namespace, object));
-            let task_cluster = cluster.clone();
-            let task_id = id.clone();
-            let task = cx.spawn(async move |this, cx| {
-                let result = fetch.await;
-                this.update(cx, |this, cx| {
-                    if let Some(state) = this.clusters.get_mut(&task_cluster) {
-                        state.in_flight.remove(&task_id);
-                        if let Some(entry) = state.summaries.get_mut(&task_id)
-                            && entry.0 == resource_version
-                        {
-                            entry.1 = match result {
-                                Ok(summary) => SummaryState::Ready(Arc::new(summary)),
-                                Err(err) => SummaryState::Failed(err),
-                            };
-                        }
-                        state.revision += 1;
-                    }
-                    this.pump(&task_cluster, cx);
-                    cx.notify();
-                })
-                .ok();
-            });
-            state.in_flight.insert(id);
-            state.tasks.push(task);
+    /// What the core reads from the app for the cluster it follows.
+    fn inputs(&self, cluster: &ClusterId, cx: &App) -> HelmInputs {
+        self.inputs_for(cluster, self.core.scope(cluster), cx)
+    }
+
+    fn inputs_for(&self, cluster: &ClusterId, scope: Option<&str>, cx: &App) -> HelmInputs {
+        HelmInputs {
+            client: ConnectionManager::try_global(cx).and_then(|m| m.read(cx).client(cluster)),
+            fallback_namespace: fallback_namespace(cluster, cx),
+            stores: StoreCopies::of(&AppStoresRef(cx), &HelmStores::keys(cluster, scope)),
         }
     }
 
     /// The releases of `cluster`, if its watches run ([`Self::watch`]).
     pub fn snapshot(&self, cluster: &ClusterId, cx: &App) -> Option<Arc<Snapshot>> {
-        let state = self.clusters.get(cluster)?;
-        let generation = state.revision * 1_000_003
-            + state.secrets.read(cx).generation() * 31
-            + state.config_maps.read(cx).generation();
-        if let Some((g, snapshot)) = state.snapshot.borrow().as_ref()
-            && *g == generation
-        {
-            return Some(snapshot.clone());
-        }
-        let secrets = state.secrets.read(cx);
-        let config_maps = state.config_maps.read(cx);
-        let objects: Vec<(Driver, Arc<Value>)> = secrets
-            .objects()
-            .values()
-            .map(|o| (Driver::Secret, o.clone()))
-            .chain(
-                config_maps
-                    .objects()
-                    .values()
-                    .map(|o| (Driver::ConfigMap, o.clone())),
-            )
-            .collect();
-        let releases = group(&objects)
-            .into_iter()
-            .map(|(namespace, name, driver, revisions, _)| {
-                let id = (driver, namespace.clone(), revisions[0].object.clone());
-                ReleaseRow {
-                    summary: state
-                        .summaries
-                        .get(&id)
-                        .map(|(_, s)| s.clone())
-                        .unwrap_or(SummaryState::Loading),
-                    namespace,
-                    name,
-                    driver,
-                    revisions,
-                }
-            })
-            .collect();
-        let problem = problem(secrets.status(), state.scope.as_deref());
-        let snapshot = Arc::new(Snapshot {
-            releases,
-            loading: !secrets.status().is_settled(),
-            problem,
-            scope: state.scope.clone(),
-        });
-        *state.snapshot.borrow_mut() = Some((generation, snapshot.clone()));
-        Some(snapshot)
+        self.core.snapshot(cluster, &AppStoresRef(cx))
     }
 }
 
@@ -355,7 +198,9 @@ fn fallback_namespace(cluster: &ClusterId, cx: &App) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use kubyl_operators_core::helm::decode::Driver;
+    use kubyl_resources::StoreStatus;
+    use serde_json::{Value, json};
 
     fn meta(ns: &str, name: &str, revision: u32, status: &str, rv: &str) -> Arc<Value> {
         Arc::new(
