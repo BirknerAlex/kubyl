@@ -2,7 +2,7 @@
 //! (github.com/gitlab.com/bitbucket.org and self-hosted hosts with those names), and matching an
 //! app's destination to a Kubyl context.
 
-use kubyl_core::ClusterId;
+use kubyl_base::ClusterId;
 
 use crate::model::{Destination, is_sha, short_repo};
 

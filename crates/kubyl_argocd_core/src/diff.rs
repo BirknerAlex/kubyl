@@ -3,8 +3,8 @@
 //! Secret values and OpenShift Routes' inline TLS keys masked on both sides), then diffed with
 //! phase 04's line diff.
 
-use kubyl_yaml::diff::{self, LineDiff};
-use kubyl_yaml::render::{self, RenderOptions};
+use kubyl_yaml_core::diff::{self, LineDiff};
+use kubyl_yaml_core::render::{self, RenderOptions};
 use serde_json::Value;
 
 use crate::api::ResourceDiff;
@@ -54,11 +54,11 @@ pub fn masked_note(item: &ResourceDiff) -> Option<&'static str> {
     if is_secret(item) {
         return Some("values masked");
     }
-    let route_key = kubyl_resources::route::is_route(&item.group, &item.kind)
+    let route_key = kubyl_resources_core::route::is_route(&item.group, &item.kind)
         && [item.live(), item.desired()]
             .iter()
             .flatten()
-            .any(kubyl_resources::route::has_key_material);
+            .any(kubyl_resources_core::route::has_key_material);
     route_key.then_some("TLS key masked")
 }
 

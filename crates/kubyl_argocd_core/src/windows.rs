@@ -413,7 +413,7 @@ mod tests {
 
     #[test]
     fn verdicts() {
-        let app = crate::model::Application::parse(&crate::model::tests::guestbook()).unwrap();
+        let app = crate::model::Application::parse(&crate::model::fixtures::guestbook()).unwrap();
         let night = at("2026-09-25T23:00:00Z");
         let noon = at("2026-09-25T12:00:00Z");
         let deny = window("deny", "0 22 * * *", "8h");

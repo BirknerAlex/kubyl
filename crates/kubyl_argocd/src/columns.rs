@@ -223,7 +223,7 @@ mod tests {
 
     #[test]
     fn application_cells() {
-        let object = crate::model::tests::guestbook();
+        let object = crate::model::fixtures::guestbook();
         let columns = Applications;
         assert!(matches!(
             columns.cell(&object, "sync"),

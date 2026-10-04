@@ -231,7 +231,7 @@ pub fn info(group: &str, kind: &str, object: &Value) -> String {
             )
         }
         ("", "Pod") => {
-            let status = kubyl_resources::columns::pod_status(object).reason;
+            let status = kubyl_resources_core::status::pod_status(object).reason;
             match text(object, "/status/podIP") {
                 "" => status,
                 ip => format!("{status} · {ip}"),
@@ -646,7 +646,7 @@ pub fn flat(nodes: &[Node]) -> Vec<Node> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::tests::guestbook;
+    use crate::model::fixtures::guestbook;
     use serde_json::json;
 
     fn live() -> Live {
