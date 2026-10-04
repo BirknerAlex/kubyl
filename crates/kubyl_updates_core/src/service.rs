@@ -8,7 +8,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -346,7 +345,7 @@ pub fn fallback_for(
 
 /// Keeps a cluster's reads going while held (views hold one).
 #[derive(Clone)]
-pub struct UpdatesLease(#[allow(dead_code)] Rc<()>);
+pub struct UpdatesLease(#[allow(dead_code)] Arc<()>);
 
 /// What the app does for the service. Each variant that names a method asks the app to call it
 /// right away with fresh snapshots (the service itself never reads the app's state).
@@ -388,7 +387,7 @@ struct ClusterUpdates {
     reading: bool,
     /// Bumped when the provider is rebuilt; older reads are dropped.
     generation: u64,
-    lease: Rc<()>,
+    lease: Arc<()>,
     wanted_until: Instant,
     preflight: HashMap<String, Preflight>,
     busy: Option<String>,
@@ -402,7 +401,7 @@ struct ClusterUpdates {
 }
 
 impl ClusterUpdates {
-    fn new(lease: Rc<()>) -> Self {
+    fn new(lease: Arc<()>) -> Self {
         Self {
             detected: None,
             facts: None,
@@ -576,7 +575,7 @@ impl UpdatesCore {
             return;
         }
         self.clusters
-            .insert(cluster.clone(), ClusterUpdates::new(Rc::new(())));
+            .insert(cluster.clone(), ClusterUpdates::new(Arc::new(())));
         self.detect(cluster, conns, host);
         if self.poll {
             self.start_poll(cluster, host);
@@ -601,7 +600,7 @@ impl UpdatesCore {
             let Some(state) = this.clusters.get_mut(&id) else {
                 return;
             };
-            let wanted = Rc::strong_count(&state.lease) > 1 || Instant::now() < state.wanted_until;
+            let wanted = Arc::strong_count(&state.lease) > 1 || Instant::now() < state.wanted_until;
             if !wanted {
                 // Nobody looks: stop, and drop the Helm watches.
                 state.polling = false;
@@ -947,7 +946,7 @@ impl UpdatesCore {
 
     /// Puts a status in place without a provider (tests of views).
     pub fn seed(&mut self, cluster: &ClusterId, detected: Detected, status: Status) {
-        let mut state = ClusterUpdates::new(Rc::new(()));
+        let mut state = ClusterUpdates::new(Arc::new(()));
         state.detected = Some(detected);
         let status = Arc::new(status);
         state.last = Some(status.clone());
@@ -1189,13 +1188,13 @@ mod tests {
     /// A write that finishes after its cluster was rekeyed clears `busy` on the new id.
     #[test]
     fn a_write_finishing_after_a_rekey_clears_busy() {
-        let mut state = ClusterUpdates::new(Rc::new(()));
+        let mut state = ClusterUpdates::new(Arc::new(()));
         state.busy = Some("Update".into());
         state.busy_token = 7;
         let mut clusters = HashMap::new();
         // `Rekeyed` moved the state from the old id to the new one.
         clusters.insert(ClusterId::new("new-id"), state);
-        clusters.insert(ClusterId::new("other"), ClusterUpdates::new(Rc::new(())));
+        clusters.insert(ClusterId::new("other"), ClusterUpdates::new(Arc::new(())));
         assert_eq!(
             finish_write(&mut clusters, 7),
             Some(ClusterId::new("new-id"))

@@ -11,7 +11,6 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::future::Future;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -33,7 +32,7 @@ use super::v1::{self, ClusterCatalog, ClusterExtension};
 
 /// Keeps a cluster's OLM watches running while held (views hold one).
 #[derive(Clone)]
-pub struct OlmLease(#[allow(dead_code)] Rc<()>);
+pub struct OlmLease(#[allow(dead_code)] Arc<()>);
 
 /// The OLM objects a cluster's watches cover.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -153,7 +152,7 @@ struct ClusterOlm {
     /// Whether discovery was known when the watches started: until then the (empty) snapshot is
     /// loading, not a cluster without operators.
     discovered: bool,
-    lease: Rc<()>,
+    lease: Arc<()>,
     wanted_until: Instant,
     /// The snapshot and the store generations it was built from.
     snapshot: RefCell<Option<(Vec<u64>, Arc<Snapshot>)>>,
@@ -245,7 +244,7 @@ impl OlmCore {
     pub fn sweep_at(&mut self, now: Instant, host: &mut dyn Host<Self>) {
         let before = self.clusters.len();
         self.clusters
-            .retain(|_, state| Rc::strong_count(&state.lease) > 1 || state.wanted_until > now);
+            .retain(|_, state| Arc::strong_count(&state.lease) > 1 || state.wanted_until > now);
         self.reviews
             .retain(|_, r| now.duration_since(r.at) < REVIEW_TTL * 5);
         if self.clusters.len() != before {
@@ -272,7 +271,7 @@ impl OlmCore {
             return Some(OlmLease(state.lease.clone()));
         }
         let stores = stores?;
-        let lease = Rc::new(());
+        let lease = Arc::new(());
         self.insert(cluster, stores, served, lease.clone());
         Some(OlmLease(lease))
     }
@@ -282,7 +281,7 @@ impl OlmCore {
         cluster: &ClusterId,
         stores: OlmStores,
         served: Option<(bool, bool)>,
-        lease: Rc<()>,
+        lease: Arc<()>,
     ) {
         let (v0, v1) = served.unwrap_or_default();
         self.clusters.insert(

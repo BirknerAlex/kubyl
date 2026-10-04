@@ -13,7 +13,6 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::convert::Infallible;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -33,7 +32,7 @@ const PARALLEL: usize = 6;
 
 /// Keeps a cluster's Helm watches while held.
 #[derive(Clone)]
-pub struct HelmLease(#[allow(dead_code)] Rc<()>);
+pub struct HelmLease(#[allow(dead_code)] Arc<()>);
 
 type ObjectId = (Driver, String, String);
 
@@ -100,7 +99,7 @@ pub enum HelmEffect {
 }
 
 struct ClusterHelm {
-    lease: Rc<()>,
+    lease: Arc<()>,
     wanted_until: Instant,
     scope: Option<String>,
     _stores: HelmStores,
@@ -150,7 +149,7 @@ impl HelmCore {
     fn sweep(&mut self) {
         let now = Instant::now();
         self.clusters
-            .retain(|_, state| Rc::strong_count(&state.lease) > 1 || state.wanted_until > now);
+            .retain(|_, state| Arc::strong_count(&state.lease) > 1 || state.wanted_until > now);
     }
 
     /// Whether the service follows `cluster` (the app then has its watches).
@@ -182,13 +181,13 @@ impl HelmCore {
             return Some(HelmLease(state.lease.clone()));
         }
         let stores = stores?;
-        let lease = Rc::new(());
+        let lease = Arc::new(());
         self.insert(cluster, stores, lease.clone());
         self.changed(cluster, inputs, host);
         Some(HelmLease(lease))
     }
 
-    fn insert(&mut self, cluster: &ClusterId, stores: HelmStores, lease: Rc<()>) {
+    fn insert(&mut self, cluster: &ClusterId, stores: HelmStores, lease: Arc<()>) {
         self.clusters.insert(
             cluster.clone(),
             ClusterHelm {
