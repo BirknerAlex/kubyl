@@ -6,6 +6,8 @@
 //!   has; [`backends`]: Hubble Relay (gRPC), Calico Whisker and NetObserv (the API server's
 //!   service proxy).
 //! - [`buffer`]: the ring buffer; [`aggregate`]: the topology; [`rows`]: table rows.
+//! - [`service`]: the demand-driven [`service::FlowsCore`] (detection, the backend, streams and
+//!   ring buffers) on a [`kubyl_base::host::Host`]; [`state`]: its states and timings.
 //! - [`settings`]: the `"netflow"` settings.json section.
 
 pub mod aggregate;
@@ -33,5 +35,6 @@ pub mod proto {
 
 pub mod rows;
 pub mod sanitize;
+pub mod service;
 pub mod settings;
 pub mod state;

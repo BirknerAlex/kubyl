@@ -1,5 +1,5 @@
 //! The flow service's states and connection decisions without the UI.
-//! `kubyl_netflow::service::FlowService` runs detection, connections and streams.
+//! [`crate::service::FlowsCore`] runs detection, connections and streams.
 
 use std::sync::Arc;
 use std::time::Duration;
