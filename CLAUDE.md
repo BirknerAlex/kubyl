@@ -8,6 +8,7 @@ Native Kubernetes desktop client (macOS, Windows, Linux) in Rust on GPUI, styled
 - Never depend on GPL crates from Zed (`editor`, `workspace`, `terminal_view`…). `cargo deny check` enforces this.
 - No network or blocking calls on the UI thread. Kube work runs on the Tokio runtime from `kubyl_core`.
 - Never log or persist tokens, refresh tokens or Secret data.
+- Logic without UI goes in the crate's GPUI-free `kubyl_<name>_core`; views stay in the GPUI crate. `script/check-core-crates.sh` (CI job `core-crates`) fails when a core crate depends on `gpui`, `gpui-component` or the UI crates.
 - Parallel sessions: one git worktree/branch per phase (`phase/NN-name`). Only touch the crates your phase owns.
 
 See AGENTS.md for commands, git workflow and gotchas shared by all coding agents.
