@@ -26,11 +26,10 @@
 //!
 //! Never store tokens, credentials or Secret data in either file.
 
-mod paths;
 mod state;
 mod store;
 
-pub use paths::config_dir;
+pub use kubyl_settings_core::config_dir;
 pub use state::{State, StateSection};
 pub use store::{Settings, SettingsSection};
 

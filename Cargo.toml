@@ -35,6 +35,7 @@ kubyl_prometheus = { path = "crates/kubyl_prometheus" }
 kubyl_resources = { path = "crates/kubyl_resources" }
 kubyl_selfupdate = { path = "crates/kubyl_selfupdate" }
 kubyl_settings = { path = "crates/kubyl_settings" }
+kubyl_settings_core = { path = "crates/kubyl_settings_core" }
 kubyl_terminal = { path = "crates/kubyl_terminal" }
 kubyl_ui = { path = "crates/kubyl_ui" }
 kubyl_updates = { path = "crates/kubyl_updates" }

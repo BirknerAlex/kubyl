@@ -80,7 +80,7 @@ fn create_private(dir: &Path, reuse: bool) -> bool {
 
 /// Writes `contents` to `path` atomically (temp file + rename), creating parent directories.
 /// The temp file name is unique per call, so concurrent writers never share it.
-pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+pub fn write_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -112,12 +112,14 @@ static PENDING: (Mutex<usize>, Condvar) = (Mutex::new(0), Condvar::new());
 /// A write scheduled on the executor. Create it on the thread that produces the contents and
 /// move it into the task: tasks can run out of order, and the ticket keeps an older snapshot
 /// from replacing a newer one. [`wait_for_writes`] waits until all tickets are dropped.
-pub(crate) struct WriteTicket {
+pub struct WriteTicket {
     seq: u64,
 }
 
+// No `Default`: creating a ticket counts a pending write.
+#[allow(clippy::new_without_default)]
 impl WriteTicket {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         *PENDING.0.lock().unwrap_or_else(|e| e.into_inner()) += 1;
         Self {
             seq: SEQ.fetch_add(1, Ordering::SeqCst),
@@ -126,7 +128,7 @@ impl WriteTicket {
 
     /// Like [`write_atomic`], serialised with other writes, and skipped when a newer write to
     /// `path` already went through.
-    pub(crate) fn write(&self, path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    pub fn write(&self, path: &Path, contents: &[u8]) -> std::io::Result<()> {
         let mut guard = LAST_WRITTEN.lock().unwrap_or_else(|e| e.into_inner());
         let last = guard.get_or_insert_with(HashMap::new);
         if last.get(path).is_some_and(|&seq| seq > self.seq) {
@@ -147,7 +149,7 @@ impl Drop for WriteTicket {
 }
 
 /// Blocks (up to `timeout`) until every scheduled write is done. Call off the UI thread.
-pub(crate) fn wait_for_writes(timeout: Duration) {
+pub fn wait_for_writes(timeout: Duration) {
     let pending = PENDING.0.lock().unwrap_or_else(|e| e.into_inner());
     let _ = PENDING
         .1

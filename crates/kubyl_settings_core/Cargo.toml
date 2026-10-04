@@ -1,6 +1,6 @@
 [package]
-name = "kubyl_settings"
-description = "Settings and UI state persistence."
+name = "kubyl_settings_core"
+description = "settings.json and state.json without the UI: typed sections, parsing, schema, atomic writes, file watching."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,12 +13,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-anyhow.workspace = true
 dirs.workspace = true
-futures.workspace = true
-gpui.workspace = true
-kubyl_core.workspace = true
-kubyl_settings_core.workspace = true
 notify.workspace = true
 schemars.workspace = true
 serde.workspace = true
@@ -27,4 +22,3 @@ tracing.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-gpui = { workspace = true, features = ["test-support"] }
