@@ -67,25 +67,31 @@ in `kubyl_base` runs the same core code on Tokio, without GPUI.
 ## Tasks
 
 ### Foundation
-- [ ] `kubyl_base`: types, error, runtime, plain notifications, `Host` + test host.
-- [ ] `kubyl_core` re-exports `kubyl_base`; `GpuiHost`.
-- [ ] `kubyl_settings_core`: sections, parsing, merging, schema, `state.json`, atomic writes, the
+- [x] `kubyl_base`: types, error, runtime, plain notices, `SharedString`, `Host` + `TestHost`.
+- [x] `kubyl_core` re-exports `kubyl_base`; `GpuiHost` (`kubyl_core::host`).
+- [x] `kubyl_settings_core`: sections, parsing, merging, schema, `state.json`, atomic writes, the
       file watcher. `kubyl_settings` keeps the `Settings`/`State` globals and observers.
-- [ ] CI check for core crates.
+- [x] CI check for core crates (`script/check-core-crates.sh`, job `core-crates`).
 
 ### Kubernetes
-- [ ] `kubyl_kube_core`: kubeconfig, groups, auth, client, transport, discovery, access, openapi,
-      watches, cluster info, settings; the `ConnectionManager` state machine.
-- [ ] `kubyl_resources_core`: formatting, filters, describe, ops, routes, table rows, columns;
-      the `ResourceStores` watch caches.
+- [x] `kubyl_kube_core`: kubeconfig, groups, auth, client, transport, discovery, access, openapi,
+      watches, cluster info, settings; `ManagerCore` (the `ConnectionManager` state machine).
+- [x] `kubyl_resources_core`: formatting, filters, describe, ops, routes, kubectl status, usage
+      types; `StoreCore` (the watch caches). Column providers and the server-side table stay in
+      `kubyl_resources` (they build UI cell values).
 
-### Features (in dependency order)
-- [ ] `kubyl_logs_core`, `kubyl_terminal_core` (exec sessions), `kubyl_portforward_core`.
-- [ ] `kubyl_yaml_core`, `kubyl_metrics_core`.
-- [ ] `kubyl_alerts_core`, `kubyl_argocd_core`, `kubyl_netflow_core`, `kubyl_operators_core`,
+### Features: modules moved (logic without services)
+- [x] `kubyl_logs_core`, `kubyl_terminal_core`, `kubyl_portforward_core` (with `ForwardsCore`).
+- [x] `kubyl_yaml_core`, `kubyl_metrics_core` (with `MetricsCore`), `kubyl_charts_core`.
+- [x] `kubyl_alerts_core`, `kubyl_argocd_core`, `kubyl_netflow_core`, `kubyl_operators_core`,
       `kubyl_updates_core`, `kubyl_prometheus_core`.
-- [ ] `kubyl_files_core`, `kubyl_kubeconfig_core`, `kubyl_webview_core`, `kubyl_palette_core`,
-      `kubyl_explorer_core`, `kubyl_overview_core`, `kubyl_selfupdate_core`, `kubyl_charts_core`.
+- [x] `kubyl_files_core`, `kubyl_kubeconfig_core`, `kubyl_webview_core`, `kubyl_palette_core`,
+      `kubyl_explorer_core`, `kubyl_overview_core`, `kubyl_selfupdate_core`.
+
+### Features: services on `Host`
+- [x] `ConnectionManager`, `ResourceStore`, `PortForwardManager`, `MetricsService`.
+- [ ] Alerts service and silences, Argo CD state and runs, flows service, OLM/Helm caches,
+      updates service, Prometheus service, self-update service, file transfer queue.
 
 ### Wrap-up
 - [ ] `plans/README.md`: workspace layout, crate ownership, the decision.
@@ -107,3 +113,17 @@ in `kubyl_base` runs the same core code on Tokio, without GPUI.
 ## Handoff log
 
 - 2026-10-04: Plan written.
+- 2026-10-04: Foundation, Kubernetes and every feature crate's movable modules are in 23
+  `*_core` crates (all GPUI-free, CI-checked); `ConnectionManager`, `ResourceStore`,
+  `PortForwardManager` and `MetricsService` run their state machines on `Host` with unchanged
+  APIs. 979 tests pass (same as before the phase, minus moved duplicates, plus new core tests);
+  the app was checked on the kind cluster (pods, deployments, metrics, alerts badges) after the
+  kube and resources steps.
+  - Moved modules keep their paths through `pub use <core>::{…}` in the GPUI crate. Theme colors
+    of core enums are extension traits there (`ColorTagExt`, `ConnectionStateExt`).
+  - `gpui::SharedString` is `gpui-pre-shared-string` (no UI); core crates use it via
+    `kubyl_base::SharedString`, bumped together with gpui.
+  - Test fixtures shared with GPUI crates sit behind `test-support` features
+    (`kubyl_kube_core`, `kubyl_argocd_core`) or in the core crate's `tests/fixtures`.
+  - Commits that add a core crate don't all build on their own: the root `Cargo.toml` entries
+    landed with the last crate of each batch.
