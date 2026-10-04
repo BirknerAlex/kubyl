@@ -12,6 +12,10 @@
 //! (`<config dir>/dev-credentials.json`, mode 0600) for development. Never use it for real
 //! clusters. `KUBYL_CREDENTIAL_STORE=memory` keeps secrets only for the current run (tests).
 //!
+//! An app can install its own backend with [`install`] (once, before the first call), e.g. an
+//! encrypted file on a machine without a keychain. It replaces all of the above, including
+//! `KUBYL_CREDENTIAL_STORE`.
+//!
 //! All calls block (the keychain may show a prompt), so run them on the Tokio runtime's
 //! blocking pool, never on the UI thread.
 
@@ -25,33 +29,66 @@ use secrecy::{ExposeSecret as _, SecretString};
 /// Keychain service name for every entry.
 const SERVICE: &str = "io.github.birkneralex.Kubyl";
 
+/// A credential store an app installs with [`install`]. Calls block, like the built-in stores;
+/// they run on the Tokio runtime's blocking pool. Implementations must never log a secret.
+pub trait SecretStore: Send + Sync {
+    /// A human-readable name, for the UI.
+    fn name(&self) -> &'static str;
+    /// Reads a secret. `Ok(None)` when there is none.
+    fn get(&self, key: &str) -> Result<Option<SecretString>, String>;
+    /// Stores a secret, replacing an existing one.
+    fn set(&self, key: &str, secret: &SecretString) -> Result<(), String>;
+    /// Removes a secret. Missing entries are fine.
+    fn delete(&self, key: &str) -> Result<(), String>;
+}
+
+/// The store was already chosen: by an earlier [`install`], or by the first call that read,
+/// wrote or named the store.
+#[derive(Debug, thiserror::Error)]
+#[error("the credential store is already in use")]
+pub struct AlreadyInUse;
+
 enum Backend {
     Keyring,
     File(PathBuf),
     Memory(Mutex<BTreeMap<String, String>>),
+    Custom(Box<dyn SecretStore>),
+}
+
+static BACKEND: OnceLock<Backend> = OnceLock::new();
+
+/// Installs the app's own credential store. Call it once at startup, before anything reads or
+/// writes a credential; without it the store is the OS keychain, or what
+/// `KUBYL_CREDENTIAL_STORE` selects.
+pub fn install(store: Box<dyn SecretStore>) -> Result<(), AlreadyInUse> {
+    BACKEND
+        .set(Backend::Custom(store))
+        .map_err(|_| AlreadyInUse)
 }
 
 fn backend() -> &'static Backend {
-    static BACKEND: OnceLock<Backend> = OnceLock::new();
-    BACKEND.get_or_init(
-        || match std::env::var("KUBYL_CREDENTIAL_STORE").as_deref() {
-            Ok("file") => {
-                let path = kubyl_settings_core::config_dir().join("dev-credentials.json");
-                tracing::warn!(
-                    "KUBYL_CREDENTIAL_STORE=file: storing credentials in plain text at {}",
-                    path.display()
-                );
-                Backend::File(path)
-            }
-            Ok("memory") => Backend::Memory(Mutex::default()),
-            _ => Backend::Keyring,
-        },
-    )
+    BACKEND.get_or_init(|| from_env(std::env::var("KUBYL_CREDENTIAL_STORE").ok().as_deref()))
+}
+
+fn from_env(value: Option<&str>) -> Backend {
+    match value {
+        Some("file") => {
+            let path = kubyl_settings_core::config_dir().join("dev-credentials.json");
+            tracing::warn!(
+                "KUBYL_CREDENTIAL_STORE=file: storing credentials in plain text at {}",
+                path.display()
+            );
+            Backend::File(path)
+        }
+        Some("memory") => Backend::Memory(Mutex::default()),
+        _ => Backend::Keyring,
+    }
 }
 
 /// A human-readable name of the active store, for the UI.
 pub fn store_name() -> &'static str {
     match backend() {
+        Backend::Custom(store) => store.name(),
         Backend::Keyring if cfg!(target_os = "macos") => "Keychain",
         Backend::Keyring if cfg!(target_os = "windows") => "Credential Manager",
         Backend::Keyring => "Secret Service",
@@ -62,7 +99,12 @@ pub fn store_name() -> &'static str {
 
 /// Reads a secret. `Ok(None)` when there is none.
 pub fn get(key: &str) -> Result<Option<SecretString>, String> {
-    match backend() {
+    get_from(backend(), key)
+}
+
+fn get_from(backend: &Backend, key: &str) -> Result<Option<SecretString>, String> {
+    match backend {
+        Backend::Custom(store) => store.get(key),
         Backend::Keyring => {
             let entry = entry(key).map_err(|e| e.to_string())?;
             match entry.get_password() {
@@ -78,7 +120,12 @@ pub fn get(key: &str) -> Result<Option<SecretString>, String> {
 
 /// Stores a secret, replacing an existing one.
 pub fn set(key: &str, secret: &SecretString) -> Result<(), String> {
-    match backend() {
+    set_in(backend(), key, secret)
+}
+
+fn set_in(backend: &Backend, key: &str, secret: &SecretString) -> Result<(), String> {
+    match backend {
+        Backend::Custom(store) => store.set(key, secret),
         Backend::Keyring => entry(key)
             .and_then(|entry| entry.set_password(secret.expose_secret()))
             .map_err(|e| e.to_string()),
@@ -97,7 +144,12 @@ pub fn set(key: &str, secret: &SecretString) -> Result<(), String> {
 
 /// Removes a secret. Missing entries are fine.
 pub fn delete(key: &str) -> Result<(), String> {
-    match backend() {
+    delete_in(backend(), key)
+}
+
+fn delete_in(backend: &Backend, key: &str) -> Result<(), String> {
+    match backend {
+        Backend::Custom(store) => store.delete(key),
         Backend::Keyring => {
             let entry = entry(key).map_err(|e| e.to_string())?;
             match entry.delete_credential() {
@@ -245,6 +297,31 @@ mod tests {
 #[cfg(test)]
 mod file_tests {
     use super::*;
+
+    #[test]
+    fn env_selects_the_built_in_stores() {
+        assert!(matches!(from_env(Some("memory")), Backend::Memory(_)));
+        assert!(matches!(from_env(Some("keychain")), Backend::Keyring));
+        assert!(matches!(from_env(None), Backend::Keyring));
+    }
+
+    #[test]
+    fn built_in_stores_keep_reading_writing_and_deleting() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = Backend::File(dir.path().join("dev-credentials.json"));
+        for backend in [Backend::Memory(Mutex::default()), file] {
+            let secret = SecretString::from("s3cret");
+            assert!(get_from(&backend, "a").unwrap().is_none());
+            set_in(&backend, "a", &secret).unwrap();
+            assert_eq!(
+                get_from(&backend, "a").unwrap().unwrap().expose_secret(),
+                "s3cret"
+            );
+            delete_in(&backend, "a").unwrap();
+            delete_in(&backend, "a").unwrap();
+            assert!(get_from(&backend, "a").unwrap().is_none());
+        }
+    }
 
     #[test]
     fn concurrent_file_writes_keep_every_entry() {
