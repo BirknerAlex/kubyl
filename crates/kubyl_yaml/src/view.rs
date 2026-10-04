@@ -1009,7 +1009,7 @@ impl YamlEditor {
                 )
             })
             .collect();
-        self.local_history = ApplyHistory::entries_of(cx, &keys);
+        self.local_history = crate::settings::history_of(cx, &keys);
         if !self.has_workload_history() {
             return;
         }
@@ -1602,7 +1602,7 @@ impl YamlEditor {
                     .trim()
                     .to_string();
                 // Never Secrets (their buffer may hold decoded values).
-                ApplyHistory::record(cx, key, &doc.gvk.kind, source + "\n");
+                crate::settings::record_apply(cx, key, &doc.gvk.kind, source + "\n");
             }
         }
 

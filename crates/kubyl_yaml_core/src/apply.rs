@@ -9,9 +9,9 @@ use std::ops::Range;
 use kube::Client;
 use kube::api::{Api, DynamicObject, Patch, PatchParams, PostParams};
 use kube::discovery::ApiResource;
-use kubyl_core::Gvk;
-use kubyl_kube::discovery::Discovery;
-use kubyl_resources::ops::FIELD_MANAGER;
+use kubyl_base::Gvk;
+use kubyl_kube_core::discovery::Discovery;
+use kubyl_resources_core::ops::FIELD_MANAGER;
 use serde_json::Value;
 
 use crate::parse::{Node, Parsed, Path};
@@ -139,7 +139,7 @@ fn prepare_one(
     Ok(Prepared {
         index,
         gvk,
-        resource: kubyl_resources::store::api_resource(info),
+        resource: kubyl_resources_core::store::api_resource(info),
         namespace,
         name,
         object,

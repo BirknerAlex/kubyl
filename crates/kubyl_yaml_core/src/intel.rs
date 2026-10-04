@@ -3,7 +3,7 @@
 
 use std::ops::Range;
 
-use kubyl_core::{Gvk, Gvr};
+use kubyl_base::{Gvk, Gvr};
 use serde_json::Value;
 
 use crate::parse::{self, Part, Path, Seg};

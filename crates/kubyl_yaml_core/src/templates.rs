@@ -1,7 +1,7 @@
 //! Starting points for "New resource": hand-written templates for common kinds and a skeleton
 //! from any kind's schema (its required fields), so CRDs work too.
 
-use kubyl_core::Gvk;
+use kubyl_base::Gvk;
 use serde_json::{Map, Value, json};
 
 use crate::render::to_yaml;

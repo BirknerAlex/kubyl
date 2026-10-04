@@ -409,7 +409,7 @@ mod tests {
     use super::*;
     use crate::parse::parse;
     use crate::schema::tests::cert_doc;
-    use kubyl_core::Gvk;
+    use kubyl_base::Gvk;
 
     fn problems(text: &str) -> Vec<(String, String)> {
         let doc = cert_doc();

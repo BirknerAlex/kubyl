@@ -12,7 +12,7 @@ use std::ops::Range;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use kubyl_resources::route;
+use kubyl_resources_core::route;
 use serde_json::{Map, Value};
 
 use crate::parse::{self, Node, NodeValue, Path};
@@ -231,7 +231,7 @@ pub fn sorted(value: Value) -> Value {
 
 /// YAML for a JSON value (the same formatting as the explorer's Copy YAML).
 pub fn to_yaml(value: &Value) -> String {
-    kubyl_resources::format::to_yaml(value)
+    kubyl_resources_core::format::to_yaml(value)
 }
 
 /// Replaces the Secret values in `object` (from the buffer) with what the server must get:

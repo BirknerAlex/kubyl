@@ -17,18 +17,13 @@
 //! editor (`YamlEditor` context) `yaml::Apply` (`secondary-s`), `yaml::DryRun`
 //! (`secondary-shift-s`), `yaml::ShowDiff`, `yaml::ShowProblems`, `yaml::NextProblem` (`f8`)…
 
-pub mod apply;
-pub mod diff;
-pub mod intel;
 mod lsp;
-pub mod parse;
-pub mod render;
 pub mod schema;
 pub mod settings;
-pub mod templates;
 mod ui;
-pub mod validate;
 pub mod view;
+
+pub use kubyl_yaml_core::{apply, diff, intel, parse, render, templates, validate};
 
 pub use ui::diff_view;
 
