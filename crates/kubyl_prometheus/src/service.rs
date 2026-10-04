@@ -89,9 +89,8 @@ impl PrometheusService {
                 this.connection_event(event, cx)
             }));
         }
-        let reach = PortForwardManager::global(cx).read(cx).reach();
         Self {
-            core: PrometheusCore::new(Arc::new(reach), Arc::new(Keychain)),
+            core: PrometheusCore::new(PortForwardManager::app_reach(cx), Arc::new(Keychain)),
             _subscriptions: subscriptions,
         }
     }

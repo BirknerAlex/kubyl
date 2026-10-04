@@ -469,6 +469,8 @@ impl ForwardsCore {
                 // from inside is fine, nothing runs after it.)
                 forward.probe = None;
                 host.effect(ForwardsEffect::Changed(id));
+                // A request may wait for this forward to listen again.
+                self.settle(id, host);
             }
             // Binding the local port failed: nothing to reconnect.
             Err(_) if matches!(forward.state, ForwardState::Failed(_)) => {
@@ -911,6 +913,40 @@ mod reach_tests {
             error,
             "the port-forward didn't start (needs create pods/portforward)"
         );
+    }
+
+    #[test]
+    fn a_probe_that_finds_the_target_again_answers_the_request() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let mut host = TestHost::default();
+        let mut core = ForwardsCore::default();
+        let (reach, _serving) = serve(&mut core, &mut host);
+        let answer = open(&runtime, &reach, request(&runtime, Duration::from_secs(30)));
+
+        host.run_until(&mut core, |core, _| core.forwards().count() == 1);
+        let id = started(&core);
+        // The first lookup failed; the listener comes up meanwhile.
+        silence(
+            &mut core,
+            id,
+            ForwardState::Reconnecting("no ready endpoints".into()),
+        );
+        core.apply_event(
+            id,
+            &ForwardEvent::Listening { local_port: 40125 },
+            &mut host,
+        );
+        // The next probe finds a ready pod.
+        let resolved = resolve::Resolved {
+            pod: "alertmanager-main-0".into(),
+            port: 9093,
+        };
+        core.finish_check(id, Ok(resolved), &mut host);
+        let reached = answer
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
+        assert_eq!(reached.local_port, 40125);
     }
 
     #[test]
