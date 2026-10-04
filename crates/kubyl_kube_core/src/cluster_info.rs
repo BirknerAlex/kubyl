@@ -1,7 +1,7 @@
 //! What kind of cluster this is: distribution guess and capabilities (`ClusterCaps`).
 
 use k8s_openapi::apimachinery::pkg::version::Info;
-use kubyl_core::{ArgoCdCaps, ClusterCaps};
+use kubyl_base::{ArgoCdCaps, ClusterCaps};
 
 use crate::discovery::Discovery;
 use crate::kubeconfig::ContextInfo;
@@ -166,7 +166,7 @@ mod tests {
     use super::*;
     use crate::auth::AuthMethod;
     use crate::kubeconfig::{CaSource, SourceKind};
-    use kubyl_core::ClusterId;
+    use kubyl_base::ClusterId;
 
     fn context(name: &str, server: &str) -> ContextInfo {
         ContextInfo {
@@ -201,7 +201,7 @@ mod tests {
     #[test]
     fn argocd_caps_follow_each_crd() {
         use crate::discovery::ApiResourceInfo;
-        use kubyl_core::{Gvk, Gvr};
+        use kubyl_base::{Gvk, Gvr};
         let resource = |plural: &str, kind: &str| ApiResourceInfo {
             gvk: Gvk::new("argoproj.io", "v1alpha1", kind),
             gvr: Gvr::new("argoproj.io", "v1alpha1", plural),

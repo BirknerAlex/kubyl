@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use futures::{StreamExt as _, TryStreamExt as _};
 use kube::Client;
 use kube::core::discovery::v2::APIGroupDiscoveryList;
-use kubyl_core::{Gvk, Gvr};
+use kubyl_base::{Gvk, Gvr};
 
 /// One resource type in one version.
 #[derive(Clone, Debug, PartialEq, Eq)]
