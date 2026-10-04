@@ -134,6 +134,49 @@ async fn exits(client: kube::Client, target: ExecTarget) -> bool {
         .expect("run")
 }
 
+/// Runs `command` in the box pod and returns how the session ended.
+async fn ends(client: kube::Client, command: &[&str]) -> exec::Ending {
+    let (_input_tx, input_rx) = mpsc::unbounded();
+    let (output_tx, _output_rx) = mpsc::channel(32);
+    let (_resize_tx, resize_rx) = mpsc::unbounded();
+    let (connected_tx, connected_rx) = oneshot::channel();
+    let target = ExecTarget {
+        namespace: NAMESPACE.into(),
+        pod: "box".into(),
+        container: Some("main".into()),
+        mode: Mode::Exec {
+            command: command.iter().map(|part| part.to_string()).collect(),
+        },
+    };
+    let task = tokio::spawn(exec::run_to_end(
+        client,
+        target,
+        input_rx,
+        output_tx,
+        resize_rx,
+        connected_tx,
+    ));
+    connected_rx.await.unwrap().expect("connected");
+    tokio::time::timeout(Duration::from_secs(20), task)
+        .await
+        .expect("session ends")
+        .unwrap()
+        .expect("run")
+}
+
+#[tokio::test]
+#[ignore = "needs a cluster (script/dev-cluster.sh)"]
+async fn exec_reports_the_exit_code() {
+    let client = client().await;
+    setup(&client).await;
+
+    let ok = ends(client.clone(), &["sh", "-c", "exit 0"]).await;
+    let failed = ends(client.clone(), &["sh", "-c", "exit 7"]).await;
+    teardown(&client).await;
+    assert_eq!(ok, exec::Ending::Exited { code: Some(0) });
+    assert_eq!(failed, exec::Ending::Exited { code: Some(7) });
+}
+
 #[tokio::test]
 #[ignore = "needs a cluster (script/dev-cluster.sh)"]
 async fn exec_debug_container_and_node_shell() {
