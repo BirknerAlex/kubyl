@@ -3,7 +3,7 @@
 //! clusters) and `MachineDeployment`s. Updating bumps those versions; Cluster API replaces the
 //! machines. There's no update graph: the user types the version (images must exist for it).
 
-use kubyl_core::Gvr;
+use kubyl_base::Gvr;
 use serde_json::{Value, json};
 
 use crate::kube_api::{self, items, str_at};

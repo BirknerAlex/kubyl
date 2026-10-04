@@ -3,7 +3,7 @@
 //! and plain data (the view renders it; pre-flight checks read it).
 
 use jiff::Timestamp;
-use kubyl_core::Gvr;
+use kubyl_base::Gvr;
 use serde_json::Value;
 
 /// How a cluster is updated.

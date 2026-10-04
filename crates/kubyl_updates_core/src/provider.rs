@@ -1,7 +1,7 @@
 //! The provider abstraction: every distribution updates differently, so each gets an
 //! [`UpdateProvider`] (decided in phase 13, README "Cluster update providers").
 //!
-//! Calls return futures that run on the shared Tokio runtime (`kubyl_core::spawn_kube`),
+//! Calls return futures that run on the shared Tokio runtime (`kubyl_base::spawn_kube`),
 //! never on the UI thread. Progress is [`UpdateProvider::read`] again: the service polls while
 //! a view shows the cluster, faster while an update runs.
 

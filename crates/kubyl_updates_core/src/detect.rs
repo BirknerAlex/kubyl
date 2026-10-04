@@ -2,8 +2,8 @@
 //! OpenShift, the managed clouds, k3s/RKE2, Cluster API management clusters, else
 //! self-managed.
 
-use kubyl_kube::cluster_info::Distribution;
-use kubyl_kube::discovery::Discovery;
+use kubyl_kube_core::cluster_info::Distribution;
+use kubyl_kube_core::discovery::Discovery;
 
 use crate::model::ProviderKind;
 
