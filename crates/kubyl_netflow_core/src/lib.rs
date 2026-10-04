@@ -34,3 +34,4 @@ pub mod proto {
 pub mod rows;
 pub mod sanitize;
 pub mod settings;
+pub mod state;
