@@ -25,7 +25,7 @@ pub mod selection;
 pub mod store;
 pub mod table;
 
-pub use kubyl_resources_core::{describe, filter, format, ops, route};
+pub use kubyl_resources_core::{describe, filter, format, ops, route, source};
 
 pub use filter::Filter;
 pub use selection::{ResourceSelection, Selected};

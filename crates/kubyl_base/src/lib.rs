@@ -8,12 +8,14 @@
 //!
 //! `kubyl_core` re-exports all of it next to the GPUI parts (registries, `spawn_kube`).
 
+pub mod columns;
 pub mod error;
 pub mod host;
 pub mod notice;
 pub mod runtime;
 pub mod types;
 
+pub use columns::{Align, CellValue, ColumnDef, ColumnWidth};
 pub use error::{Error, Result};
 /// GPUI's cheap-to-clone string (the same type as `gpui::SharedString`), without GPUI.
 pub use gpui_shared_string::SharedString;
