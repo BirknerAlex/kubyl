@@ -95,12 +95,10 @@ in `kubyl_base` runs the same core code on Tokio, without GPUI.
       sources, fetch-and-merge), Prometheus (`servers`), updates (`service`: states, facts,
       building providers), flows (`state`), Argo CD (`settings`, `apps`, `run`), OLM
       (`olm::snapshot`), Helm (`helm::release`).
-- [ ] Later (needs port-forward and store seams in the core): the orchestration of the services
-      above. They start temporary port-forwards through `PortForwardManager`, hold
-      `ResourceStores` leases and read `MetricsService`, all GPUI entities. Moving them on `Host`
-      means a "reach this service" trait (forward or proxy) and store snapshots fed in by the
-      adapter. Silences, the file transfer queue, log sessions and the remaining view state are
-      UI.
+- [x] The orchestration of the services above moved in phase 20 ("the rest of the services on
+      Host", `plans/20-services-on-host.md`): a "reach this service" trait and store sources
+      replaced the GPUI entities they used. Silences, the file transfer queue, log sessions
+      and the remaining view state are UI.
 
 ### Wrap-up
 - [x] `plans/README.md`: workspace layout, the decision; `AGENTS.md`: where logic goes.
