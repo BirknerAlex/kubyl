@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use kubyl_settings::{SettingsSection, StateSection};
+use kubyl_settings_core::{SettingsSection, StateSection};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 

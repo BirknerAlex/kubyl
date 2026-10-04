@@ -12,15 +12,11 @@
 
 mod actions;
 mod chrome;
-pub mod client;
-pub mod discover;
-pub mod matchers;
-pub mod merge;
-pub mod model;
 pub mod service;
-pub mod settings;
 pub mod silence;
 pub mod view;
+
+pub use kubyl_alerts_core::{client, discover, matchers, merge, model, rows, settings};
 
 use gpui::App;
 use kubyl_settings::Settings;
