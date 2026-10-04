@@ -4,8 +4,8 @@
 //! Every series is a [`crate::queries`] id rendered with the object's filters, so the same
 //! query serves a pod, a workload (its pods by name) and a namespace.
 
-use kubyl_core::ResourceRef;
-use kubyl_resources::format::{format_bytes, format_cpu};
+use kubyl_base::ResourceRef;
+use kubyl_resources_core::format::{format_bytes, format_cpu};
 
 /// How a panel's values read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -443,7 +443,7 @@ fn regex_escape(value: &str) -> String {
 mod tests {
     use super::*;
     use crate::queries::{LIBRARY, Queries};
-    use kubyl_core::{ClusterId, Gvr};
+    use kubyl_base::{ClusterId, Gvr};
 
     #[test]
     fn every_panel_query_exists() {

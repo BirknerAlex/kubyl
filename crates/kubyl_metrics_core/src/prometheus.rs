@@ -413,9 +413,9 @@ mod tests {
             socket.write_all(response.as_bytes()).await.unwrap();
             request
         });
-        let bearer = Bearer::User(kubyl_kube::auth::BearerToken::Static(SecretString::from(
-            "s3cr3t".to_string(),
-        )));
+        let bearer = Bearer::User(kubyl_kube_core::auth::BearerToken::Static(
+            SecretString::from("s3cr3t".to_string()),
+        ));
         let target = Target::Route {
             namespace: "openshift-monitoring".into(),
             service: "thanos-querier".into(),
@@ -451,7 +451,7 @@ mod tests {
         ));
         // Without credentials, plain HTTP is fine.
         assert!(PromClient::external("http://prom.example.com", false, None).is_ok());
-        let bearer = Bearer::User(kubyl_kube::auth::BearerToken::Static(token.clone()));
+        let bearer = Bearer::User(kubyl_kube_core::auth::BearerToken::Static(token.clone()));
         let route = Target::Route {
             namespace: "openshift-monitoring".into(),
             service: "thanos-querier".into(),

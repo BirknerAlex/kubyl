@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use kubyl_settings::SettingsSection;
+use kubyl_settings_core::SettingsSection;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -77,7 +77,7 @@ pub struct MetricsSettings {
     /// name.
     pub prometheus: BTreeMap<String, PrometheusOverride>,
     /// PromQL overrides by query id (`cluster_cpu`, `namespace_memory`, `pod_cpu`…; see the
-    /// ids in `kubyl_metrics::queries`). `$sel` is replaced with extra label matchers
+    /// ids in `kubyl_metrics_core::queries`). `$sel` is replaced with extra label matchers
     /// (`,namespace="payments"`), so keep it inside a selector's braces after another matcher.
     pub queries: BTreeMap<String, String>,
 }

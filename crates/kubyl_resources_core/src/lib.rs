@@ -8,6 +8,7 @@
 //! - [`ops`]: delete, scale, restart, undo, cordon, drain, trigger CronJob…
 //! - [`describe`]: `kubectl describe`-like text.
 //! - [`format`]: ages, quantities and JSON helpers.
+//! - [`usage`]: CPU and memory usage as metrics providers report it.
 //! - [`route`]: OpenShift Routes (model, URL, weights, target port resolution, key masking).
 //!
 //! `kubyl_resources` re-exports these modules and adds the GPUI side: shared store entities,
@@ -20,3 +21,4 @@ pub mod ops;
 pub mod route;
 pub mod status;
 pub mod store;
+pub mod usage;
