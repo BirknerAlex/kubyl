@@ -5023,6 +5023,7 @@ dependencies = [
  "kubyl_base",
  "kubyl_kube_core",
  "kubyl_resources_core",
+ "kubyl_settings_core",
  "kubyl_yaml_core",
  "open",
  "openidconnect",
