@@ -20,6 +20,7 @@ pub mod preflight;
 pub mod provider;
 pub mod providers;
 pub mod removed;
+pub mod service;
 pub mod settings;
 pub mod suc;
 pub mod version;
