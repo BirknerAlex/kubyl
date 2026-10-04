@@ -113,6 +113,21 @@ impl<S: Service> TestHost<S> {
         }
     }
 
+    /// Runs callbacks until `done` returns true, for services with work that never ends (a
+    /// stream they serve).
+    ///
+    /// # Panics
+    /// When pending work produces nothing for 10 s.
+    pub fn run_until(&mut self, service: &mut S, mut done: impl FnMut(&mut S, &Self) -> bool) {
+        while !done(service, self) {
+            let message = self
+                .rx
+                .recv_timeout(STALL)
+                .expect("pending work produced nothing for 10 s");
+            self.handle(service, message);
+        }
+    }
+
     fn handle(&mut self, service: &mut S, message: Message) {
         match message {
             Message::Done(id, output) => match self.pending.remove(&id) {
