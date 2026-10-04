@@ -18,6 +18,7 @@ use kubyl_ui::{
 };
 
 use super::{PasteKubeconfig, browse_kubeconfigs, clusters_view_kind, open_sign_in, switch_to};
+use crate::ConnectionStateExt as _;
 use crate::auth::{AuthMethod, store};
 use crate::kubeconfig::{CaSource, ContextInfo, Source, SourceKind};
 use crate::settings::{ColorTag, ColorTagExt as _, display_path};

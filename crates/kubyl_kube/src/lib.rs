@@ -57,7 +57,9 @@ pub use kubyl_kube_core::{
     access, auth, client, cluster_info, discovery, groups, kubeconfig, openapi, transport, watches,
 };
 
-pub use manager::{Cluster, ConnectionEvent, ConnectionManager, ConnectionState, Namespaces};
+pub use manager::{
+    Cluster, ConnectionEvent, ConnectionManager, ConnectionState, ConnectionStateExt, Namespaces,
+};
 
 use gpui::App;
 use kubyl_settings::Settings;

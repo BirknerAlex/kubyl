@@ -15,6 +15,9 @@ pub mod runtime;
 pub mod types;
 
 pub use error::{Error, Result};
-pub use host::{Flow, Host, HostExt, Service, TaskHandle};
+pub use host::{Flow, Host, HostExt, Pace, Service, TaskHandle};
 pub use notice::{Notice, NotificationLevel};
-pub use types::{ArgoCdCaps, ClusterCaps, ClusterId, ContextName, Gvk, Gvr, ResourceRef, ViewKind};
+pub use types::{
+    ArgoCdCaps, ClusterCaps, ClusterId, ContextName, Gvk, Gvr, ResourceRef, TabContext,
+    TabNamespace, ViewKind,
+};

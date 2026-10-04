@@ -12,7 +12,8 @@ use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 
 use super::{
-    AnyBox, AnyCallback, BatchCallback, Callback, Detach, Executor, Flow, Host, Service, TaskHandle,
+    AnyBox, AnyCallback, BatchCallback, Callback, Detach, Executor, Flow, Host, Pace, Service,
+    TaskHandle, TickCallback,
 };
 use crate::notice::Notice;
 
@@ -22,6 +23,7 @@ const STALL: Duration = Duration::from_secs(10);
 enum Message {
     Done(u64, AnyBox),
     Batch(u64, Vec<AnyBox>),
+    Tick(u64),
     Ended(u64),
 }
 
@@ -29,6 +31,7 @@ enum Pending<S: Service> {
     Once(AnyCallback<S>),
     Timer(Callback<S>),
     Batches(BatchCallback<S>),
+    Ticks(TickCallback<S>),
 }
 
 /// A [`Host`] for tests: work runs on its own Tokio runtime, callbacks run when the test calls
@@ -129,6 +132,14 @@ impl<S: Service> TestHost<S> {
                     self.pending.insert(id, (Pending::Batches(on_batch), alive));
                 }
             }
+            Message::Tick(id) => {
+                if let Some((Pending::Ticks(mut tick), alive)) = self.pending.remove(&id)
+                    && alive.load(Ordering::SeqCst)
+                    && tick(service, self) == Flow::Continue
+                {
+                    self.pending.insert(id, (Pending::Ticks(tick), alive));
+                }
+            }
             Message::Ended(id) => {
                 self.pending.remove(&id);
             }
@@ -177,15 +188,18 @@ impl<S: Service> Host<S> for TestHost<S> {
     fn batches_any(
         &mut self,
         mut items: BoxStream<'static, AnyBox>,
-        window: Duration,
+        pace: Pace,
         on_batch: BatchCallback<S>,
     ) -> TaskHandle {
         self.start(Pending::Batches(on_batch), move |id, tx| {
             async move {
+                let mut index = 0;
                 while let Some(first) = items.next().await {
-                    if !window.is_zero() {
-                        tokio::time::sleep(window).await;
+                    let delay = pace.delay_before(index);
+                    if !delay.is_zero() {
+                        tokio::time::sleep(delay).await;
                     }
+                    index += 1;
                     let mut batch = vec![first];
                     let mut ended = false;
                     loop {
@@ -201,8 +215,25 @@ impl<S: Service> Host<S> for TestHost<S> {
                     if tx.send(Message::Batch(id, batch)).is_err() || ended {
                         break;
                     }
+                    if !pace.gap.is_zero() {
+                        tokio::time::sleep(pace.gap).await;
+                    }
                 }
                 tx.send(Message::Ended(id)).ok();
+            }
+            .boxed()
+        })
+    }
+
+    fn every_any(&mut self, interval: Duration, tick: TickCallback<S>) -> TaskHandle {
+        self.start(Pending::Ticks(tick), move |id, tx| {
+            async move {
+                loop {
+                    tokio::time::sleep(interval).await;
+                    if tx.send(Message::Tick(id)).is_err() {
+                        break;
+                    }
+                }
             }
             .boxed()
         })
@@ -279,7 +310,8 @@ mod tests {
             tx.unbounded_send(n).unwrap();
         }
         drop(tx);
-        let handle = host.batches(rx, Duration::from_millis(10), |this, batch, host| {
+        let pace = Pace::debounce(Duration::from_millis(10));
+        let handle = host.batches(rx, pace, |this, batch, host| {
             this.total += batch.iter().sum::<u32>();
             host.emit(batch.len() as u32);
             Flow::Continue
@@ -288,6 +320,23 @@ mod tests {
         drop(handle);
         assert_eq!(counter.total, 6);
         assert_eq!(host.events, [3]);
+    }
+
+    #[test]
+    fn ticks_repeat_until_stopped() {
+        let mut host: TestHost<Counter> = TestHost::new();
+        let mut counter = Counter::default();
+        let ticks = host.every(Duration::from_millis(5), |this, _| {
+            this.total += 1;
+            if this.total == 3 {
+                Flow::Stop
+            } else {
+                Flow::Continue
+            }
+        });
+        host.run_until_idle(&mut counter);
+        drop(ticks);
+        assert_eq!(counter.total, 3);
     }
 
     #[test]

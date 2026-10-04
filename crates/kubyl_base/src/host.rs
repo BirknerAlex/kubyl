@@ -47,6 +47,63 @@ pub enum Executor {
     Background,
 }
 
+/// When [`HostExt::batches`] delivers.
+///
+/// After an item arrives the host waits `first_delay` (for the first batch) or `delay` (for
+/// later ones), then delivers everything that arrived by then as one batch, then waits `gap`
+/// before it looks at the stream again.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Pace {
+    pub first_delay: Duration,
+    pub delay: Duration,
+    pub gap: Duration,
+}
+
+impl Pace {
+    /// Each item as soon as it arrives (with whatever else is already waiting).
+    pub const IMMEDIATE: Pace = Pace {
+        first_delay: Duration::ZERO,
+        delay: Duration::ZERO,
+        gap: Duration::ZERO,
+    };
+
+    /// Waits `delay` after an item so a burst arrives as one batch.
+    pub const fn debounce(delay: Duration) -> Self {
+        Pace {
+            first_delay: delay,
+            delay,
+            gap: Duration::ZERO,
+        }
+    }
+
+    /// Like [`Pace::debounce`], but the first batch comes right away.
+    pub const fn debounce_after_first(delay: Duration) -> Self {
+        Pace {
+            first_delay: Duration::ZERO,
+            delay,
+            gap: Duration::ZERO,
+        }
+    }
+
+    /// Delivers right away, then at most once per `gap`.
+    pub const fn throttle(gap: Duration) -> Self {
+        Pace {
+            first_delay: Duration::ZERO,
+            delay: Duration::ZERO,
+            gap,
+        }
+    }
+
+    /// How long to wait before delivering batch number `index` (0-based).
+    pub fn delay_before(&self, index: usize) -> Duration {
+        if index == 0 {
+            self.first_delay
+        } else {
+            self.delay
+        }
+    }
+}
+
 /// Whether a batch callback wants more.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Flow {
@@ -57,6 +114,7 @@ pub enum Flow {
 pub type Callback<S> = Box<dyn FnOnce(&mut S, &mut dyn Host<S>)>;
 pub type AnyCallback<S> = Box<dyn FnOnce(&mut S, AnyBox, &mut dyn Host<S>)>;
 pub type BatchCallback<S> = Box<dyn FnMut(&mut S, Vec<AnyBox>, &mut dyn Host<S>) -> Flow>;
+pub type TickCallback<S> = Box<dyn FnMut(&mut S, &mut dyn Host<S>) -> Flow>;
 
 /// Something a host gave back for running work, kept alive by a [`TaskHandle`].
 pub trait Detach: Any {
@@ -103,14 +161,18 @@ pub trait Host<S: Service> {
 
     fn after_any(&mut self, delay: Duration, then: Callback<S>) -> TaskHandle;
 
-    /// Waits for an item, then `window` longer, and delivers everything that arrived as one
-    /// batch. Ends with the stream or when the callback returns [`Flow::Stop`].
+    /// Delivers the stream's items in batches paced by `pace`. Ends with the stream or when the
+    /// callback returns [`Flow::Stop`].
     fn batches_any(
         &mut self,
         items: BoxStream<'static, AnyBox>,
-        window: Duration,
+        pace: Pace,
         on_batch: BatchCallback<S>,
     ) -> TaskHandle;
+
+    /// Calls `tick` every `interval` (the first time after one interval) until it returns
+    /// [`Flow::Stop`].
+    fn every_any(&mut self, interval: Duration, tick: TickCallback<S>) -> TaskHandle;
 
     fn emit(&mut self, event: S::Event);
 
@@ -150,16 +212,25 @@ pub trait HostExt<S: Service>: Host<S> {
         self.after_any(delay, Box::new(then))
     }
 
+    /// See [`Host::every_any`].
+    fn every(
+        &mut self,
+        interval: Duration,
+        tick: impl FnMut(&mut S, &mut dyn Host<S>) -> Flow + 'static,
+    ) -> TaskHandle {
+        self.every_any(interval, Box::new(tick))
+    }
+
     /// See [`Host::batches_any`].
     fn batches<T: Send + 'static>(
         &mut self,
         items: impl Stream<Item = T> + Send + 'static,
-        window: Duration,
+        pace: Pace,
         mut on_batch: impl FnMut(&mut S, Vec<T>, &mut dyn Host<S>) -> Flow + 'static,
     ) -> TaskHandle {
         self.batches_any(
             items.map(|item| Box::new(item) as AnyBox).boxed(),
-            window,
+            pace,
             Box::new(move |service, batch, host| {
                 let batch = batch.into_iter().map(|item| *downcast(item)).collect();
                 on_batch(service, batch, host)

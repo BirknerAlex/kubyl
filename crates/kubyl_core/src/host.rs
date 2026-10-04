@@ -29,7 +29,8 @@ use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use gpui::{AsyncApp, Context, EventEmitter, Task, WeakEntity};
 use kubyl_base::host::{
-    AnyBox, AnyCallback, BatchCallback, Callback, Detach, Executor, Flow, Host, Service, TaskHandle,
+    AnyBox, AnyCallback, BatchCallback, Callback, Detach, Executor, Flow, Host, Pace, Service,
+    TaskHandle, TickCallback,
 };
 use kubyl_base::notice::Notice;
 
@@ -132,16 +133,19 @@ impl<E: Hosts<S>, S: Service> Host<S> for GpuiHost<'_, '_, E, S> {
     fn batches_any(
         &mut self,
         mut items: BoxStream<'static, AnyBox>,
-        window: Duration,
+        pace: Pace,
         mut on_batch: BatchCallback<S>,
     ) -> TaskHandle {
         let task = self
             .cx
             .spawn(async move |this: WeakEntity<E>, cx: &mut AsyncApp| {
+                let mut index = 0;
                 while let Some(first) = items.next().await {
-                    if !window.is_zero() {
-                        cx.background_executor().timer(window).await;
+                    let delay = pace.delay_before(index);
+                    if !delay.is_zero() {
+                        cx.background_executor().timer(delay).await;
                     }
+                    index += 1;
                     let mut batch = vec![first];
                     let mut ended = false;
                     loop {
@@ -156,6 +160,25 @@ impl<E: Hosts<S>, S: Service> Host<S> for GpuiHost<'_, '_, E, S> {
                     }
                     let flow = call_back(&this, cx, |service, host| on_batch(service, batch, host));
                     if flow != Some(Flow::Continue) || ended {
+                        break;
+                    }
+                    if !pace.gap.is_zero() {
+                        cx.background_executor().timer(pace.gap).await;
+                    }
+                }
+            });
+        TaskHandle::new(GpuiTask(task))
+    }
+
+    fn every_any(&mut self, interval: Duration, mut tick: TickCallback<S>) -> TaskHandle {
+        let task = self
+            .cx
+            .spawn(async move |this: WeakEntity<E>, cx: &mut AsyncApp| {
+                loop {
+                    cx.background_executor().timer(interval).await;
+                    if call_back(&this, cx, |service, host| tick(service, host))
+                        != Some(Flow::Continue)
+                    {
                         break;
                     }
                 }
@@ -289,11 +312,15 @@ mod tests {
         let (tx, rx) = futures::channel::mpsc::unbounded::<u32>();
         let handle = holder.update(cx, |this, cx| {
             hosted(this, cx, |_, host| {
-                host.batches(rx, Duration::from_millis(100), |this, batch, host| {
-                    this.total += batch.len() as u32;
-                    host.emit(this.total);
-                    Flow::Continue
-                })
+                host.batches(
+                    rx,
+                    Pace::debounce(Duration::from_millis(100)),
+                    |this, batch, host| {
+                        this.total += batch.len() as u32;
+                        host.emit(this.total);
+                        Flow::Continue
+                    },
+                )
             })
         });
         for n in 0..3 {
