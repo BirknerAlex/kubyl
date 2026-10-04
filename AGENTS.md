@@ -45,6 +45,7 @@ cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo deny check
+./script/check-core-crates.sh   # core crates must not depend on GPUI or the UI crates
 cargo run -p kubyl
 ```
 
