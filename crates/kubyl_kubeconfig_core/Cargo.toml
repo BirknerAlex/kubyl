@@ -1,6 +1,6 @@
 [package]
-name = "kubyl_kubeconfig"
-description = "Kubeconfig editor, connection test and creation wizard."
+name = "kubyl_kubeconfig_core"
+description = "Kubeconfig editing without the UI: a lossless kubeconfig model, files, validation, certificates, TLS probes and the connection test."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,25 +13,18 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-kubyl_kubeconfig_core.workspace = true
 anyhow.workspace = true
 base64.workspace = true
 dirs.workspace = true
 futures.workspace = true
-gpui.workspace = true
-gpui-component.workspace = true
 http.workspace = true
 jiff.workspace = true
 k8s-openapi.workspace = true
 kube.workspace = true
-kubyl_core.workspace = true
-kubyl_explorer.workspace = true
-kubyl_kube.workspace = true
-kubyl_settings.workspace = true
-kubyl_ui.workspace = true
-kubyl_yaml.workspace = true
-lsp-types.workspace = true
-open.workspace = true
+kubyl_base.workspace = true
+kubyl_kube_core.workspace = true
+kubyl_settings_core.workspace = true
+kubyl_yaml_core.workspace = true
 parking_lot.workspace = true
 rustls.workspace = true
 rustls-native-certs.workspace = true
@@ -48,7 +41,3 @@ tokio-rustls.workspace = true
 tracing.workspace = true
 url.workspace = true
 x509-cert.workspace = true
-
-[dev-dependencies]
-gpui = { workspace = true, features = ["test-support"] }
-tempfile.workspace = true

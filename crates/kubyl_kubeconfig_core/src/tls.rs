@@ -7,7 +7,7 @@
 //! certificates the server sent) is only offered when it verifies the server's certificate,
 //! and the user confirms its fingerprint before it's used.
 //!
-//! Runs on the Tokio runtime (`kubyl_core::spawn_kube`).
+//! Runs on the Tokio runtime (`kubyl_core::spawn_kube` in the app).
 
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};

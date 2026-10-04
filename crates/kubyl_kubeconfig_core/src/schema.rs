@@ -4,7 +4,7 @@
 
 use std::sync::{Arc, OnceLock};
 
-use kubyl_core::Gvk;
+use kubyl_base::Gvk;
 use serde_json::{Value, json};
 
 /// The group/version/kind of a kubeconfig document.
@@ -157,8 +157,8 @@ fn build() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kubyl_yaml::schema::Schema;
-    use kubyl_yaml::{parse, validate};
+    use kubyl_yaml_core::schema::Schema;
+    use kubyl_yaml_core::{parse, validate};
 
     #[test]
     fn validates_kubeconfigs() {
@@ -179,7 +179,7 @@ mod tests {
         );
         let lookup = |g: &Gvk| (g == &gvk()).then(|| (document(), SOURCE.to_string()));
         let offset = text.find("servr").unwrap() - 8;
-        let hover = kubyl_yaml::intel::hover(text, offset, &lookup);
+        let hover = kubyl_yaml_core::intel::hover(text, offset, &lookup);
         assert!(hover.is_some());
     }
 }

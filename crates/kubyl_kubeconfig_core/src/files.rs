@@ -361,12 +361,12 @@ fn prune(dir: &Path, prefix: &str, keep: usize) -> std::io::Result<()> {
 
 /// The folder for Kubyl-owned kubeconfigs (pasted or created in Kubyl).
 pub fn owned_dir() -> PathBuf {
-    kubyl_settings::config_dir().join("kubeconfigs")
+    kubyl_settings_core::config_dir().join("kubeconfigs")
 }
 
 /// The folder for backups.
 pub fn backup_dir() -> PathBuf {
-    kubyl_settings::config_dir().join("kubeconfig-backups")
+    kubyl_settings_core::config_dir().join("kubeconfig-backups")
 }
 
 /// Whether Kubyl owns `path` (it's in `owned_dir`).

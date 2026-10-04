@@ -176,7 +176,7 @@ async fn kind_failures_stop_at_the_right_step_with_a_clear_message() {
     let user = json!({"client-certificate-data": certs::data_from_pem(&kind.cert), "client-key-data": certs::data_from_pem(&kind.key)});
 
     // A wrong CA: TLS fails, with the fix, and no credentials go out.
-    let other = include_str!("fixtures/other-ca.pem");
+    let other = include_str!("../../kubyl_kubeconfig_core/tests/fixtures/other-ca.pem");
     let report = test(
         single(
             &kind.server,

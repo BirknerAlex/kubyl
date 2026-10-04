@@ -12,29 +12,23 @@
 //! Other crates open it with `kubyl_core::actions::{NewKubeconfig, EditKubeconfig}`.
 
 pub mod actions;
-pub mod certs;
-pub mod conntest;
 mod dialogs;
 pub mod editor;
 #[cfg(test)]
 mod editor_tests;
 mod editor_ui;
-pub mod files;
 pub(crate) mod forms;
 pub mod import;
 #[cfg(test)]
 mod live_ui_tests;
-pub mod model;
 pub mod panel;
-pub mod schema;
 pub mod settings;
 pub mod state;
-pub mod tls;
-pub mod validate;
 pub mod widgets;
 pub mod wizard;
-pub mod yaml;
 mod yaml_tab;
+
+pub use kubyl_kubeconfig_core::{certs, conntest, files, model, schema, tls, validate, yaml};
 
 use gpui::{App, AppContext as _};
 use kubyl_core::ViewRegistry;
