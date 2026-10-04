@@ -5002,8 +5002,16 @@ dependencies = [
  "fjadra",
  "gpui-pre",
  "jiff",
+ "kubyl_charts_core",
  "kubyl_core",
  "kubyl_ui",
+]
+
+[[package]]
+name = "kubyl_charts_core"
+version = "0.4.0"
+dependencies = [
+ "kubyl_base",
 ]
 
 [[package]]
@@ -5302,6 +5310,7 @@ dependencies = [
  "k8s-openapi",
  "kube",
  "kubyl_base",
+ "kubyl_charts_core",
  "kubyl_kube_core",
  "kubyl_resources_core",
  "kubyl_settings_core",

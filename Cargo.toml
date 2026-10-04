@@ -17,6 +17,7 @@ publish = false
 kubyl_alerts = { path = "crates/kubyl_alerts" }
 kubyl_base = { path = "crates/kubyl_base" }
 kubyl_charts = { path = "crates/kubyl_charts" }
+kubyl_charts_core = { path = "crates/kubyl_charts_core" }
 kubyl_argocd = { path = "crates/kubyl_argocd" }
 kubyl_core = { path = "crates/kubyl_core" }
 kubyl_explorer = { path = "crates/kubyl_explorer" }

@@ -1,0 +1,16 @@
+[package]
+name = "kubyl_charts_core"
+description = "Chart data without the UI: time ranges, time grids and axis math."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+kubyl_base.workspace = true
