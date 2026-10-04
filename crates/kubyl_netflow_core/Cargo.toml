@@ -21,6 +21,7 @@ kube.workspace = true
 kubyl_base.workspace = true
 kubyl_kube_core.workspace = true
 kubyl_metrics_core.workspace = true
+kubyl_portforward_core.workspace = true
 kubyl_resources_core.workspace = true
 kubyl_settings_core.workspace = true
 prost.workspace = true
