@@ -19,6 +19,11 @@ desktop client (macOS, Windows, Linux) in Rust on GPUI, styled like Zed.
   via `kubyl_core::spawn_kube`.
 - Never log or persist tokens, refresh tokens, client keys or Secret data. Secrets go to the OS
   keychain (`kubyl_kube::auth::store`), never into settings.json or state.json.
+- Logic without UI goes in the crate's `kubyl_<name>_core` (no `gpui`, `gpui-component` or
+  `kubyl_ui`; `script/check-core-crates.sh` checks it in CI). The GPUI crate re-exports it and adds
+  views. Stateful services are plain structs on `kubyl_base::Host`, wrapped in an entity with
+  `kubyl_core::host::{Hosts, hosted}`; theme colors of core types are extension traits in the GPUI
+  crate.
 - Only touch the crates your phase owns. Feature crates plug in through their `init(cx)` and the
   registries in `kubyl_core` (views, actions, chrome, columns) instead of editing the shell.
   Keep shared-crate and root `Cargo.toml` changes minimal and in their own commits.

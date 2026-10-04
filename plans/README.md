@@ -74,7 +74,7 @@ the same files. See "Extension points" below.
 Cargo.toml                  # [workspace], shared deps pinned in [workspace.dependencies]
 crates/
   kubyl/                    # binary: main(), app init, window, menus, bundling metadata
-  kubyl_core/               # shared types: ClusterId, ResourceRef, GVK/GVR, errors, Tokio bridge
+  kubyl_core/               # GPUI side of kubyl_base: registries, actions, spawn_kube, GpuiHost, toasts
   kubyl_ui/                 # theme tokens, Zed-like components (TitleBar, Sidebar, Tabs, StatusBar,
                             #   Dock, Table, KeyHints, Chip, Pill, Toast, Modal), icons
   kubyl_settings/           # settings + state persistence (JSON in platform config dir)
@@ -98,6 +98,12 @@ crates/
   kubyl_kubeconfig/         # kubeconfig editor, connection test, creation wizard (phase 11)
   kubyl_alerts/             # Alertmanager alerts, silences, alerting rules (phase 14)
   kubyl_netflow/            # network flows: Hubble, NetObserv, Calico Whisker; table and topology (phase 16)
+  kubyl_prometheus/         # Prometheus web UI tab (phase 18)
+  kubyl_base/               # GPUI-free foundation: types, errors, Tokio runtime, notices, Host (phase 19)
+  kubyl_*_core/             # GPUI-free logic of the crate of the same name (phase 19): kube, resources,
+                            #   settings, logs, terminal, portforward, yaml, metrics, charts, alerts, argocd,
+                            #   netflow, operators, updates, prometheus, files, kubeconfig, webview,
+                            #   palette, explorer, overview, selfupdate
 assets/                     # logo, icons, fonts, keymaps, themes
 design/mockups/             # mockup generator (HTML design canvas)
 plans/                      # these plans
