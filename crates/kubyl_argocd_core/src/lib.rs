@@ -19,5 +19,6 @@ pub mod ops;
 pub mod run;
 pub mod settings;
 pub mod sso;
+pub mod state;
 pub mod tree;
 pub mod windows;

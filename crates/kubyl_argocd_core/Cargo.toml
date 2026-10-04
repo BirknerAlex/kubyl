@@ -22,6 +22,7 @@ k8s-openapi.workspace = true
 kube.workspace = true
 kubyl_base.workspace = true
 kubyl_kube_core.workspace = true
+kubyl_portforward_core.workspace = true
 kubyl_resources_core.workspace = true
 kubyl_yaml_core.workspace = true
 kubyl_settings_core.workspace = true
@@ -39,6 +40,7 @@ url.workspace = true
 
 [dev-dependencies]
 base64.workspace = true
+kubyl_kube_core = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
 
 [features]
