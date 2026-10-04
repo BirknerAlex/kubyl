@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use jiff::Timestamp;
-use kubyl_metrics::prometheus::PromError;
+use kubyl_metrics_core::prometheus::PromError;
 use serde_json::Value;
 
 pub type Labels = BTreeMap<String, String>;

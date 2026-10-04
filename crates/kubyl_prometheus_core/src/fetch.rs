@@ -1,7 +1,7 @@
 //! Reads of the Prometheus HTTP API. Everything here is async and runs on the Tokio runtime
-//! (`kubyl_core::spawn_kube`), never on the UI thread.
+//! (`kubyl_core::spawn_kube` in the app), never on the UI thread.
 
-use kubyl_metrics::prometheus::{PromClient, PromError};
+use kubyl_metrics_core::prometheus::{PromClient, PromError};
 
 use crate::complete::Names;
 use crate::model::{self, Overview, QueryResult, RuleGroup, Targets};
@@ -81,7 +81,7 @@ pub async fn query(
 const LOOKBACK: f64 = 12.0 * 3600.0;
 
 fn scoped(selector: Option<&str>) -> Vec<(&'static str, String)> {
-    let now = kubyl_metrics::service::now();
+    let now = kubyl_metrics_core::service::now();
     let mut params = vec![
         ("start", format!("{:.0}", now - LOOKBACK)),
         ("end", format!("{now:.0}")),
@@ -136,13 +136,13 @@ pub async fn label_values(
     let body = prom
         .api(&format!("/api/v1/label/{label}/values"), &scoped(selector))
         .await?;
-    kubyl_metrics::prometheus::parse_names(&body)
+    kubyl_metrics_core::prometheus::parse_names(&body)
 }
 
 /// The label names of the series `selector` matches.
 pub async fn labels_of(prom: &PromClient, selector: &str) -> Result<Vec<String>, PromError> {
     let body = prom.api("/api/v1/labels", &scoped(Some(selector))).await?;
-    kubyl_metrics::prometheus::parse_names(&body)
+    kubyl_metrics_core::prometheus::parse_names(&body)
 }
 
 /// Metric and label names for the query box's suggestions (index lookups on the server). The
@@ -162,7 +162,7 @@ pub async fn names(prom: &PromClient) -> Result<Names, PromError> {
     Ok(Names {
         metrics,
         labels: labels
-            .and_then(|body| kubyl_metrics::prometheus::parse_names(&body))
+            .and_then(|body| kubyl_metrics_core::prometheus::parse_names(&body))
             .unwrap_or_default(),
         metadata,
     })

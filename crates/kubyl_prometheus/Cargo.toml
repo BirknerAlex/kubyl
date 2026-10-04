@@ -13,6 +13,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+kubyl_prometheus_core.workspace = true
 futures.workspace = true
 gpui.workspace = true
 gpui-component.workspace = true
