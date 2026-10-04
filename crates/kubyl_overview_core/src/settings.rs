@@ -1,6 +1,6 @@
 //! The `"overview"` section of settings.json and what the overview remembers in state.json.
 
-use kubyl_settings::{SettingsSection, StateSection};
+use kubyl_settings_core::{SettingsSection, StateSection};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 

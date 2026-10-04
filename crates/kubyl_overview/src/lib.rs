@@ -12,7 +12,7 @@
 pub mod events;
 pub mod notify;
 pub mod overview;
-pub mod settings;
+pub use kubyl_overview_core::settings;
 
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};

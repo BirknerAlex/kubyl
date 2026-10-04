@@ -7,10 +7,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use gpui::SharedString;
 use jiff::Timestamp;
-use kubyl_resources::columns::{event_message, event_time};
-use kubyl_resources::format::{array_at, format_bytes, int_at, parse_quantity, str_at, timestamp};
+use kubyl_base::SharedString;
+use kubyl_resources_core::format::{
+    array_at, format_bytes, int_at, parse_quantity, str_at, timestamp,
+};
+use kubyl_resources_core::status::{event_message, event_time};
 use serde_json::Value;
 
 /// One line of the stream (one event, or a group of repeats).
