@@ -7,7 +7,7 @@ use gpui::{Action, actions};
 use serde::Deserialize;
 
 use crate::registry::ViewRequest;
-use crate::types::ResourceRef;
+use crate::types::{ClusterId, ResourceRef};
 
 actions!(
     kubyl,
@@ -63,3 +63,18 @@ pub struct ForwardPort {
 #[derive(Clone, PartialEq, Debug, Deserialize, Action)]
 #[action(namespace = kubyl, no_json)]
 pub struct StopForward(pub u64);
+
+/// Asks the user's agent about something (phase 21, `kubyl_agent` handles it): selected log
+/// lines, an alert, an object. Opens the agent panel with it attached to the prompt. `text` is
+/// what the agent gets; the handler masks token shapes again, but senders must not put Secret
+/// values in it.
+#[derive(Clone, PartialEq, Debug, Deserialize, Action)]
+#[action(namespace = kubyl, no_json)]
+pub struct AskAgent {
+    pub cluster: ClusterId,
+    /// Shown on the attachment, e.g. `42 log lines of shop/web-0`.
+    pub label: String,
+    /// `kubyl://…`, identifies what was attached.
+    pub uri: String,
+    pub text: String,
+}

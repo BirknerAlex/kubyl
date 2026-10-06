@@ -309,6 +309,44 @@ pub struct Alert {
 }
 
 impl Alert {
+    /// The alert as text for the user's agent (phase 21): name, severity, state, since, target,
+    /// summary, labels and annotations. Annotations are the rule author's text; the agent
+    /// panel scrubs token shapes again before sending.
+    pub fn agent_text(&self) -> String {
+        let mut text = format!(
+            "Alert {} ({}, {})",
+            self.name,
+            self.severity.label(),
+            self.state.label()
+        );
+        if let Some(since) = self.since() {
+            text.push_str(&format!(", since {since}"));
+        }
+        text.push('\n');
+        if let Some(target) = &self.target {
+            let object = match &target.namespace {
+                Some(ns) => format!("{ns}/{}", target.label()),
+                None => target.label(),
+            };
+            text.push_str(&format!("Target: {object}\n"));
+        }
+        text.push_str(&format!("Summary: {}\n", self.summary()));
+        if let Some(value) = &self.value {
+            text.push_str(&format!("Value: {value}\n"));
+        }
+        text.push_str("Labels:\n");
+        for (key, value) in &self.labels {
+            text.push_str(&format!("  {key}={value}\n"));
+        }
+        if !self.annotations.is_empty() {
+            text.push_str("Annotations:\n");
+            for (key, value) in &self.annotations {
+                text.push_str(&format!("  {key}: {value}\n"));
+            }
+        }
+        text
+    }
+
     pub fn namespace(&self) -> Option<&str> {
         self.labels
             .get("namespace")

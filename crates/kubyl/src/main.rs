@@ -10,6 +10,11 @@ mod views;
 mod workspace;
 
 fn main() {
+    // `kubyl mcp-bridge`: an agent started Kubyl's tools over stdio (phase 21). No window, no
+    // logging: stdout belongs to the agent.
+    if std::env::args().nth(1).as_deref() == Some(kubyl_agent::BRIDGE_ARG) {
+        std::process::exit(kubyl_agent::bridge());
+    }
     // Before any thread exists. WebKitGTK's DMA-BUF renderer makes the compositor drop the
     // connection ("Missing acquire timeline", e.g. NVIDIA on Wayland) as soon as a web view opens.
     #[cfg(target_os = "linux")]
@@ -63,6 +68,7 @@ fn main() {
             kubyl_alerts::init(cx);
             kubyl_netflow::init(cx);
             kubyl_prometheus::init(cx);
+            kubyl_agent::init(cx);
             kubyl_selfupdate::init(cx);
 
             kubyl_settings::Settings::write_schema(cx);

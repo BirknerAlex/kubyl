@@ -90,6 +90,8 @@ actions!(
         ClearSelection,
         /// Copies the selected lines (or the current match).
         CopySelection,
+        /// Asks the agent about the selected lines (or the current match).
+        AskAgentAboutSelection,
         /// Copies every line passing the filters.
         CopyVisible,
         /// Saves the lines passing the filters to a file.
@@ -125,6 +127,7 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("g g", JumpToTop, list),
         KeyBinding::new("escape", ClearSelection, list),
         KeyBinding::new("secondary-c", CopySelection, list),
+        KeyBinding::new("shift-a", AskAgentAboutSelection, list),
         KeyBinding::new("secondary-f", FocusSearch, view),
         KeyBinding::new("secondary-shift-c", CopyVisible, view),
         KeyBinding::new("secondary-s", DownloadVisible, view),
@@ -150,6 +153,10 @@ pub(crate) fn init(cx: &mut App) {
         ActionSpec::new("Logs: Previous Match", PreviousMatch),
         ActionSpec::new("Logs: Search", FocusSearch),
         ActionSpec::new("Logs: Copy Selected Lines", CopySelection),
+        ActionSpec::new(
+            "Logs: Ask Agent About Selected Lines",
+            AskAgentAboutSelection,
+        ),
         ActionSpec::new("Logs: Copy Visible Lines", CopyVisible),
         ActionSpec::new("Logs: Download Visible Lines…", DownloadVisible),
         ActionSpec::new("Logs: Download Full Log…", DownloadFull),
@@ -1344,6 +1351,48 @@ impl LogsView {
     }
 
     fn copy_selection(&mut self, cx: &mut Context<Self>) {
+        let text = self.selected_text();
+        if text.is_empty() {
+            return;
+        }
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+    }
+
+    /// Sends the selected lines (or the current one) to the agent panel (`kubyl_agent`).
+    fn ask_agent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.selected_text();
+        if text.is_empty() {
+            return;
+        }
+        let lines = text.lines().count();
+        let target = &self.target;
+        let object = match (&target.namespace, &target.name) {
+            (Some(ns), Some(name)) => format!("{ns}/{name}"),
+            (None, Some(name)) => name.clone(),
+            _ => target.gvr.resource.clone(),
+        };
+        let label = if lines == 1 {
+            format!("1 log line of {object}")
+        } else {
+            format!("{lines} log lines of {object}")
+        };
+        let uri = format!(
+            "kubyl://{}/logs/{}/{}",
+            target.cluster, target.gvr.resource, object
+        );
+        window.dispatch_action(
+            Box::new(kubyl_core::actions::AskAgent {
+                cluster: target.cluster.clone(),
+                label,
+                uri,
+                text: format!("Log lines of {} {object}:\n{text}", target.gvr.resource),
+            }),
+            cx,
+        );
+    }
+
+    /// The selected lines (or the current line) as shown, joined by newlines.
+    fn selected_text(&self) -> String {
         let seqs: Vec<u64> = match self.selection {
             Some((a, b)) => {
                 let range = a.min(b)..=a.max(b);
@@ -1354,16 +1403,11 @@ impl LogsView {
             }
             None => self.cursor.current_line().into_iter().collect(),
         };
-        if seqs.is_empty() {
-            return;
-        }
-        let text = seqs
-            .iter()
+        seqs.iter()
             .filter_map(|&seq| self.ring.get_by_seq(seq))
             .map(|line| self.line_text(line))
             .collect::<Vec<_>>()
-            .join("\n");
-        cx.write_to_clipboard(ClipboardItem::new_string(text));
+            .join("\n")
     }
 
     fn visible_text(&self) -> String {
@@ -2700,6 +2744,9 @@ impl Render for LogsView {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &CopySelection, _, cx| this.copy_selection(cx)))
+            .on_action(cx.listener(|this, _: &AskAgentAboutSelection, window, cx| {
+                this.ask_agent(window, cx)
+            }))
             .on_action(cx.listener(|this, _: &CopyVisible, _, cx| {
                 let text = this.visible_text();
                 cx.write_to_clipboard(ClipboardItem::new_string(text));

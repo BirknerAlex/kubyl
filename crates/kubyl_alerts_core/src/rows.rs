@@ -472,6 +472,25 @@ mod tests {
     use super::*;
     use crate::model::{Target, TargetKind};
 
+    #[test]
+    fn alerts_read_as_text_for_the_agent() {
+        let mut a = alert(
+            "KubePodCrashLooping",
+            Severity::Critical,
+            AlertState::Firing,
+            "shop",
+        );
+        a.annotations
+            .insert("summary".into(), "Pod is crash looping.".into());
+        let text = a.agent_text();
+        assert!(
+            text.starts_with("Alert KubePodCrashLooping (critical, firing)"),
+            "{text}"
+        );
+        assert!(text.contains("Summary: Pod is crash looping."), "{text}");
+        assert!(text.contains("  namespace=shop"), "{text}");
+    }
+
     pub(crate) fn alert(name: &str, severity: Severity, state: AlertState, ns: &str) -> Alert {
         let mut labels = std::collections::BTreeMap::new();
         labels.insert("alertname".to_string(), name.to_string());

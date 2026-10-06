@@ -717,6 +717,85 @@ impl Application {
         &self.metadata.name
     }
 
+    /// The application as text for the user's agent (phase 21): sync and health, sources,
+    /// destination, conditions, the last operation, and the resources that aren't synced or
+    /// healthy (at most 40). No Helm values or manifests.
+    pub fn agent_text(&self) -> String {
+        let status = &self.status;
+        let mut text = format!(
+            "Argo CD application {}: sync {}, health {}",
+            self.qualified_name(),
+            status.sync.status,
+            status.health.status
+        );
+        if let Some(message) = &status.health.message {
+            text.push_str(&format!(" ({message})"));
+        }
+        text.push('\n');
+        for source in self.spec.all_sources() {
+            let what = source
+                .chart
+                .clone()
+                .or_else(|| source.path.clone())
+                .unwrap_or_default();
+            text.push_str(&format!(
+                "Source: {} {what} @ {}\n",
+                source.repo_url,
+                source.target_revision.as_deref().unwrap_or("HEAD")
+            ));
+        }
+        text.push_str(&format!("Destination: {}\n", self.spec.destination.label()));
+        if !status.sync.revision.is_empty() {
+            text.push_str(&format!("Synced revision: {}\n", status.sync.revision));
+        }
+        for condition in &status.conditions {
+            text.push_str(&format!(
+                "Condition {}: {}\n",
+                condition.kind, condition.message
+            ));
+        }
+        if let Some(op) = &status.operation_state {
+            text.push_str(&format!(
+                "Last operation: {}{}\n",
+                op.phase,
+                op.message
+                    .as_deref()
+                    .map(|m| format!(" ({m})"))
+                    .unwrap_or_default()
+            ));
+        }
+        let troubled: Vec<&ManagedResource> = status
+            .resources
+            .iter()
+            .filter(|r| {
+                r.status.as_deref().is_some_and(|s| s != "Synced")
+                    || r.health.as_ref().is_some_and(|h| h.status != "Healthy")
+            })
+            .collect();
+        if !troubled.is_empty() {
+            text.push_str("Resources not synced or not healthy:\n");
+            for r in troubled.iter().take(40) {
+                let health = r.health.as_ref();
+                text.push_str(&format!(
+                    "  {} {}/{}: {} {}{}\n",
+                    r.kind,
+                    r.namespace,
+                    r.name,
+                    r.status.as_deref().unwrap_or("-"),
+                    health.map(|h| h.status.as_str()).unwrap_or("-"),
+                    health
+                        .and_then(|h| h.message.as_deref())
+                        .map(|m| format!(" ({m})"))
+                        .unwrap_or_default()
+                ));
+            }
+            if troubled.len() > 40 {
+                text.push_str(&format!("  …and {} more\n", troubled.len() - 40));
+            }
+        }
+        text
+    }
+
     pub fn namespace(&self) -> &str {
         self.metadata.namespace.as_deref().unwrap_or_default()
     }
@@ -1211,6 +1290,20 @@ mod tests {
     use super::fixtures::guestbook;
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn agent_text_names_status_source_and_destination() {
+        let app = Application::parse(&guestbook()).unwrap();
+        let text = app.agent_text();
+        assert!(
+            text.starts_with("Argo CD application argocd/guestbook: sync Synced, health Healthy"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Source: ") && text.contains("Destination: in-cluster · guestbook"),
+            "{text}"
+        );
+    }
 
     #[test]
     fn parses_an_application() {

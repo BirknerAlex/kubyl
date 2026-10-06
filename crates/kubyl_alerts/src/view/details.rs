@@ -975,6 +975,7 @@ impl AlertsView {
         let colors = cx.colors().clone();
         let silence_entry = entry.clone();
         let ack_entry = entry.clone();
+        let ask_entry = entry.clone();
         let labels = matchers::format(&entry.alert.matchers());
         let amtool = format!(
             "amtool alert query {}",
@@ -1009,6 +1010,24 @@ impl AlertsView {
                 ))
             })
             .child(div().flex_1())
+            .child(
+                Button::new("details-ask")
+                    .ghost()
+                    .icon(IconName::Zap)
+                    .label("Ask agent")
+                    .on_click(move |_, window, cx| {
+                        let alert = &ask_entry.alert;
+                        window.dispatch_action(
+                            Box::new(kubyl_core::actions::AskAgent {
+                                cluster: ask_entry.cluster.clone(),
+                                label: format!("Alert {}", alert.name),
+                                uri: format!("kubyl://alerts/{}", alert.fingerprint),
+                                text: alert.agent_text(),
+                            }),
+                            cx,
+                        )
+                    }),
+            )
             .child(
                 MenuButton::new("details-copy")
                     .ghost()

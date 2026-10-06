@@ -874,6 +874,23 @@ impl AppView {
             .label("Sync…")
             .disabled(!writable || app.is_deleting())
             .on_click(move |_, window, cx| dialogs::open_sync(target.clone(), window, cx));
+        let ask_cluster = self.cluster().clone();
+        let ask_app = app.clone();
+        let ask = Button::new("argo-app-ask")
+            .ghost()
+            .icon(IconName::Zap)
+            .label("Ask agent")
+            .on_click(move |_, window, cx| {
+                window.dispatch_action(
+                    Box::new(kubyl_core::actions::AskAgent {
+                        cluster: ask_cluster.clone(),
+                        label: format!("Argo CD app {}", ask_app.qualified_name()),
+                        uri: format!("kubyl://argocd/{}", ask_app.qualified_name()),
+                        text: ask_app.agent_text(),
+                    }),
+                    cx,
+                )
+            });
         let ui_cluster = self.cluster().clone();
         let argo_ui = Button::new("argo-app-ui")
             .ghost()
@@ -1017,6 +1034,7 @@ impl AppView {
                 cx,
             ))
             .when(writable, |this| this.child(refresh_menu).child(sync))
+            .child(ask)
             .child(argo_ui)
             .child(more)
             .into_any_element()

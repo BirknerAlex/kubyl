@@ -114,6 +114,9 @@ cargo run -p kubyl
 - Live tests against those clusters are ignored by default: see the header of
   `crates/kubyl_kube/tests/live.rs` (and of `crates/kubyl_metrics/tests/live.rs`,
   `crates/kubyl_alerts/tests/live.rs`, `crates/kubyl_operators/tests/live.rs`,
+  `crates/kubyl_agent_core/tests/live.rs` for the agent tools through the MCP server,
+  `crates/kubyl_agent_core/tests/adapters.rs` for the ACP protocol of installed agent adapters
+  (no prompts: never spend tokens in tests),
   `crates/kubyl_updates/tests/live.rs` for the update providers and pre-flight checks on the
   `updates-dev.sh` clusters, `crates/kubyl_portforward/tests/live.rs` for Route backends,
   `KUBYL_TEST_ROUTE_NAMESPACE`, and `crates/kubyl_netflow/tests/live.rs` for the Hubble, Whisker
