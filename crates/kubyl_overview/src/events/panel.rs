@@ -146,7 +146,8 @@ impl Render for EventsPanel {
                     .child(ui::namespace_chip(&self.feed, on_namespace, cx))
                     .child(div().flex_1())
                     .child(ui::live_indicator(&status, &colors))
-                    .child(ui::pause_button(&self.feed, cx)),
+                    .child(ui::pause_button(&self.feed, cx))
+                    .child(ui::ask_button(&self.feed, &self.filter, cx)),
             )
             .child(
                 div()

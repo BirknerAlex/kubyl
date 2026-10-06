@@ -450,7 +450,8 @@ impl Render for EventsView {
             .child(ui::namespace_chip(&self.feed, on_namespace, cx))
             .child(group_button)
             .child(ui::live_indicator(&status, &colors))
-            .child(ui::pause_button(&self.feed, cx));
+            .child(ui::pause_button(&self.feed, cx))
+            .child(ui::ask_button(&self.feed, &self.filter, cx));
         let hints: Vec<(SharedString, SharedString)> = vec![
             ("enter".into(), "Open object".into()),
             ("/".into(), "Search".into()),

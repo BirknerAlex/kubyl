@@ -984,33 +984,6 @@ fn copy_yaml(cx: &mut App) {
     .detach();
 }
 
-/// Placeholder for masked values, the same text the YAML editor and details show.
-const MASK: &str = "••••••••";
-
-/// Masks the `data`/`stringData` values of a core Secret and kubectl's last-applied copy of
-/// them. Returns whether it is a Secret.
-fn mask_secret(object: &mut serde_json::Value) -> bool {
-    use serde_json::Value;
-    if object["kind"].as_str() != Some("Secret") || object["apiVersion"].as_str() != Some("v1") {
-        return false;
-    }
-    for field in ["data", "stringData"] {
-        if let Some(map) = object.get_mut(field).and_then(Value::as_object_mut) {
-            for value in map.values_mut() {
-                *value = Value::String(MASK.into());
-            }
-        }
-    }
-    if let Some(annotation) = object
-        .pointer_mut("/metadata/annotations")
-        .and_then(Value::as_object_mut)
-        .and_then(|a| a.get_mut("kubectl.kubernetes.io/last-applied-configuration"))
-    {
-        *annotation = Value::String(MASK.into());
-    }
-    true
-}
-
 /// The objects as YAML for the clipboard, and how many had Secret data or an inline Route key
 /// masked: secrets are only copied by an explicit action (the details' reveal).
 fn copyable_yaml(objects: Vec<serde_json::Value>) -> (Vec<String>, usize) {
@@ -1018,7 +991,9 @@ fn copyable_yaml(objects: Vec<serde_json::Value>) -> (Vec<String>, usize) {
     let yaml = objects
         .into_iter()
         .map(|mut object| {
-            if mask_secret(&mut object) | kubyl_resources::route::mask_inline_key(&mut object) {
+            if kubyl_resources::redact::mask_secret(&mut object)
+                | kubyl_resources::route::mask_inline_key(&mut object)
+            {
                 masked += 1;
             }
             format::to_yaml(&object)

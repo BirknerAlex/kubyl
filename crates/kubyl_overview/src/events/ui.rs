@@ -27,6 +27,71 @@ pub fn age(row: &EventRow, now: Timestamp) -> String {
         .unwrap_or_default()
 }
 
+/// Events sent to the agent at most.
+const ASK_ROWS: usize = 60;
+
+/// Asks the agent (phase 21) about the events the filter shows, newest first.
+pub fn ask_button(feed: &Entity<EventsFeed>, filter: &Filter, cx: &App) -> impl IntoElement {
+    let feed = feed.read(cx);
+    let cluster = feed.cluster().cloned();
+    let rows: Vec<EventRow> = feed
+        .rows()
+        .iter()
+        .filter(|r| filter.matches(r))
+        .take(ASK_ROWS)
+        .cloned()
+        .collect();
+    let namespace = feed.namespace().map(str::to_string);
+    div()
+        .id("events-ask-tooltip")
+        .tooltip(|window, cx| {
+            gpui_component::tooltip::Tooltip::new("Ask the agent about these events")
+                .build(window, cx)
+        })
+        .child(
+            IconButton::new("events-ask", IconName::Zap)
+                .icon_size(12.0)
+                .on_click(move |_, window, cx| {
+                    let Some(cluster) = cluster.clone() else {
+                        return;
+                    };
+                    let scope = namespace.clone().unwrap_or_else(|| "all namespaces".into());
+                    window.dispatch_action(
+                        Box::new(kubyl_core::actions::AskAgent {
+                            cluster,
+                            label: format!("{} events · {scope}", rows.len()),
+                            uri: format!("kubyl://events/{scope}"),
+                            text: ask_text(&rows, &scope, Timestamp::now()),
+                        }),
+                        cx,
+                    );
+                }),
+        )
+}
+
+/// The events as lines for the agent: age, type, reason, object, count, message.
+pub fn ask_text(rows: &[EventRow], scope: &str, now: Timestamp) -> String {
+    let mut text = format!("Kubernetes events in {scope}, newest first:\n");
+    for row in rows {
+        let object = match &row.namespace {
+            Some(ns) => format!("{ns}/{}", row.object()),
+            None => row.object(),
+        };
+        text.push_str(&format!(
+            "{} ago  {}  {}  {object}  x{}  {}\n",
+            age(row, now),
+            if row.warning { "Warning" } else { "Normal" },
+            row.reason,
+            row.count,
+            row.message
+        ));
+    }
+    if rows.is_empty() {
+        text.push_str("(none)\n");
+    }
+    text
+}
+
 /// `● live`, `paused · 3 new`, `loading…`.
 pub fn live_indicator(status: &FeedStatus, colors: &Colors) -> impl IntoElement {
     let (label, color): (SharedString, _) = match status {

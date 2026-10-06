@@ -3989,6 +3989,129 @@ def network_states_screen():
 </div>'''
     return page("Network flows: no source, forbidden — Kubyl", inner)
 
+# ---------- 19. Agents (phase 21) ----------
+def ag_dock(body, composer=True, sub=None, width=420):
+    head = f'<div class="phead" style="border-bottom:1px solid var(--bv)"><span style="flex:1;color:var(--text);font-weight:500">Agent</span><button class="ib" aria-label="Threads">{ic("history",13)}</button><button class="ib" aria-label="New thread">{ic("plus",14)}</button><button class="ib" aria-label="Close thread">{ic("trash",13)}</button></div>'
+    if sub is None:
+        sub = f'<div style="display:flex;align-items:center;gap:6px;padding:6px 14px;border-bottom:1px solid var(--bv)">{dot(C["red"])}<span style="flex:1;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Why does payment-gateway crash?</span><span class="prod" style="font-size:9.5px;padding:0 4px">PROD</span><span style="font-size:11.5px;color:var(--faint)">working</span></div>'
+    comp = ""
+    if composer:
+        comp = (f'<div style="flex-shrink:0;display:flex;flex-direction:column;gap:6px;padding:10px 12px;border-top:1px solid var(--bv)">'
+                f'<div style="display:flex;gap:4px;flex-wrap:wrap"><span class="chip">{ic("link",11)}Pod payments/payment-gateway-5c8b7f9d4-hl2vp{ic("x",10)}</span></div>'
+                '<div class="inp focus" style="height:52px;align-items:flex-start;padding-top:6px;color:var(--faint)">Ask about this cluster…  (@ mentions an object, Enter sends)</div>'
+                f'<div style="display:flex;align-items:center;gap:6px"><span class="chip on">Ask</span><span class="chip">Plan</span><span style="flex:1;font-size:11.5px;color:var(--faint)">Claude · prod-eu-west-1</span><button class="btn" style="height:24px">{ic("square",11)}Stop</button></div>'
+                '</div>')
+    return f'<aside class="dock" style="width:{width}px">{head}{sub}<div style="flex:1;overflow:hidden;padding:12px 14px;display:flex;flex-direction:column;gap:10px">{body}</div>{comp}</aside>'
+
+def ag_user(text, chip=None):
+    c = f'<div style="display:flex;gap:4px"><span class="chip">{ic("link",11)}{chip}</span></div>' if chip else ""
+    return f'<div style="display:flex;flex-direction:column;gap:6px;padding:8px 10px;border-radius:6px;background:var(--elev);border:1px solid var(--bv)">{c}<div style="font-size:13px">{text}</div></div>'
+
+def ag_tool(icon, title, status="ok", body=""):
+    sc = {"ok": ("check", C["green"]), "run": ("clock", C["yellow"]), "err": ("x", C["red"])}[status]
+    return f'<div style="display:flex;flex-direction:column;gap:6px;padding:6px 10px;border-radius:6px;border:1px solid var(--bv)"><div style="display:flex;align-items:center;gap:6px">{ic(icon,13,C["muted"])}<span style="flex:1;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{title}</span>{ic(sc[0],12,sc[1])}</div>{body}</div>'
+
+def ag_mono(text):
+    return f'<div class="mono" style="font-size:11.5px;line-height:17px;padding:6px 8px;border-radius:4px;background:var(--bg);border:1px solid var(--bv);color:var(--muted);white-space:pre">{text}</div>'
+
+def ag_ask(icon, title, inner, buttons):
+    return f'<div style="display:flex;flex-direction:column;gap:8px;padding:10px;border-radius:6px;border:1px solid var(--yellow);background:var(--elev)"><div style="display:flex;gap:6px;align-items:center">{ic(icon,13,C["yellow"])}<span style="font-size:12.5px">{title}</span></div>{inner}<div style="display:flex;gap:6px;flex-wrap:wrap">{"".join(buttons)}</div></div>'
+
+def ag_pods_center():
+    head = f'<div class="th" style="{POD_COLS}"><span>NAME {ic("cd",10)}</span><span>READY</span><span>STATUS</span><span style="text-align:right;padding-right:10px">RESTARTS</span><span>CPU</span><span>MEMORY</span><span>NODE</span><span>AGE</span></div>'
+    rows, picked = [], False
+    for (n, rd, s, r, cpu, cp, mem, mp, node, age) in PODS[:14]:
+        on = s == "CrashLoopBackOff" and not picked
+        picked = picked or on
+        rows.append(f'<div class="tr{" on" if on else ""}" style="{POD_COLS}"><span class="mono">{n}</span><span class="mono">{rd}</span>{st(s)}<span class="mono" style="text-align:right;padding-right:10px">{r}</span><span class="mono">{f"{cpu}m" if cpu else "—"}</span><span class="mono">{mem if cpu else "—"}</span><span class="mono" style="color:var(--muted)">{node}</span><span class="mono" style="color:var(--muted)">{age}</span></div>')
+    return f'<div style="flex:1;display:flex;flex-direction:column;min-width:0">{head}<div style="flex:1;overflow:hidden">{"".join(rows)}</div>{hints([("↵","Details"),("l","Logs"),("s","Shell"),("⇧a","Ask agent"),("y","YAML"),("/","Filter")])}</div>'
+
+def ag_app(dock, right_extra=""):
+    return ('<div class="app">' + titlebar() + '<div class="body">' + sidebar("Pods")
+            + '<main class="main">' + tabs([("box", "Pods", True), ("list", "Logs · payment-gateway", False)])
+            + f'<div style="flex:1;display:flex;min-height:0">{ag_pods_center()}{dock}</div></main></div>'
+            + statusbar(right_extra=right_extra) + '</div>')
+
+AG_WAITING = f'<span style="color:var(--yellow)">{ic("zap",12,C["yellow"])}Agent needs you</span>'
+
+def agent_screen():
+    plan = (f'<div style="display:flex;flex-direction:column;gap:3px;padding:8px;border-radius:6px;background:var(--elev)">'
+            f'<div style="display:flex;gap:6px;align-items:center;font-size:11.5px;color:var(--muted)">{ic("listchecks",12)}Plan</div>'
+            f'<div style="font-size:12px;color:var(--dim)">{ic("ok",11,C["green"])} Read the pod and its events</div>'
+            f'<div style="font-size:12px">{ic("right",11,C["accent"])} Compare memory with the limit</div>'
+            f'<div style="font-size:12px">{ic("square",11,C["faint"])} Propose a new limit</div></div>')
+    warn = f'<div style="display:flex;gap:6px;font-size:12px;color:var(--red)">{ic("alert",12,C["red"])}Reads Secrets: their values would go to the agent&#39;s provider.</div>'
+    body = "".join([
+        ag_user("Why does this pod keep restarting?", "Pod payments/payment-gateway-5c8b7f9d4-hl2vp"),
+        f'<div style="display:flex;gap:4px;align-items:center;font-size:11.5px;color:var(--dim)">{ic("right",11,C["faint"])}Thinking</div>',
+        ag_tool("layers", "Kubyl · describe pod payments/payment-gateway-5c8b7f9d4-hl2vp"),
+        ag_tool("layers", "Kubyl · logs payments/payment-gateway-5c8b7f9d4-hl2vp"),
+        ag_tool("layers", "Kubyl · events payments"),
+        '<div style="font-size:13px;line-height:19px">The <span class="mono" style="font-size:12px">gateway</span> container is <b>OOMKilled</b> 14 times in 3 hours: its limit is <span class="mono" style="font-size:12px">256Mi</span> and it peaks at about 300Mi while it warms the currency cache.</div>',
+        plan,
+        ag_tool("terminal", "Check the chart's values", "run", ag_mono("$ helm get values payments -n payments\n…")),
+        ag_ask("terminal", "Run this command?",
+               ag_mono("$ kubectl -n payments get secret gateway-db -o yaml") + warn
+               + '<div style="font-size:11.5px;color:var(--dim)">in ~/Library/Caches/kubyl/agent/threads/…/work</div>',
+               ['<button class="btn p" style="height:24px">Run</button>', '<button class="btn g" style="height:24px">Don&#39;t run</button>']),
+    ])
+    return page("Agent — Kubyl", ag_app(ag_dock(body), AG_WAITING))
+
+def agent_states_screen():
+    note = (f'<div style="display:flex;flex-direction:column;gap:6px;padding:10px;border-radius:6px;border:1px solid var(--border);background:var(--elev)">'
+            f'<div style="display:flex;gap:6px;align-items:center">{ic("shield",13,C["accent"])}<span style="font-size:12.5px">What the agent sees</span></div>'
+            '<div style="font-size:11.5px;color:var(--muted)">Your own agent (Claude, Codex, Gemini…) runs on this machine with its own sign-in. It reads one cluster through Kubyl&#39;s read-only tools, with your access. Kubyl masks Secret values, private keys and token-like text, and asks before every command and file change.</div>'
+            '<div style="font-size:11.5px;color:var(--muted)">What it reads goes to the agent&#39;s provider, logs included. The agent isn&#39;t sandboxed: its own tools can still read files on this machine, such as ~/.kube/config.</div>'
+            '<div><button class="btn" style="height:24px">Got it</button></div></div>')
+    def agent(name, ok, sub, sel=False, copy=False):
+        bg = "background:var(--sel);" if sel else ""
+        cp = f'<button class="ib" aria-label="Copy">{ic("copy",12)}</button>' if copy else ""
+        return f'<div style="display:flex;gap:8px;align-items:center;padding:5px 6px;border-radius:4px;{bg}">{dot(C["green"] if ok else C["faint"])}<div style="flex:1;min-width:0"><div style="font-size:12.5px">{name}</div><div class="mono" style="font-size:11px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{sub}</div></div>{cp}</div>'
+    sec = lambda t: f'<div class="dtitle" style="margin:6px 0 0">{t}</div>'
+    stopped = (f'<div style="display:flex;flex-direction:column;gap:6px;padding:10px;border-radius:6px;border:1px solid var(--red)">'
+               f'<div style="display:flex;gap:6px;font-size:12px;color:var(--red)">{ic("alert",12,C["red"])}The agent stopped: connect ECONNREFUSED</div>'
+               f'<div style="display:flex;gap:6px"><button class="btn" style="height:24px">{ic("undo",12)}Retry</button><button class="btn g" style="height:24px">Agent output</button></div></div>')
+    body = "".join([
+        note, sec("Cluster"),
+        f'<div style="display:flex;gap:6px;align-items:center"><span class="chip">{dot(C["red"])}prod-eu-west-1</span><span style="font-size:11.5px;color:var(--dim)">The agent reads it through Kubyl&#39;s tools, with your access.</span></div>',
+        sec("Agent"),
+        agent("Claude", True, "installed · /opt/homebrew/bin/claude-agent-acp", True),
+        agent("Codex", True, "running · ~/.npm-global/bin/codex-acp"),
+        agent("Gemini CLI", False, "npm install -g @google/gemini-cli", copy=True),
+        agent("GitHub Copilot", False, "npm install -g @github/copilot", copy=True),
+        agent("goose", False, "See block.github.io/goose for install options"),
+        sec("Sign-in and stopped states"),
+        ag_ask("key", "Claude needs a sign-in", '<div style="font-size:11.5px;color:var(--muted)">Run `claude` in a terminal once and sign in (Claude Code), then try again.</div>',
+               ['<button class="btn" style="height:24px">Log in with Claude</button>', '<button class="btn g" style="height:24px">Retry</button>']),
+        stopped,
+    ])
+    sub = '<div style="display:flex;align-items:center;gap:6px;padding:6px 14px;border-bottom:1px solid var(--bv);font-size:12px;color:var(--dim)">New thread</div>'
+    return page("Agent: new thread and states — Kubyl", ag_app(ag_dock(body, sub=sub)))
+
+def agent_questions_screen():
+    field = lambda label, ctl, note="": f'<div style="display:flex;flex-direction:column;gap:3px"><div style="font-size:11.5px;color:var(--muted)">{label}</div>{ctl}{note}</div>'
+    form = ag_ask("info", "Where should the fix go?",
+        '<div style="font-size:12px">I can write the new limit into your GitOps repo. Which overlay?</div>'
+        + field("Overlay *", '<div style="display:flex;gap:4px"><span class="chip">dev</span><span class="chip">staging</span><span class="chip on">prod</span></div>')
+        + field("Memory limit *", '<div class="inp" style="width:140px">384M</div>', '<div style="font-size:11.5px;color:var(--red)">Doesn&#39;t match ^[0-9]+(Mi|Gi)$.</div>')
+        + field("Open a merge request", '<div><span class="chip on">Yes</span></div>')
+        + '<div style="font-size:11.5px;color:var(--dim)">Your answer goes to the agent. Don&#39;t enter passwords or tokens here.</div>',
+        ['<button class="btn p" style="height:24px">Answer</button>', '<button class="btn g" style="height:24px">Decline</button>'])
+    url = ag_ask("globe", "The agent asks you to open a page",
+        '<div style="font-size:12px">Authorize GitLab access for the merge request.</div>' + ag_mono("https://gitlab.example.com/oauth/authorize?client_id=…")
+        + '<div style="font-size:11.5px;color:var(--dim)">It opens in your browser. Check the address before you sign in anywhere.</div>',
+        [f'<button class="btn p" style="height:24px">{ic("ext",12,"#1b1e24")}Open in browser</button>', '<button class="btn g" style="height:24px">Decline</button>'])
+    line = lambda text, col, bg="": f'<div class="mono" style="font-size:11.5px;padding:0 6px;color:{col};{bg}">{text}</div>'
+    diff = (line("  resources:", C["dim"]) + line("    limits:", C["dim"])
+            + line("-      memory: 256Mi", C["red"], "background:rgba(208,114,119,.08)")
+            + line("+      memory: 384Mi", C["green"], "background:rgba(161,193,129,.08)"))
+    write = ag_ask("diff", "Change this file?",
+        '<div style="font-size:11.5px;color:var(--dim)">~/gitops/apps/payments/overlays/prod/gateway.yaml</div>'
+        + f'<div style="padding:4px 0;border-radius:4px;border:1px solid var(--bv);background:var(--bg)">{diff}</div>',
+        ['<button class="btn p" style="height:24px">Write</button>', '<button class="btn g" style="height:24px">Don&#39;t write</button>'])
+    body = ag_user("Fix it in the repo, please.") + form + url + write
+    return page("Agent: questions, links and file changes — Kubyl", ag_app(ag_dock(body), AG_WAITING))
+
 SCREENS = [
  ("Main.dc.html", "1 · Pods (k9s-style table + details)", pods_screen),
  ("Routes.dc.html", "1 · OpenShift Routes under Network, with details", routes_screen),
@@ -4041,6 +4164,9 @@ SCREENS = [
  ("NetworkTopologyWorkloads.dc.html", "18 · Topology at workload zoom, a denied connection selected", network_topology_workloads_screen),
  ("NetworkBackends.dc.html", "18 · Calico Whisker (aggregated records, policy trace) and NetObserv without Loki (metrics only)", network_backends_screen),
  ("NetworkStates.dc.html", "18 · No flow source (what to install for the CNI) and a forbidden port-forward", network_states_screen),
+ ("Agent.dc.html", "19 · Agent panel: a thread with Kubyl tool calls, a plan and a command to approve", agent_screen),
+ ("AgentStates.dc.html", "19 · Agent: new thread, agent picker, first-run note, sign-in and stopped states", agent_states_screen),
+ ("AgentQuestions.dc.html", "19 · Agent questions: a form, a link to open, a file change", agent_questions_screen),
 ]
 
 boards, order = {}, []

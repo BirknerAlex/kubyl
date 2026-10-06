@@ -47,6 +47,7 @@ Each phase file is written so one Claude Code session can own it from start to f
 | 18 | [Prometheus: web UI for Prometheus, Thanos Query, VictoriaMetrics](18-prometheus.md) | 02, 07 | `kubyl_prometheus` (new) | none yet |
 | 19 | [Split domain logic from the UI: GPUI-free `*_core` crates](19-core-split.md) | all | `kubyl_base`, `kubyl_*_core` (new); one split crate at a time | none |
 | 20 | [The rest of the services on Host](20-services-on-host.md) | 19 | the coordinating services of alerts, Prometheus, flows, Argo CD, OLM/Helm and updates, and the core crates they move into | none |
+| 21 | [Agents over ACP: Claude, Codex, Gemini, Copilot with cluster tools](21-agents-acp.md) | 02, 04, 05, 07 (14, 18 optional) | `kubyl_agent`, `kubyl_agent_core` (new); shared commits in `kubyl_resources_core` (`redact`), `kubyl_core` (`AskAgent`), `kubyl_logs`, `kubyl_overview` (events), `kubyl_alerts`(`_core`), `kubyl_argocd`(`_core`) | 19 · Agents |
 
 ```
 00 ─▶ 01 ─▶ 02 ─┬─▶ 03
@@ -59,6 +60,7 @@ Each phase file is written so one Claude Code session can own it from start to f
 02 + 05 + 07 ─▶ 14 (alerts; uses 08 for the Alertmanager/Prometheus UIs if present)
 01 + 02 + 03 ─▶ 15 (polish; context grouping after 11)
 02 + 05 + 07 ─▶ 16 (network flows: Cilium/Hubble, NetObserv, Calico/Whisker)
+02 + 04 + 05 + 07 ─▶ 21 (agents over ACP; uses 14 and 18 for alert and PromQL tools if present)
 09: CI part runs from 00 onward; packaging and release after the feature phases
 ```
 
@@ -100,11 +102,12 @@ crates/
   kubyl_alerts/             # Alertmanager alerts, silences, alerting rules (phase 14)
   kubyl_netflow/            # network flows: Hubble, NetObserv, Calico Whisker; table and topology (phase 16)
   kubyl_prometheus/         # Prometheus web UI tab (phase 18)
+  kubyl_agent/              # agent panel over ACP (Claude, Codex, Gemini…), cluster tools over MCP (phase 21)
   kubyl_base/               # GPUI-free foundation: types, errors, Tokio runtime, notices, Host (phase 19)
   kubyl_*_core/             # GPUI-free logic of the crate of the same name (phase 19): kube, resources,
                             #   settings, logs, terminal, portforward, yaml, metrics, charts, alerts, argocd,
                             #   netflow, operators, updates, prometheus, files, kubeconfig, webview,
-                            #   palette, explorer, overview, selfupdate
+                            #   palette, explorer, overview, selfupdate, agent
 assets/                     # logo, icons, fonts, keymaps, themes
 design/mockups/             # mockup generator (HTML design canvas)
 plans/                      # these plans
@@ -177,6 +180,8 @@ plans/                      # these plans
 | Keymaps | Crates bind defaults in code; `kubyl_keymap` layers `assets/keymaps/{default,k9s}.json` and the user's `"keymap"` section of settings.json on top (decided in phase 03) | Not a separate keymap.json: settings.json already hot-reloads and has a schema. `null` unbinds. `ActionRegistry` keystrokes are kept in sync with what is bound. |
 | Logging | `tracing` + `tracing-subscriber`, rolling file in the platform log dir | Never log tokens or Secret data. |
 | License | **`MIT OR Apache-2.0`** (decided 2026-09-24). Set once in `[workspace.package]`; every crate uses `license.workspace = true` | Compatible with GPUI and all key deps (Apache-2.0). GPL crates are banned via `cargo-deny`. Releases ship `THIRD_PARTY_LICENSES` (cargo-about) plus the font/icon licenses. |
+| Agents (ACP) | `kubyl_agent` + `kubyl_agent_core` (decided in phase 21). Kubyl is an ACP client like Zed: it starts the user's own agent (`claude-agent-acp`, `codex-acp`, `gemini --acp`, `copilot --acp`, `goose acp`, `opencode acp`, or a custom command from `agent.custom`) found through the login shell's `PATH`, one process per agent, and shows threads in a right-dock panel. Wire types from `agent-client-protocol-schema =1.10.2` (Apache-2.0); the JSON-RPC loop and the MCP server are Kubyl's own (no `agent-client-protocol` SDK, no `rmcp`) | Kubyl never installs agents and holds no API keys. A thread is bound to one cluster. Prompt answers are delivered in order after the turn's updates (`Peer::send_ordered`). Transcripts stay in memory; state.json keeps only reopenable threads (agent, cluster, title, folder, agent's session id) for agents with `loadSession`. Thread folders live under `<cache dir>/kubyl/agent/threads/` and are removed with the thread. |
+| Agent access to the cluster | Through Kubyl's MCP server only (decided in phase 21): one per thread on `127.0.0.1`, a random bearer token in memory, requests with an `Origin` refused; HTTP for agents with `mcpCapabilities.http`, else `kubyl mcp-bridge` (the Kubyl binary relaying stdio). 11 read-only tools with the user's client (`cluster_info`, `list_resources`, `get_resource`, `describe`, `events`, `logs`, `top`, `query_prometheus`, `alerts`, `can_i`, `api_resources`), output capped (`agent.max_tool_output_kib`). Everything goes through `kubyl_resources_core::redact`: Secret values, Route keys, credential-like fields and env vars masked, Helm release storage refused, token shapes scrubbed from text | The agent process gets `KUBECONFIG` pointing at an empty file; `agent.kubectl: context` gives commands Kubyl runs a one-context kubeconfig when the user has no inline credentials. Kubyl's own tools are allowed without a prompt; commands (`terminal/*`, run locally with captured output), reads outside the thread folder and every file write ask, with warnings for commands that read Secrets or kubeconfigs. The agent isn't sandboxed: the first-run note says its own tools can still read local files. |
 
 ### Extension points (these keep parallel sessions conflict-free)
 

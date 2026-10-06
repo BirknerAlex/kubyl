@@ -121,6 +121,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent-client-protocol-schema"
+version = "1.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c3ffd489b0e2f96a134d7966c2f43d874d91299e951b66093b91b54b00b7f8f"
+dependencies = [
+ "anyhow",
+ "derive_more",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "strum",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4018,6 +4032,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
+name = "httpdate"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
+
+[[package]]
 name = "hybrid-array"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4040,6 +4060,7 @@ dependencies = [
  "http",
  "http-body",
  "httparse",
+ "httpdate",
  "itoa",
  "pin-project-lite",
  "smallvec",
@@ -4871,6 +4892,7 @@ dependencies = [
  "gpui-pre",
  "gpui-pre-platform",
  "image",
+ "kubyl_agent",
  "kubyl_alerts",
  "kubyl_argocd",
  "kubyl_charts",
@@ -4907,6 +4929,61 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "winresource",
+]
+
+[[package]]
+name = "kubyl_agent"
+version = "0.5.0"
+dependencies = [
+ "agent-client-protocol-schema",
+ "dirs 7.0.0",
+ "gpui-component",
+ "gpui-pre",
+ "jiff",
+ "kubyl_agent_core",
+ "kubyl_alerts",
+ "kubyl_core",
+ "kubyl_kube",
+ "kubyl_metrics",
+ "kubyl_resources",
+ "kubyl_settings",
+ "kubyl_ui",
+ "serde_json",
+ "similar",
+ "tempfile",
+]
+
+[[package]]
+name = "kubyl_agent_core"
+version = "0.5.0"
+dependencies = [
+ "agent-client-protocol-schema",
+ "anyhow",
+ "base64 0.22.1",
+ "dirs 7.0.0",
+ "futures",
+ "getrandom 0.4.3",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "jiff",
+ "k8s-openapi",
+ "kube",
+ "kubyl_base",
+ "kubyl_kube_core",
+ "kubyl_metrics_core",
+ "kubyl_resources_core",
+ "kubyl_settings_core",
+ "parking_lot",
+ "regex",
+ "schemars 1.2.2",
+ "serde",
+ "serde-saphyr 1.3.0",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
