@@ -2,6 +2,84 @@
 
 All notable changes to Kubyl are documented here.
 
+## [0.5.0] - 2026-10-06
+
+### Bug Fixes
+
+- Base64-encode the client certificate of an exec plugin ([5770b18](https://github.com/BirknerAlex/kubyl/commit/5770b18eb17a3e25be7b9fe62fd566f1586c9b96))
+- Let service leases cross threads and stores be copied from other threads ([eab38a4](https://github.com/BirknerAlex/kubyl/commit/eab38a47e0d3d9be3442883aec4c9b3576f63855))
+- Address CodeRabbit review on phase 20 ([0ee88c9](https://github.com/BirknerAlex/kubyl/commit/0ee88c9156abe83ecb7b41c803f46776464933ba))
+
+### CI
+
+- Sync winget-pkgs fork before submitting manifest (#34) ([5cf2f4a](https://github.com/BirknerAlex/kubyl/commit/5cf2f4a4aca9d36b308e7c5b55622d7b4b3f372f))
+
+### Documentation
+
+- Require the contributor license agreement on kubyl.dev (#35) ([989df60](https://github.com/BirknerAlex/kubyl/commit/989df60d525d8657681cc12c6434ca6be6fefa1a))
+- Mark phase 18 (Prometheus) as done ([7f286d0](https://github.com/BirknerAlex/kubyl/commit/7f286d0449e4f632cbe39782ca9add0e9efed6ed))
+- Add phase 19, split domain logic from the UI ([a6142b1](https://github.com/BirknerAlex/kubyl/commit/a6142b10cb83e913d1e1605c502b122da7eebfb0))
+- Phase 19 progress and the core-crates decision ([2a784fe](https://github.com/BirknerAlex/kubyl/commit/2a784fed2cfac008399bfef208fb86a0844d50f2))
+- Phase 19 status, workspace layout and where logic goes ([e894102](https://github.com/BirknerAlex/kubyl/commit/e894102135b605027e0dc925a3058ce8e9265cc8))
+- Phase 19 checked against the dev cluster ([cb18ffc](https://github.com/BirknerAlex/kubyl/commit/cb18ffca83c39570a8e822d8972d9a8f621a698c))
+- The core-crates check in AGENTS.md and CLAUDE.md ([fae3e7a](https://github.com/BirknerAlex/kubyl/commit/fae3e7a1965bb1c152a475b0452c4ab05f989dcf))
+- Git rules for a public repo with PRs and the CLA ([1d4873a](https://github.com/BirknerAlex/kubyl/commit/1d4873af522919ac5521088152b559495dbb3472))
+- Phase 20, the rest of the services on Host ([e2567ff](https://github.com/BirknerAlex/kubyl/commit/e2567ffed4558ebe7fc0bd8c17ed8772a54dd669))
+
+### Features
+
+- Let an app install its own credential store ([a2a720b](https://github.com/BirknerAlex/kubyl/commit/a2a720b1b5f1207e5a3ad0a5a083ee8e088bbddb))
+- Let TestHost run until a condition holds ([c93bf9d](https://github.com/BirknerAlex/kubyl/commit/c93bf9d2ebad6cc06c9687796240497f65f16718))
+- Let features reach a Service through a trait ([1d3b0aa](https://github.com/BirknerAlex/kubyl/commit/1d3b0aa69b75d097f62567ca8050f6837f32bd38))
+- Store sources, change sets and the built-in columns in the core ([b7b8d00](https://github.com/BirknerAlex/kubyl/commit/b7b8d008bfef03fe2df2c98abb61df90c8006b32))
+- Report a session's exit code ([43ce089](https://github.com/BirknerAlex/kubyl/commit/43ce08987a7695a1f903010e3d4df86d097f16a5))
+
+### Miscellaneous
+
+- Cargo.lock for the new crate dependencies ([d755f06](https://github.com/BirknerAlex/kubyl/commit/d755f06cbde15b9ece52ad56372541ed725878ea))
+
+### Refactor
+
+- Add kubyl_base, the GPUI-free foundation ([8c8c35e](https://github.com/BirknerAlex/kubyl/commit/8c8c35e692209af0300eb329535837ab8054d8d0))
+- Add kubyl_settings_core ([1b5b576](https://github.com/BirknerAlex/kubyl/commit/1b5b576d78c794e2d5025502e22e85b4317ae492))
+- Move kubeconfig, auth, clients and discovery to kubyl_kube_core ([f7a8434](https://github.com/BirknerAlex/kubyl/commit/f7a843441fea882367f007d7fb69b7a737613de3))
+- Move the ConnectionManager state machine to kubyl_kube_core ([17d495b](https://github.com/BirknerAlex/kubyl/commit/17d495bc369d1f5c66110e98941ea11811d64a55))
+- Add kubyl_resources_core ([ab80227](https://github.com/BirknerAlex/kubyl/commit/ab802273f96dddb83aaefe5196131b6352697fac))
+- SharedString, ActiveForward in kubyl_base ([770ed64](https://github.com/BirknerAlex/kubyl/commit/770ed6468b9a9d6e67b0d4a7c30c13583ad4e95c))
+- Add kubyl_logs_core ([ccfdcfe](https://github.com/BirknerAlex/kubyl/commit/ccfdcfe505000463f155289d7d9593097667593a))
+- Add kubyl_terminal_core ([2307e8c](https://github.com/BirknerAlex/kubyl/commit/2307e8c722a2576ab4570be5940e0af7e876638c))
+- Add kubyl_portforward_core ([1cbf3d3](https://github.com/BirknerAlex/kubyl/commit/1cbf3d3216d3b340b573f01aa5b7807865b20995))
+- Add kubyl_yaml_core ([4cf8d35](https://github.com/BirknerAlex/kubyl/commit/4cf8d35bbc99b034bd9215493e9e17b1c85cc7a3))
+- Move discovery, queries and transports to kubyl_metrics_core ([14a2810](https://github.com/BirknerAlex/kubyl/commit/14a2810d0080cc09ca74dc8b19cc58385ccbaf88))
+- Add kubyl_charts_core ([69e9573](https://github.com/BirknerAlex/kubyl/commit/69e957317ce9577ef6665a16f2191853c83fe5f4))
+- Move the metrics cache to kubyl_metrics_core ([ce2727c](https://github.com/BirknerAlex/kubyl/commit/ce2727c2267245f2bd140be7001abeb674f86fe9))
+- Move clients, model, matchers and rows to kubyl_alerts_core ([b0e7559](https://github.com/BirknerAlex/kubyl/commit/b0e7559c4e1529ecdfc6dc8ba4ae2db8a87a06a7))
+- Move the API, model, health, trees and ops to kubyl_argocd_core ([288230b](https://github.com/BirknerAlex/kubyl/commit/288230bd89fc623327c05268d4a9b7063434643f))
+- Add kubyl_operators_core ([9c15fb2](https://github.com/BirknerAlex/kubyl/commit/9c15fb2ce7e77567ee15bd61ce609751d6d2c4d8))
+- Move providers, checks and pre-flight to kubyl_updates_core ([8c75824](https://github.com/BirknerAlex/kubyl/commit/8c758249b88e2937d2e61d51c6b616089c01cb09))
+- Move fetches, model and completion to kubyl_prometheus_core ([7b08233](https://github.com/BirknerAlex/kubyl/commit/7b08233a870a8943e5315dc15d26e5ae8cb92cf6))
+- Move backends, model, filters and topology to kubyl_netflow_core ([32b6504](https://github.com/BirknerAlex/kubyl/commit/32b65044a5d33f966e8fb35a7ec52ac800304dc7))
+- Add kubyl_files_core ([fd3b3e1](https://github.com/BirknerAlex/kubyl/commit/fd3b3e11331ed2ccda5ae52810e1bd2a4884da0c))
+- Add kubyl_kubeconfig_core ([51a2e69](https://github.com/BirknerAlex/kubyl/commit/51a2e691ab963793f2ee3565e2b2abaf587bc6b6))
+- Add kubyl_selfupdate_core ([5a2f5a2](https://github.com/BirknerAlex/kubyl/commit/5a2f5a2a21676f4e584835195ce6c170b8ce43f2))
+- Add kubyl_palette_core ([4c49fb3](https://github.com/BirknerAlex/kubyl/commit/4c49fb3998759fb6aa106cff3c48829055e01d33))
+- Add kubyl_overview_core with the event rows and settings ([bbeb9e4](https://github.com/BirknerAlex/kubyl/commit/bbeb9e4d382d5e849077098e8fa2d3087175ff91))
+- Add kubyl_webview_core ([089eb72](https://github.com/BirknerAlex/kubyl/commit/089eb72752e7530742cf528b283ad6787db46500))
+- Add kubyl_explorer_core with RBAC checks and settings ([71da1bf](https://github.com/BirknerAlex/kubyl/commit/71da1bf1bf1ee57be11dabe11d0a09a2f0f132ba))
+- The check/download state machine runs on Host ([663ff1e](https://github.com/BirknerAlex/kubyl/commit/663ff1e13701f19fcff01f390f74c0b6b98c9443))
+- Move server kinds, access and discovery to the core ([8ee7a3d](https://github.com/BirknerAlex/kubyl/commit/8ee7a3d0264aa032717c26b5bab6b0bcac67969a))
+- Move update states and building providers to the core ([f19b142](https://github.com/BirknerAlex/kubyl/commit/f19b1424430d8055aa06b39577823b7ba77dc708))
+- Move counts, sources and the fetch-and-merge to the core ([626b14f](https://github.com/BirknerAlex/kubyl/commit/626b14ff1046f10f69a52c8520d73eafcf7e2c56))
+- Move flow states and Relay TLS rules to the core ([884fa69](https://github.com/BirknerAlex/kubyl/commit/884fa69dc7ec7a384f1d37dfacdf72ab0006720c))
+- Move settings, app rows and operations to the core ([022af54](https://github.com/BirknerAlex/kubyl/commit/022af54a7dc8be955dd2a5130d09919e3d23afbd))
+- Move OLM availability, snapshots and watch problems to the core ([339f20b](https://github.com/BirknerAlex/kubyl/commit/339f20bcd0b773404c0831765a9d5f7065122156))
+- The updates service is UpdatesCore on a Host ([2ebec6f](https://github.com/BirknerAlex/kubyl/commit/2ebec6fea4bc23d549c73addba248b8e5a2dca18))
+- The flow service is FlowsCore on a Host ([a994367](https://github.com/BirknerAlex/kubyl/commit/a994367022414910a92dceee7112d8ebb6b08ad3))
+- The Argo CD service is ArgoCore on a Host ([2f42fd4](https://github.com/BirknerAlex/kubyl/commit/2f42fd4c7637f43be02ebdd78bdd8718cb6386dd))
+- The alerts service is AlertsCore on a Host ([296acda](https://github.com/BirknerAlex/kubyl/commit/296acda5f402717166daf529cfdb26b5518857d7))
+- The Prometheus service is PrometheusCore on a Host ([ed0fe49](https://github.com/BirknerAlex/kubyl/commit/ed0fe493b84c29172aaf2d3a4c8ac9a34fa5c2bc))
+- The OLM and Helm services are OlmCore and HelmCore on a Host ([c00304e](https://github.com/BirknerAlex/kubyl/commit/c00304e434b26d238e301d63cb3e509e800a7f29))
+
 ## [0.4.0] - 2026-10-03
 
 ### Bug Fixes
