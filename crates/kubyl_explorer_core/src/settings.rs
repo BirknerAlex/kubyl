@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 pub struct ExplorerSettings {
     /// Order of the groups under each cluster. Ids: `overview`, `events`, `workloads`,
-    /// `network`, `config`, `storage`, `access`, `cluster`, `administration`, `custom`.
+    /// `network`, `config`, `storage`, `devices`, `access`, `cluster`, `administration`, `custom`.
     /// Groups not listed follow in their default order.
     pub group_order: Vec<String>,
     /// Groups to hide (same ids as `group_order`).

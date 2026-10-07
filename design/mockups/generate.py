@@ -4714,6 +4714,243 @@ def flux_delete_screen():
     return page("Flux delete — Kubyl", flux_shell("Kustomizations", tb, content, modal))
 
 
+# ---------- 22 · Resource views (phase 24) ----------
+RV_CLUSTER = "kind-dev"
+
+def rv_sidebar(active, open_groups):
+    """kind-dev with the groups phase 24 adds to (only kinds the cluster serves show)."""
+    groups = [
+        ("Workloads", [("Pods", "box", "21"), ("Deployments", "layers", "4"), ("StatefulSets", "db", "1"), ("Jobs", "play", "2"), ("VerticalPodAutoscalers", "activity", "1")]),
+        ("Network", [("Services", "network", "6"), ("Endpoints", "commit", "6"), ("EndpointSlices", "commit", "6"), ("Ingresses", "globe", "1"), ("NetworkPolicies", "shield", "2"),
+                     ("Gateways", "globe", "1"), ("GatewayClasses", "globe", "1"), ("HTTPRoutes", "right", "1"), ("GRPCRoutes", "right", "1"), ("ListenerSets", "list", "0"), ("ReferenceGrants", "link", "1")]),
+        ("Config &amp; Secrets", []), ("Storage", []),
+        ("Device Resources", [("ResourceClaims", "cpu", "2"), ("ResourceClaimTemplates", "fileplus", "1"), ("DeviceClasses", "blocks", "1"), ("ResourceSlices", "server", "1"), ("DeviceTaintRules", "alert", "0")]),
+        ("Access Control", []),
+        ("Cluster", [("Nodes", "server", "2"), ("Namespaces", "folder", "24"), ("PriorityClasses", "up", "2"), ("RuntimeClasses", "cpu", "1"), ("Leases", "lock", "9"),
+                     ("MutatingWebhooks", "zap", "1"), ("ValidatingWebhooks", "ok", "2"), ("ValidatingAdmissionPolicies", "shield", "2"), ("ValidatingAdmissionPolicyBindings", "link", "2"),
+                     ("MutatingAdmissionPolicies", "shield", "1"), ("MutatingAdmissionPolicyBindings", "link", "1")]),
+        ("Administration", []), ("Custom Resources", []),
+    ]
+    rows = [
+        f'<div class="phead"><span style="flex:1;font-weight:500;color:var(--text)">Explorer</span><button class="ib" aria-label="Filter kinds">{ic("search",13)}</button><button class="ib" aria-label="Add kubeconfig">{ic("plus",14)}</button><button class="ib" aria-label="More">{ic("more",14)}</button></div>',
+        f'<div class="sec">{ic("cr",11)}Favorites<span style="flex:1"></span><span style="font-weight:400;letter-spacing:0;text-transform:none;color:var(--faint)">4</span></div>',
+        f'<div class="sec">{ic("cd",11)}Clusters</div>',
+        root(RV_CLUSTER, "on", True, C["green"]),
+        ti("Overview", 1, "gauge"),
+        ti("Events", 1, "bell", "3", color=C["yellow"]),
+    ]
+    for g, kinds in groups:
+        is_open = g in open_groups
+        rows.append(ti(g, 1, open_=is_open))
+        if is_open:
+            rows += [ti(n, 2, icon, cnt, on=n == active) for n, icon, cnt in kinds]
+    rows += [root("prod-eu-west-1", "on", color=C["red"], prod=True), root("staging-eu-west-1", "on", color=C["yellow"])]
+    return '<aside class="side">' + "\n".join(rows) + '</aside>'
+
+def rv_app(title, active, open_groups, tb, content, ns="kubyl-views"):
+    inner = f'''<div class="app">
+{titlebar(RV_CLUSTER, ns, False, "kind · v1.37.0")}
+<div class="body">{rv_sidebar(active, open_groups)}<main class="main">{tb}{content}</main></div>
+{statusbar(cluster=RV_CLUSTER, ns=ns)}
+</div>'''
+    return page(title, inner)
+
+def rv_list(icon, title, sub, cols, head, rows, keys, extra_tool=""):
+    toolbar = f'''<div class="tool">
+<div class="crumb">{ic(icon,14,C["accent"])}<b>{title}</b><span>·</span><span>{sub}</span></div>
+<div style="flex:1"></div>{extra_tool}
+<div class="inp" style="width:180px">{ic("filter",12)}Filter</div>
+<button class="btn g" aria-label="Columns">{ic("sliders",13)}</button>
+<span class="chip" style="color:var(--green)">{dot(C["green"])}live</span>
+</div>'''
+    hd = f'<div class="th" style="{cols}">' + "".join(f"<span>{h}</span>" for h in head) + "</div>"
+    body = "".join(f'<div class="tr{" on" if i == 0 else ""}" style="{cols}">{"".join(r)}</div>' for i, r in enumerate(rows))
+    return f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0">
+{toolbar}{hd}<div style="flex:1;overflow:hidden">{body}</div>
+{hints(keys)}
+</div>'''
+
+def rv_dock(title, width, sections):
+    return (f'<aside class="dock" style="width:{width}px"><div class="phead" style="border-bottom:1px solid var(--bv)"><span style="flex:1;color:var(--text);font-weight:500">{title}</span>'
+            f'<button class="ib" aria-label="Pin">{ic("star",13)}</button><button class="ib" aria-label="Close">{ic("x",13)}</button></div>'
+            + "".join(sections) + "</aside>")
+
+def rv_head(name, chips, ns=None):
+    nsl = f'<div style="font-size:11.5px;color:var(--dim);margin-bottom:6px">namespace {ns}</div>' if ns else ""
+    return f'<div class="dsec"><div class="mono" style="font-size:12.5px;margin-bottom:4px">{name}</div>{nsl}<div style="display:flex;gap:6px;flex-wrap:wrap">{chips}</div></div>'
+
+def rv_sec(title, body, last=False):
+    return f'<div class="dsec"{" style=border-bottom:0" if last else ""}><p class="dtitle">{title}</p>{body}</div>'
+
+def m(t, c="var(--text)", s=11.5): return f'<span class="mono" style="font-size:{s}px;color:{c}">{t}</span>'
+def lk(t, s=11.5): return f'<a href="#" class="mono" style="font-size:{s}px;text-decoration:none">{t}</a>'
+def tpill(label, col): return f'<span class="pill" style="font-size:12px">{dot(col)}<span style="color:{col}">{label}</span></span>'
+def chip_ok(label): return f'<span class="chip" style="color:var(--green)">{ic("check",11,C["green"],2.5)}{label}</span>'
+def cel(lines): return ('<div class="mono" style="font-size:11.5px;line-height:17px;white-space:pre-wrap;color:var(--text);background:#2a2e36;border:1px solid var(--bv);border-radius:5px;padding:5px 8px">'
+                        + "<br>".join(lines) + "</div>")
+def card(inner): return f'<div style="border:1px solid var(--bv);border-radius:6px;background:#2a2e36;padding:7px 10px;display:flex;flex-direction:column;gap:3px;font-size:12px">{inner}</div>'
+
+def dra_claims_screen():
+    cols = "grid-template-columns: minmax(0,1fr) 196px 150px 110px 54px"
+    rows = [
+        [m("shared-gpu", s=12), tpill("Allocated, reserved by 1", C["green"]), m("gpu.example.com", "var(--muted)"), f'<span style="color:var(--green)">2 healthy</span>', m("14m", "var(--muted)")],
+        [m("gpu-job-0-gpu-nf4ln", s=12), tpill("Allocated, reserved by 1", C["green"]), m("gpu.example.com", "var(--muted)"), f'<span style="color:var(--green)">1 healthy</span>', m("14m", "var(--muted)")],
+        [m("train-a100-x4", s=12), tpill("Pending", C["yellow"]), m("gpu.example.com", "var(--muted)"), m("—", "var(--faint)"), m("2m", "var(--muted)")],
+        [m("nic-sriov-7", s=12), tpill("Allocated", C["accent"]), m("net.example.com", "var(--muted)"), f'<span style="color:var(--red)">1 unhealthy</span>', m("3d", "var(--muted)")],
+    ]
+    center = rv_list("cpu", "ResourceClaims", "4 in kubyl-views", cols, ["NAME", "STATE", "DEVICE CLASSES", "DEVICE HEALTH", "AGE"], rows,
+                     [("↵", "Details"), ("d", "Describe"), ("e", "Edit YAML"), ("⌃d", "Delete"), ("/", "Filter")])
+    results = "".join(
+        f'<div style="display:flex;align-items:center;gap:7px;padding:3px 0;font-size:12px">{ic("cpu",13,C["green"])}{m(dev)}<span style="color:var(--dim)">in</span>{lk(slice_)}<span style="flex:1"></span><span style="color:var(--green);font-size:11.5px">Healthy</span></div>'
+        for dev, slice_ in [("gpu-0", "kubyl-dev-worker-dvvbf"), ("gpu-1", "kubyl-dev-worker-dvvbf")])
+    dock = rv_dock("ResourceClaim details", 380, [
+        rv_head("shared-gpu", tpill("Allocated, reserved by 1", C["green"]) + '<span class="chip">age 14m</span>', "kubyl-views"),
+        rv_sec("Requests · 1", card(f'<div style="display:flex;gap:6px;align-items:center"><b style="font-weight:500">gpus</b><span class="chip" style="height:18px">exactly 2</span><span style="flex:1"></span>{lk("gpu.example.com")}</div>'
+                                   '<div style="color:var(--dim);font-size:11.5px">ExactCount · no selectors · no admin access</div>')),
+        rv_sec("Allocation", '<div style="display:flex;flex-direction:column;gap:4px">'
+               + rkv("Node", lk("kubyl-dev-worker"), 70) + rkv("Driver", m("gpu.example.com"), 70) + rkv("Pool", m("kubyl-dev-worker"), 70) + rkv("Allocated", "14m ago", 70)
+               + '</div><div style="font-size:11.5px;color:var(--dim);margin:8px 0 2px">Devices · 2</div>' + results),
+        rv_sec("Reserved for · 1", f'<div style="display:flex;align-items:center;gap:7px;font-size:12px">{dot(C["green"])}<span style="color:var(--dim)">Pod</span>{lk("gpu-shared")}<span style="flex:1"></span><span style="color:var(--green)">Running</span></div>'),
+        rv_sec("Device status", '<div style="display:flex;flex-direction:column;gap:6px">' + "".join(
+            card(f'<div style="display:flex;gap:6px;align-items:center">{m(d)}<span style="flex:1"></span><span class="pill">{ic("ok",12,C["green"])}Ready</span></div>'
+                 f'<div style="display:flex;gap:4px;flex-wrap:wrap"><span class="chip mchip">model=LATEST-GPU-MODEL</span><span class="chip mchip">driverVersion=1.0.0</span></div>') for d in ["gpu-0", "gpu-1"]) + '</div>', last=True),
+    ])
+    content = f'<div style="flex:1;display:flex;min-height:0">{center}{dock}</div>'
+    tb = tabs([("cpu", "ResourceClaims", True), ("box", "Pods", False)])
+    return rv_app("Device resources — Kubyl", "ResourceClaims", ("Device Resources",), tb, content)
+
+def dra_devices_screen():
+    cols = "grid-template-columns: minmax(0,1fr) 130px 130px 130px 70px 80px 54px"
+    rows = [[m("kubyl-dev-worker-dvvbf", s=12), m("gpu.example.com", "var(--muted)"), m("kubyl-dev-worker", "var(--muted)"), lk("kubyl-dev-worker", 12), m("8"), m("3"), m("14m", "var(--muted)")],
+            [m("kubyl-dev-worker-net-q7d2k", s=12), m("net.example.com", "var(--muted)"), m("kubyl-dev-worker", "var(--muted)"), lk("kubyl-dev-worker", 12), m("4"), m("0", "var(--dim)"), m("3d", "var(--muted)")],
+            [m("fabric-pool-0", s=12), m("fabric.example.com", "var(--muted)"), m("fabric", "var(--muted)"), m("all nodes", "var(--dim)"), m("16"), m("2"), m("3d", "var(--muted)")]]
+    center = rv_list("server", "ResourceSlices", "3", cols, ["NAME", "DRIVER", "POOL", "NODE", "DEVICES", "ALLOCATED", "AGE"], rows,
+                     [("↵", "Details"), ("d", "Describe"), ("e", "Edit YAML"), ("/", "Filter")])
+    def device(name, claim, attrs, cap, taint=None):
+        c = (f'<span style="color:var(--dim)">claim</span>{lk(claim)}' if claim else '<span style="color:var(--dim)">free</span>')
+        t = f'<div style="font-size:11.5px;color:var(--yellow)">{ic("alert",11,C["yellow"])} taint {taint}</div>' if taint else ""
+        return card(f'<div style="display:flex;gap:6px;align-items:center">{ic("cpu",13,C["green"] if claim else C["dim"])}{m(name, s=12)}<span style="flex:1"></span>{c}</div>'
+                    f'<div style="display:flex;gap:4px;flex-wrap:wrap">{"".join(f"<span class=\"chip mchip\">{a}</span>" for a in attrs)}</div>'
+                    f'<div style="font-size:11.5px;color:var(--dim)">capacity {cap}</div>{t}')
+    dock = rv_dock("ResourceSlice details", 400, [
+        rv_head("kubyl-dev-worker-dvvbf", '<span class="chip mchip">gpu.example.com</span><span class="chip">3 of 8 allocated</span><span class="chip">age 14m</span>'),
+        rv_sec("Slice", '<div style="display:flex;flex-direction:column;gap:4px">' + rkv("Driver", m("gpu.example.com"), 70) + rkv("Pool", m("kubyl-dev-worker") + ' <span style="color:var(--dim)">· generation 1 · 1 slice</span>', 70) + rkv("Node", lk("kubyl-dev-worker"), 70) + '</div>'),
+        rv_sec("Devices · 8", '<div style="display:flex;flex-direction:column;gap:6px">'
+               + device("gpu-0", "kubyl-views/shared-gpu", ["model=LATEST-GPU-MODEL", "index=0", "driverVersion=1.0.0"], "compute 100 · memory 80Gi")
+               + device("gpu-1", "kubyl-views/shared-gpu", ["model=LATEST-GPU-MODEL", "index=1", "driverVersion=1.0.0"], "compute 100 · memory 80Gi")
+               + device("gpu-2", None, ["model=LATEST-GPU-MODEL", "index=2", "driverVersion=1.0.0"], "compute 100 · memory 80Gi", "maintenance=planned:NoSchedule")
+               + '<div style="font-size:11.5px;color:var(--dim)">… 5 more</div></div>', last=True),
+    ])
+    # The pod's and the node's sections, as they appear in their details (inset).
+    pod_card = f'''<div style="position:absolute;left:300px;bottom:44px;width:420px;background:var(--panel);border:1px solid var(--border);border-radius:8px;box-shadow:0 12px 34px rgba(0,0,0,.45);overflow:hidden">
+<div class="phead" style="border-bottom:1px solid var(--bv)"><span style="flex:1;color:var(--text);font-weight:500">Pod details · gpu-shared</span></div>
+{rv_sec("Resource claims · 1", card(f'<div style="display:flex;gap:6px;align-items:center"><b style="font-weight:500">gpus</b><span style="color:var(--dim)">→</span>{lk("shared-gpu")}<span style="flex:1"></span>{tpill("Allocated, reserved", C["green"])}</div>'
+        f'<div style="font-size:11.5px;color:var(--dim)">container ctr · devices {m("gpu-0", "var(--muted)")}, {m("gpu-1", "var(--muted)")} · {lk("gpu.example.com")} · <span style="color:var(--green)">Healthy</span></div>'), last=True)}
+</div>'''
+    node_card = f'''<div style="position:absolute;left:740px;bottom:44px;width:400px;background:var(--panel);border:1px solid var(--border);border-radius:8px;box-shadow:0 12px 34px rgba(0,0,0,.45);overflow:hidden">
+<div class="phead" style="border-bottom:1px solid var(--bv)"><span style="flex:1;color:var(--text);font-weight:500">Node details · kubyl-dev-worker</span></div>
+{rv_sec("Devices · 12 · 3 allocated", '<div style="display:flex;flex-direction:column;gap:3px;font-size:12px">'
+        + f'<div style="display:flex;gap:6px;align-items:center">{lk("kubyl-dev-worker-dvvbf")}<span style="color:var(--dim)">gpu.example.com · pool kubyl-dev-worker · 8 devices</span></div>'
+        + "".join(f'<div style="display:flex;gap:7px;align-items:center;padding-left:12px">{ic("cpu",12,C["green"] if c else C["dim"])}{m(d)}<span style="flex:1"></span>{lk(c) if c else "<span style=color:var(--dim)>free</span>"}</div>' for d, c in [("gpu-0", "kubyl-views/shared-gpu"), ("gpu-1", "kubyl-views/shared-gpu"), ("gpu-3", "kubyl-views/gpu-job-0-gpu-nf4ln")])
+        + f'<div style="display:flex;gap:6px;align-items:center;margin-top:4px">{lk("kubyl-dev-worker-net-q7d2k")}<span style="color:var(--dim)">net.example.com · 4 devices, all free</span></div></div>', last=True)}
+</div>'''
+    content = f'<div style="flex:1;display:flex;min-height:0;position:relative">{center}{dock}</div>'
+    tb = tabs([("server", "ResourceSlices", True), ("cpu", "ResourceClaims", False)])
+    inner = f'''<div class="app">
+{titlebar(RV_CLUSTER, "kubyl-views", False, "kind · v1.37.0")}
+<div class="body">{rv_sidebar("ResourceSlices", ("Device Resources",))}<main class="main">{tb}{content}</main></div>
+{statusbar(cluster=RV_CLUSTER, ns="kubyl-views")}
+{pod_card}{node_card}
+</div>'''
+    return page("Resource slices, a pod's claims and a node's devices — Kubyl", inner)
+
+def admission_screen():
+    cols = "grid-template-columns: minmax(0,1fr) 90px 80px 80px 54px"
+    rows = [[m("kubyl-replica-limit", s=12), m("2"), m("Fail"), lk("1", 12), m("12m", "var(--muted)")],
+            [m("safe-upgrades.gateway.networking.k8s.io", s=12), m("2"), m("Fail"), lk("1", 12), m("12m", "var(--muted)")],
+            [m("require-team-label", s=12), m("1"), m("Ignore"), m("0", "var(--yellow)"), m("6d", "var(--muted)")]]
+    center = rv_list("shield", "ValidatingAdmissionPolicies", "3", cols, ["NAME", "VALIDATIONS", "FAILURE", "BINDINGS", "AGE"], rows,
+                     [("↵", "Details"), ("d", "Describe"), ("e", "Edit YAML"), ("⌃d", "Delete"), ("/", "Filter")])
+    val = lambda expr, msg: card(cel(expr) + f'<div style="font-size:11.5px;color:var(--dim)">{msg}</div>')
+    binding = card(f'<div style="display:flex;gap:6px;align-items:center">{ic("link",12,C["dim"])}{lk("kubyl-replica-limit-views")}<span style="flex:1"></span><span class="chip" style="height:18px;color:var(--red)">Deny</span><span class="chip" style="height:18px">Audit</span></div>'
+                   f'<div style="font-size:11.5px;color:var(--dim)">params {lk("ConfigMap kubyl-views/replica-limit", 11)} · missing params: Deny</div>'
+                   f'<div style="font-size:11.5px;color:var(--dim)">namespaces {m("kubyl.dev/views=true", "var(--muted)", 11)} · 1 matches: {lk("kubyl-views", 11)}</div>')
+    dock = rv_dock("ValidatingAdmissionPolicy details", 470, [
+        rv_head("kubyl-replica-limit", '<span class="chip">failure Fail</span><span class="chip">2 validations</span><span class="chip">params ConfigMap</span><span class="chip">age 12m</span>'),
+        rv_sec("Match constraints", '<div style="display:flex;flex-direction:column;gap:4px">' + rkv("Resources", m("apps/v1 deployments, statefulsets"), 90) + rkv("Operations", "CREATE, UPDATE", 90) + rkv("Match policy", "Equivalent", 90) + "</div>"),
+        rv_sec("Match conditions · 1", card(f'<b style="font-weight:500">not-a-system-user</b>' + cel(["!request.userInfo.username.startsWith('system:')"]))),
+        rv_sec("Variables · 2", '<div style="display:flex;flex-direction:column;gap:4px;font-size:12px">'
+               + rkv(m("replicas"), cel(["has(object.spec.replicas) ? object.spec.replicas : 1"]), 70) + rkv(m("limit"), cel(["int(params.data.maxReplicas)"]), 70) + "</div>"),
+        rv_sec("Validations · 2", '<div style="display:flex;flex-direction:column;gap:6px">'
+               + val(["variables.replicas &lt;= variables.limit"], "message: 'replicas must be at most ' + string(variables.limit) · reason Invalid")
+               + val(["object.metadata.name.size() &lt;= 40"], "names are at most 40 characters") + "</div>"),
+        rv_sec("Audit annotations · 1", rkv(m("replicas"), cel(["string(variables.replicas)"]), 70)),
+        rv_sec("Bindings · 1", binding, last=True),
+    ])
+    content = f'<div style="flex:1;display:flex;min-height:0">{center}{dock}</div>'
+    tb = tabs([("shield", "ValidatingAdmissionPolicies", True), ("ok", "ValidatingWebhooks", False)])
+    return rv_app("Admission policies — Kubyl", "ValidatingAdmissionPolicies", ("Cluster",), tb, content)
+
+def gateway_screen():
+    cols = "grid-template-columns: minmax(0,1fr) 96px 130px 120px 90px 70px 54px"
+    rows = [[m("web-gateway", s=12), m("kubyl-fake", "var(--muted)"), m("172.18.0.240", "var(--muted)"), tpill("Programmed", C["green"]), m("2"), m("3"), m("12m", "var(--muted)")],
+            [m("internal", s=12), m("cilium", "var(--muted)"), m("&lt;pending&gt;", "var(--dim)"), tpill("Pending", C["yellow"]), m("1"), m("0", "var(--dim)"), m("2d", "var(--muted)")]]
+    center = rv_list("globe", "Gateways", "2 in kubyl-views", cols, ["NAME", "CLASS", "ADDRESSES", "PROGRAMMED", "LISTENERS", "ROUTES", "AGE"], rows,
+                     [("↵", "Details"), ("d", "Describe"), ("e", "Edit YAML"), ("⌃d", "Delete"), ("/", "Filter")])
+    listener = lambda name, proto, host, routes: card(
+        f'<div style="display:flex;gap:6px;align-items:center"><b style="font-weight:500">{name}</b><span class="chip mchip" style="height:18px">{proto}</span>{m(host, "var(--muted)")}<span style="flex:1"></span>'
+        f'<span class="pill">{ic("ok",12,C["green"])}Programmed</span></div><div style="font-size:11.5px;color:var(--dim)">{routes}</div>')
+    route = lambda kind, name, via: f'<div style="display:flex;align-items:center;gap:7px;padding:3px 0;font-size:12px">{ic("ok",12,C["green"])}<span style="color:var(--dim)">{kind}</span>{lk(name)}<span style="flex:1"></span><span style="color:var(--dim);font-size:11.5px">{via}</span></div>'
+    dock = rv_dock("Gateway details", 400, [
+        rv_head("web-gateway", tpill("Accepted", C["green"]) + tpill("Programmed", C["green"]) + '<span class="chip">age 12m</span>', "kubyl-views"),
+        rv_sec("Gateway", '<div style="display:flex;flex-direction:column;gap:4px">' + rkv("Class", lk("kubyl-fake") + ' <span style="color:var(--dim)">· kubyl.dev/fake-gateway-controller</span>', 70) + rkv("Addresses", m("172.18.0.240") + ' <span style="color:var(--dim)">IPAddress</span>', 70) + "</div>"),
+        rv_sec("Listeners · 2", '<div style="display:flex;flex-direction:column;gap:6px">' + listener("http", "HTTP :80", "any host", "1 route attached · routes from the same namespace")
+               + listener("https", "HTTPS :443", "*.shop.example.com", "2 routes attached · routes from all namespaces · TLS Terminate · Secret shop-tls") + "</div>"),
+        rv_sec("Attached routes · 2", route("HTTPRoute", "shop", "http, https") + route("GRPCRoute", "checkout", "https"), last=True),
+    ])
+    svc_card = f'''<div style="position:absolute;left:300px;bottom:44px;width:440px;background:var(--panel);border:1px solid var(--border);border-radius:8px;box-shadow:0 12px 34px rgba(0,0,0,.45);overflow:hidden">
+<div class="phead" style="border-bottom:1px solid var(--bv)"><span style="flex:1;color:var(--text);font-weight:500">Service details · web</span></div>
+{rv_sec("Routes · 1", f'<div style="display:flex;flex-direction:column;gap:3px;font-size:12px"><div style="display:flex;gap:7px;align-items:center">{ic("ok",12,C["green"])}<span style="color:var(--dim)">HTTPRoute</span>{lk("shop")}<span style="flex:1"></span><span style="color:var(--dim);font-size:11.5px">port 80 · weight 90</span></div>'
+        f'<div style="font-size:11.5px;color:var(--dim);padding-left:19px">shop.example.com, www.shop.example.com · via {lk("web-gateway", 11)}</div></div>')}
+{rv_sec("EndpointSlices · 1", f'<div style="display:flex;gap:7px;align-items:center;font-size:12px">{lk("web-x8f2k")}<span style="color:var(--dim)">IPv4 · 2/2 ready · http 80/TCP</span></div>', last=True)}
+</div>'''
+    content = f'<div style="flex:1;display:flex;min-height:0;position:relative">{center}{dock}</div>'
+    tb = tabs([("globe", "Gateways", True), ("right", "HTTPRoutes", False), ("network", "Services", False)])
+    inner = f'''<div class="app">
+{titlebar(RV_CLUSTER, "kubyl-views", False, "kind · v1.37.0")}
+<div class="body">{rv_sidebar("Gateways", ("Network",))}<main class="main">{tb}{content}</main></div>
+{statusbar(cluster=RV_CLUSTER, ns="kubyl-views")}
+{svc_card}
+</div>'''
+    return page("Gateway API — Kubyl", inner)
+
+def vpa_screen():
+    cols = "grid-template-columns: minmax(0,1fr) 170px 100px 210px 54px"
+    rows = [[m("web", s=12), lk("Deployment/web", 12), m("Off", "var(--dim)"), m("nginx 80m / 96Mi"), m("12m", "var(--muted)")],
+            [m("ledger-writer", s=12), lk("StatefulSet/ledger-writer", 12), m("InPlaceOrRecreate"), m("app 410m / 1.2Gi"), m("9d", "var(--muted)")],
+            [m("batch-scorer", s=12), lk("CronJob/batch-scorer", 12), m("Initial"), m("—", "var(--faint)"), m("1m", "var(--muted)")]]
+    center = rv_list("activity", "VerticalPodAutoscalers", "3 in kubyl-views", cols, ["NAME", "TARGET", "UPDATE MODE", "RECOMMENDATION (CPU / MEMORY)", "AGE"], rows,
+                     [("↵", "Details"), ("d", "Describe"), ("e", "Edit YAML"), ("⌃d", "Delete"), ("/", "Filter")])
+    grid = "display:grid;grid-template-columns:70px repeat(4,minmax(0,1fr));gap:4px 8px;font-size:12px;align-items:center"
+    def rec(container, rows_, note=""):
+        cells = "".join(f'<span style="color:var(--dim)">{r}</span>' + "".join(m(v, col) for v, col in vals) for r, vals in rows_)
+        return card(f'<div style="display:flex;gap:6px;align-items:center"><b style="font-weight:500">{container}</b><span style="flex:1"></span><span style="font-size:11.5px;color:var(--dim)">{note}</span></div>'
+                    f'<div style="{grid}"><span></span>' + "".join(f'<span style="color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.05em">{h}</span>' for h in ["Requests", "Lower", "Target", "Upper"]) + cells + "</div>")
+    dock = rv_dock("VerticalPodAutoscaler details", 430, [
+        rv_head("web", tpill("RecommendationProvided", C["green"]) + '<span class="chip">mode Off</span><span class="chip">age 12m</span>', "kubyl-views"),
+        rv_sec("Target", '<div style="display:flex;flex-direction:column;gap:4px">' + rkv("Workload", f'<span style="color:var(--dim)">Deployment</span> {lk("web")}', 80) + rkv("Update mode", "Off <span style=color:var(--dim)>· recommendations only</span>", 80) + "</div>"),
+        rv_sec("Recommendations · 1 of 2 containers", '<div style="display:flex;flex-direction:column;gap:6px">'
+               + rec("nginx", [("CPU", [("50m", "var(--muted)"), ("25m", "var(--muted)"), ("80m", C["accent"]), ("320m", "var(--muted)")]),
+                               ("Memory", [("64Mi", "var(--muted)"), ("48Mi", "var(--muted)"), ("96Mi", C["accent"]), ("256Mi", "var(--muted)")])], "target above requests")
+               + card('<div style="display:flex;gap:6px;align-items:center"><b style="font-weight:500">metrics</b><span style="flex:1"></span><span style="font-size:11.5px;color:var(--dim)">mode Off · not scaled</span></div>')
+               + "</div>"),
+        rv_sec("Conditions", f'<span class="pill" style="font-size:12px">{ic("ok",12,C["green"])}RecommendationProvided</span>', last=True),
+    ])
+    content = f'<div style="flex:1;display:flex;min-height:0">{center}{dock}</div>'
+    tb = tabs([("activity", "VerticalPodAutoscalers", True), ("layers", "Deployments", False)])
+    return rv_app("VerticalPodAutoscalers — Kubyl", "VerticalPodAutoscalers", ("Workloads",), tb, content)
+
+
 SCREENS = [
  ("Main.dc.html", "1 · Pods (k9s-style table + details)", pods_screen),
  ("Routes.dc.html", "1 · OpenShift Routes under Network, with details", routes_screen),
@@ -4786,6 +5023,11 @@ SCREENS = [
  ("FluxManaged.dc.html", "21 · Managed by Flux in an object's details; the Flux column in Deployments", flux_managed_screen),
  ("FluxSuspend.dc.html", "21 · Multi-select and the suspend confirmation", flux_actions_screen),
  ("FluxDelete.dc.html", "21 · Delete on PROD: what prune removes, typed confirmation", flux_delete_screen),
+ ("DeviceResources.dc.html", "22 · Resource views: Device Resources, a claim's requests, allocation and reserved-for pods", dra_claims_screen),
+ ("ResourceSlices.dc.html", "22 · Resource views: a slice's devices, a pod's Resource Claims and a node's Devices", dra_devices_screen),
+ ("AdmissionPolicies.dc.html", "22 · Resource views: admission policies under Cluster, CEL validations and bindings", admission_screen),
+ ("GatewayApi.dc.html", "22 · Resource views: a Gateway's listeners and attached routes, a Service's Routes", gateway_screen),
+ ("VerticalPodAutoscalers.dc.html", "22 · Resource views: VerticalPodAutoscalers with recommendations", vpa_screen),
 ]
 
 boards, order = {}, []

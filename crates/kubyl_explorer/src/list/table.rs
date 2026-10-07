@@ -109,7 +109,7 @@ pub(super) fn render(
             let focus = this.filter_input.read(cx).focus_handle(cx);
             focus.focus(window, cx);
         }))
-        .on_action(cx.listener(|this, _: &ToggleWide, _, cx| this.toggle_wide(cx)))
+        .on_action(cx.listener(|this, _: &ToggleWide, window, cx| this.toggle_wide(window, cx)))
         .on_action(
             |_: &CopySelection, window, cx| match kubyl_ui::selected_text(window, cx) {
                 Some(text) => cx.write_to_clipboard(gpui::ClipboardItem::new_string(text)),
@@ -362,16 +362,18 @@ fn render_toolbar(
                 menu = menu.item(
                     PopupMenuItem::new(title.clone())
                         .checked(*visible)
-                        .on_click(move |_, _, cx| {
-                            weak.update(cx, |this, cx| this.toggle_column(&id, cx)).ok();
+                        .on_click(move |_, window, cx| {
+                            weak.update(cx, |this, cx| this.toggle_column(&id, window, cx))
+                                .ok();
                         }),
                 );
             }
             let weak = columns_weak.clone();
             menu.separator()
                 .item(PopupMenuItem::new("Wide (-o wide)").checked(wide).on_click(
-                    move |_, _, cx| {
-                        weak.update(cx, |this, cx| this.toggle_wide(cx)).ok();
+                    move |_, window, cx| {
+                        weak.update(cx, |this, cx| this.toggle_wide(window, cx))
+                            .ok();
                     },
                 ))
         });
@@ -607,6 +609,29 @@ fn render_buttons(
         .children(buttons.into_iter().enumerate().map(|(ix, button)| {
             let action = (button.action)(&target);
             let tooltip = button.tooltip.clone();
+            if button.link {
+                // The name of another object: accent text that opens it.
+                return div()
+                    .id(SharedString::from(format!("cell-{row}-{}-{ix}", def.id)))
+                    .min_w_0()
+                    .truncate()
+                    .when(def.mono, |this| {
+                        this.font_family(fonts::MONO).text_size(u(12.0))
+                    })
+                    .text_color(colors.accent)
+                    .cursor_pointer()
+                    .hover(|s| s.underline())
+                    .child(button.label.clone())
+                    .when_some(tooltip, |this, tooltip| {
+                        this.tooltip(move |window, cx| {
+                            gpui_component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx)
+                        })
+                    })
+                    .on_click(move |_, window, cx| {
+                        cx.stop_propagation();
+                        window.dispatch_action(action.boxed_clone(), cx);
+                    });
+            }
             div()
                 .id(SharedString::from(format!("cell-{row}-{}-{ix}", def.id)))
                 .flex()

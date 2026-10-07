@@ -114,11 +114,24 @@ const WORKLOADS: &[KnownKind] = &[
     k("apps", "replicasets", "ReplicaSets", IconName::Copy),
     k("batch", "jobs", "Jobs", IconName::Play),
     k("batch", "cronjobs", "CronJobs", IconName::Clock),
+    // The VPA CRD (kubernetes/autoscaler), where installed.
+    k(
+        "autoscaling.k8s.io",
+        "verticalpodautoscalers",
+        "VerticalPodAutoscalers",
+        IconName::Activity,
+    ),
 ];
 
 const NETWORK: &[KnownKind] = &[
     k("", "services", "Services", IconName::Network),
     k("", "endpoints", "Endpoints", IconName::Link),
+    k(
+        "discovery.k8s.io",
+        "endpointslices",
+        "EndpointSlices",
+        IconName::GitCommit,
+    ),
     k(
         "networking.k8s.io",
         "ingresses",
@@ -156,6 +169,55 @@ const NETWORK: &[KnownKind] = &[
         "gatewayclasses",
         "GatewayClasses",
         IconName::Globe,
+    ),
+    k(
+        "gateway.networking.k8s.io",
+        "grpcroutes",
+        "GRPCRoutes",
+        IconName::ArrowRight,
+    ),
+    k(
+        "gateway.networking.k8s.io",
+        "tlsroutes",
+        "TLSRoutes",
+        IconName::ArrowRight,
+    ),
+    k(
+        "gateway.networking.k8s.io",
+        "tcproutes",
+        "TCPRoutes",
+        IconName::ArrowRight,
+    ),
+    k(
+        "gateway.networking.k8s.io",
+        "udproutes",
+        "UDPRoutes",
+        IconName::ArrowRight,
+    ),
+    k(
+        "gateway.networking.k8s.io",
+        "listenersets",
+        "ListenerSets",
+        IconName::List,
+    ),
+    // Gateway API before v1.5: the experimental channel's ListenerSet.
+    k(
+        "gateway.networking.x-k8s.io",
+        "xlistenersets",
+        "XListenerSets",
+        IconName::List,
+    ),
+    k(
+        "gateway.networking.k8s.io",
+        "backendtlspolicies",
+        "BackendTLSPolicies",
+        IconName::Lock,
+    ),
+    k(
+        "gateway.networking.k8s.io",
+        "referencegrants",
+        "ReferenceGrants",
+        IconName::Link,
     ),
 ];
 
@@ -204,6 +266,40 @@ const STORAGE: &[KnownKind] = &[
         IconName::Link,
     ),
     k("storage.k8s.io", "csidrivers", "CSIDrivers", IconName::Cpu),
+];
+
+/// Dynamic Resource Allocation (`resource.k8s.io`, Kubernetes 1.34+ as `v1`).
+const DEVICES: &[KnownKind] = &[
+    k(
+        "resource.k8s.io",
+        "resourceclaims",
+        "ResourceClaims",
+        IconName::Cpu,
+    ),
+    k(
+        "resource.k8s.io",
+        "resourceclaimtemplates",
+        "ResourceClaimTemplates",
+        IconName::FilePlus,
+    ),
+    k(
+        "resource.k8s.io",
+        "deviceclasses",
+        "DeviceClasses",
+        IconName::Blocks,
+    ),
+    k(
+        "resource.k8s.io",
+        "resourceslices",
+        "ResourceSlices",
+        IconName::Server,
+    ),
+    k(
+        "resource.k8s.io",
+        "devicetaintrules",
+        "DeviceTaintRules",
+        IconName::TriangleAlert,
+    ),
 ];
 
 const ACCESS: &[KnownKind] = &[
@@ -274,6 +370,30 @@ const CLUSTER: &[KnownKind] = &[
         "ValidatingWebhooks",
         IconName::CircleCheck,
     ),
+    k(
+        "admissionregistration.k8s.io",
+        "validatingadmissionpolicies",
+        "ValidatingAdmissionPolicies",
+        IconName::Shield,
+    ),
+    k(
+        "admissionregistration.k8s.io",
+        "validatingadmissionpolicybindings",
+        "ValidatingAdmissionPolicyBindings",
+        IconName::Link,
+    ),
+    k(
+        "admissionregistration.k8s.io",
+        "mutatingadmissionpolicies",
+        "MutatingAdmissionPolicies",
+        IconName::Shield,
+    ),
+    k(
+        "admissionregistration.k8s.io",
+        "mutatingadmissionpolicybindings",
+        "MutatingAdmissionPolicyBindings",
+        IconName::Link,
+    ),
 ];
 
 /// Default group order. Ids are what `explorer.group_order` refers to.
@@ -318,6 +438,13 @@ pub const GROUPS: &[GroupDef] = &[
         label: "Storage",
         collapsible: true,
         kinds: STORAGE,
+        views: no_views,
+    },
+    GroupDef {
+        id: "devices",
+        label: "Device Resources",
+        collapsible: true,
+        kinds: DEVICES,
         views: no_views,
     },
     GroupDef {
@@ -735,6 +862,56 @@ pub fn icon_for(group: &str, resource: &str) -> IconName {
         .unwrap_or(IconName::File)
 }
 
+/// Short names Kubyl adds to discovery's for the palette (`:claims`, `:vap`…). `:rc` stays
+/// ReplicationController's.
+const EXTRA_SHORT_NAMES: &[(&str, &str, &[&str])] = &[
+    ("resource.k8s.io", "resourceclaims", &["claims", "claim"]),
+    (
+        "resource.k8s.io",
+        "resourceclaimtemplates",
+        &["claimtemplates"],
+    ),
+    ("resource.k8s.io", "deviceclasses", &["deviceclass"]),
+    ("resource.k8s.io", "resourceslices", &["slices", "slice"]),
+    (
+        "admissionregistration.k8s.io",
+        "validatingadmissionpolicies",
+        &["vap"],
+    ),
+    (
+        "admissionregistration.k8s.io",
+        "validatingadmissionpolicybindings",
+        &["vapb"],
+    ),
+    (
+        "admissionregistration.k8s.io",
+        "mutatingadmissionpolicies",
+        &["map"],
+    ),
+    (
+        "admissionregistration.k8s.io",
+        "mutatingadmissionpolicybindings",
+        &["mapb"],
+    ),
+    ("discovery.k8s.io", "endpointslices", &["eps"]),
+    ("autoscaling.k8s.io", "verticalpodautoscalers", &["vpa"]),
+];
+
+/// Discovery's short names of a kind plus the ones Kubyl adds.
+pub fn short_names(group: &str, resource: &str, served: &[String]) -> Vec<String> {
+    let mut names = served.to_vec();
+    let extra = EXTRA_SHORT_NAMES
+        .iter()
+        .filter(|(g, r, _)| *g == group && *r == resource)
+        .flat_map(|(_, _, names)| names.iter());
+    for name in extra {
+        if !names.iter().any(|n| n == name) {
+            names.push(name.to_string());
+        }
+    }
+    names
+}
+
 /// Display label for a kind (`Pods`, `Certificates`).
 pub fn label_for(group: &str, resource: &str, kind: Option<&str>) -> String {
     GROUPS
@@ -811,12 +988,8 @@ mod tests {
             .map(|k| k.label.as_str())
             .collect();
         assert_eq!(labels, ["CertificateRequests", "Certificates", "Issuers"]);
-        // Gateways are curated under Network; the rest of the group stays a custom resource.
-        let gateway: Vec<_> = groups["gateway.networking.k8s.io"]
-            .iter()
-            .map(|k| k.label.as_str())
-            .collect();
-        assert_eq!(gateway, ["GRPCRoutes"]);
+        // The Gateway API is curated under Network: no longer a custom resource.
+        assert!(!groups.contains_key("gateway.networking.k8s.io"));
         assert!(!groups.contains_key(""));
         let workloads = group_kinds(group("workloads").unwrap(), &discovery);
         assert_eq!(workloads.len(), 1);
@@ -866,6 +1039,161 @@ mod tests {
         assert!(!custom_groups(&discovery).contains_key("route.openshift.io"));
         assert_eq!(icon_for("route.openshift.io", "routes"), IconName::Route);
         assert_eq!(label_for("route.openshift.io", "routes", None), "Routes");
+    }
+
+    #[test]
+    fn phase_24_kinds_show_where_they_belong_only_where_served() {
+        let labels = |id: &str, discovery: &Discovery| -> Vec<String> {
+            group_kinds(group(id).unwrap(), discovery)
+                .into_iter()
+                .map(|k| k.label)
+                .collect()
+        };
+        let mut discovery = Discovery {
+            groups: vec![],
+            resources: vec![
+                resource("", "Pod", "pods"),
+                resource("", "Service", "services"),
+                resource(
+                    "admissionregistration.k8s.io",
+                    "ValidatingWebhookConfiguration",
+                    "validatingwebhookconfigurations",
+                ),
+            ],
+            aggregated: true,
+        };
+        // Nothing served: no Device Resources group, nothing added elsewhere.
+        assert!(labels("devices", &discovery).is_empty());
+        assert_eq!(labels("workloads", &discovery), ["Pods"]);
+        assert_eq!(labels("cluster", &discovery), ["ValidatingWebhooks"]);
+
+        discovery.resources.extend([
+            resource("resource.k8s.io", "ResourceClaim", "resourceclaims"),
+            resource("resource.k8s.io", "DeviceClass", "deviceclasses"),
+            resource("resource.k8s.io", "ResourceSlice", "resourceslices"),
+            resource(
+                "resource.k8s.io",
+                "ResourceClaimTemplate",
+                "resourceclaimtemplates",
+            ),
+            resource(
+                "admissionregistration.k8s.io",
+                "ValidatingAdmissionPolicy",
+                "validatingadmissionpolicies",
+            ),
+            resource(
+                "admissionregistration.k8s.io",
+                "ValidatingAdmissionPolicyBinding",
+                "validatingadmissionpolicybindings",
+            ),
+            resource("discovery.k8s.io", "EndpointSlice", "endpointslices"),
+            resource(
+                "autoscaling.k8s.io",
+                "VerticalPodAutoscaler",
+                "verticalpodautoscalers",
+            ),
+            resource(
+                "autoscaling.k8s.io",
+                "VerticalPodAutoscalerCheckpoint",
+                "verticalpodautoscalercheckpoints",
+            ),
+            resource("gateway.networking.k8s.io", "Gateway", "gateways"),
+            resource("gateway.networking.k8s.io", "TLSRoute", "tlsroutes"),
+            resource(
+                "gateway.networking.x-k8s.io",
+                "XListenerSet",
+                "xlistenersets",
+            ),
+            resource(
+                "gateway.networking.x-k8s.io",
+                "XBackendTrafficPolicy",
+                "xbackendtrafficpolicies",
+            ),
+        ]);
+        assert_eq!(
+            labels("devices", &discovery),
+            [
+                "ResourceClaims",
+                "ResourceClaimTemplates",
+                "DeviceClasses",
+                "ResourceSlices"
+            ]
+        );
+        assert_eq!(
+            labels("workloads", &discovery),
+            ["Pods", "VerticalPodAutoscalers"]
+        );
+        assert_eq!(
+            labels("network", &discovery),
+            [
+                "Services",
+                "EndpointSlices",
+                "Gateways",
+                "TLSRoutes",
+                "XListenerSets"
+            ]
+        );
+        assert_eq!(
+            labels("cluster", &discovery),
+            [
+                "ValidatingWebhooks",
+                "ValidatingAdmissionPolicies",
+                "ValidatingAdmissionPolicyBindings"
+            ]
+        );
+        let custom = custom_groups(&discovery);
+        // VPA checkpoints and the other experimental kinds stay custom resources.
+        let names = |group: &str| -> Vec<String> {
+            custom[group].iter().map(|k| k.label.clone()).collect()
+        };
+        assert_eq!(
+            names("autoscaling.k8s.io"),
+            ["VerticalPodAutoscalerCheckpoints"]
+        );
+        assert_eq!(
+            names("gateway.networking.x-k8s.io"),
+            ["XBackendTrafficPolicies"]
+        );
+        assert!(!custom.contains_key("resource.k8s.io"));
+        assert_eq!(icon_for("resource.k8s.io", "resourceclaims"), IconName::Cpu);
+        assert_eq!(
+            label_for(
+                "admissionregistration.k8s.io",
+                "mutatingadmissionpolicies",
+                None
+            ),
+            "MutatingAdmissionPolicies"
+        );
+        // The group sits after Storage by default.
+        let ids = ordered_groups(&[], &[]);
+        let storage = ids.iter().position(|id| *id == "storage").unwrap();
+        assert_eq!(ids[storage + 1], "devices");
+    }
+
+    #[test]
+    fn short_names_add_to_discovery() {
+        assert_eq!(
+            short_names("resource.k8s.io", "resourceclaims", &[]),
+            ["claims", "claim"]
+        );
+        assert_eq!(
+            short_names(
+                "autoscaling.k8s.io",
+                "verticalpodautoscalers",
+                &["vpa".into()]
+            ),
+            ["vpa"]
+        );
+        assert_eq!(
+            short_names("", "replicationcontrollers", &["rc".into()]),
+            ["rc"]
+        );
+        // No kind of phase 24 takes `rc`.
+        assert!(
+            EXTRA_SHORT_NAMES
+                .iter()
+                .all(|(_, _, names)| !names.contains(&"rc"))
+        );
     }
 
     #[test]

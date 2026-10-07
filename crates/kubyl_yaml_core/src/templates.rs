@@ -215,6 +215,71 @@ spec:
             )
         },
     },
+    Template {
+        title: "ValidatingAdmissionPolicy",
+        gvk: (
+            "admissionregistration.k8s.io",
+            "v1",
+            "ValidatingAdmissionPolicy",
+        ),
+        body: |ns| {
+            // Cluster-scoped: the binding applies the policy to the namespace the editor was
+            // opened for.
+            format!(
+                "apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: replica-limit
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [apps]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [deployments]
+  validations:
+    - expression: \"object.spec.replicas <= 5\"
+      message: Deployments run at most 5 replicas.
+      reason: Invalid
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: replica-limit-{ns}
+spec:
+  policyName: replica-limit
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {ns}
+"
+            )
+        },
+    },
+    Template {
+        title: "ResourceClaimTemplate",
+        gvk: ("resource.k8s.io", "v1", "ResourceClaimTemplate"),
+        body: |ns| {
+            format!(
+                "apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  name: single-gpu
+  namespace: {ns}
+spec:
+  spec:
+    devices:
+      requests:
+        - name: gpu
+          exactly:
+            deviceClassName: gpu.example.com
+            count: 1
+"
+            )
+        },
+    },
 ];
 
 pub fn template_for(gvk: &Gvk) -> Option<&'static Template> {
@@ -295,8 +360,39 @@ mod tests {
             assert!(parsed.error.is_none(), "{}", template.title);
             let root = parsed.roots().next().unwrap().to_json();
             assert_eq!(root["kind"], template.gvk.2);
-            assert_eq!(root["metadata"]["namespace"], "payments");
+            let cluster_scoped = template.gvk.0 == "admissionregistration.k8s.io";
+            if !cluster_scoped {
+                assert_eq!(root["metadata"]["namespace"], "payments");
+            }
         }
+        // A policy comes with a binding for the namespace.
+        let policy = template_for(&Gvk::new(
+            "admissionregistration.k8s.io",
+            "v1",
+            "ValidatingAdmissionPolicy",
+        ))
+        .unwrap();
+        let parsed = parse(&policy.text("payments"));
+        let docs: Vec<_> = parsed.roots().map(|r| r.to_json()).collect();
+        assert_eq!(docs.len(), 2);
+        assert!(docs[0]["metadata"].get("namespace").is_none());
+        assert_eq!(
+            docs[0]["spec"]["validations"][0]["expression"],
+            "object.spec.replicas <= 5"
+        );
+        assert_eq!(docs[1]["kind"], "ValidatingAdmissionPolicyBinding");
+        assert_eq!(docs[1]["spec"]["policyName"], docs[0]["metadata"]["name"]);
+        assert_eq!(
+            docs[1]["spec"]["matchResources"]["namespaceSelector"]["matchLabels"]["kubernetes.io/metadata.name"],
+            "payments"
+        );
+        let claim =
+            template_for(&Gvk::new("resource.k8s.io", "v1", "ResourceClaimTemplate")).unwrap();
+        let object = parse(&claim.text("ml")).roots().next().unwrap().to_json();
+        assert_eq!(
+            object["spec"]["spec"]["devices"]["requests"][0]["exactly"]["deviceClassName"],
+            "gpu.example.com"
+        );
         let route = template_for(&Gvk::new("route.openshift.io", "v1", "Route")).unwrap();
         let object = parse(&route.text("shop")).roots().next().unwrap().to_json();
         assert_eq!(object["spec"]["tls"]["termination"], "edge");

@@ -40,6 +40,18 @@ pub fn status_tone(reason: &str) -> Tone {
     match reason {
         "Running" | "Succeeded" | "Ready" | "Active" | "Bound" | "Available" | "Complete"
         | "SuccessCriteriaMet" => Tone::Good,
+        // Gateway API, VPA (phase 24).
+        "Accepted" | "Programmed" | "RecommendationProvided" => Tone::Good,
+        // ResourceClaims: allocated but not in use yet; in use.
+        "Allocated" => Tone::Info,
+        r if r.starts_with("Allocated, reserved") => Tone::Good,
+        "Deleting" | "Partly accepted" => Tone::Warning,
+        r if r.starts_with("Not accepted")
+            || r.starts_with("Not programmed")
+            || r.starts_with("Refs not resolved") =>
+        {
+            Tone::Bad
+        }
         "Completed" => Tone::Muted,
         "Pending" | "Terminating" | "Unknown" | "SchedulingGated" | "Suspended" => Tone::Warning,
         "ContainerCreating" | "PodInitializing" => Tone::Info,
@@ -382,6 +394,15 @@ pub fn is_failing(group: &str, kind: &str, object: &Value) -> bool {
         ("", "PersistentVolumeClaim") => str_at(object, "/status/phase") != "Bound",
         ("" | "events.k8s.io", "Event") => str_at(object, "/type") == "Warning",
         (crate::route::GROUP, crate::route::KIND) => Route::parse(object).is_rejected(),
+        (crate::gateway::GROUP, "Gateway") => {
+            crate::gateway::Gateway::parse(object).state().1 == Tone::Bad
+        }
+        (crate::gateway::GROUP, "GatewayClass") => {
+            crate::gateway::gateway_class(object).1.1 == Tone::Bad
+        }
+        (crate::gateway::GROUP, kind) if crate::gateway::is_route(crate::gateway::GROUP, kind) => {
+            crate::gateway::Route::parse(object).state().1 == Tone::Bad
+        }
         _ => false,
     }
 }

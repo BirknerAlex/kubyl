@@ -1233,6 +1233,83 @@ mod tests {
     }
 
     #[test]
+    fn short_names_of_the_resource_views() {
+        let mut s = snapshot();
+        let extra = |group: &str, resource: &str, kind_name: &str, served: &[&str]| {
+            let served: Vec<String> = served.iter().map(|n| n.to_string()).collect();
+            let names = kubyl_explorer::catalog::short_names(group, resource, &served);
+            let names: Vec<&str> = names.iter().map(String::as_str).collect();
+            kind(group, resource, kind_name, &names)
+        };
+        s.kinds.extend([
+            extra(
+                "",
+                "replicationcontrollers",
+                "ReplicationController",
+                &["rc"],
+            ),
+            extra("resource.k8s.io", "resourceclaims", "ResourceClaim", &[]),
+            extra("resource.k8s.io", "resourceslices", "ResourceSlice", &[]),
+            extra("resource.k8s.io", "deviceclasses", "DeviceClass", &[]),
+            extra(
+                "admissionregistration.k8s.io",
+                "validatingadmissionpolicies",
+                "ValidatingAdmissionPolicy",
+                &[],
+            ),
+            extra(
+                "admissionregistration.k8s.io",
+                "validatingadmissionpolicybindings",
+                "ValidatingAdmissionPolicyBinding",
+                &[],
+            ),
+            extra(
+                "admissionregistration.k8s.io",
+                "mutatingadmissionpolicies",
+                "MutatingAdmissionPolicy",
+                &[],
+            ),
+            extra(
+                "admissionregistration.k8s.io",
+                "mutatingadmissionpolicybindings",
+                "MutatingAdmissionPolicyBinding",
+                &[],
+            ),
+            extra("discovery.k8s.io", "endpointslices", "EndpointSlice", &[]),
+            extra(
+                "autoscaling.k8s.io",
+                "verticalpodautoscalers",
+                "VerticalPodAutoscaler",
+                &["vpa"],
+            ),
+        ]);
+        for (typed, resource) in [
+            ("rc", "replicationcontrollers"),
+            ("claims", "resourceclaims"),
+            ("deviceclasses", "deviceclasses"),
+            ("slices", "resourceslices"),
+            ("vap", "validatingadmissionpolicies"),
+            ("vapb", "validatingadmissionpolicybindings"),
+            ("map", "mutatingadmissionpolicies"),
+            ("mapb", "mutatingadmissionpolicybindings"),
+            ("eps", "endpointslices"),
+            ("vpa", "verticalpodautoscalers"),
+        ] {
+            let items = build(
+                Mode::Resources,
+                &format!("{typed} -A"),
+                &s,
+                Options::default(),
+            );
+            assert!(
+                matches!(&items[0].target, Target::Kind { gvr, .. } if gvr.resource == resource),
+                "{typed}: {:?}",
+                items[0].title
+            );
+        }
+    }
+
+    #[test]
     fn inline_commands() {
         let s = snapshot();
         let items = build(Mode::Resources, "pods kube-system", &s, Options::default());
