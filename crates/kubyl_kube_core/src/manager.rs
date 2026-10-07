@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::access::{AccessCache, AccessQuery};
 use crate::auth::CredentialSource;
+use crate::auth::store::Credentials;
 use crate::client::{self, BuiltClient, ConnectError, Probe};
 use crate::cluster_info::{self, ClusterInfo};
 use crate::discovery::{self, Discovery};
@@ -279,6 +280,8 @@ pub struct ManagerCore {
     state: KubeState,
     /// Clusters the user explicitly asked for; an OIDC sign-in prompt is shown for them.
     interactive: HashSet<ClusterId>,
+    /// Where the tokens of its connections are kept.
+    credentials: Credentials,
     tasks: Vec<TaskHandle>,
 }
 
@@ -315,8 +318,22 @@ impl ManagerCore {
             settings,
             state,
             interactive: HashSet::new(),
+            credentials: Credentials::default(),
             tasks: Vec::new(),
         }
+    }
+
+    /// Keeps this manager's tokens in `credentials` instead of the default handle's entries. An
+    /// app that serves several users from one process gives each manager its own scope.
+    pub fn with_credentials(mut self, credentials: Credentials) -> Self {
+        self.credentials = credentials;
+        self
+    }
+
+    /// Where the tokens of this manager's connections are kept: the one handle for everything
+    /// secret that belongs to a cluster (sign-ins, Argo CD tokens, a Prometheus header).
+    pub fn secrets(&self) -> &Credentials {
+        &self.credentials
     }
 
     /// Starts watching kubeconfig files (if enabled) and loads them.
@@ -1037,8 +1054,9 @@ impl ManagerCore {
         cluster.state = ConnectionState::Connecting;
 
         let task_info = info.clone();
+        let credentials = self.credentials.clone();
         let connect = async move {
-            let built = client::build(&task_info, config).await?;
+            let built = client::build(&task_info, config, &credentials).await?;
             let probe = match client::probe(&built.client).await {
                 // A cached exec token may have been revoked; run the plugin once more.
                 Err(ConnectError::Auth { .. })
@@ -1678,7 +1696,7 @@ impl ManagerCore {
         }
         let info = self.context(id)?;
         let config = self.loaded.configs.get(&info.file)?;
-        client::oidc_auth(info, config).map(Arc::new)
+        client::oidc_auth(info, config, &self.credentials).map(Arc::new)
     }
 
     /// The OpenShift OAuth credentials of a context, once a connect attempt built them.
@@ -1687,7 +1705,11 @@ impl ManagerCore {
             return Some(auth);
         }
         let info = self.context(id)?;
-        crate::auth::OpenShiftAuth::find(info.server.as_deref()?, info.user.as_deref()?)
+        crate::auth::OpenShiftAuth::find(
+            &self.credentials,
+            info.server.as_deref()?,
+            info.user.as_deref()?,
+        )
     }
 
     /// Connects on the user's behalf: a context that needs a sign-in opens the modal.

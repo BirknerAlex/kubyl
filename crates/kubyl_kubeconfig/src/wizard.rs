@@ -622,6 +622,7 @@ impl Wizard {
             context: context.clone(),
             file: self.target_path(cx),
             allow_exec: true,
+            secrets: kubyl_kube::auth::Credentials::default(),
         };
         let global = Kubeconfigs::global(cx);
         let file = self.target_path(cx);

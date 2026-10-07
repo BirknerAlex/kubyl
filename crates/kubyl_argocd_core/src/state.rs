@@ -25,6 +25,7 @@ use std::time::{Duration, Instant};
 use futures::channel::{mpsc, oneshot};
 use kubyl_base::host::{Flow, Host, HostExt as _, Pace, Service, TaskHandle};
 use kubyl_base::{ArgoCdCaps, ClusterId, Notice};
+use kubyl_kube_core::auth::Credentials as Store;
 use kubyl_kube_core::kubeconfig::ContextInfo;
 use kubyl_portforward_core::reach::{Reach, ReachPort, ReachRequest, Reached};
 use kubyl_resources_core::source::StoreSource;
@@ -231,6 +232,8 @@ pub struct ArgoCore {
     reach: Arc<dyn Reach>,
     settings: ArgoSettings,
     state: ArgoState,
+    /// Where the tokens of the installs are kept.
+    secrets: Store,
     /// Numbers the forwards, so a stopped one is told apart from its successor.
     forwards: u64,
 }
@@ -247,8 +250,15 @@ impl ArgoCore {
             reach,
             settings: ArgoSettings::default(),
             state: ArgoState::default(),
+            secrets: Store::default(),
             forwards: 0,
         }
+    }
+
+    /// Keeps the tokens in `secrets` instead of the default handle's entries.
+    pub fn with_credentials(mut self, secrets: Store) -> Self {
+        self.secrets = secrets;
+        self
     }
 
     // ----- Inputs -----
@@ -512,6 +522,7 @@ impl ArgoCore {
                 .get(cluster)
                 .and_then(|c| c.link.client.clone()),
             setting: self.settings.api_transport,
+            secrets: self.secrets.clone(),
         }
     }
 
@@ -782,12 +793,13 @@ impl ArgoCore {
             && let (Some(key), Some(server)) = (key, &session.install.server)
         {
             let token_key = settings::token_key(&key, &session.install.namespace, &server.name);
+            let secrets = self.secrets.clone();
             host.spawn(
                 async move {
                     tokio::task::spawn_blocking(move || {
-                        kubyl_kube_core::auth::store::delete(&refresh_key(&token_key)).ok();
-                        kubyl_kube_core::auth::store::delete(&password_key(&token_key)).ok();
-                        kubyl_kube_core::auth::store::delete(&token_key)
+                        secrets.delete(&refresh_key(&token_key)).ok();
+                        secrets.delete(&password_key(&token_key)).ok();
+                        secrets.delete(&token_key)
                     })
                     .await
                     .ok();
@@ -867,6 +879,7 @@ struct Env {
     reach: Arc<dyn Reach>,
     client: Option<kube::Client>,
     setting: ApiTransport,
+    secrets: Store,
 }
 
 /// Runs `work` on Tokio with a channel for its steps, and `handler` on the host's thread for
@@ -928,49 +941,49 @@ impl SavedPassword {
     }
 }
 
-async fn read_token(key: String) -> Option<SecretString> {
-    tokio::task::spawn_blocking(move || kubyl_kube_core::auth::store::get(&key))
+async fn read_token(secrets: &Store, key: String) -> Option<SecretString> {
+    let secrets = secrets.clone();
+    tokio::task::spawn_blocking(move || secrets.get(&key))
         .await
         .ok()
         .and_then(|r| r.inspect_err(|e| tracing::warn!("keychain: {e}")).ok())
         .flatten()
 }
 
-async fn delete_token(key: String) {
-    tokio::task::spawn_blocking(move || kubyl_kube_core::auth::store::delete(&key))
+async fn delete_token(secrets: &Store, key: String) {
+    let secrets = secrets.clone();
+    tokio::task::spawn_blocking(move || secrets.delete(&key))
         .await
         .ok();
 }
 
-async fn write_token(key: String, token: SecretString) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || kubyl_kube_core::auth::store::set(&key, &token))
+async fn write_token(secrets: &Store, key: String, token: SecretString) -> Result<(), String> {
+    let secrets = secrets.clone();
+    let name = secrets.store_name();
+    tokio::task::spawn_blocking(move || secrets.set(&key, &token))
         .await
         .map_err(|e| e.to_string())?
-        .map_err(|e| {
-            format!(
-                "couldn't store the token in the {}: {e}",
-                kubyl_kube_core::auth::store::store_name()
-            )
-        })
+        .map_err(|e| format!("couldn't store the token in the {name}: {e}"))
 }
 
 /// Signs in again with the saved username and password and stores the new token. Rejected
 /// credentials are deleted, so the dialog asks again.
 async fn relogin(
+    secrets: &Store,
     api: &ArgoApi,
     token_key: &str,
     saved: &SavedPassword,
 ) -> Result<SecretString, ApiState> {
     match api.login(&saved.username, &saved.password).await {
         Ok(token) => {
-            if let Err(err) = write_token(token_key.to_string(), token.clone()).await {
+            if let Err(err) = write_token(secrets, token_key.to_string(), token.clone()).await {
                 tracing::info!("Argo CD session token not stored: {err}");
             }
             Ok(token)
         }
         Err(ApiError::InvalidCredentials) => {
-            delete_token(password_key(token_key)).await;
-            delete_token(token_key.to_string()).await;
+            delete_token(secrets, password_key(token_key)).await;
+            delete_token(secrets, token_key.to_string()).await;
             Err(ApiState::SignInRequired(Some(format!(
                 "Argo CD no longer takes the saved password for {}. Sign in again.",
                 saved.username
@@ -982,13 +995,13 @@ async fn relogin(
 
 /// Stores an SSO session: the refresh token, and the session token when the keychain takes it
 /// (Windows Credential Manager holds 2.5 KB; without it the next start renews the session).
-async fn store_session(token_key: &str, tokens: &SsoTokens) -> Result<(), String> {
+async fn store_session(secrets: &Store, token_key: &str, tokens: &SsoTokens) -> Result<(), String> {
     let Some(refresh) = &tokens.refresh_token else {
-        delete_token(refresh_key(token_key)).await;
-        return write_token(token_key.to_string(), tokens.id_token.clone()).await;
+        delete_token(secrets, refresh_key(token_key)).await;
+        return write_token(secrets, token_key.to_string(), tokens.id_token.clone()).await;
     };
-    write_token(refresh_key(token_key), refresh.clone()).await?;
-    if let Err(err) = write_token(token_key.to_string(), tokens.id_token.clone()).await {
+    write_token(secrets, refresh_key(token_key), refresh.clone()).await?;
+    if let Err(err) = write_token(secrets, token_key.to_string(), tokens.id_token.clone()).await {
         tracing::info!("Argo CD session token not stored: {err}");
     }
     Ok(())
@@ -997,6 +1010,7 @@ async fn store_session(token_key: &str, tokens: &SsoTokens) -> Result<(), String
 /// Renews an SSO session with its refresh token (settings from the confirmed server say where)
 /// and stores the new tokens.
 async fn renew(
+    secrets: &Store,
     api: &ArgoApi,
     token_key: &str,
     refresh: &SecretString,
@@ -1004,7 +1018,7 @@ async fn renew(
     let settings = api.settings().await.map_err(|e| e.to_string())?;
     let config = SsoConfig::from_settings(&settings)?;
     let tokens = sso::refresh(&config, refresh).await?;
-    store_session(token_key, &tokens).await?;
+    store_session(secrets, token_key, &tokens).await?;
     Ok(tokens.id_token)
 }
 
@@ -1099,9 +1113,9 @@ async fn connect_work(
             .map(|s| s.name.clone())
             .unwrap_or_default();
         let token_key = settings::token_key(&key, &install.namespace, &service);
-        let mut token = read_token(token_key.clone()).await;
-        let refresh = read_token(refresh_key(&token_key)).await;
-        let saved = read_token(password_key(&token_key))
+        let mut token = read_token(&env.secrets, token_key.clone()).await;
+        let refresh = read_token(&env.secrets, refresh_key(&token_key)).await;
+        let saved = read_token(&env.secrets, password_key(&token_key))
             .await
             .and_then(|s| SavedPassword::parse(&s));
         steps.send(Step::Renewable(refresh.is_some() || saved.is_some()));
@@ -1111,7 +1125,7 @@ async fn connect_work(
             && token.as_ref().is_none_or(sso::expiring)
         {
             renewed = true;
-            match renew(&api, &token_key, refresh).await {
+            match renew(&env.secrets, &api, &token_key, refresh).await {
                 Ok(fresh) => token = Some(fresh),
                 Err(err) => tracing::info!("Argo CD session renewal failed: {err}"),
             }
@@ -1122,7 +1136,7 @@ async fn connect_work(
             && let Some(saved) = &saved
         {
             relogged = true;
-            match relogin(&api, &token_key, saved).await {
+            match relogin(&env.secrets, &api, &token_key, saved).await {
                 Ok(fresh) => token = Some(fresh),
                 Err(state) => return Ok(state),
             }
@@ -1145,7 +1159,7 @@ async fn connect_work(
                 Err(ApiError::Unauthorized) if !renewed && refresh.is_some() => {
                     renewed = true;
                     let refresh = refresh.as_ref().expect("checked");
-                    match renew(&api, &token_key, refresh).await {
+                    match renew(&env.secrets, &api, &token_key, refresh).await {
                         Ok(fresh) => token = fresh,
                         Err(err) => {
                             return Ok(ApiState::SignInRequired(Some(format!(
@@ -1157,7 +1171,7 @@ async fn connect_work(
                 Err(ApiError::Unauthorized) if !relogged && saved.is_some() => {
                     relogged = true;
                     let saved = saved.as_ref().expect("checked");
-                    match relogin(&api, &token_key, saved).await {
+                    match relogin(&env.secrets, &api, &token_key, saved).await {
                         Ok(fresh) => token = fresh,
                         Err(state) => return Ok(state),
                     }
@@ -1228,22 +1242,24 @@ async fn sign_in_work(
         let token_key = settings::token_key(&key, &install.namespace, &service);
         let renewable = session.as_ref().is_some_and(|s| s.refresh_token.is_some());
         match &session {
-            Some(session) => store_session(&token_key, session).await?,
+            Some(session) => store_session(&env.secrets, &token_key, session).await?,
             None => {
-                write_token(token_key.clone(), token).await?;
+                write_token(&env.secrets, token_key.clone(), token).await?;
                 // A refresh token of an earlier SSO session would renew the wrong one.
-                delete_token(refresh_key(&token_key)).await;
+                delete_token(&env.secrets, refresh_key(&token_key)).await;
             }
         }
         // The username and password sign in again when the session expires; another way of
         // signing in replaces them.
         match &saved {
             Some(saved) => {
-                if let Err(err) = write_token(password_key(&token_key), saved.to_secret()).await {
+                if let Err(err) =
+                    write_token(&env.secrets, password_key(&token_key), saved.to_secret()).await
+                {
                     tracing::info!("Argo CD password not stored: {err}");
                 }
             }
-            None => delete_token(password_key(&token_key)).await,
+            None => delete_token(&env.secrets, password_key(&token_key)).await,
         }
         let renewable = renewable || saved.is_some();
         let via = api.transport().describe();

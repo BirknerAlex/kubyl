@@ -12,6 +12,7 @@
 pub mod exec;
 pub mod oidc;
 pub mod openshift;
+pub(crate) mod registry;
 pub mod shell_env;
 pub mod store;
 
@@ -28,6 +29,7 @@ use tower::filter::AsyncPredicate;
 pub use exec::ExecAuth;
 pub use oidc::{OidcAuth, OidcParams, SignInEvent};
 pub use openshift::OpenShiftAuth;
+pub use store::Credentials;
 
 /// How a context authenticates, as detected from its kubeconfig user.
 #[derive(Clone, Debug, PartialEq, Eq)]

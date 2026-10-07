@@ -602,6 +602,7 @@ impl KubeconfigEditor {
             context: context.clone(),
             file: self.path.clone(),
             allow_exec: true,
+            secrets: kubyl_kube::auth::Credentials::default(),
         };
         self.show_test = true;
         match needs {
@@ -648,6 +649,7 @@ impl KubeconfigEditor {
                         context: context.clone(),
                         file: file.clone(),
                         allow_exec: true,
+                        secrets: kubyl_kube::auth::Credentials::default(),
                     };
                     g.test(TestKey::new(key.clone(), context.clone()), input, cx);
                 }

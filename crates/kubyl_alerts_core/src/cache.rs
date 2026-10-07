@@ -207,6 +207,7 @@ pub enum Pace {
 /// keychain key uses the URL as written in settings; the result is keyed by the API URL the
 /// probe compares against (with `path`, without a trailing slash).
 pub async fn read_headers(
+    secrets: &kubyl_kube_core::auth::Credentials,
     ids: &[String],
     urls: &[(String, String)],
 ) -> Vec<(String, SecretString)> {
@@ -215,9 +216,11 @@ pub async fn read_headers(
     }
     let ids = ids.to_vec();
     let urls = urls.to_vec();
+    let secrets = secrets.clone();
     tokio::task::spawn_blocking(move || {
         headers_for(&ids, &urls, |key| {
-            kubyl_kube_core::auth::store::get(key)
+            secrets
+                .get(key)
                 .inspect_err(|e| tracing::warn!("keychain: {e}"))
                 .ok()
                 .flatten()

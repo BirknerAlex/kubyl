@@ -29,6 +29,65 @@ use secrecy::{ExposeSecret as _, SecretString};
 /// Keychain service name for every entry.
 const SERVICE: &str = "io.github.birkneralex.Kubyl";
 
+/// The one handle to the credential store. Every secret Kubyl keeps (OIDC and OpenShift tokens,
+/// Argo CD tokens, a Prometheus header) goes through one of these, never through the free
+/// functions of this module directly.
+///
+/// The default handle has no scope and uses the keys as they are, so the desktop app's entries
+/// stay where they are. An app that keeps the credentials of several users in one store (a
+/// server, one handle per user) gives each a scope: its keys get a `scope/<scope>/` prefix that
+/// can't collide with a key (`oidc/…`, `openshift/…`, `argocd/…`), so two scopes never share an
+/// entry. Handles are cheap to clone.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Credentials {
+    scope: std::sync::Arc<str>,
+}
+
+impl Credentials {
+    /// A handle whose entries live in `scope`. An empty scope is the default handle.
+    pub fn scoped(scope: &str) -> Self {
+        Self {
+            scope: scope.into(),
+        }
+    }
+
+    pub fn scope(&self) -> &str {
+        &self.scope
+    }
+
+    /// `key` as stored, and as in-memory caches should key it so scopes stay apart too. `/` and
+    /// `%` in the scope are escaped, so scope `a` with key `b/c` never meets scope `a/b` with key
+    /// `c`.
+    pub fn key(&self, key: &str) -> String {
+        if self.scope.is_empty() {
+            key.to_string()
+        } else {
+            let scope = self.scope.replace('%', "%25").replace('/', "%2F");
+            format!("scope/{scope}/{key}")
+        }
+    }
+
+    /// Reads a secret. `Ok(None)` when there is none.
+    pub fn get(&self, key: &str) -> Result<Option<SecretString>, String> {
+        get(&self.key(key))
+    }
+
+    /// Stores a secret, replacing an existing one.
+    pub fn set(&self, key: &str, secret: &SecretString) -> Result<(), String> {
+        set(&self.key(key), secret)
+    }
+
+    /// Removes a secret. Missing entries are fine.
+    pub fn delete(&self, key: &str) -> Result<(), String> {
+        delete(&self.key(key))
+    }
+
+    /// A human-readable name of the store, for the UI.
+    pub fn store_name(&self) -> &'static str {
+        store_name()
+    }
+}
+
 /// A credential store an app installs with [`install`]. Calls block, like the built-in stores;
 /// they run on the Tokio runtime's blocking pool. Implementations must never log a secret.
 pub trait SecretStore: Send + Sync {
@@ -98,7 +157,7 @@ pub fn store_name() -> &'static str {
 }
 
 /// Reads a secret. `Ok(None)` when there is none.
-pub fn get(key: &str) -> Result<Option<SecretString>, String> {
+pub(crate) fn get(key: &str) -> Result<Option<SecretString>, String> {
     get_from(backend(), key)
 }
 
@@ -119,7 +178,7 @@ fn get_from(backend: &Backend, key: &str) -> Result<Option<SecretString>, String
 }
 
 /// Stores a secret, replacing an existing one.
-pub fn set(key: &str, secret: &SecretString) -> Result<(), String> {
+pub(crate) fn set(key: &str, secret: &SecretString) -> Result<(), String> {
     set_in(backend(), key, secret)
 }
 
@@ -143,7 +202,7 @@ fn set_in(backend: &Backend, key: &str, secret: &SecretString) -> Result<(), Str
 }
 
 /// Removes a secret. Missing entries are fine.
-pub fn delete(key: &str) -> Result<(), String> {
+pub(crate) fn delete(key: &str) -> Result<(), String> {
     delete_in(backend(), key)
 }
 

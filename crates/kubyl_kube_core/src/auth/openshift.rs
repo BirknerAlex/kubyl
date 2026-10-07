@@ -28,7 +28,9 @@ use parking_lot::Mutex;
 use secrecy::{ExposeSecret as _, SecretString};
 use serde::Deserialize;
 
-use super::{AuthError, SignInEvent, store};
+use super::registry::Registry;
+use super::store::Credentials;
+use super::{AuthError, SignInEvent};
 
 /// The OAuth client `oc login --web` uses (loopback redirects allowed).
 const CLI_CLIENT: &str = "openshift-cli-client";
@@ -56,7 +58,7 @@ pub fn username_hint(kubeconfig_user: &str) -> String {
 }
 
 /// Where and how to reach the cluster (from the built kube config).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct OpenShiftParams {
     /// The API server URL.
     pub server: String,
@@ -67,11 +69,18 @@ pub struct OpenShiftParams {
     /// `insecure-skip-tls-verify` in the kubeconfig: the same trust applies to its OAuth server.
     pub insecure: bool,
     pub proxy: Option<String>,
+    /// Where its tokens are kept. The manager sets it.
+    pub credentials: Credentials,
 }
 
 impl OpenShiftParams {
     fn store_key(&self) -> String {
         store_key(&self.server, &self.user)
+    }
+
+    /// The key of the shared auth and the in-memory caches: the store key in its scope.
+    fn shared_key(&self) -> String {
+        self.credentials.key(&self.store_key())
     }
 }
 
@@ -128,31 +137,23 @@ pub struct OpenShiftAuth {
     loaded: tokio::sync::OnceCell<()>,
 }
 
-static SHARED: LazyLock<Mutex<HashMap<String, Arc<OpenShiftAuth>>>> =
-    LazyLock::new(Default::default);
+static SHARED: LazyLock<Registry<OpenShiftAuth>> = LazyLock::new(Default::default);
 
 impl OpenShiftAuth {
     /// The auth for these params, shared by key. A changed kubeconfig token (a new `oc login`)
     /// replaces the old one and gets another chance. Changed TLS or proxy settings replace the
     /// whole entry, so the OAuth client never keeps trusting what the kubeconfig no longer does.
     pub fn shared(params: OpenShiftParams, kubeconfig_token: Option<SecretString>) -> Arc<Self> {
-        let auth = {
-            let mut shared = SHARED.lock();
-            let key = params.store_key();
-            if shared.get(&key).is_some_and(|auth| auth.params != params) {
-                shared.remove(&key);
-            }
-            shared
-                .entry(key)
-                .or_insert_with(|| {
-                    Arc::new(Self {
-                        params,
-                        tokens: Mutex::new(Tokens::default()),
-                        loaded: tokio::sync::OnceCell::new(),
-                    })
-                })
-                .clone()
-        };
+        let auth = SHARED.get_or_insert(
+            params.shared_key(),
+            params.credentials.scope().is_empty(),
+            |auth| auth.params != params,
+            || Self {
+                params: params.clone(),
+                tokens: Mutex::new(Tokens::default()),
+                loaded: tokio::sync::OnceCell::new(),
+            },
+        );
         if let Some(token) = kubeconfig_token {
             let mut tokens = auth.tokens.lock();
             let changed = tokens
@@ -168,8 +169,8 @@ impl OpenShiftAuth {
     }
 
     /// The auth of a kubeconfig user on a server, once a client was built for it.
-    pub fn find(server: &str, user: &str) -> Option<Arc<Self>> {
-        SHARED.lock().get(&store_key(server, user)).cloned()
+    pub fn find(credentials: &Credentials, server: &str, user: &str) -> Option<Arc<Self>> {
+        SHARED.get(&credentials.key(&store_key(server, user)))
     }
 
     /// A token to send: the one from Kubyl's last sign-in, else the kubeconfig's.
@@ -221,9 +222,10 @@ impl OpenShiftAuth {
         };
         if forget {
             let key = self.params.store_key();
+            let credentials = self.params.credentials.clone();
             tokio::task::spawn_blocking(move || {
                 for suffix in ["token", "expires"] {
-                    store::delete(&format!("{key}/{suffix}")).ok();
+                    credentials.delete(&format!("{key}/{suffix}")).ok();
                 }
             })
             .await
@@ -234,10 +236,11 @@ impl OpenShiftAuth {
 
     async fn load(&self) {
         let key = self.params.store_key();
+        let credentials = self.params.credentials.clone();
         let stored = tokio::task::spawn_blocking(move || {
             (
-                store::get(&format!("{key}/token")),
-                store::get(&format!("{key}/expires")),
+                credentials.get(&format!("{key}/token")),
+                credentials.get(&format!("{key}/expires")),
             )
         })
         .await;
@@ -256,7 +259,7 @@ impl OpenShiftAuth {
             }
             Ok((Err(err), _)) => tracing::warn!(
                 "couldn't read the OpenShift token from the {}: {err}",
-                store::store_name()
+                self.params.credentials.store_name()
             ),
             _ => {}
         }
@@ -319,21 +322,22 @@ impl OpenShiftAuth {
             tokens.used = None;
         }
         let key = self.params.store_key();
+        let credentials = self.params.credentials.clone();
         let result = tokio::task::spawn_blocking(move || {
-            store::set(&format!("{key}/token"), &token)?;
+            credentials.set(&format!("{key}/token"), &token)?;
             match expires_at {
-                Some(at) => store::set(
+                Some(at) => credentials.set(
                     &format!("{key}/expires"),
                     &SecretString::from(at.as_second().to_string()),
                 ),
-                None => store::delete(&format!("{key}/expires")),
+                None => credentials.delete(&format!("{key}/expires")),
             }
         })
         .await;
         if let Ok(Err(err)) = result {
             tracing::warn!(
                 "couldn't store the OpenShift token in the {}: {err}",
-                store::store_name()
+                self.params.credentials.store_name()
             );
         }
     }
@@ -706,6 +710,7 @@ mod tests {
             roots: Vec::new(),
             insecure: false,
             proxy: None,
+            credentials: Credentials::default(),
         }
     }
 
@@ -777,6 +782,61 @@ mod tests {
         let verified = OpenShiftAuth::shared(params("tls/api-lab:6443"), None);
         assert!(!Arc::ptr_eq(&first, &verified));
         assert!(!verified.params.insecure);
+    }
+
+    #[test]
+    fn scopes_never_share_an_openshift_auth() {
+        let scoped = |scope: &str| OpenShiftParams {
+            credentials: Credentials::scoped(scope),
+            ..params("scopes/api-lab:6443")
+        };
+        let alice = OpenShiftAuth::shared(scoped("alice"), None);
+        assert!(Arc::ptr_eq(
+            &alice,
+            &OpenShiftAuth::shared(scoped("alice"), None)
+        ));
+        assert!(!Arc::ptr_eq(
+            &alice,
+            &OpenShiftAuth::shared(scoped("bob"), None)
+        ));
+        let found = OpenShiftAuth::find(
+            &Credentials::scoped("alice"),
+            "https://api.lab.example:6443",
+            "scopes/api-lab:6443",
+        );
+        assert!(found.is_some_and(|f| Arc::ptr_eq(&f, &alice)));
+        assert!(
+            OpenShiftAuth::find(
+                &Credentials::scoped("carol"),
+                "https://api.lab.example:6443",
+                "scopes/api-lab:6443",
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn a_scoped_auth_is_forgotten_with_its_last_holder() {
+        let scoped = OpenShiftParams {
+            credentials: Credentials::scoped("dropped"),
+            ..params("forget/api-lab:6443")
+        };
+        let credentials = scoped.credentials.clone();
+        let auth = OpenShiftAuth::shared(scoped, None);
+        let find = || {
+            OpenShiftAuth::find(
+                &credentials,
+                "https://api.lab.example:6443",
+                "forget/api-lab:6443",
+            )
+        };
+        assert!(find().is_some());
+        drop(auth);
+        assert!(find().is_none());
+        // The desktop's own stays, for tokens that only live in memory across a rebuild.
+        let own = params("forget/own:6443");
+        drop(OpenShiftAuth::shared(own.clone(), None));
+        assert!(OpenShiftAuth::find(&own.credentials, &own.server, &own.user).is_some());
     }
 
     #[test]

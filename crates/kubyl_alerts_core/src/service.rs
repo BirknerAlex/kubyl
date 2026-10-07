@@ -371,6 +371,8 @@ pub struct AlertsCore {
     notices: HashMap<ClusterId, Notices>,
     notified: HashMap<ClusterId, Instant>,
     reach: Arc<dyn Reach>,
+    /// Where the saved Authorization headers and Alertmanager logins are kept.
+    secrets: kubyl_kube_core::auth::Credentials,
     next_forward: u64,
     ticking: Option<TaskHandle>,
 }
@@ -390,9 +392,16 @@ impl AlertsCore {
             notices: HashMap::new(),
             notified: HashMap::new(),
             reach,
+            secrets: kubyl_kube_core::auth::Credentials::default(),
             next_forward: 0,
             ticking: None,
         }
+    }
+
+    /// Keeps the saved headers and logins in `secrets` instead of the default handle's entries.
+    pub fn with_credentials(mut self, secrets: kubyl_kube_core::auth::Credentials) -> Self {
+        self.secrets = secrets;
+        self
     }
 
     /// Starts the refresh loop: [`AlertsEffect::Tick`] once a second.
@@ -699,12 +708,13 @@ impl AlertsCore {
         let use_rules = cluster_settings.rules;
         let prom_for_rules = prom.clone().filter(|_| use_rules);
         let reach = self.reach.clone();
+        let secrets = self.secrets.clone();
         let client = ce.client.clone();
         let cluster = cluster.clone();
         let work_cluster = cluster.clone();
         host.spawn(
             async move {
-                let headers = read_headers(&id_keys, &urls).await;
+                let headers = read_headers(&secrets, &id_keys, &urls).await;
                 let credentials = Credentials {
                     user_token,
                     headers,
@@ -931,6 +941,7 @@ impl AlertsCore {
         host.notify();
         let typed = header.is_some();
         let reach = self.reach.clone();
+        let secrets = self.secrets.clone();
         let work_cluster = cluster.clone();
         let cluster = cluster.clone();
         let label = label.to_string();
@@ -941,7 +952,9 @@ impl AlertsCore {
                     let header = match header {
                         Some(header) => header,
                         None => {
-                            let saved = read_saved(&keys).await.ok_or(Unlock::NoCredentials)?;
+                            let saved = read_saved(&secrets, &keys)
+                                .await
+                                .ok_or(Unlock::NoCredentials)?;
                             // Never to a Service that replaced the one the user signed in to.
                             if saved.service_uid != uid {
                                 return Err(Unlock::Replaced);
@@ -962,13 +975,14 @@ impl AlertsCore {
                             service_uid: uid.clone(),
                         };
                         if let Some(key) = keys.first()
-                            && let Err(err) = write_secret(key.clone(), saved.to_secret()).await
+                            && let Err(err) =
+                                write_secret(&secrets, key.clone(), saved.to_secret()).await
                         {
                             tracing::warn!("Alertmanager credentials not stored: {err}");
                         }
                     }
-                    Err(Unlock::Rejected) if !typed => delete_secrets(keys),
-                    Err(Unlock::Replaced) => delete_secrets(keys),
+                    Err(Unlock::Rejected) if !typed => delete_secrets(secrets, keys),
+                    Err(Unlock::Replaced) => delete_secrets(secrets, keys),
                     _ => {}
                 }
                 result.map(|(connected, _, _)| connected)
@@ -1094,7 +1108,7 @@ impl AlertsCore {
             if let Some(forward) = state.password_forwards.remove(label) {
                 state.forwards.retain(|f| f.key != forward);
             }
-            delete_secrets_on(keys, host);
+            delete_secrets_on(self.secrets.clone(), keys, host);
             let mut locked = Locked::new(source.conn.target);
             locked.problem =
                 Some("Alertmanager no longer takes the saved username and password.".into());
@@ -1650,11 +1664,16 @@ async fn password_forward(
 }
 
 /// The first readable entry of `keys`.
-async fn read_saved(keys: &[String]) -> Option<SavedBasic> {
+async fn read_saved(
+    secrets: &kubyl_kube_core::auth::Credentials,
+    keys: &[String],
+) -> Option<SavedBasic> {
     let keys = keys.to_vec();
+    let secrets = secrets.clone();
     tokio::task::spawn_blocking(move || {
         keys.iter().find_map(|key| {
-            kubyl_kube_core::auth::store::get(key)
+            secrets
+                .get(key)
                 .inspect_err(|e| tracing::warn!("keychain: {e}"))
                 .ok()
                 .flatten()
@@ -1679,23 +1698,32 @@ async fn service_uid(client: &kube::Client, target: &AmTarget) -> Result<String,
         .map_err(Unlock::Failed)
 }
 
-async fn write_secret(key: String, secret: SecretString) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || kubyl_kube_core::auth::store::set(&key, &secret))
+async fn write_secret(
+    secrets: &kubyl_kube_core::auth::Credentials,
+    key: String,
+    secret: SecretString,
+) -> Result<(), String> {
+    let secrets = secrets.clone();
+    tokio::task::spawn_blocking(move || secrets.set(&key, &secret))
         .await
         .map_err(|e| e.to_string())?
 }
 
 /// Deletes keychain entries without waiting. Must run inside the Tokio runtime.
-fn delete_secrets(keys: Vec<String>) {
+fn delete_secrets(secrets: kubyl_kube_core::auth::Credentials, keys: Vec<String>) {
     drop(tokio::task::spawn_blocking(move || {
         for key in keys {
-            kubyl_kube_core::auth::store::delete(&key).ok();
+            secrets.delete(&key).ok();
         }
     }));
 }
 
 /// [`delete_secrets`] from the host's thread.
-fn delete_secrets_on(keys: Vec<String>, host: &mut dyn Host<AlertsCore>) {
-    host.spawn(async move { delete_secrets(keys) }, |_, (), _| {})
+fn delete_secrets_on(
+    secrets: kubyl_kube_core::auth::Credentials,
+    keys: Vec<String>,
+    host: &mut dyn Host<AlertsCore>,
+) {
+    host.spawn(async move { delete_secrets(secrets, keys) }, |_, (), _| {})
         .detach();
 }

@@ -23,7 +23,9 @@ use k8s_openapi::api::core::v1::Namespace;
 use kube::api::{ListParams, PostParams};
 use kube::config::{ExecAuthCluster, Kubeconfig};
 use kube::{Api, Client};
-use kubyl_kube_core::auth::{AuthError, AuthMethod, CredentialSource, ExecAuth, OidcAuth, exec};
+use kubyl_kube_core::auth::{
+    AuthError, AuthMethod, CredentialSource, Credentials, ExecAuth, OidcAuth, exec,
+};
 use kubyl_kube_core::client::{self, ConnectError};
 use secrecy::ExposeSecret as _;
 
@@ -238,6 +240,8 @@ pub struct Input {
     pub file: PathBuf,
     /// The user agreed to run the context's exec plugin (or it's saved and already in use).
     pub allow_exec: bool,
+    /// Where the context's tokens are kept: the desktop's default handle.
+    pub secrets: Credentials,
 }
 
 struct Run {
@@ -913,7 +917,7 @@ async fn credentials(
         }
     }
 
-    let built = match client::build(info, Arc::new(kube.clone())).await {
+    let built = match client::build(info, Arc::new(kube.clone()), &input.secrets).await {
         Ok(built) => built,
         Err(err) => {
             let (message, stderr) = describe_connect(&err);
@@ -1116,6 +1120,7 @@ mod tests {
                 context: "ctx".into(),
                 file: PathBuf::from("/tmp/kubyl-test/config"),
                 allow_exec,
+                secrets: Credentials::default(),
             },
             tx,
         )
