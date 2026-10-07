@@ -369,10 +369,12 @@ fn external_urls(cluster: &ClusterId, cx: &App) -> Vec<String> {
 fn save_authorization(cluster: ClusterId, url: String, header: Option<SecretString>, cx: &mut App) {
     let key = crate::service::auth_key(cluster.as_str(), &url);
     let clearing = header.is_none();
+    // The desktop keeps one user's credentials: the default handle.
+    let secrets = kubyl_kube::auth::Credentials::default();
     let task = cx.background_executor().spawn(async move {
         match header {
-            Some(header) => kubyl_kube::auth::store::set(&key, &header),
-            None => kubyl_kube::auth::store::delete(&key),
+            Some(header) => secrets.set(&key, &header),
+            None => secrets.delete(&key),
         }
     });
     cx.spawn(async move |cx| {

@@ -47,20 +47,22 @@ pub trait Credentials: Send + Sync + 'static {
     fn delete(&self, key: &str) -> Result<(), String>;
 }
 
-/// The OS keychain (or whichever store `kubyl_kube_core::auth::store` was given).
-pub struct Keychain;
+/// The OS keychain (or whichever store `kubyl_kube_core::auth::store` was given), through a
+/// credentials handle: the default one is the desktop's, a scoped one is one user's.
+#[derive(Default)]
+pub struct Keychain(pub kubyl_kube_core::auth::Credentials);
 
 impl Credentials for Keychain {
     fn get(&self, key: &str) -> Result<Option<SecretString>, String> {
-        kubyl_kube_core::auth::store::get(key)
+        self.0.get(key)
     }
 
     fn set(&self, key: &str, secret: &SecretString) -> Result<(), String> {
-        kubyl_kube_core::auth::store::set(key, secret)
+        self.0.set(key, secret)
     }
 
     fn delete(&self, key: &str) -> Result<(), String> {
-        kubyl_kube_core::auth::store::delete(key)
+        self.0.delete(key)
     }
 }
 

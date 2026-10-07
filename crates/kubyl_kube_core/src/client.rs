@@ -11,8 +11,9 @@ use secrecy::{ExposeSecret as _, SecretString};
 use tower::buffer::BufferLayer;
 use tower::filter::AsyncFilterLayer;
 
-use crate::auth::oidc::OidcSecrets;
+use crate::auth::oidc::{OidcParams, OidcSecrets};
 use crate::auth::openshift::OpenShiftParams;
+use crate::auth::store::Credentials;
 use crate::auth::{
     AuthError, AuthLayer, AuthMethod, BearerToken, CredentialSource, ExecAuth, OidcAuth,
     OpenShiftAuth, exec,
@@ -122,6 +123,7 @@ pub struct BuiltClient {
 pub async fn build(
     info: &ContextInfo,
     kubeconfig: Arc<Kubeconfig>,
+    store: &Credentials,
 ) -> Result<BuiltClient, ConnectError> {
     let options = KubeConfigOptions {
         context: Some(info.context.clone()),
@@ -140,9 +142,12 @@ pub async fn build(
     match &info.auth {
         AuthMethod::Oidc(params) => {
             let secrets = oidc_secrets(&config.auth_info);
+            let params = OidcParams {
+                credentials: store.clone(),
+                ..params.clone()
+            };
             credentials = Some(CredentialSource::Oidc(Arc::new(OidcAuth::new(
-                params.clone(),
-                secrets,
+                params, secrets,
             ))));
             strip_managed_auth(&mut config.auth_info);
         }
@@ -159,6 +164,7 @@ pub async fn build(
                     roots: config.root_cert.clone().unwrap_or_default(),
                     insecure: config.accept_invalid_certs,
                     proxy: config.proxy_url.as_ref().map(|u| u.to_string()),
+                    credentials: store.clone(),
                 },
                 token,
             )));
@@ -266,7 +272,11 @@ fn oidc_secrets(user: &AuthInfo) -> OidcSecrets {
 
 /// The OIDC credentials of an OIDC context, straight from its kubeconfig (for signing in before
 /// a client exists).
-pub fn oidc_auth(info: &ContextInfo, kubeconfig: &Kubeconfig) -> Option<OidcAuth> {
+pub fn oidc_auth(
+    info: &ContextInfo,
+    kubeconfig: &Kubeconfig,
+    store: &Credentials,
+) -> Option<OidcAuth> {
     let AuthMethod::Oidc(params) = &info.auth else {
         return None;
     };
@@ -276,7 +286,11 @@ pub fn oidc_auth(info: &ContextInfo, kubeconfig: &Kubeconfig) -> Option<OidcAuth
         .find(|u| Some(&u.name) == info.user.as_ref())?
         .auth_info
         .as_ref()?;
-    Some(OidcAuth::new(params.clone(), oidc_secrets(user)))
+    let params = OidcParams {
+        credentials: store.clone(),
+        ..params.clone()
+    };
+    Some(OidcAuth::new(params, oidc_secrets(user)))
 }
 
 /// Removes the credentials Kubyl provides itself, so kube doesn't run plugins or refresh OIDC.
@@ -538,18 +552,26 @@ Z3lPxQKGPo1SKrMwSFLkpQOC7VYOF47/c1j7PhYl36GH07J3zyNj69OQ
         );
         let loaded = crate::kubeconfig::load(&specs);
         let dev = &loaded.contexts[0];
-        let built = build(dev, loaded.configs[&dev.file].clone())
-            .await
-            .ok()
-            .unwrap();
+        let built = build(
+            dev,
+            loaded.configs[&dev.file].clone(),
+            &Credentials::default(),
+        )
+        .await
+        .ok()
+        .unwrap();
         assert!(built.credentials.is_none());
         assert_eq!(built.default_namespace, "payments");
 
         let oidc = loaded.contexts.iter().find(|c| c.auth.is_oidc()).unwrap();
-        let built = build(oidc, loaded.configs[&oidc.file].clone())
-            .await
-            .ok()
-            .unwrap();
+        let built = build(
+            oidc,
+            loaded.configs[&oidc.file].clone(),
+            &Credentials::default(),
+        )
+        .await
+        .ok()
+        .unwrap();
         assert!(matches!(built.credentials, Some(CredentialSource::Oidc(_))));
     }
 }

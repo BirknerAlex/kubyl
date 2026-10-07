@@ -90,7 +90,10 @@ impl PrometheusService {
             }));
         }
         Self {
-            core: PrometheusCore::new(PortForwardManager::app_reach(cx), Arc::new(Keychain)),
+            core: PrometheusCore::new(
+                PortForwardManager::app_reach(cx),
+                Arc::new(Keychain::default()),
+            ),
             _subscriptions: subscriptions,
         }
     }

@@ -182,10 +182,12 @@ pub fn store_auth_header(
     cx: &mut App,
 ) -> Task<Result<(), String>> {
     let key = auth_key(&cluster);
+    // The desktop keeps one user's credentials: the default handle.
+    let secrets = kubyl_kube::auth::Credentials::default();
     cx.background_executor().spawn(async move {
         match header {
-            Some(header) => kubyl_kube::auth::store::set(&key, &header),
-            None => kubyl_kube::auth::store::delete(&key),
+            Some(header) => secrets.set(&key, &header),
+            None => secrets.delete(&key),
         }
     })
 }

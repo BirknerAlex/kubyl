@@ -35,12 +35,13 @@ use openidconnect::{
     ProviderMetadata, RedirectUrl, RefreshToken, RequestTokenError, Scope, StandardErrorResponse,
     TokenResponse as _, reqwest,
 };
-use parking_lot::Mutex;
 use secrecy::{ExposeSecret as _, SecretString};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-use super::{AuthError, CaBundle, flag_value, flag_values, jwt_expiry, store};
+use super::registry::Registry;
+use super::store::Credentials;
+use super::{AuthError, CaBundle, flag_value, flag_values, jwt_expiry};
 
 /// Refresh ID tokens this long before they expire.
 const EXPIRY_MARGIN: Duration = Duration::from_secs(60);
@@ -64,6 +65,8 @@ pub struct OidcParams {
     pub prefer_device_code: bool,
     /// The config came from a kubelogin exec user.
     pub kubelogin: bool,
+    /// Where its tokens are kept. The manager sets it, not the kubeconfig.
+    pub credentials: Credentials,
 }
 
 impl OidcParams {
@@ -89,6 +92,7 @@ impl OidcParams {
             listen_ports: DEFAULT_PORTS.to_vec(),
             prefer_device_code: false,
             kubelogin: false,
+            credentials: Credentials::default(),
         }
     }
 
@@ -133,6 +137,7 @@ impl OidcParams {
             },
             prefer_device_code: flag_value(&args, "--grant-type").as_deref() == Some("device-code"),
             kubelogin: true,
+            credentials: Credentials::default(),
         })
     }
 
@@ -211,7 +216,7 @@ impl Tokens {
 type Slot = Arc<tokio::sync::Mutex<Tokens>>;
 
 /// Tokens by store key, shared by contexts with the same issuer and client.
-static SLOTS: LazyLock<Mutex<HashMap<String, Slot>>> = LazyLock::new(Default::default);
+static SLOTS: LazyLock<Registry<tokio::sync::Mutex<Tokens>>> = LazyLock::new(Default::default);
 
 /// Progress of an interactive sign-in, for the modal.
 #[derive(Clone, Debug)]
@@ -301,7 +306,12 @@ fn chain(err: &(dyn std::error::Error + 'static)) -> String {
 
 impl OidcAuth {
     pub fn new(params: OidcParams, secrets: OidcSecrets) -> Self {
-        let slot = SLOTS.lock().entry(params.store_key()).or_default().clone();
+        let slot = SLOTS.get_or_insert(
+            params.credentials.key(&params.store_key()),
+            params.credentials.scope().is_empty(),
+            |_| false,
+            Default::default,
+        );
         Self {
             params,
             secrets,
@@ -352,9 +362,10 @@ impl OidcAuth {
             ..Default::default()
         };
         let key = self.params.store_key();
+        let credentials = self.params.credentials.clone();
         tokio::task::spawn_blocking(move || {
             for suffix in ["refresh", "id"] {
-                store::delete(&format!("{key}/{suffix}")).ok();
+                credentials.delete(&format!("{key}/{suffix}")).ok();
             }
         })
         .await
@@ -368,10 +379,11 @@ impl OidcAuth {
         }
         tokens.loaded = true;
         let key = self.params.store_key();
+        let credentials = self.params.credentials.clone();
         let stored = tokio::task::spawn_blocking(move || {
             (
-                store::get(&format!("{key}/refresh")),
-                store::get(&format!("{key}/id")),
+                credentials.get(&format!("{key}/refresh")),
+                credentials.get(&format!("{key}/id")),
             )
         })
         .await;
@@ -380,7 +392,7 @@ impl OidcAuth {
             Ok((Err(err), _)) | Ok((_, Err(err))) => {
                 tracing::warn!(
                     "couldn't read OIDC tokens from the {}: {err}",
-                    store::store_name()
+                    self.params.credentials.store_name()
                 );
                 (None, None)
             }
@@ -493,16 +505,18 @@ impl OidcAuth {
         }
 
         let key = self.params.store_key();
+
+        let credentials = self.params.credentials.clone();
         let id = tokens.id_token.clone();
         let refresh = tokens.refresh_token.clone();
         let result = tokio::task::spawn_blocking(move || {
             if let Some(refresh) = &refresh {
-                store::set(&format!("{key}/refresh"), refresh)?;
+                credentials.set(&format!("{key}/refresh"), refresh)?;
             }
             // Windows Credential Manager limits entries to 2.5 KB; large ID tokens only live in
             // memory then, and the next start refreshes them.
             if let Some(id) = &id
-                && let Err(err) = store::set(&format!("{key}/id"), id)
+                && let Err(err) = credentials.set(&format!("{key}/id"), id)
             {
                 tracing::info!("ID token not stored: {err}");
             }
@@ -513,7 +527,7 @@ impl OidcAuth {
             Ok(Ok(())) => {}
             Ok(Err(err)) => tracing::warn!(
                 "couldn't store the refresh token in the {}: {err}",
-                store::store_name()
+                self.params.credentials.store_name()
             ),
             Err(_) => {}
         }
@@ -955,6 +969,53 @@ mod tests {
             .expect("the idle connection blocked the callback")
             .unwrap();
         assert_eq!(code.ok().unwrap(), "c0de");
+    }
+
+    #[test]
+    fn scopes_never_share_a_token_slot() {
+        let params = |scope: &str| OidcParams {
+            credentials: Credentials::scoped(scope),
+            ..OidcParams::from_auth_provider(&HashMap::from([
+                (
+                    "idp-issuer-url".to_string(),
+                    "https://shared-idp.invalid".to_string(),
+                ),
+                ("client-id".to_string(), "kubyl".to_string()),
+            ]))
+        };
+        let slot = |scope: &str| {
+            OidcAuth::new(params(scope), OidcSecrets::default())
+                .slot
+                .clone()
+        };
+        // The default scope keeps the key the desktop always used.
+        assert_eq!(
+            params("").credentials.key(&params("").store_key()),
+            "oidc/https://shared-idp.invalid/kubyl"
+        );
+        assert!(Arc::ptr_eq(&slot("alice"), &slot("alice")));
+        assert!(!Arc::ptr_eq(&slot("alice"), &slot("bob")));
+        assert!(!Arc::ptr_eq(&slot("alice"), &slot("")));
+    }
+
+    #[test]
+    fn a_scoped_slot_is_forgotten_with_its_last_holder() {
+        let params = |scope: &str| OidcParams {
+            credentials: Credentials::scoped(scope),
+            ..OidcParams::from_auth_provider(&HashMap::from([
+                (
+                    "idp-issuer-url".to_string(),
+                    "https://forget-idp.invalid".to_string(),
+                ),
+                ("client-id".to_string(), "kubyl".to_string()),
+            ]))
+        };
+        let key = |scope: &str| params(scope).credentials.key(&params(scope).store_key());
+        drop(OidcAuth::new(params("gone"), OidcSecrets::default()));
+        assert!(SLOTS.get(&key("gone")).is_none());
+        // The desktop's own slot stays, for tokens that only live in memory across a rebuild.
+        drop(OidcAuth::new(params(""), OidcSecrets::default()));
+        assert!(SLOTS.get(&key("")).is_some());
     }
 
     #[tokio::test]

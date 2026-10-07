@@ -70,6 +70,7 @@ async fn test(doc: Doc, context: &str, file: &Path, allow_exec: bool) -> Report 
             context: context.into(),
             file: file.to_path_buf(),
             allow_exec,
+            secrets: kubyl_kube::auth::Credentials::default(),
         },
         tx,
     )

@@ -68,9 +68,13 @@ async fn kind_connects_discovers_and_lists_namespaces() {
     let path = expand(std::env::var("KUBYL_TEST_KUBECONFIG").expect("KUBYL_TEST_KUBECONFIG"));
     let loaded = load(&path);
     let info = context(&loaded, std::env::var("KUBYL_TEST_CONTEXT").ok().as_deref());
-    let built = client::build(info, loaded.configs[&info.file].clone())
-        .await
-        .unwrap();
+    let built = client::build(
+        info,
+        loaded.configs[&info.file].clone(),
+        &kubyl_kube::auth::Credentials::default(),
+    )
+    .await
+    .unwrap();
     let probe = client::probe(&built.client).await.unwrap();
     println!(
         "{} {} {:?} user={:?}",
@@ -205,9 +209,13 @@ async fn exec_plugin_with_a_client_certificate_connects() {
 
     let loaded = load(&file.display().to_string());
     let info = context(&loaded, Some("exec"));
-    let built = client::build(info, loaded.configs[&info.file].clone())
-        .await
-        .unwrap();
+    let built = client::build(
+        info,
+        loaded.configs[&info.file].clone(),
+        &kubyl_kube::auth::Credentials::default(),
+    )
+    .await
+    .unwrap();
     let probe = client::probe(&built.client).await.unwrap();
     println!(
         "exec plugin: {} user={:?}",
@@ -225,9 +233,13 @@ async fn oidc_signs_in_and_refreshes() {
     let loaded = load(&path);
     let info = context(&loaded, None);
     assert!(info.auth.is_oidc(), "{:?}", info.auth);
-    let built = client::build(info, loaded.configs[&info.file].clone())
-        .await
-        .unwrap();
+    let built = client::build(
+        info,
+        loaded.configs[&info.file].clone(),
+        &kubyl_kube::auth::Credentials::default(),
+    )
+    .await
+    .unwrap();
     let Some(CredentialSource::Oidc(auth)) = built.credentials.clone() else {
         panic!("expected OIDC credentials");
     };

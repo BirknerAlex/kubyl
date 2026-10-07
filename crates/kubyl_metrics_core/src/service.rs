@@ -338,6 +338,8 @@ pub struct MetricsCore {
     clusters: HashMap<ClusterId, ClusterMetrics>,
     demand: RefCell<Demand>,
     settings: MetricsSettings,
+    /// Where the saved Authorization headers of external Prometheus URLs are kept.
+    secrets: kubyl_kube_core::auth::Credentials,
     generation: u64,
 }
 
@@ -357,8 +359,21 @@ impl MetricsCore {
             clusters: HashMap::new(),
             demand: RefCell::default(),
             settings,
+            secrets: kubyl_kube_core::auth::Credentials::default(),
             generation: 0,
         }
+    }
+
+    /// Reads the saved Authorization headers from `secrets` instead of the default handle's
+    /// entries.
+    pub fn with_credentials(mut self, secrets: kubyl_kube_core::auth::Credentials) -> Self {
+        self.secrets = secrets;
+        self
+    }
+
+    /// Where the saved Authorization headers are kept.
+    pub fn secrets(&self) -> &kubyl_kube_core::auth::Credentials {
+        &self.secrets
     }
 
     // ----- Reading (marks demand) -----
@@ -676,9 +691,11 @@ impl MetricsCore {
             conn.user_token.clone(),
         );
         let cluster = cluster.clone();
+        let secrets = self.secrets.clone();
         host.spawn(
             async move {
                 let auth = Credentials {
+                    secrets,
                     keychain_keys: auth_keys,
                     user_token,
                 };
@@ -1213,6 +1230,7 @@ pub enum Detected {
 
 /// What detection may authenticate with. Never logged.
 struct Credentials {
+    secrets: kubyl_kube_core::auth::Credentials,
     /// Keychain entries of the Authorization header for an external URL, first found wins.
     keychain_keys: Vec<String>,
     /// The user's own bearer token, for Services behind an auth proxy (OpenShift).
@@ -1319,10 +1337,11 @@ async fn find_prometheus(
     };
     if let Some(url) = &override_.url {
         let auth_keys = auth.keychain_keys.clone();
+        let secrets = auth.secrets.clone();
         let header = tokio::task::spawn_blocking(move || {
             auth_keys
                 .iter()
-                .find_map(|key| kubyl_kube_core::auth::store::get(key).ok().flatten())
+                .find_map(|key| secrets.get(key).ok().flatten())
         })
         .await
         .ok()
