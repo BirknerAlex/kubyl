@@ -1,0 +1,43 @@
+[package]
+name = "kubyl_helm_core"
+description = "Helm without the UI: releases from their storage objects, and the user's helm CLI (charts, repositories, install, upgrade, rollback, uninstall)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+base64.workspace = true
+flate2.workspace = true
+futures.workspace = true
+jiff.workspace = true
+k8s-openapi.workspace = true
+kube.workspace = true
+kubyl_base.workspace = true
+kubyl_kube_core.workspace = true
+kubyl_resources_core.workspace = true
+kubyl_settings_core.workspace = true
+kubyl_yaml_core.workspace = true
+openidconnect.workspace = true
+schemars.workspace = true
+secrecy.workspace = true
+serde.workspace = true
+serde-saphyr.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+url.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

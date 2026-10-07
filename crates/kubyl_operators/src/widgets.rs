@@ -12,8 +12,6 @@ use kubyl_ui::{
     Colors, Icon, IconName, Selectable, StatusDot, fonts, h_flex, sizes, tone_color, u, v_flex,
 };
 
-use crate::helm::present::{self, Line};
-
 pub fn column_cell(def: &ColumnDef) -> gpui::Div {
     let cell = div().min_w_0().overflow_hidden().pr(u(8.0));
     match def.width {
@@ -366,12 +364,6 @@ pub fn ago(time: Option<Timestamp>) -> String {
     kubyl_resources::format::human_duration(seconds)
 }
 
-/// Copies text and says so (never for Secret data unless the user asked for exactly that).
-pub fn copy(text: String, what: &str, cx: &mut App) {
-    cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
-    NotificationCenter::push(cx, Notification::info(format!("Copied {what}.")));
-}
-
 /// Opens an `http(s)` URL in the system browser.
 pub fn open_url(url: &str, cx: &mut App) {
     if !(url.starts_with("https://") || url.starts_with("http://")) {
@@ -431,42 +423,6 @@ pub fn sub_tab(
                     .child(text),
             )
         })
-}
-
-/// Highlighted YAML lines (values, manifests), for `uniform_list` rows.
-pub fn yaml_line(number: usize, line: &Line, colors: &Colors) -> AnyElement {
-    use present::Tone as T;
-    h_flex()
-        .h(u(20.0))
-        .font_family(fonts::MONO)
-        .text_size(u(12.5))
-        .whitespace_nowrap()
-        .child(
-            div()
-                .flex_none()
-                .w(u(48.0))
-                .pr(u(12.0))
-                .flex()
-                .justify_end()
-                .text_color(colors.text_faint)
-                .child(number.to_string()),
-        )
-        .children(line.iter().map(|span| {
-            let color = match span.tone {
-                T::Key => colors.red,
-                T::Punct | T::Plain => colors.text_muted,
-                T::Str => colors.green,
-                T::Number | T::Bool | T::Null => colors.orange,
-                T::Masked => colors.text_dim,
-                T::Comment => colors.text_dim,
-            };
-            div()
-                .flex_none()
-                .text_color(color)
-                .when(span.tone == T::Comment, |this| this.italic())
-                .child(span.text.replace('\t', "    "))
-        }))
-        .into_any_element()
 }
 
 /// A chip that acts as a toggle.

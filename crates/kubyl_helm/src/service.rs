@@ -1,5 +1,5 @@
 //! [`Helm`]: the Helm releases of each cluster a view shows ([`HelmCore`] from
-//! `kubyl_operators_core`) in an entity.
+//! `kubyl_helm_core`) in an entity.
 //!
 //! Releases come from **metadata-only** watches of the Secrets and ConfigMaps labelled
 //! `owner=helm`: names, revisions, status and times are labels, so the list needs no Secret
@@ -24,10 +24,8 @@ use kubyl_resources::ResourceStores;
 use kubyl_resources::source::StoreCopies;
 use kubyl_resources::store::{AppStores, AppStoresRef};
 
-pub use kubyl_operators_core::helm::release::*;
-pub use kubyl_operators_core::helm::service::{
-    HelmCore, HelmEffect, HelmInputs, HelmLease, HelmStores,
-};
+pub use kubyl_helm_core::release::*;
+pub use kubyl_helm_core::service::{HelmCore, HelmEffect, HelmInputs, HelmLease, HelmStores};
 
 /// The Helm releases of every cluster a view asked about. Reads go to the [`HelmCore`]; observe
 /// the entity to re-render.
@@ -198,7 +196,7 @@ fn fallback_namespace(cluster: &ClusterId, cx: &App) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kubyl_operators_core::helm::decode::Driver;
+    use kubyl_helm_core::decode::Driver;
     use kubyl_resources::StoreStatus;
     use serde_json::{Value, json};
 

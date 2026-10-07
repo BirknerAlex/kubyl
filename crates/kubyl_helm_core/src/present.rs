@@ -330,15 +330,21 @@ pub struct KubeTarget {
     pub kubeconfig: std::path::PathBuf,
 }
 
-/// The commands the release tab offers: Kubyl shows releases read-only, so rollback,
-/// uninstall and friends go through the user's `helm`. `target` is the kubeconfig and context.
+/// The `helm` commands the release tab offers to copy (next to Kubyl's own upgrade, rollback and
+/// uninstall). `target` is the kubeconfig and context; a release stored in ConfigMaps gets
+/// `HELM_DRIVER=configmap` (Helm looks in Secrets otherwise).
 pub fn commands(
     name: &str,
     namespace: &str,
     revision: u32,
     latest: u32,
+    driver: crate::decode::Driver,
     target: Option<&KubeTarget>,
 ) -> Vec<Command> {
+    let helm = match driver {
+        crate::decode::Driver::Secret => "helm",
+        crate::decode::Driver::ConfigMap => "HELM_DRIVER=configmap helm",
+    };
     let tail = {
         let mut tail = format!(" -n {}", quote(namespace));
         if let Some(target) = target {
@@ -355,29 +361,29 @@ pub fn commands(
     if revision < latest {
         out.push(Command {
             label: format!("Roll back to revision {revision}"),
-            command: format!("helm rollback {name} {revision}{tail}"),
+            command: format!("{helm} rollback {name} {revision}{tail}"),
         });
     } else if latest > 1 {
         out.push(Command {
             label: format!("Roll back to revision {}", latest - 1),
-            command: format!("helm rollback {name} {}{tail}", latest - 1),
+            command: format!("{helm} rollback {name} {}{tail}", latest - 1),
         });
     }
     out.push(Command {
         label: "Uninstall".into(),
-        command: format!("helm uninstall {name}{tail}"),
+        command: format!("{helm} uninstall {name}{tail}"),
     });
     out.push(Command {
         label: "Get values".into(),
-        command: format!("helm get values {name} --revision {revision}{tail}"),
+        command: format!("{helm} get values {name} --revision {revision}{tail}"),
     });
     out.push(Command {
         label: "History".into(),
-        command: format!("helm history {name}{tail}"),
+        command: format!("{helm} history {name}{tail}"),
     });
     out.push(Command {
         label: "Status".into(),
-        command: format!("helm status {name}{tail}"),
+        command: format!("{helm} status {name}{tail}"),
     });
     out
 }
@@ -484,7 +490,14 @@ mod tests {
             context: "kind-kubyl-dev".into(),
             kubeconfig: "/home/me/my configs/dev.yaml".into(),
         };
-        let commands = commands("shop db", "shop", 3, 5, Some(&target));
+        let commands = commands(
+            "shop db",
+            "shop",
+            3,
+            5,
+            crate::decode::Driver::Secret,
+            Some(&target),
+        );
         assert_eq!(
             commands[0].command,
             "helm rollback 'shop db' 3 -n shop --kubeconfig '/home/me/my configs/dev.yaml' --kube-context kind-kubyl-dev"
@@ -496,9 +509,18 @@ mod tests {
                 .iter()
                 .any(|c| c.command.starts_with("helm uninstall 'shop db'"))
         );
-        let latest = super::commands("db", "shop", 5, 5, None);
+        let latest = super::commands("db", "shop", 5, 5, crate::decode::Driver::Secret, None);
         assert_eq!(latest[0].command, "helm rollback db 4 -n shop");
-        let first = super::commands("db", "shop", 1, 1, None);
+        let first = super::commands("db", "shop", 1, 1, crate::decode::Driver::Secret, None);
         assert_eq!(first[0].label, "Uninstall");
+        // Releases in ConfigMaps: Helm only finds them with that driver.
+        let config_maps =
+            super::commands("db", "shop", 2, 2, crate::decode::Driver::ConfigMap, None);
+        assert!(
+            config_maps
+                .iter()
+                .all(|c| c.command.starts_with("HELM_DRIVER=configmap helm ")),
+            "{config_maps:?}"
+        );
     }
 }

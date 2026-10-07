@@ -71,6 +71,7 @@ fn main() {
             kubyl_agent::init(cx);
             kubyl_selfupdate::init(cx);
             kubyl_flux::init(cx);
+            kubyl_helm::init(cx);
 
             kubyl_settings::Settings::write_schema(cx);
             app::open_window(cx);

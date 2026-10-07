@@ -174,8 +174,8 @@ impl AgentService {
                 let manager = manager.read(cx);
                 (
                     manager
-                        .context(cluster)
-                        .map(|c| (c.file.clone(), c.context.clone())),
+                        .cli_target(cluster)
+                        .map(|t| (t.kubeconfig, t.context)),
                     manager.display_name(cluster).to_string(),
                 )
             }
@@ -202,8 +202,8 @@ impl AgentService {
                 (
                     cluster.clone(),
                     manager
-                        .context(&cluster)
-                        .map(|c| (c.file.clone(), c.context.clone())),
+                        .cli_target(&cluster)
+                        .map(|t| (t.kubeconfig, t.context)),
                     manager.display_name(&cluster).to_string(),
                 )
             }

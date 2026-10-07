@@ -1712,6 +1712,30 @@ impl ManagerCore {
         )
     }
 
+    /// How a user's CLI (`helm`) reaches `id`: its kubeconfig file and context, and the sign-in
+    /// Kubyl manages for it when the CLI can't sign in by itself (OIDC, OpenShift OAuth), from
+    /// this manager's [`Credentials`] handle (a scoped one never lets the CLI fall back to the
+    /// kubeconfig's own tokens).
+    pub fn cli_target(&self, id: &ClusterId) -> Option<crate::cli::CliTarget> {
+        let info = self.context(id)?;
+        let (sign_in, kubyl_signs_in) = match &info.auth {
+            crate::auth::AuthMethod::Oidc(_) => {
+                (self.oidc_auth(id).map(CredentialSource::Oidc), true)
+            }
+            crate::auth::AuthMethod::OpenShift => (
+                self.openshift_auth(id).map(CredentialSource::OpenShift),
+                true,
+            ),
+            _ => (None, false),
+        };
+        Some(
+            crate::cli::CliTarget::new(info.file.clone(), info.context.clone())
+                .with_server(info.server.clone())
+                .with_sign_in(sign_in)
+                .with_credentials(&self.credentials, kubyl_signs_in),
+        )
+    }
+
     /// Connects on the user's behalf: a context that needs a sign-in opens the modal.
     pub fn connect_interactive(&mut self, id: &ClusterId, host: &mut dyn Host<Self>) {
         self.interactive.insert(id.clone());

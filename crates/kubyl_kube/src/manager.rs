@@ -108,7 +108,8 @@ impl ConnectionManager {
         cx.try_global::<GlobalManager>().map(|g| g.0.clone())
     }
 
-    pub(crate) fn install(pasted_dir: PathBuf, watch_files: bool, cx: &mut App) -> Entity<Self> {
+    /// Installs the global (`watch_files: false` in GPUI tests of other crates).
+    pub fn install(pasted_dir: PathBuf, watch_files: bool, cx: &mut App) -> Entity<Self> {
         let manager = cx.new(|cx| Self::new(pasted_dir, watch_files, cx));
         cx.set_global(GlobalManager(manager.clone()));
         let weak = manager.downgrade();

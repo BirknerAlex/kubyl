@@ -198,10 +198,9 @@ pub async fn fetch_encoded(
     match driver {
         Driver::Secret => {
             let api: Api<Secret> = Api::namespaced(client, namespace);
-            let secret = api
-                .get(object)
-                .await
-                .map_err(|e| crate::errors::describe(&e, "get", "secrets", Some(namespace)))?;
+            let secret = api.get(object).await.map_err(|e| {
+                kubyl_resources_core::errors::describe(&e, "get", "secrets", Some(namespace))
+            })?;
             secret
                 .data
                 .and_then(|mut d| d.remove("release"))
@@ -210,10 +209,9 @@ pub async fn fetch_encoded(
         }
         Driver::ConfigMap => {
             let api: Api<ConfigMap> = Api::namespaced(client, namespace);
-            let config_map = api
-                .get(object)
-                .await
-                .map_err(|e| crate::errors::describe(&e, "get", "configmaps", Some(namespace)))?;
+            let config_map = api.get(object).await.map_err(|e| {
+                kubyl_resources_core::errors::describe(&e, "get", "configmaps", Some(namespace))
+            })?;
             config_map
                 .data
                 .and_then(|mut d| d.remove("release"))
@@ -259,4 +257,55 @@ pub async fn load_summaries(
         out.push((object, summary));
     }
     out
+}
+
+/// The Helm release that manages an object: `app.kubernetes.io/managed-by: Helm` and the
+/// `meta.helm.sh/release-name` annotation (with `meta.helm.sh/release-namespace`, else the
+/// object's namespace). `(namespace, name)`.
+pub fn managed_by(object: &Value) -> Option<(String, String)> {
+    let managed = object
+        .pointer("/metadata/labels/app.kubernetes.io~1managed-by")
+        .and_then(Value::as_str)?;
+    if managed != "Helm" {
+        return None;
+    }
+    let annotations = object.pointer("/metadata/annotations")?;
+    let name = annotations
+        .get("meta.helm.sh/release-name")
+        .and_then(Value::as_str)
+        .filter(|n| !n.is_empty())?;
+    let namespace = annotations
+        .get("meta.helm.sh/release-namespace")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            object
+                .pointer("/metadata/namespace")
+                .and_then(Value::as_str)
+        })?;
+    Some((namespace.to_string(), name.to_string()))
+}
+
+#[cfg(test)]
+mod managed_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn helm_managed_objects_name_their_release() {
+        let object = json!({"metadata": {"name": "web", "namespace": "shop",
+            "labels": {"app.kubernetes.io/managed-by": "Helm"},
+            "annotations": {"meta.helm.sh/release-name": "web", "meta.helm.sh/release-namespace": "shop"}}});
+        assert_eq!(managed_by(&object), Some(("shop".into(), "web".into())));
+        // Argo CD renders charts with the label but without Helm's annotations.
+        let argo = json!({"metadata": {"name": "web", "namespace": "shop",
+            "labels": {"app.kubernetes.io/managed-by": "Helm", "app.kubernetes.io/instance": "web"}}});
+        assert_eq!(managed_by(&argo), None);
+        let cluster_scoped = json!({"metadata": {"name": "web-role",
+            "labels": {"app.kubernetes.io/managed-by": "Helm"},
+            "annotations": {"meta.helm.sh/release-name": "web", "meta.helm.sh/release-namespace": "shop"}}});
+        assert_eq!(
+            managed_by(&cluster_scoped),
+            Some(("shop".into(), "web".into()))
+        );
+    }
 }
