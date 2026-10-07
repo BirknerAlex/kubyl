@@ -1590,11 +1590,17 @@ fn pending_card(thread: ThreadId, pending: u64, kind: &PendingKind, colors: &Col
         PendingKind::Command {
             line,
             cwd,
+            env,
             warnings,
         } => card
             .child(header(IconName::Terminal, "Run this command?".into()))
             .child(mono_block(format!("$ {line}"), colors))
             .child(small(format!("in {}", cwd.display()), colors.text_dim))
+            .when(!env.is_empty(), |this| {
+                let vars: Vec<String> = env.iter().map(|(n, v)| format!("{n}={v}")).collect();
+                this.child(small("with this environment:", colors.text_dim))
+                    .child(mono_block(vars.join("\n"), colors))
+            })
             .children(warnings.iter().map(|w| notice(w, true, colors)))
             .child(
                 h_flex()
@@ -2580,6 +2586,7 @@ mod gpui_tests {
                 PendingKind::Command {
                     line: "kubectl get secret db -o yaml".into(),
                     cwd: std::env::temp_dir(),
+                    env: vec![("LANG".into(), "C".into())],
                     warnings: kubyl_agent_core::policy::command_warnings(
                         "kubectl get secret db -o yaml",
                     ),

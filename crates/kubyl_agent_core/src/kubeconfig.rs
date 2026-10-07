@@ -80,6 +80,22 @@ pub fn context_kubeconfig(file: &Path, context: &str) -> Result<String, String> 
                     "{context}'s user holds credentials in the kubeconfig; only exec plugins can be shared"
                 ));
             }
+            if let Some(exec) = &auth.exec {
+                let env_secret = exec.env.iter().flatten().any(|var| {
+                    var.get("name")
+                        .is_some_and(|n| kubyl_resources_core::redact::is_credential_name(n))
+                });
+                let args = exec.args.clone().unwrap_or_default().join(" ");
+                let args_secret = matches!(
+                    kubyl_resources_core::redact::scrub_text(&args),
+                    std::borrow::Cow::Owned(_)
+                );
+                if env_secret || args_secret {
+                    return Err(format!(
+                        "{context}'s exec plugin passes credentials in its environment or arguments"
+                    ));
+                }
+            }
             let mut value = json!({});
             if let Some(exec) = &auth.exec {
                 value["exec"] = serde_json::to_value(exec).map_err(|e| e.to_string())?;
@@ -164,6 +180,23 @@ users:
         assert_eq!(value["clusters"].as_array().unwrap().len(), 1);
         assert!(!eks.contains("kind-admin"));
 
+        let err = context_kubeconfig(&file, "kind").unwrap_err();
+        assert!(err.contains("holds credentials"), "{err}");
+
+        let with_env = CONFIG.replace(
+            "      args: [eks, get-token, --cluster-name, prod]",
+            "      args: [eks, get-token, --cluster-name, prod]\n      env: [{name: AWS_SECRET_ACCESS_KEY, value: abc123}]",
+        );
+        std::fs::write(&file, with_env).unwrap();
+        let err = context_kubeconfig(&file, "eks").unwrap_err();
+        assert!(err.contains("passes credentials"), "{err}");
+        let with_arg = CONFIG.replace(
+            "--cluster-name, prod]",
+            "--cluster-name, prod, --token=abcdefghijkl]",
+        );
+        std::fs::write(&file, with_arg).unwrap();
+        assert!(context_kubeconfig(&file, "eks").is_err());
+        std::fs::write(&file, CONFIG).unwrap();
         let err = context_kubeconfig(&file, "kind").unwrap_err();
         assert!(err.contains("holds credentials"), "{err}");
         assert!(context_kubeconfig(&file, "missing").is_err());

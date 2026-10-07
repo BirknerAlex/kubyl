@@ -943,7 +943,21 @@ fn copy_yaml(cx: &mut App) {
             .as_ref()
             .is_some_and(|s| s.read(cx).key().mode == StoreMode::Metadata);
         match (&item.object, metadata_only) {
-            (Some(object), false) => ready.push((**object).clone()),
+            (Some(object), false) => {
+                // Store items can come without `kind`/`apiVersion`; masking needs them.
+                let mut object = (**object).clone();
+                if object
+                    .get("kind")
+                    .and_then(|k| k.as_str())
+                    .is_none_or(|k| k == "PartialObjectMetadata")
+                {
+                    object["kind"] = serde_json::Value::String(item.kind.clone());
+                }
+                if object.get("apiVersion").and_then(|v| v.as_str()).is_none() {
+                    object["apiVersion"] = serde_json::Value::String(item.target.gvr.api_version());
+                }
+                ready.push(object);
+            }
             _ => {
                 if let Some((client, resource)) = client_and_resource(cx, &item.target) {
                     fetch.push((client, resource, item.target.clone()));

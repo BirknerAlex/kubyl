@@ -107,6 +107,8 @@ pub enum PendingKind {
     Command {
         line: String,
         cwd: PathBuf,
+        /// Environment the agent sets for it (values scrubbed for display).
+        env: Vec<(String, String)>,
         warnings: Vec<&'static str>,
     },
     /// A read outside the thread's folder.
@@ -1042,7 +1044,8 @@ impl AgentCore {
         host.effect(AgentEffect::Remember(SavedThread {
             agent: thread.agent.clone(),
             cluster: thread.cluster.clone(),
-            title: thread.title(),
+            // state.json keeps no conversation secrets.
+            title: kubyl_resources_core::redact::scrub_text(&thread.title()).into_owned(),
             cwd: thread.cwd.display().to_string(),
             session: session.clone(),
             updated: now_seconds(),
@@ -1171,26 +1174,37 @@ impl AgentCore {
                 };
                 let scope = connection.as_ref().and_then(|c| c.scope(&session));
                 let line = policy::command_line(&request.command, &request.args);
-                let warnings = policy::command_warnings(&line);
+                let mut warnings = policy::command_warnings(&line);
                 let cwd = request.cwd.clone().unwrap_or_else(|| thread.cwd.clone());
+                // The thread's kubeconfig always wins; the agent can't swap in another one.
+                let env: Vec<(String, String)> = request
+                    .env
+                    .iter()
+                    .filter(|e| !e.name.eq_ignore_ascii_case("KUBECONFIG"))
+                    .map(|e| (e.name.clone(), e.value.clone()))
+                    .collect();
+                if env.len() != request.env.len() {
+                    warnings.push("Tried to set KUBECONFIG; Kubyl keeps the thread's.");
+                }
                 let launch = Launch {
                     command: request.command.clone(),
                     args: request.args.clone(),
-                    env: request
-                        .env
-                        .iter()
-                        .map(|e| (e.name.clone(), e.value.clone()))
-                        .collect(),
+                    env: env.clone(),
                     cwd: cwd.clone(),
                     output_limit: request.output_byte_limit,
                     path,
                     kubeconfig: scope.map(|s| s.kubeconfig),
                 };
+                let inner = policy::shell_inner(&request.command, &request.args);
+                let mut lines = vec![line.as_str()];
+                lines.extend(inner.as_deref());
+                // A grant covers exactly the command the user saw, with no extra environment.
                 let granted = warnings.is_empty()
+                    && env.is_empty()
                     && thread
                         .grant
                         .as_ref()
-                        .is_some_and(|g| g.covers(&line, Instant::now()));
+                        .is_some_and(|g| g.covers(&lines, Instant::now()));
                 if granted {
                     thread.grant = None;
                     self.run_command(agent, launch, responder, host);
@@ -1200,6 +1214,16 @@ impl AgentCore {
                         kind: PendingKind::Command {
                             line,
                             cwd,
+                            env: env
+                                .iter()
+                                .map(|(name, value)| {
+                                    (
+                                        name.clone(),
+                                        kubyl_resources_core::redact::scrub_text(value)
+                                            .into_owned(),
+                                    )
+                                })
+                                .collect(),
                             warnings,
                         },
                         responder: Some(responder),

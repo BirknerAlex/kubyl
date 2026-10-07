@@ -61,6 +61,12 @@ static CREDENTIAL_NAME: LazyLock<Regex> = LazyLock::new(|| {
         .expect("valid credential name pattern")
 });
 
+/// Whether a key or variable name names a credential (`password`, `dbPassword`, `AUTH_TOKEN`,
+/// `clientSecret`, `apiKey`…: a credential word at the end of the name).
+pub fn is_credential_name(name: &str) -> bool {
+    CREDENTIAL_NAME.is_match(name)
+}
+
 /// Masks string values under credential-like keys anywhere in `value` (a custom resource's
 /// spec, a ConfigMap), and the `value` of env vars with credential-like names. Returns whether
 /// something was masked.
