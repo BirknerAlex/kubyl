@@ -4899,6 +4899,7 @@ dependencies = [
  "kubyl_core",
  "kubyl_explorer",
  "kubyl_files",
+ "kubyl_flux",
  "kubyl_keymap",
  "kubyl_kube",
  "kubyl_kubeconfig",
@@ -5260,6 +5261,49 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "kubyl_flux"
+version = "0.5.0"
+dependencies = [
+ "futures",
+ "gpui-component",
+ "gpui-pre",
+ "jiff",
+ "kube",
+ "kubyl_core",
+ "kubyl_explorer",
+ "kubyl_flux_core",
+ "kubyl_kube",
+ "kubyl_logs",
+ "kubyl_palette",
+ "kubyl_resources",
+ "kubyl_settings",
+ "kubyl_ui",
+ "parking_lot",
+ "regex",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "kubyl_flux_core"
+version = "0.5.0"
+dependencies = [
+ "futures",
+ "jiff",
+ "k8s-openapi",
+ "kube",
+ "kubyl_base",
+ "kubyl_resources_core",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.21",
+ "tokio",
+ "url",
 ]
 
 [[package]]

@@ -1,7 +1,7 @@
 //! What kind of cluster this is: distribution guess and capabilities (`ClusterCaps`).
 
 use k8s_openapi::apimachinery::pkg::version::Info;
-use kubyl_base::{ArgoCdCaps, ClusterCaps};
+use kubyl_base::{ArgoCdCaps, ClusterCaps, FluxCaps};
 
 use crate::discovery::Discovery;
 use crate::kubeconfig::ContextInfo;
@@ -141,6 +141,27 @@ pub fn caps(
         prometheus: info.is_some_and(|i| !i.prometheus_candidates.is_empty()),
         olm: has("operators.coreos.com") || has("olm.operatorframework.io"),
         argocd: argocd_caps(discovery),
+        flux: flux_caps(discovery),
+    }
+}
+
+/// Which Flux CRDs are served (`<component>.toolkit.fluxcd.io`).
+fn flux_caps(discovery: Option<&Discovery>) -> FluxCaps {
+    let served = |group: &str, resource: Option<&str>| {
+        discovery.is_some_and(|d| {
+            d.resources.iter().any(|r| {
+                r.gvr.group == group
+                    && resource.is_none_or(|resource| r.gvr.resource == resource)
+                    && r.is_listable()
+            })
+        })
+    };
+    FluxCaps {
+        kustomizations: served("kustomize.toolkit.fluxcd.io", Some("kustomizations")),
+        helm_releases: served("helm.toolkit.fluxcd.io", Some("helmreleases")),
+        sources: served("source.toolkit.fluxcd.io", None),
+        image_automation: served("image.toolkit.fluxcd.io", None),
+        notifications: served("notification.toolkit.fluxcd.io", None),
     }
 }
 
@@ -231,6 +252,43 @@ mod tests {
         assert!(argocd.any() && argocd.applications);
         assert!(!argocd.application_sets && !argocd.projects);
         assert_eq!(caps(None, None, &settings).argocd, ArgoCdCaps::default());
+    }
+
+    #[test]
+    fn flux_caps_follow_each_group() {
+        use crate::discovery::ApiResourceInfo;
+        use kubyl_base::{Gvk, Gvr};
+        let resource = |group: &str, plural: &str, kind: &str| ApiResourceInfo {
+            gvk: Gvk::new(group, "v1", kind),
+            gvr: Gvr::new(group, "v1", plural),
+            singular: kind.to_lowercase(),
+            namespaced: true,
+            verbs: vec!["list".into(), "watch".into()],
+            short_names: vec![],
+            categories: vec![],
+            subresources: vec![],
+            preferred: true,
+        };
+        let settings = ContextSettings::default();
+        assert!(!caps(None, None, &settings).flux.any());
+        let some = Discovery {
+            resources: vec![
+                resource(
+                    "source.toolkit.fluxcd.io",
+                    "gitrepositories",
+                    "GitRepository",
+                ),
+                resource(
+                    "kustomize.toolkit.fluxcd.io",
+                    "kustomizations",
+                    "Kustomization",
+                ),
+            ],
+            ..Default::default()
+        };
+        let flux = caps(Some(&some), None, &settings).flux;
+        assert!(flux.any() && flux.kustomizations && flux.sources);
+        assert!(!flux.helm_releases && !flux.image_automation && !flux.notifications);
     }
 
     #[test]

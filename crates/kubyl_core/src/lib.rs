@@ -35,7 +35,9 @@ pub use registry::{
     TabView, Tone, ViewFactory, ViewRegistry, ViewRequest, new_tab,
 };
 pub use runtime::spawn_kube;
-pub use types::{ArgoCdCaps, ClusterCaps, ClusterId, ContextName, Gvk, Gvr, ResourceRef, ViewKind};
+pub use types::{
+    ArgoCdCaps, ClusterCaps, ClusterId, ContextName, FluxCaps, Gvk, Gvr, ResourceRef, ViewKind,
+};
 
 use gpui::App;
 

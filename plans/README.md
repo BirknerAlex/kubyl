@@ -48,6 +48,7 @@ Each phase file is written so one Claude Code session can own it from start to f
 | 19 | [Split domain logic from the UI: GPUI-free `*_core` crates](19-core-split.md) | all | `kubyl_base`, `kubyl_*_core` (new); one split crate at a time | none |
 | 20 | [The rest of the services on Host](20-services-on-host.md) | 19 | the coordinating services of alerts, Prometheus, flows, Argo CD, OLM/Helm and updates, and the core crates they move into | none |
 | 21 | [Agents over ACP: Claude, Codex, Gemini, Copilot with cluster tools](21-agents-acp.md) | 02, 04, 05, 07 (14, 18 optional) | `kubyl_agent`, `kubyl_agent_core` (new); shared commits in `kubyl_resources_core` (`redact`), `kubyl_core` (`AskAgent`), `kubyl_logs`, `kubyl_overview` (events), `kubyl_alerts`(`_core`), `kubyl_argocd`(`_core`) | 19 · Agents |
+| 23 | [Flux CD: sources, Kustomizations, HelmReleases, reconcile, suspend](23-flux.md) | 02, 04, 05, 07 (21, 22 optional) | `kubyl_flux`, `kubyl_flux_core` (new); shared commits in `kubyl_base`/`kubyl_core` (`FluxCaps`), `kubyl_kube_core` (caps from discovery), `kubyl_explorer` (view rows in contributed groups), `kubyl_palette` (`:` views), `kubyl` (init) | 21 · Flux |
 
 ```
 00 ─▶ 01 ─▶ 02 ─┬─▶ 03
@@ -61,6 +62,7 @@ Each phase file is written so one Claude Code session can own it from start to f
 01 + 02 + 03 ─▶ 15 (polish; context grouping after 11)
 02 + 05 + 07 ─▶ 16 (network flows: Cilium/Hubble, NetObserv, Calico/Whisker)
 02 + 04 + 05 + 07 ─▶ 21 (agents over ACP; uses 14 and 18 for alert and PromQL tools if present)
+02 + 04 + 05 + 07 ─▶ 23 (Flux CD; links to 22's Helm releases if present)
 09: CI part runs from 00 onward; packaging and release after the feature phases
 ```
 
@@ -102,12 +104,13 @@ crates/
   kubyl_alerts/             # Alertmanager alerts, silences, alerting rules (phase 14)
   kubyl_netflow/            # network flows: Hubble, NetObserv, Calico Whisker; table and topology (phase 16)
   kubyl_prometheus/         # Prometheus web UI tab (phase 18)
+  kubyl_flux/               # Flux CD: sources, Kustomizations, HelmReleases, reconcile, suspend (phase 23)
   kubyl_agent/              # agent panel over ACP (Claude, Codex, Gemini…), cluster tools over MCP (phase 21)
   kubyl_base/               # GPUI-free foundation: types, errors, Tokio runtime, notices, Host (phase 19)
   kubyl_*_core/             # GPUI-free logic of the crate of the same name (phase 19): kube, resources,
                             #   settings, logs, terminal, portforward, yaml, metrics, charts, alerts, argocd,
                             #   netflow, operators, updates, prometheus, files, kubeconfig, webview,
-                            #   palette, explorer, overview, selfupdate, agent
+                            #   palette, explorer, overview, selfupdate, agent, flux
 assets/                     # logo, icons, fonts, keymaps, themes
 design/mockups/             # mockup generator (HTML design canvas)
 plans/                      # these plans
@@ -170,6 +173,8 @@ plans/                      # these plans
 | Topology graph | Nodes are namespaces or workloads (with world, host and remote-node nodes), edges aggregate flows per (source, destination) over the time window with flow count, bytes, packets and the verdict mix. Layout: `fjadra` 0.2.1 (MIT OR Apache-2.0, no dependencies; a port of d3-force that Rerun's graph view uses: links, Barnes–Hut many-body, collision, centering) behind `kubyl_charts::graph`, run off the UI thread, warm-started from the previous positions so a live graph doesn't jump and seeded from node ids so it's stable (decided in phase 16) | Evaluated in the spike: `fdg-sim` (unmaintained since 2022), `forceatlas2` (AGPL-3.0), `layout-rs` (layered layouts for DAGs), petgraph (no layout). `kubyl_charts::graph` keeps the crate behind one function, so a hand-rolled layout could replace it. Beyond 150 workload nodes the smallest fold into "more in <namespace>" nodes. Edges: green for forwarded, red and dashed for dropped, yellow for "no reply", width by volume, from client to server (Hubble's reply flows aren't drawn, as in Hubble UI); traffic inside a node loops above it. Nodes sized by volume, colored like the other charts (`ColorRegistry`, `<cluster>/namespace`). At workload zoom each namespace is laid out on its own and drawn as a box (`graph::layout_grouped`: groups never overlap); layouts don't depend on node order, so the same traffic gives the same picture. A click selects a node or edge and the side panel explains it (traffic, peers, workloads, the policy); a double-click, Enter or "Show flows" filters the table to it (as on board 18, OpenShift's and NetObserv's topologies); `j`/`k` step through nodes, `]`/`[` through connections, blocked ones first. |
 | Sensitive flow fields | L7 data (HTTP URLs and headers, DNS names) and endpoint identities are flow data: never logged, never in settings.json, state.json, toasts, `Debug` output, error messages or the palette (decided in phase 16). Sanitized on Tokio while parsing, before anything stores them: URL query values become `…` (the names stay) unless `netflow.keep_query_values` is on (off by default); `Authorization`, `Proxy-Authorization`, `Cookie` and `Set-Cookie` values are always dropped | The view's options (time window, zoom level, columns) go to state.json; filters and flows don't. |
 | Flows on read-only and PROD clusters | Flows are a read path: shown on read-only and PROD clusters like web views; the only thing Kubyl creates is the loopback forward (decided in phase 16) | |
+| Flux access (phase 23) | Kubernetes only (decided in phase 23): Flux has no API server, so Kubyl reads its CRDs through shared `ResourceStores` watches (each kind at the version discovery prefers; `FluxObject` reads the status fields the versions share and treats missing ones as absent) and acts with the user's RBAC. No `flux` CLI at runtime. Detection is discovery (`ClusterCaps::flux`, per group: kustomize, helm, sources, image automation, notifications) plus the controllers' Deployments in `flux-system` (else any namespace by `app.kubernetes.io/part-of=flux`) for versions and logs; Deployments only, never Secrets | States like `flux get`/kstatus: Suspended (`spec.suspend`) › Stalled › Reconciling while a `requestedAt` isn't handled yet › Failed (`Ready=False`) › Reconciling (`Reconciling=True`, or `observedGeneration` behind) › Ready. Static objects have no status and count as Ready, outside the ready totals, with no reconcile: Alerts and Providers from `v1beta3` on (`v1beta1`/`v1beta2` ones have a status), and HelmRepositories of `type: oci` (source-controller empties their status since Flux 2.3). "Needs attention": failed, stalled, sources not fetched (no artifact after 5 min, or a failing fetch), waiting for a dependency (the root cause through the `dependsOn` chain, only for objects that aren't Ready or suspended; a dependency blocks the way the controllers check it: missing, generation not observed, or Ready not True; a `readyExpr` isn't evaluated), suspended (no duration: Flux records no suspend time). |
+| Flux actions (phase 23) | What the `flux` CLI sends, as JSON merge patches (decided in phase 23): reconcile = `reconcile.fluxcd.io/requestedAt=<RFC 3339 now>`; with source = the same on the source first, then, like the CLI, waiting (at most 2 min) until the source handled that request (`status.lastHandledReconcileAt`) and stopping if it isn't ready; a suspended source stops it, a static one is skipped (a HelmRelease with `spec.chart` annotates its HelmChart from `status.helmChart`, which pulls from the repository; with `chartRef` the OCIRepository/HelmChart); HelmRelease force/reset = `forceAt`/`resetAt` with the same value as `requestedAt`; suspend = `spec.suspend: true`; resume = `spec.suspend: false` plus a reconcile request; delete = a Kubernetes delete (the controller's finalizer prunes) | Hidden on read-only clusters, `can_i` (patch or delete, on the object and the source) before each write, results through the objects' state (Reconciling → Ready/Failed) plus a toast. Suspend, force and delete always confirm; every action confirms on PROD and deleting needs the typed name there. The delete dialog spells out what the finalizer removes, the way the controllers decide it: a Kustomization prunes its inventory per `spec.deletionPolicy` (`MirrorPrune` = `prune`, `Delete`/`WaitForTermination` always, `Orphan` never) unless it's suspended, minus objects marked `prune: disabled`, `reconcile: disabled` or `ssa: Ignore` (listed as kept where Kubyl's watches show them); a HelmRelease uninstalls its release unless it's suspended or nothing was installed. Delete takes one object at a time. Several selected objects reconcile/suspend/resume together, on the primary's cluster only. ImagePolicies read at `v1beta1`/`v1beta2` (Flux < 2.7) have no `spec.suspend` and ignore reconcile requests: neither is offered. Values from Secrets (post-build `substituteFrom`, `valuesFrom`), Receiver tokens and URL credentials are never read or shown: names only, URLs without user info and query values. |
 | File watching | `notify` | Kubeconfig hot reload. |
 | Settings | JSON (`serde_json`) in `dirs::config_dir()/kubyl/` (override with `$KUBYL_CONFIG_DIR`) | `settings.json` (user, hot-reloaded, with a generated `settings.schema.json`), `state.json` (UI state, favorites, tabs). Typed sections: `kubyl_settings::{SettingsSection, StateSection}`. |
 | UI units | Sizes use `kubyl_ui::u(px)` (rems); the window's rem size follows `ui_font_size` | Zoom (⌘+/⌘-) scales the whole UI. Colors come from `cx.colors()`. |
@@ -264,7 +269,10 @@ one list. That list is the only shared line, and it is append-only.
   port's loopback forward (`kubyl_webview::forward::WebForwards`) with other tabs of the port.
 - Table cells with buttons (phase 08): `CellValue::Buttons(Vec<CellButton>)`, each building
   its action for the row's object; `ResourceColumns::extend` adds columns (before `age`) to a
-  kind that has a provider.
+  kind that has a provider. Columns that depend on the cluster (phase 23) override
+  `ColumnProvider::columns_in(clusters, cx)` (tables ask again when a cluster's discovery
+  changes) and `cell_in(cluster, object, column, cx)` (the row's cluster); both default to
+  `columns`/`cell`.
 - Tabs (phase 08): `TabView::tab_dot` (a colored dot, e.g. the cluster color) and
   `TabView::wants_close` (the pane closes the tab when its view asks).
 - Kind-specific views (phase 10): `ViewRegistry::register_list_view(cx, group, resource, kind)`
@@ -391,6 +399,20 @@ one list. That list is the only shared line, and it is append-only.
 - Graph layout (phase 16): `kubyl_charts::graph::{layout, layout_grouped, fit, Viewport}` places
   node-link diagrams (force-directed, warm starts by node id, groups that never overlap) off the
   UI thread and maps them into a view.
+- Flux (phase 23): `ClusterCaps::flux` (`kustomizations`, `helm_releases`, `sources`,
+  `image_automation`, `notifications`, `any()`); `kubyl_flux::state::Flux::global(cx)` (`caps`,
+  `install(cluster)` → controllers and versions, `version`); `kubyl_flux::state::find(cluster,
+  kind, ns, name, cx)` reads a loaded Flux object; `kubyl_flux_core::ownership::managed_by(object)`
+  names the Kustomization/HelmRelease that manages an object (by its labels);
+  `kubyl_flux::actions::open_object(target, …)`, `open_category(cluster, Category, ns, …)`
+  and `views::overview::open(cluster, …)` open the views. A HelmRelease links to the Helm release
+  tab through `ViewKind::Custom("helm_release")` with the release's storage Secret as the target.
+- View rows in contributed groups (phase 23): `kubyl_explorer::catalog::register_group_view(cx,
+  GroupView { group, entry, before_kinds, visible })` adds a row that opens a view (Flux's
+  Overview, Sources) inside a `TreeGroup`; the group shows when any of its kinds or view rows does.
+- `:` views (phase 23): `kubyl_palette::register_view(cx, PaletteView { name, aliases, detail,
+  icon, kind, visible })` offers a view next to the kinds in `:` mode (`:sources`), opened for the
+  active cluster and namespace; only listed once something is typed.
 
 ### UX principles (from the mockups)
 
