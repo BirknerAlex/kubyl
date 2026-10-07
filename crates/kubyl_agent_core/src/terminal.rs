@@ -135,7 +135,14 @@ impl Terminals {
     /// Starts `launch`. Must run inside a Tokio runtime.
     pub fn spawn(&self, launch: Launch) -> std::io::Result<(String, Arc<LocalTerminal>)> {
         let line = crate::policy::command_line(&launch.command, &launch.args);
-        let mut cmd = shell_command(&line);
+        let mut cmd = if cfg!(windows) {
+            shell_command(&crate::policy::windows_command_line(
+                &launch.command,
+                &launch.args,
+            ))
+        } else {
+            shell_command(&line)
+        };
         cmd.current_dir(&launch.cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -144,11 +151,12 @@ impl Terminals {
         if let Some(path) = &launch.path {
             cmd.env("PATH", path);
         }
-        if let Some(kubeconfig) = &launch.kubeconfig {
-            cmd.env("KUBECONFIG", kubeconfig);
-        }
         for (name, value) in &launch.env {
             cmd.env(name, value);
+        }
+        // Last, so the agent's environment can't point commands at another kubeconfig.
+        if let Some(kubeconfig) = &launch.kubeconfig {
+            cmd.env("KUBECONFIG", kubeconfig);
         }
         let mut child = cmd.spawn()?;
         let (exit_tx, exit_rx) = watch::channel(None);

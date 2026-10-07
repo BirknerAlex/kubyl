@@ -740,7 +740,7 @@ impl Application {
                 .unwrap_or_default();
             text.push_str(&format!(
                 "Source: {} {what} @ {}\n",
-                source.repo_url,
+                source.repo_short(),
                 source.target_revision.as_deref().unwrap_or("HEAD")
             ));
         }

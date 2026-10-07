@@ -142,6 +142,8 @@ pub async fn serve(
         let mut connections = tokio::task::JoinSet::new();
         loop {
             let Ok((stream, _)) = listener.accept().await else {
+                // A lasting error (out of file descriptors) mustn't spin the runtime.
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 continue;
             };
             let shared = shared.clone();

@@ -157,8 +157,8 @@ sees what was read.
 - `events(namespace?, involved_object?, since?)`: phase 07's events, OOM kills included.
 - `logs(namespace, pod, container?, previous?, since?, tail?, grep?)`: phase 05's log client,
   default tail 500 lines, scrubbed.
-- `metrics(kind, namespace?, name?)`: phase 07's `MetricsService` (Prometheus or
-  metrics-server).
+- `top(kind: pods | nodes, namespace?)`: CPU and memory usage from metrics-server, like
+  `kubectl top` (Prometheus data goes through `query_prometheus`).
 - `query_prometheus(promql, range?)`: phase 18's client when a Prometheus was found.
 - `alerts(namespace?)`: phase 14's firing and pending alerts when Alertmanager was found.
 - `can_i(verb, resource, namespace?)`: a SelfSubjectAccessReview.
@@ -305,9 +305,8 @@ inline credentials (`-DatabasePassword="…"`, `…AuthToken=…`) through `get_
 `mask_credential_fields` and a broader scrub rule, with tests). Tool output that agents wrap
 in a lone code fence now shows without the fence; mixed text renders as markdown.
 
-**Not done / next.** Part 2 (`propose_*` writes); "Ask agent" on events, alerts and Argo CD
-apps; `@` mentions; GPUI tests of the panel; republishing
-the mockup artifact with board 19; a version probe of installed agents. Masking of free text
+**Not done / next.** Part 2 (`propose_*` writes); republishing the mockup artifact with
+board 19; a version probe of installed agents. Masking of free text
 stays best-effort: values under unusual key names in custom resources can still reach the
 agent, which the first-run note says.
 
@@ -351,4 +350,17 @@ session), the session settings, `session/set_config_option` with the current val
 `session/cancel`. `KUBYL_TEST_AGENTS=claude,codex` limits the run. Passes against
 `claude-agent-acp` 0.86 (model, fast mode, effort, mode; five modes); Codex, Gemini CLI,
 Copilot, goose and OpenCode weren't installed. Turns are tested with the fake agent only.
+
+### 2026-10-07, CodeRabbit review of PR #40
+
+**Fixed.** Exec plugins whose environment or arguments carry credentials aren't copied into the
+`agent.kubectl: context` kubeconfig (`redact::is_credential_name`, `scrub_text` on the args).
+Arguments of agent commands are quoted unless plain (POSIX single quotes; double quotes for
+`cmd /C`), so shell syntax in them reaches the program literally. Command grants match the
+command exactly (or the command inside `sh|bash|zsh -c`), and a permission prompt that showed no
+command grants nothing. The agent's environment for a command can't replace `KUBECONFIG`
+(dropped, with a warning), is shown in the prompt, and always needs a prompt. Saved thread
+titles are scrubbed before state.json. Argo CD sources go to the agent without URL credentials
+(`repo_short`). The MCP accept loop backs off after errors. The explorer's Copy YAML adds
+`kind`/`apiVersion` to store objects before masking (a Secret without them wasn't masked).
 
