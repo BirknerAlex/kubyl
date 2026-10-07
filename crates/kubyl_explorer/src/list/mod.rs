@@ -431,13 +431,29 @@ impl ResourceListView {
                 Some(provider) => Columns::Provider(provider),
                 None => Columns::Server,
             };
-            self.update_columns();
+            self.update_columns(cx);
         }
     }
 
-    fn update_columns(&mut self) {
+    /// The clusters whose objects the table shows (column providers may depend on them).
+    fn table_clusters(&self) -> Vec<ClusterId> {
+        match &self.mode {
+            Mode::Cluster(id) => vec![id.clone()],
+            Mode::Favorites => {
+                let mut clusters: Vec<ClusterId> = Vec::new();
+                for source in &self.sources {
+                    if !clusters.contains(&source.spec.cluster) {
+                        clusters.push(source.spec.cluster.clone());
+                    }
+                }
+                clusters
+            }
+        }
+    }
+
+    fn update_columns(&mut self, cx: &App) {
         let base = match &self.columns_source {
-            Columns::Provider(provider) => provider.columns(),
+            Columns::Provider(provider) => provider.columns_in(&self.table_clusters(), cx),
             Columns::Server => self
                 .sources
                 .iter()
@@ -624,7 +640,7 @@ impl ResourceListView {
         }
         self.sources = sources;
         self.sort_cache.clear();
-        self.update_columns();
+        self.update_columns(cx);
         for ix in 0..self.sources.len() {
             self.source_changed(ix, window, cx);
         }
@@ -700,7 +716,7 @@ impl ResourceListView {
                 }
                 let again = source.fetch.dirty || source.store.read(cx).generation() != generation;
                 this.sort_cache.clear();
-                this.update_columns();
+                this.update_columns(cx);
                 if again {
                     this.schedule_table_fetch(ix, cx);
                 }
@@ -907,7 +923,9 @@ impl ResourceListView {
             _ => {}
         }
         match &self.columns_source {
-            Columns::Provider(provider) => provider.cell(object, &column.id),
+            Columns::Provider(provider) => {
+                provider.cell_in(&source.spec.cluster, object, &column.id, cx)
+            }
             Columns::Server => match column.id.as_ref() {
                 "name" => CellValue::Text(format::name(object).to_string().into()),
                 "age" => CellValue::Tinted {
@@ -1004,7 +1022,7 @@ impl ResourceListView {
                 }
             }
         }
-        self.update_columns();
+        self.update_columns(cx);
         self.sync_sources(window, cx);
     }
 
@@ -1076,7 +1094,8 @@ impl ResourceListView {
         if !relevant {
             return;
         }
-        if matches!(event, ConnectionEvent::DiscoveryChanged(_)) {
+        let discovery = matches!(event, ConnectionEvent::DiscoveryChanged(_));
+        if discovery {
             let before = self.kind.clone();
             self.resolve_kind(cx);
             if before != self.kind {
@@ -1084,6 +1103,10 @@ impl ResourceListView {
             }
         }
         self.sync_sources(window, cx);
+        // Column providers may depend on what the cluster serves (`columns_in`).
+        if discovery {
+            self.update_columns(cx);
+        }
         cx.notify();
     }
 

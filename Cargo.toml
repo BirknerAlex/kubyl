@@ -28,6 +28,8 @@ kubyl_explorer = { path = "crates/kubyl_explorer" }
 kubyl_explorer_core = { path = "crates/kubyl_explorer_core" }
 kubyl_files = { path = "crates/kubyl_files" }
 kubyl_files_core = { path = "crates/kubyl_files_core" }
+kubyl_flux = { path = "crates/kubyl_flux" }
+kubyl_flux_core = { path = "crates/kubyl_flux_core" }
 kubyl_keymap = { path = "crates/kubyl_keymap" }
 kubyl_kube = { path = "crates/kubyl_kube" }
 kubyl_kube_core = { path = "crates/kubyl_kube_core" }

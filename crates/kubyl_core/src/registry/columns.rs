@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use gpui::{Action, App, Global, SharedString};
 
-use crate::types::{Gvk, ResourceRef};
+use crate::types::{ClusterId, Gvk, ResourceRef};
 
 pub use kubyl_base::columns::{Align, ColumnDef, ColumnWidth};
 pub use kubyl_base::types::Tone;
@@ -82,6 +82,27 @@ impl fmt::Debug for CellButton {
 pub trait ColumnProvider: 'static {
     fn columns(&self) -> Vec<ColumnDef>;
     fn cell(&self, object: &serde_json::Value, column: &str) -> CellValue;
+
+    /// The columns of a table showing objects of `clusters` (several in Favorites). Providers
+    /// whose columns depend on the cluster (a feature it serves) override this; the default is
+    /// [`ColumnProvider::columns`]. Tables call it again when a cluster's discovery changes.
+    fn columns_in(&self, clusters: &[ClusterId], cx: &App) -> Vec<ColumnDef> {
+        let _ = (clusters, cx);
+        self.columns()
+    }
+
+    /// A cell of an object on `cluster`. Providers whose cells depend on the cluster override
+    /// this; the default is [`ColumnProvider::cell`].
+    fn cell_in(
+        &self,
+        cluster: &ClusterId,
+        object: &serde_json::Value,
+        column: &str,
+        cx: &App,
+    ) -> CellValue {
+        let _ = (cluster, cx);
+        self.cell(object, column)
+    }
 }
 
 /// Per-kind column providers, keyed by group and kind (all versions share columns).
@@ -155,18 +176,12 @@ impl ColumnProvider for Extended {
     /// The kind's columns with the added ones before `age` (which stays at the end of the
     /// regular columns), or last.
     fn columns(&self) -> Vec<ColumnDef> {
-        let mut columns = self.base.columns();
-        let at = columns
-            .iter()
-            .position(|c| c.id.as_ref() == "age")
-            .unwrap_or(columns.len());
-        let added: Vec<ColumnDef> = self
+        let added = self
             .extensions
             .iter()
             .flat_map(|extension| extension.columns())
             .collect();
-        columns.splice(at..at, added);
-        columns
+        insert_before_age(self.base.columns(), added)
     }
 
     fn cell(&self, object: &serde_json::Value, column: &str) -> CellValue {
@@ -177,6 +192,45 @@ impl ColumnProvider for Extended {
         }
         self.base.cell(object, column)
     }
+
+    fn columns_in(&self, clusters: &[ClusterId], cx: &App) -> Vec<ColumnDef> {
+        let added = self
+            .extensions
+            .iter()
+            .flat_map(|extension| extension.columns_in(clusters, cx))
+            .collect();
+        insert_before_age(self.base.columns_in(clusters, cx), added)
+    }
+
+    fn cell_in(
+        &self,
+        cluster: &ClusterId,
+        object: &serde_json::Value,
+        column: &str,
+        cx: &App,
+    ) -> CellValue {
+        let clusters = std::slice::from_ref(cluster);
+        for extension in &self.extensions {
+            if extension
+                .columns_in(clusters, cx)
+                .iter()
+                .any(|c| c.id.as_ref() == column)
+            {
+                return extension.cell_in(cluster, object, column, cx);
+            }
+        }
+        self.base.cell_in(cluster, object, column, cx)
+    }
+}
+
+/// `added` before the `age` column (or last).
+fn insert_before_age(mut columns: Vec<ColumnDef>, added: Vec<ColumnDef>) -> Vec<ColumnDef> {
+    let at = columns
+        .iter()
+        .position(|c| c.id.as_ref() == "age")
+        .unwrap_or(columns.len());
+    columns.splice(at..at, added);
+    columns
 }
 
 #[cfg(test)]
@@ -208,6 +262,73 @@ mod tests {
         fn cell(&self, _: &serde_json::Value, _: &str) -> CellValue {
             CellValue::Empty
         }
+    }
+
+    /// A column only for the cluster `flux`, whose cells name the row's cluster.
+    struct PerCluster;
+
+    impl ColumnProvider for PerCluster {
+        fn columns(&self) -> Vec<ColumnDef> {
+            Vec::new()
+        }
+
+        fn cell(&self, _: &serde_json::Value, _: &str) -> CellValue {
+            CellValue::Empty
+        }
+
+        fn columns_in(&self, clusters: &[ClusterId], _: &App) -> Vec<ColumnDef> {
+            if clusters.iter().any(|c| c.as_str() == "flux") {
+                vec![ColumnDef::new("flux", "Flux", ColumnWidth::Fixed(80.0))]
+            } else {
+                Vec::new()
+            }
+        }
+
+        fn cell_in(
+            &self,
+            cluster: &ClusterId,
+            _: &serde_json::Value,
+            _: &str,
+            _: &App,
+        ) -> CellValue {
+            CellValue::Text(cluster.as_str().to_string().into())
+        }
+    }
+
+    #[gpui::test]
+    fn extensions_can_depend_on_the_cluster(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            ResourceColumns::register(cx, "apps", "Deployment", AgeThenWide);
+            ResourceColumns::extend(cx, "apps", "Deployment", PerCluster);
+            let provider = ResourceColumns::get(cx, &Gvk::new("apps", "v1", "Deployment")).unwrap();
+            let ids = |clusters: &[ClusterId], cx: &App| -> Vec<SharedString> {
+                provider
+                    .columns_in(clusters, cx)
+                    .iter()
+                    .map(|c| c.id.clone())
+                    .collect()
+            };
+            let flux = ClusterId::new("flux");
+            let plain = ClusterId::new("plain");
+            assert_eq!(
+                ids(std::slice::from_ref(&plain), cx),
+                ["name", "age", "selector"]
+            );
+            assert_eq!(
+                ids(&[plain.clone(), flux.clone()], cx),
+                ["name", "flux", "age", "selector"]
+            );
+            let object = serde_json::json!({});
+            assert_eq!(
+                provider.cell_in(&flux, &object, "flux", cx),
+                CellValue::Text("flux".into())
+            );
+            // Not a column on that cluster: the kind's own provider answers.
+            assert_eq!(
+                provider.cell_in(&plain, &object, "flux", cx),
+                CellValue::Empty
+            );
+        });
     }
 
     #[gpui::test]

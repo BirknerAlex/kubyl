@@ -95,6 +95,8 @@ enum Item {
         cluster: ClusterId,
         entry: ViewEntry,
         depth: usize,
+        /// A view row of a contributed group (Flux's Sources): not scoped to the namespace.
+        contributed: bool,
     },
     /// A row another crate added (`catalog::register_view_row`).
     Row {
@@ -607,7 +609,18 @@ impl ClustersSection {
                     .filter(|k| matches(&k.label) || matches(group.label))
                     .filter(|k| self.allowed(cluster, k, cx))
                     .collect();
-                if visible.is_empty() {
+                // View rows of the group (Flux's Overview, Sources…).
+                let (views_before, views_after) = {
+                    let (before, after) = catalog::group_views(group.id, cluster, cx);
+                    let keep = |views: Vec<ViewEntry>| -> Vec<ViewEntry> {
+                        views
+                            .into_iter()
+                            .filter(|v| matches(v.label) || matches(group.label))
+                            .collect()
+                    };
+                    (keep(before), keep(after))
+                };
+                if visible.is_empty() && views_before.is_empty() && views_after.is_empty() {
                     continue;
                 }
                 let id = format!("{}/{}", def.id, group.id);
@@ -622,11 +635,19 @@ impl ClustersSection {
                     badge,
                 });
                 if expanded {
+                    let view_item = |entry: ViewEntry| Item::View {
+                        cluster: cluster.clone(),
+                        entry,
+                        depth: d(3),
+                        contributed: true,
+                    };
+                    contributed.extend(views_before.into_iter().map(&view_item));
                     contributed.extend(visible.into_iter().map(|kind| Item::Kind {
                         cluster: cluster.clone(),
                         kind,
                         depth: d(3),
                     }));
+                    contributed.extend(views_after.into_iter().map(&view_item));
                 }
             }
             if kinds.is_empty() && views.is_empty() && contributed.is_empty() {
@@ -637,6 +658,7 @@ impl ClustersSection {
                     cluster: cluster.clone(),
                     entry,
                     depth: d(1),
+                    contributed: false,
                 }));
                 items.extend(kinds.into_iter().map(|kind| Item::Kind {
                     cluster: cluster.clone(),
@@ -659,6 +681,7 @@ impl ClustersSection {
                     cluster: cluster.clone(),
                     entry,
                     depth: d(2),
+                    contributed: false,
                 }));
                 items.extend(kinds.into_iter().map(|kind| Item::Kind {
                     cluster: cluster.clone(),
@@ -884,12 +907,17 @@ impl ClustersSection {
                     cx,
                 );
             }
-            Item::View { cluster, entry, .. } => {
+            Item::View {
+                cluster,
+                entry,
+                contributed,
+                ..
+            } => {
                 Self::activate_cluster(cluster, cx);
                 // The cluster's Overview is cluster-wide; a namespace makes it the namespace
                 // variant (opened from a favorite).
-                let namespace =
-                    Self::scope_namespace(cluster, cx).filter(|_| entry.kind != ViewKind::Overview);
+                let namespace = Self::scope_namespace(cluster, cx)
+                    .filter(|_| entry.kind != ViewKind::Overview && !*contributed);
                 window.dispatch_action(
                     Box::new(OpenView(ViewRequest::for_resource(
                         entry.kind.clone(),

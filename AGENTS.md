@@ -111,6 +111,13 @@ cargo run -p kubyl
   (calico-node logs BGP "Invalid NEXT_HOP"), `kubectl -n calico-system rollout restart
   ds/calico-node`. `spec.loki.enable: false` in the FlowCollector shows NetObserv's metrics-only
   mode.
+- Flux: `script/flux-dev.sh` installs Flux on `kubyl-dev` from its release manifests (no
+  `flux` CLI) with samples in `flux-demo` (a GitRepository/Kustomization `podinfo`, a
+  HelmRepository/HelmRelease `podinfo-helm`, a static OCI HelmRepository `podinfo-oci`, a failing `broken`, a suspended `paused`, a
+  dependency chain `infra` → `apps` and `apps-late` waiting for `broken`, image automation,
+  notifications); `--delete` removes what it marked (a Flux that was there before stays). Live
+  tests: `crates/kubyl_flux_core/tests/live.rs`, and `crates/kubyl_flux/tests/live_ui.rs`
+  (uninstalls and reinstalls Flux).
 - Live tests against those clusters are ignored by default: see the header of
   `crates/kubyl_kube/tests/live.rs` (and of `crates/kubyl_metrics/tests/live.rs`,
   `crates/kubyl_alerts/tests/live.rs`, `crates/kubyl_operators/tests/live.rs`,

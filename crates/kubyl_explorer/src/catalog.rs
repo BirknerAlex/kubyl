@@ -461,6 +461,50 @@ pub fn register_tree_group(cx: &mut App, group: TreeGroup) {
     cx.default_global::<TreeGroups>().0.push(group);
 }
 
+/// A view row inside a contributed group, e.g. Flux's "Overview" and "Sources" (views over
+/// several kinds). It opens `entry.kind` for the cluster like the curated groups' view rows
+/// (`ResourceRef::list(cluster, Gvr::new("", "", ""), namespace)`) and shows while `visible`
+/// says so (e.g. while the cluster serves one of its kinds).
+#[derive(Clone)]
+pub struct GroupView {
+    /// The [`TreeGroup::id`] it belongs to.
+    pub group: &'static str,
+    /// Its id must be unique in the tree (`flux-overview`).
+    pub entry: ViewEntry,
+    /// Shown above the group's kinds (else below them).
+    pub before_kinds: bool,
+    pub visible: RowVisible,
+}
+
+/// Views of contributed groups, from [`register_group_view`].
+#[derive(Default)]
+pub struct GroupViews(pub Vec<GroupView>);
+
+impl Global for GroupViews {}
+
+/// Adds a view row to a contributed group (from a feature crate's `init`).
+pub fn register_group_view(cx: &mut App, view: GroupView) {
+    cx.default_global::<GroupViews>().0.push(view);
+}
+
+/// The view rows of a contributed group that show for `cluster`, split into those above and
+/// below its kinds.
+pub fn group_views(group: &str, cluster: &ClusterId, cx: &App) -> (Vec<ViewEntry>, Vec<ViewEntry>) {
+    let mut before = Vec::new();
+    let mut after = Vec::new();
+    for view in cx.try_global::<GroupViews>().into_iter().flat_map(|v| &v.0) {
+        if view.group != group || !(view.visible)(cluster, cx) {
+            continue;
+        }
+        if view.before_kinds {
+            before.push(view.entry.clone());
+        } else {
+            after.push(view.entry.clone());
+        }
+    }
+    (before, after)
+}
+
 /// Re-renders the tree, e.g. after a group's badge changed.
 pub fn tree_groups_changed(cx: &mut App) {
     if cx.has_global::<TreeGroups>() {

@@ -2,7 +2,7 @@
 //! Pure data in and out, so ranking is unit-tested without a window.
 
 use gpui::Hsla;
-use kubyl_core::{ClusterId, Gvr, ResourceRef};
+use kubyl_core::{ClusterId, Gvr, ResourceRef, ViewKind};
 use kubyl_resources::StoreKey;
 use kubyl_ui::IconName;
 
@@ -48,6 +48,17 @@ pub struct KindEntry {
     pub categories: Vec<String>,
     pub namespaced: bool,
     pub icon: IconName,
+}
+
+/// A view offered in `:` mode next to the kinds (`:sources` → Flux's Sources), registered with
+/// [`crate::register_view`] and shown for the active cluster while it applies there.
+#[derive(Clone, Debug)]
+pub struct ViewEntry {
+    pub name: String,
+    pub aliases: Vec<String>,
+    pub detail: String,
+    pub icon: IconName,
+    pub kind: ViewKind,
 }
 
 #[derive(Clone, Debug)]
@@ -111,6 +122,8 @@ pub struct Snapshot {
     /// The active namespace (`None` = all).
     pub namespace: Option<String>,
     pub kinds: Vec<KindEntry>,
+    /// Views of the active cluster offered next to its kinds.
+    pub views: Vec<ViewEntry>,
     pub contexts: Vec<ContextEntry>,
     pub namespaces: Vec<String>,
     /// Namespaces come from a live listing (otherwise any typed name is offered).
@@ -185,6 +198,11 @@ impl Group {
 /// What confirming a result does.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Target {
+    /// Open a view of the cluster (`ResourceRef::list(cluster, Gvr::new("", "", ""), None)`).
+    View {
+        cluster: ClusterId,
+        kind: ViewKind,
+    },
     /// Open the list of a kind.
     Kind {
         cluster: ClusterId,
@@ -452,6 +470,29 @@ impl Builder<'_> {
                     m.score += 1;
                 }
                 let item = self.kind_item(&cluster, kind, m, scope.clone());
+                self.push(item);
+            }
+        }
+        // Views other crates offer here (`:sources`), only for what's typed.
+        if q.is_empty() {
+            return;
+        }
+        for view in &self.snapshot.views {
+            let keys: Vec<&str> = view.aliases.iter().map(String::as_str).collect();
+            if let Some(m) = q.score(&view.name, &keys) {
+                let mut item = Item::new(
+                    Group::Kinds,
+                    view.icon,
+                    view.name.clone(),
+                    Target::View {
+                        cluster: cluster.clone(),
+                        kind: view.kind.clone(),
+                    },
+                )
+                .matched(m)
+                .detail(view.detail.clone())
+                .key(format!("view:{}", view.name));
+                item.aliases = (!view.aliases.is_empty()).then(|| view.aliases.join(", "));
                 self.push(item);
             }
         }
@@ -1132,6 +1173,27 @@ mod tests {
 
     fn titles(items: &[Item]) -> Vec<(Group, String)> {
         items.iter().map(|i| (i.group, i.title.clone())).collect()
+    }
+
+    #[test]
+    fn registered_views_are_offered_next_to_kinds() {
+        let mut snapshot = snapshot();
+        snapshot.views = vec![ViewEntry {
+            name: "sources".into(),
+            aliases: vec!["flux-sources".into()],
+            detail: "Flux sources".into(),
+            icon: IconName::File,
+            kind: ViewKind::Custom("flux_sources".into()),
+        }];
+        let items = build(Mode::Resources, "sources", &snapshot, Options::default());
+        assert_eq!(items[0].title, "sources");
+        assert!(matches!(
+            &items[0].target,
+            Target::View { kind: ViewKind::Custom(kind), .. } if kind == "flux_sources"
+        ));
+        // Not listed before anything is typed.
+        let items = build(Mode::Resources, "", &snapshot, Options::default());
+        assert!(items.iter().all(|i| i.title != "sources"));
     }
 
     #[test]

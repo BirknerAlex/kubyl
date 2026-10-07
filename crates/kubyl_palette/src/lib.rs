@@ -82,6 +82,49 @@ actions!(
     ]
 );
 
+/// Whether a palette view applies to a cluster.
+pub type ViewVisible = std::sync::Arc<dyn Fn(&kubyl_core::ClusterId, &App) -> bool>;
+
+/// A view `:` mode offers next to the kinds (`:sources`), opened for the active cluster and
+/// namespace. Feature crates register theirs in `init`.
+#[derive(Clone)]
+pub struct PaletteView {
+    /// What's typed (`sources`).
+    pub name: &'static str,
+    pub aliases: Vec<&'static str>,
+    /// Shown after the name (`Flux sources`).
+    pub detail: &'static str,
+    pub icon: kubyl_ui::IconName,
+    pub kind: kubyl_core::ViewKind,
+    pub visible: ViewVisible,
+}
+
+#[derive(Default)]
+struct PaletteViews(Vec<PaletteView>);
+
+impl Global for PaletteViews {}
+
+/// Offers a view in `:` mode (from a feature crate's `init`).
+pub fn register_view(cx: &mut App, view: PaletteView) {
+    cx.default_global::<PaletteViews>().0.push(view);
+}
+
+/// The registered views that apply to `cluster`.
+fn views_for(cluster: &kubyl_core::ClusterId, cx: &App) -> Vec<items::ViewEntry> {
+    cx.try_global::<PaletteViews>()
+        .into_iter()
+        .flat_map(|v| &v.0)
+        .filter(|v| (v.visible)(cluster, cx))
+        .map(|v| items::ViewEntry {
+            name: v.name.to_string(),
+            aliases: v.aliases.iter().map(|a| a.to_string()).collect(),
+            detail: v.detail.to_string(),
+            icon: v.icon,
+            kind: v.kind.clone(),
+        })
+        .collect()
+}
+
 /// The open palette, for toggling.
 #[derive(Default)]
 struct Current(Option<WeakEntity<CommandPalette>>);

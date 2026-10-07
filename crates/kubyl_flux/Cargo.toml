@@ -1,0 +1,39 @@
+[package]
+name = "kubyl_flux"
+description = "Flux CD: overview, Kustomizations, HelmReleases, sources, image automation and notifications; reconcile, suspend and resume."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+futures.workspace = true
+gpui.workspace = true
+gpui-component.workspace = true
+jiff.workspace = true
+kube.workspace = true
+kubyl_core.workspace = true
+kubyl_explorer.workspace = true
+kubyl_flux_core.workspace = true
+kubyl_kube.workspace = true
+kubyl_logs.workspace = true
+kubyl_palette.workspace = true
+kubyl_resources.workspace = true
+kubyl_ui.workspace = true
+parking_lot.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+kubyl_flux_core = { workspace = true, features = ["test-support"] }
+kubyl_settings.workspace = true
+regex.workspace = true
+tempfile.workspace = true
+tokio.workspace = true

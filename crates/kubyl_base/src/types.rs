@@ -219,6 +219,8 @@ pub struct ClusterCaps {
     pub olm: bool,
     /// Which Argo CD CRDs the cluster serves (some installs only have some of them).
     pub argocd: ArgoCdCaps,
+    /// Which Flux CRDs the cluster serves (`*.toolkit.fluxcd.io`, phase 23).
+    pub flux: FluxCaps,
 }
 
 /// The Argo CD custom resources a cluster serves (`argoproj.io`). Argo Workflows, Rollouts and
@@ -237,6 +239,35 @@ impl ArgoCdCaps {
     /// Any Argo CD CRD is served: the Argo CD UI is shown.
     pub fn any(&self) -> bool {
         self.applications || self.application_sets || self.projects
+    }
+}
+
+/// The Flux custom resources a cluster serves (`*.toolkit.fluxcd.io`). Each kind is checked on
+/// its own: installs choose their components (image automation is optional).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FluxCaps {
+    /// `kustomizations.kustomize.toolkit.fluxcd.io`.
+    pub kustomizations: bool,
+    /// `helmreleases.helm.toolkit.fluxcd.io`.
+    pub helm_releases: bool,
+    /// Any source kind of `source.toolkit.fluxcd.io` (GitRepository, OCIRepository,
+    /// HelmRepository, HelmChart, Bucket, ExternalArtifact).
+    pub sources: bool,
+    /// Any kind of `image.toolkit.fluxcd.io` (ImageRepository, ImagePolicy,
+    /// ImageUpdateAutomation).
+    pub image_automation: bool,
+    /// Any kind of `notification.toolkit.fluxcd.io` (Alert, Provider, Receiver).
+    pub notifications: bool,
+}
+
+impl FluxCaps {
+    /// Any Flux CRD is served: the Flux UI is shown.
+    pub fn any(&self) -> bool {
+        self.kustomizations
+            || self.helm_releases
+            || self.sources
+            || self.image_automation
+            || self.notifications
     }
 }
 

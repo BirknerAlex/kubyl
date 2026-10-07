@@ -13,8 +13,8 @@ use gpui_component::WindowExt as _;
 use gpui_component::input::{Input, InputEvent, InputState};
 use kubyl_core::actions::OpenView;
 use kubyl_core::{
-    ActionRegistry, ActiveContext, ClusterId, Gvk, Notification, NotificationCenter, ResourceRef,
-    ViewRegistry, ViewRequest,
+    ActionRegistry, ActiveContext, ClusterId, Gvk, Gvr, Notification, NotificationCenter,
+    ResourceRef, ViewRegistry, ViewRequest,
 };
 use kubyl_explorer::favorites::{self, Favorites};
 use kubyl_kube::ConnectionManager;
@@ -253,6 +253,7 @@ impl CommandPalette {
             let namespaces = manager.namespaces(&cluster.id);
             snapshot.namespaces = namespaces.names;
             snapshot.namespaces_listed = namespaces.listed;
+            snapshot.views = crate::views_for(&cluster.id, cx);
             if let Some(discovery) = manager.discovery(&cluster.id) {
                 snapshot.kinds = discovery
                     .preferred()
@@ -457,6 +458,7 @@ fn run(target: Target, split: bool, window: &mut Window, cx: &mut App) {
     let opens_view = matches!(
         target,
         Target::Kind { .. }
+            | Target::View { .. }
             | Target::Object(_)
             | Target::FavoritesWorkspace(_)
             | Target::Filtered { .. }
@@ -508,6 +510,20 @@ fn run(target: Target, split: bool, window: &mut Window, cx: &mut App) {
                 window,
                 cx,
                 ViewRequest::for_resource(kind, ResourceRef::list(cluster, gvr, namespace)),
+            );
+        }
+        Target::View { cluster, kind } => {
+            let namespace = ActiveContext::global(cx)
+                .namespace
+                .as_ref()
+                .map(|n| n.to_string());
+            open(
+                window,
+                cx,
+                ViewRequest::for_resource(
+                    kind,
+                    ResourceRef::list(cluster, Gvr::new("", "", ""), namespace),
+                ),
             );
         }
         Target::Context(id) => {

@@ -4112,6 +4112,381 @@ def agent_questions_screen():
     body = ag_user("Fix it in the repo, please.") + form + url + write
     return page("Agent: questions, links and file changes — Kubyl", ag_app(ag_dock(body), AG_WAITING))
 
+# ---------- 21. Flux (phase 23) ----------
+FLUX_STATE = {"Ready": C["green"], "Reconciling": C["accent"], "Failed": C["red"], "Stalled": C["orange"],
+              "Suspended": C["purple"], "Unknown": C["dim"]}
+
+def fpill(state, label=None):
+    c = FLUX_STATE.get(state, C["muted"])
+    return f'<span class="pill">{dot(c)}<span style="color:{c}">{label or state}</span></span>'
+
+def flux_sidebar(active, workloads=False):
+    a = lambda n: n == active
+    rows = [
+        f'<div class="phead"><span style="flex:1;font-weight:500;color:var(--text)">Explorer</span><button class="ib" aria-label="Filter kinds">{ic("search",13)}</button><button class="ib" aria-label="Add kubeconfig">{ic("plus",14)}</button><button class="ib" aria-label="More">{ic("more",14)}</button></div>',
+        f'<div class="sec">{ic("cr",11)}Favorites<span style="flex:1"></span><span style="font-weight:400;letter-spacing:0;text-transform:none;color:var(--faint)">4</span></div>',
+        f'<div class="sec">{ic("cd",11)}Clusters</div>',
+        root("prod-eu-west-1", "on", True, C["red"], prod=True),
+        ti("Overview", 1, "gauge"),
+        ti("Events", 1, "bell", "23", color=C["yellow"]),
+        ti("Workloads", 1, open_=workloads),
+        *([ti("Pods", 2, "box", "17"), ti("Deployments", 2, "layers", "9", on=a("Deployments")), ti("StatefulSets", 2, "db", "2")] if workloads else []),
+        ti("Network", 1, open_=False),
+        ti("Config &amp; Secrets", 1, open_=False),
+        ti("Storage", 1, open_=False),
+        ti("Access Control", 1, open_=False),
+        ti("Cluster", 1, open_=False),
+        ti("Administration", 1, open_=True),
+        ti("Helm Releases", 2, "anchor"),
+        ti("Cluster Updates", 2, "up"),
+        ti("Flux", 2, open_=True, extra=f'<span style="font-size:11px;color:var(--dim)">v2.9.6</span>'),
+        ti("Overview", 3, "gauge", on=a("Overview")),
+        ti("Kustomizations", 3, "layers", "6", on=a("Kustomizations"), extra=f'<span style="margin-right:2px">{dot(C["red"])}</span>'),
+        ti("HelmReleases", 3, "anchor", "2", on=a("HelmReleases")),
+        ti("Sources", 3, "branch", on=a("Sources")),
+        ti("Image Automation", 3, "box", on=a("Images")),
+        ti("Notifications", 3, "bell", on=a("Notifications")),
+        ti("Custom Resources", 1, open_=True),
+        ti("kustomize.toolkit.fluxcd.io", 2, open_=False),
+        ti("source.toolkit.fluxcd.io", 2, open_=False),
+        ti('<span style="color:var(--dim)">12 more API groups…</span>', 2),
+        root("staging-eu-west-1", "on", color=C["yellow"]),
+        root("gke-analytics", None, color=C["cyan"]),
+    ]
+    return '<aside class="side">' + "\n".join(rows) + '</aside>'
+
+def flux_shell(active, tabbar, content, overlay="", workloads=False):
+    return f'''<div class="app">
+{titlebar()}
+<div class="body">
+{flux_sidebar(active, workloads)}
+<main class="main">
+{tabbar}
+{content}
+</main>
+</div>
+{statusbar(right_extra=f'<span>{ic("layers",12,C["accent"])}Flux v2.9.6</span>')}
+{overlay}
+</div>'''
+
+def fsec(title, body, last=False):
+    return f'<div class="dsec"{" style=\"border-bottom:0\"" if last else ""}><p class="dtitle">{title}</p>{body}</div>'
+
+def fbox(color, icon, title, text):
+    return (f'<div style="display:flex;gap:10px;padding:10px 12px;border-radius:7px;background:{color}1a;border:1px solid {color}59">{ic(icon,15,color)}'
+            f'<div style="flex:1;min-width:0"><div style="font-size:12.5px;font-weight:600;color:{color}">{title}</div><div style="font-size:12px;color:var(--muted);line-height:17px">{text}</div></div></div>')
+
+FLUX_KS = [
+ # name, ns, state, message, source, revision, suspended, interval, last, age
+ ("apps", "flux-demo", "Ready", "Applied revision: master@sha1:3e0ff8a", "GitRepository/podinfo", "master@sha1:3e0ff8a", False, "10m", "4m", "2d"),
+ ("apps-late", "flux-demo", "Failed", "dependency 'flux-demo/broken' is not ready", "GitRepository/podinfo", "", False, "10m", "1m", "2d"),
+ ("broken", "flux-demo", "Failed", "kustomization path not found: stat /tmp/kustomization-1709…/does-not-exist", "GitRepository/podinfo", "", False, "5m", "1m", "2d"),
+ ("infra", "flux-demo", "Ready", "Applied revision: master@sha1:3e0ff8a", "GitRepository/podinfo", "master@sha1:3e0ff8a", False, "10m", "4m", "2d"),
+ ("paused", "flux-demo", "Suspended", "Applied revision: master@sha1:3e0ff8a", "GitRepository/podinfo", "master@sha1:3e0ff8a", True, "10m", "6d", "8d"),
+ ("podinfo", "flux-demo", "Reconciling", "Reconcile requested; waiting for the controller.", "GitRepository/podinfo", "master@sha1:3e0ff8a", False, "10m", "now", "2d"),
+]
+KC = "grid-template-columns: minmax(0,1fr) 84px minmax(0,1.6fr) minmax(0,1fr) 140px 58px 50px 44px"
+
+def flux_toolbar(label, icon, counts, kinds=False):
+    kind = f'<button class="btn g" style="height:24px;padding:0 6px">All kinds{ic("cd",11)}</button>' if kinds else ""
+    return f'''<div class="tool">
+<div class="crumb" style="white-space:nowrap">{ic(icon,14,C["accent"])}<b>{label}</b><span>·</span>{counts}</div>
+<div style="flex:1"></div>{kind}
+<button class="btn g" style="height:24px;padding:0 6px">All namespaces{ic("cd",11)}</button>
+<div class="inp" style="width:150px">{ic("filter",12)}Filter</div>
+<span class="chip" style="color:var(--green)">{dot(C["green"])}live</span>
+</div>'''
+
+def flux_chips(items, extra=""):
+    chips = "".join(f'<span class="chip{" on" if on else ""}">{dot(FLUX_STATE[s])}{s}<span class="mono" style="font-size:11px;color:var(--dim)">{n}</span></span>' for s, n, on in items)
+    return f'<div style="height:36px;flex-shrink:0;display:flex;align-items:center;gap:6px;padding:0 12px;border-bottom:1px solid var(--bv)">{chips}<span style="flex:1"></span>{extra}</div>'
+
+def flux_ks_rows(selected=(1,)):
+    out = []
+    for i, (n, ns, s, msg, src, rev, susp, iv, last, age) in enumerate(FLUX_KS):
+        pause = ic("pause", 11, C["purple"]) if susp else ""
+        mc = "var(--muted)" if s in ("Failed", "Stalled") else "var(--dim)"
+        out.append(f'''<div class="tr{" on" if i in selected else ""}" style="{KC};height:32px">
+<span class="mono" style="font-size:12px;display:flex;gap:5px;align-items:center">{n}{pause}</span><span style="color:var(--muted)">{ns}</span>
+<span style="display:flex;gap:8px;align-items:center;min-width:0">{fpill(s)}<span style="font-size:12px;color:{mc};overflow:hidden;text-overflow:ellipsis">{msg}</span></span>
+<span class="mono" style="font-size:11.5px">{src}</span><span class="mono" style="font-size:11.5px">{rev}</span>
+<span class="mono" style="font-size:11.5px;color:var(--muted)">{iv}</span><span class="mono" style="font-size:11.5px;color:var(--muted)">{last}</span><span class="mono" style="font-size:11.5px;color:var(--muted)">{age}</span></div>''')
+    return "".join(out)
+
+KS_HEAD = f'<div class="th" style="{KC}"><span>NAME {ic("cd",10)}</span><span>NAMESPACE</span><span>STATE</span><span>SOURCE</span><span>REVISION</span><span>INTERVAL</span><span>LAST</span><span>AGE</span></div>'
+KS_HINTS = [("↵","Open"),("r","Reconcile"),("⇧r","With source"),("s","Suspend"),("u","Resume"),("l","Logs"),("e","Edit YAML"),("⌃d","Delete…"),("/","Filter")]
+KS_COUNTS = '<span>6</span><span style="color:var(--red)">· 2 failing</span><span style="color:var(--purple)">· 1 suspended</span>'
+
+def flux_overview_screen():
+    tile = lambda icon, label, val, sub, pills: (f'<div class="card" style="flex:1;padding:12px;display:flex;flex-direction:column;gap:6px">'
+        f'<div style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--dim)">{ic(icon,13)}{label}</div>'
+        f'<div style="display:flex;align-items:flex-end;gap:6px"><span class="mono" style="font-size:22px">{val}</span><span style="font-size:12px;color:var(--dim);padding-bottom:3px">{sub}</span></div>'
+        f'<div style="display:flex;gap:10px;font-size:11.5px">{pills}</div></div>')
+    tiles = "".join([
+        tile("layers", "Kustomizations", "3/6", "ready", fpill("Failed", "2 failing") + fpill("Suspended", "1 suspended")),
+        tile("anchor", "HelmReleases", "1/2", "ready", fpill("Stalled", "1 failing")),
+        tile("branch", "Sources", "5/6", "ready", fpill("Failed", "1 failing")),
+        tile("box", "Image Automation", "2/3", "ready", fpill("Suspended", "1 suspended")),
+        tile("bell", "Notifications", "3", "objects", fpill("Ready", "all good")),
+    ])
+    att = lambda icon, kind, name, why, col, msg: (f'<div style="padding:8px 12px;border-bottom:1px solid #2e333b;display:flex;flex-direction:column;gap:3px">'
+        f'<div style="display:flex;gap:8px;align-items:center;font-size:12px">{ic(icon,13,C["dim"])}<span style="color:var(--dim)">{kind}</span><span class="mono">{name}</span><span style="flex:1"></span><span class="pill">{dot(col)}<span style="color:{col}">{why}</span></span></div>'
+        f'<div style="padding-left:21px;font-size:12px;color:var(--muted);line-height:17px">{msg}</div></div>')
+    attention = "".join([
+        att("anchor", "HelmRelease", "data/redis", "Stalled", C["orange"], "Failed to install after 4 attempt(s): context deadline exceeded"),
+        att("layers", "Kustomization", "flux-demo/broken", "Failed", C["red"], "kustomization path not found: stat /tmp/kustomization-1709002560/does-not-exist: no such file or directory"),
+        att("branch", "GitRepository", "flux-system/infra", "Not fetched", C["red"], "failed to checkout and determine revision: authentication required"),
+        att("layers", "Kustomization", "flux-demo/apps-late", "Waiting for flux-demo/broken", C["yellow"], "dependency 'flux-demo/broken' is not ready"),
+        att("layers", "Kustomization", "flux-demo/paused", "Suspended for 6d", C["purple"], "Applied revision: master@sha1:3e0ff8a"),
+    ])
+    ev = lambda age, warn, kind, name, reason, msg: (f'<div style="display:flex;gap:8px;padding:6px 12px;border-bottom:1px solid #2e333b;font-size:12px;align-items:flex-start">'
+        f'<span class="mono" style="width:30px;font-size:11.5px;color:var(--dim)">{age}</span>{ic("alert" if warn else "info",13,C["yellow"] if warn else C["dim"])}'
+        f'<div style="flex:1;min-width:0"><div style="display:flex;gap:6px"><span style="color:var(--dim)">{kind}</span><span class="mono" style="font-size:11.5px">{name}</span><span style="color:{C["yellow"] if warn else C["muted"]}">{reason}</span></div>'
+        f'<div style="color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{msg}</div></div></div>')
+    events = "".join([
+        ev("12s", False, "Kustomization", "flux-demo/podinfo", "ReconciliationSucceeded", "Reconciliation finished in 170ms, next run in 10m0s"),
+        ev("1m", True, "Kustomization", "flux-demo/broken", "ArtifactFailed", "kustomization path not found: stat /tmp/kustomization-1709…"),
+        ev("1m", False, "Kustomization", "flux-demo/apps-late", "DependencyNotReady", "Dependencies do not meet ready condition, retrying in 30s"),
+        ev("4m", False, "GitRepository", "flux-demo/podinfo", "NewArtifact", "stored artifact for commit 'Release v6.15.0'"),
+        ev("9m", True, "HelmRelease", "data/redis", "InstallFailed", "Helm install failed for release data/redis with chart redis@19.6.4"),
+        ev("14m", False, "HelmRelease", "flux-demo/podinfo-helm", "InstallSucceeded", "Helm install succeeded for release flux-demo/podinfo-helm.v1"),
+        ev("21m", True, "GitRepository", "flux-system/infra", "GitOperationFailed", "failed to checkout and determine revision: authentication required"),
+        ev("38m", False, "ImagePolicy", "flux-demo/podinfo", "Succeeded", "Latest image tag for ghcr.io/stefanprodan/podinfo resolved to 6.15.0"),
+    ])
+    ctrl = lambda n, v: f'<div style="display:flex;gap:10px;align-items:center;height:26px;padding:0 12px;border-bottom:1px solid #2e333b;font-size:12px">{dot(C["green"])}<span class="mono" style="width:220px">{n}</span><span class="mono" style="width:70px;color:var(--muted)">{v}</span><span style="color:var(--dim)">1/1 ready</span></div>'
+    controllers = "".join(ctrl(n, v) for n, v in [("helm-controller", "v1.6.5"), ("kustomize-controller", "v1.9.6"), ("notification-controller", "v1.9.4"), ("source-controller", "v1.9.6")])
+    head = lambda t, extra="": f'<div style="display:flex;align-items:center;gap:6px;height:32px;padding:0 12px;background:#2a2e36;border-bottom:1px solid var(--bv)"><span class="dtitle" style="margin:0">{t}</span><span style="flex:1"></span>{extra}</div>'
+    content = f'''<div style="flex:1;display:flex;flex-direction:column;min-height:0">
+<div class="tool">{ic("gauge",14,C["accent"])}<b style="font-weight:500">Flux overview</b><span class="chip mchip">v2.9.6</span><span style="font-size:12px;color:var(--dim)">controllers in flux-system</span><span style="flex:1"></span><span class="chip" style="color:var(--green)">{dot(C["green"])}live</span></div>
+<div style="flex:1;overflow:hidden;display:flex;flex-direction:column;gap:12px;padding:14px 16px">
+<div style="display:flex;gap:12px;align-items:center;padding:12px;border-radius:8px;background:#d072771a;border:1px solid #d0727759">{ic("err",20,C["red"])}<div><div style="font-size:14px;font-weight:600;color:var(--red)">Failing</div><div style="font-size:12.5px;color:var(--muted)">14 of 19 ready · 3 failing · 1 waiting · 1 suspended for more than a day</div></div><span style="flex:1"></span><span style="font-size:12px;color:var(--dim)">Controllers: 6 of 6 ready</span></div>
+<div style="display:flex;gap:10px">{tiles}</div>
+<div style="display:flex;gap:12px;min-height:0;align-items:flex-start">
+<div class="card" style="flex:1;overflow:hidden;background:var(--bg)">{head("Needs attention · 5")}{attention}</div>
+<div class="card" style="flex:1;overflow:hidden;background:var(--bg)">{head("Recent activity", f'<span class="chip">{dot(C["yellow"])}Warnings</span><button class="btn g" style="height:22px;padding:0 6px">All kinds{ic("cd",11)}</button><button class="btn g" style="height:22px;padding:0 6px">All namespaces{ic("cd",11)}</button>')}{events}</div>
+</div>
+<div class="card" style="overflow:hidden;background:var(--bg)">{head("Controllers")}{controllers}</div>
+</div>
+{hints([("↵","Open")])}
+</div>'''
+    tb = tabs([("gauge", "Flux", True), ("layers", "Kustomizations", False)])
+    return page("Flux overview — Kubyl", flux_shell("Overview", tb, content))
+
+def flux_dock(name, state, msg, revision):
+    return f'''<aside class="dock" style="width:300px">
+<div class="phead" style="border-bottom:1px solid var(--bv)"><span style="flex:1;color:var(--text);font-weight:500">Kustomization details</span><button class="ib" aria-label="Pin">{ic("star",13)}</button><button class="ib" aria-label="Close">{ic("x",13)}</button></div>
+<div class="dsec"><div class="mono" style="font-size:12.5px;margin-bottom:6px">{name}</div>
+<div style="display:flex;gap:10px;align-items:center;font-size:12px">{fpill(state)}<span class="mono" style="font-size:11.5px">{revision}</span></div>
+<div style="font-size:12px;color:var(--red);margin-top:6px;line-height:17px">{msg}</div>
+<div style="display:flex;gap:6px;margin-top:10px"><button class="btn p" style="height:24px">{ic("refresh",12,"#1b1e24")}Reconcile</button><button class="btn" style="height:24px">{ic("pause",12)}Suspend</button><button class="btn g" style="height:24px">Open</button></div></div>
+{fsec("Dependencies", f'<div style="font-size:12px;color:var(--yellow)">{ic("clock",12,C["yellow"])} Waiting for flux-demo/broken (Failed)</div>')}
+{fsec("Details", '<dl class="kv" style="margin:0;grid-template-columns:84px minmax(0,1fr)"><dt>Source</dt><dd class="mono" style="font-size:11.5px">GitRepository/podinfo</dd><dt>Interval</dt><dd class="mono" style="font-size:11.5px">10m</dd><dt>Last change</dt><dd>1m ago</dd><dt>Applied</dt><dd>0 objects</dd></dl>', True)}
+</aside>'''
+
+def flux_kustomizations_screen():
+    center = f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0">
+{flux_toolbar("Kustomizations", "layers", KS_COUNTS)}
+{flux_chips([("Ready", 2, False), ("Reconciling", 1, False), ("Failed", 2, False), ("Suspended", 1, False)])}
+{KS_HEAD}
+<div style="flex:1;overflow:hidden">{flux_ks_rows((1,))}</div>
+{hints(KS_HINTS)}
+</div>'''
+    content = f'<div style="flex:1;display:flex;min-height:0">{center}{flux_dock("apps-late", "Failed", "dependency \'flux-demo/broken\' is not ready", "")}</div>'
+    tb = tabs([("gauge", "Flux", False), ("layers", "Kustomizations", True), ("branch", "Sources", False)])
+    return page("Flux Kustomizations — Kubyl", flux_shell("Kustomizations", tb, content))
+
+def flux_header(icon, name, kind, state, rev, every, extra=""):
+    return f'''<div style="display:flex;align-items:center;gap:10px;padding:12px 16px 10px;border-bottom:1px solid var(--bv)">
+<span style="width:30px;height:30px;border-radius:7px;background:#74ade822;border:1px solid #74ade855;display:flex;align-items:center;justify-content:center">{ic(icon,16,C["accent"])}</span>
+<div style="min-width:0"><div style="display:flex;align-items:center;gap:8px"><span class="mono" style="font-size:15px;font-weight:500">{name}</span><span class="chip">flux-demo</span><span style="font-size:12px;color:var(--dim)">{kind}</span></div>
+<div style="display:flex;gap:12px;align-items:center;margin-top:3px;font-size:12px">{fpill(state)}<span class="mono" style="font-size:11.5px;color:var(--muted)">{rev}</span><span style="color:var(--dim)">every {every}</span></div></div>
+<div style="flex:1"></div>{extra}
+<span style="display:flex"><button class="btn p" style="height:26px;border-radius:5px 0 0 5px">{ic("refresh",12,"#1b1e24")}Reconcile</button><button class="btn g" style="height:26px;padding:0 6px">{ic("cd",12)}</button></span>
+<button class="btn" style="height:26px">{ic("pause",12)}Suspend</button>
+<button class="btn g" style="height:26px">{ic("zap",13)}Ask agent</button>
+<button class="ib" aria-label="More">{ic("more",14)}</button>
+</div>'''
+
+def flux_subtabs(active, items):
+    return '<div style="display:flex;gap:2px;padding:0 12px;border-bottom:1px solid var(--bv);height:36px;align-items:stretch">' + "".join(
+        f'<span style="display:flex;align-items:center;gap:6px;padding:0 10px;{"color:var(--text);box-shadow:inset 0 -2px 0 var(--accent)" if t == active else "color:var(--dim)"}">{t}' + (f'<span class="chip" style="height:17px">{c}</span>' if c else "") + '</span>'
+        for t, c in items) + '</div>'
+
+KS_TABS = [("Summary", ""), ("Inventory", "3"), ("History", "4"), ("Events", ""), ("Controller logs", "")]
+
+def fcond(ok, t, reason, msg, age, col=None):
+    col = col or (C["green"] if ok else C["red"])
+    return (f'<div style="display:flex;gap:8px;font-size:12px;padding:3px 0;align-items:flex-start">{ic("ok" if ok else "err",13,col)}<div style="flex:1;min-width:0">'
+            f'<div style="display:flex;gap:6px"><b style="font-weight:500">{t}</b><span style="color:var(--dim)">{reason}</span><span style="flex:1"></span><span class="mono" style="font-size:11px;color:var(--dim)">{age}</span></div>'
+            f'<div style="color:var(--muted);line-height:17px">{msg}</div></div></div>')
+
+def flux_kustomization_screen():
+    left = f'''<div style="flex:1;min-width:0">
+<div style="padding:12px 14px 0">{fbox(C["green"], "ok", "Ready", "Applied revision: master@sha1:3e0ff8ae123b710bc91de1315cba0f996a8896c2")}</div>
+{fsec("Conditions · 1", fcond(True, "Ready=True", "ReconciliationSucceeded", "Applied revision: master@sha1:3e0ff8ae123b710bc91de1315cba0f996a8896c2", "4m"))}
+{fsec("Dependencies · 1", f'<div style="display:flex;gap:8px;font-size:12px;align-items:center;padding:2px 0"><span style="width:70px;color:var(--dim)">depends on</span><a href="#" class="mono" style="text-decoration:none">flux-demo/infra</a><span style="flex:1"></span>{fpill("Ready")}</div><div style="display:flex;gap:8px;font-size:12px;align-items:center;padding:2px 0"><span style="width:70px;color:var(--dim)">needed by</span><a href="#" class="mono" style="text-decoration:none">flux-demo/frontend</a></div>')}
+{fsec("Events · last 3", '<div style="font-size:12px;color:var(--muted);line-height:20px">4m · ReconciliationSucceeded · Reconciliation finished in 170ms, next run in 10m0s<br>2d · Progressing · Deployment/flux-chain/backend created<br>2d · DependencyNotReady · Dependencies do not meet ready condition</div>', True)}
+</div>'''
+    right = f'''<aside style="width:380px;flex-shrink:0;border-left:1px solid var(--border);background:var(--panel);overflow:hidden">
+{fsec("Source", '<dl class="kv" style="margin:0;grid-template-columns:84px minmax(0,1fr)"><dt>Source</dt><dd><a href="#" class="mono" style="font-size:11.5px;text-decoration:none">GitRepository/podinfo</a></dd><dt>URL</dt><dd class="mono" style="font-size:11.5px">https://github.com/stefanprodan/podinfo</dd><dt>Applied</dt><dd><a href="#" class="mono" style="font-size:11.5px;text-decoration:none">master@sha1:3e0ff8a</a> ' + ic("ext",11,C["dim"]) + '</dd><dt>Source at</dt><dd class="mono" style="font-size:11.5px">master@sha1:3e0ff8a</dd></dl>')}
+{fsec("Kustomization", '<dl class="kv" style="margin:0;grid-template-columns:84px minmax(0,1fr)"><dt>Path</dt><dd class="mono" style="font-size:11.5px">./deploy/webapp/backend</dd><dt>Prune</dt><dd>on: removes what leaves Git</dd><dt>Target ns</dt><dd class="mono" style="font-size:11.5px">flux-chain</dd><dt>Interval</dt><dd class="mono" style="font-size:11.5px">10m</dd><dt>Timeout</dt><dd class="mono" style="font-size:11.5px">5m</dd></dl>'
+      + '<p class="dtitle" style="margin:12px 0 6px">Post-build substitutions</p><div style="font-size:12px;display:flex;flex-direction:column;gap:4px"><span class="mono" style="font-size:11.5px">${cluster_env} <span style="color:var(--dim)">=</span> dev</span>'
+      + f'<span style="display:flex;gap:6px;align-items:center">{ic("lock",12,C["dim"])}<span style="color:var(--dim)">Secret</span><span class="mono" style="font-size:11.5px">podinfo-substitutions</span><span class="chip" style="height:17px">optional</span><span style="color:var(--faint)">values not shown</span></span></div>', True)}
+</aside>'''
+    content = f'''<div style="flex:1;display:flex;flex-direction:column;min-height:0">{flux_header("layers", "apps", "Kustomization · kustomize.toolkit.fluxcd.io/v1", "Ready", "master@sha1:3e0ff8a", "10m")}{flux_subtabs("Summary", KS_TABS)}
+<div style="flex:1;display:flex;min-height:0">{left}{right}</div>
+{hints([("r","Reconcile"),("⇧r","With source"),("s","Suspend"),("l","Logs"),("e","Edit YAML"),("⌃d","Delete…")])}</div>'''
+    tb = tabs([("gauge", "Flux", False), ("layers", "Kustomizations", False), ("layers", "apps", True)])
+    return page("Flux Kustomization — Kubyl", flux_shell("Kustomizations", tb, content))
+
+def flux_inventory_screen():
+    TC = "grid-template-columns: minmax(0,1fr) 150px minmax(0,0.6fr)"
+    guide = lambda d: "".join('<span style="width:16px;flex-shrink:0;align-self:stretch;border-left:1px solid #3e4450;margin-left:6px"></span>' for _ in range(d))
+    def node(d, kind, name, health, col, info, open_=None, live=False, on=False):
+        chev = ic("cd", 11, C["dim"]) if open_ is True else ic("cr", 11, C["dim"]) if open_ is False else '<span style="width:11px"></span>'
+        tag = '<span class="chip" style="height:16px;font-size:10.5px;padding:0 5px">live</span>' if live else ""
+        h = f'<span class="pill">{dot(col)}<span style="color:{col}">{health}</span></span>' if health else '<span style="color:var(--dim)">present</span>'
+        return (f'<div class="tr{" on" if on else ""}" style="{TC};height:30px"><span style="display:flex;align-items:center;gap:6px;height:100%">{guide(d)}{chev}'
+                f'<span style="color:var(--dim);font-size:12px">{kind}</span><span class="mono" style="font-size:12px">{name}</span>{tag}</span>{h}<span style="font-size:12px;color:var(--muted)">{info}</span></div>')
+    tree = "".join([
+        node(0, "Deployment", "flux-podinfo/podinfo", "Healthy", C["green"], "2/2 ready", True),
+        node(1, "ReplicaSet", "podinfo-6f8c7b9d4", "Healthy", C["green"], "2/2 ready", True, live=True),
+        node(2, "Pod", "podinfo-6f8c7b9d4-x2kqp", "Running", C["green"], "1/1 ready · 10.244.0.31", live=True, on=True),
+        node(2, "Pod", "podinfo-6f8c7b9d4-m8fzt", "Running", C["green"], "1/1 ready · 10.244.0.32", live=True),
+        node(0, "Service", "flux-podinfo/podinfo", "Healthy", C["green"], "ClusterIP 10.96.181.7"),
+        node(0, "HorizontalPodAutoscaler", "flux-podinfo/podinfo", "", None, ""),
+    ])
+    center = f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0">
+<div style="height:36px;flex-shrink:0;display:flex;align-items:center;gap:8px;padding:0 12px;border-bottom:1px solid var(--bv);font-size:12px;color:var(--dim)">{ic("tree",13)}3 objects · 1 Deployment, 1 Service, 1 HorizontalPodAutoscaler<span style="flex:1"></span><span class="chip" style="height:16px;font-size:10.5px;padding:0 5px">live</span> children from Kubyl's watches</div>
+<div class="th" style="{TC}"><span>OBJECT</span><span>HEALTH</span><span>INFO</span></div>
+<div style="flex:1;overflow:hidden">{tree}</div>
+{hints([("↵↵","Open in Kubyl"),("r","Reconcile"),("s","Suspend"),("l","Logs"),("e","Edit YAML"),("⌃d","Delete…")])}
+</div>'''
+    content = f'''<div style="flex:1;display:flex;flex-direction:column;min-height:0">{flux_header("layers", "podinfo", "Kustomization · kustomize.toolkit.fluxcd.io/v1", "Ready", "master@sha1:3e0ff8a", "10m")}{flux_subtabs("Inventory", KS_TABS)}
+<div style="flex:1;display:flex;min-height:0">{center}</div></div>'''
+    tb = tabs([("gauge", "Flux", False), ("layers", "Kustomizations", False), ("layers", "podinfo", True)])
+    return page("Flux inventory — Kubyl", flux_shell("Kustomizations", tb, content))
+
+def flux_helmrelease_screen():
+    hist = lambda v, chart, app, status, col, when: f'<div style="display:grid;grid-template-columns:44px minmax(0,1fr) 70px 100px 44px 96px;align-items:center;height:28px;font-size:12px;border-top:1px solid #363c46"><span class="mono">v{v}</span><span class="mono" style="font-size:11.5px">{chart}</span><span class="mono" style="font-size:11.5px;color:var(--muted)">{app}</span><span class="pill">{dot(col)}<span style="color:{col}">{status}</span></span><span class="mono" style="font-size:11.5px;color:var(--muted)">{when}</span><a href="#" style="text-decoration:none">Helm release</a></div>'
+    left = f'''<div style="flex:1;min-width:0">
+<div style="padding:12px 14px 0">{fbox(C["green"], "ok", "Ready", "Helm upgrade succeeded for release flux-demo/podinfo-helm.v3 with chart podinfo@6.15.0")}</div>
+{fsec("Conditions · 2", fcond(True, "Ready=True", "UpgradeSucceeded", "Helm upgrade succeeded for release flux-demo/podinfo-helm.v3 with chart podinfo@6.15.0", "3h") + fcond(True, "Released=True", "UpgradeSucceeded", "Helm upgrade succeeded for release flux-demo/podinfo-helm.v3", "3h"))}
+{fsec("Releases · 3", hist(3, "podinfo 6.15.0", "6.15.0", "deployed", C["green"], "3h") + hist(2, "podinfo 6.14.1", "6.14.1", "superseded", C["dim"], "2d") + hist(1, "podinfo 6.14.0", "6.14.0", "superseded", C["dim"], "9d"), True)}
+</div>'''
+    right = f'''<aside style="width:380px;flex-shrink:0;border-left:1px solid var(--border);background:var(--panel);overflow:hidden">
+{fsec("Chart", '<dl class="kv" style="margin:0;grid-template-columns:84px minmax(0,1fr)"><dt>Chart</dt><dd class="mono" style="font-size:11.5px">podinfo 6.x</dd><dt>Installed</dt><dd class="mono" style="font-size:11.5px">podinfo 6.15.0 (app 6.15.0)</dd><dt>From</dt><dd><a href="#" class="mono" style="font-size:11.5px;text-decoration:none">HelmRepository/podinfo</a></dd><dt>URL</dt><dd class="mono" style="font-size:11.5px">https://stefanprodan.github.io/podinfo</dd><dt>Release</dt><dd class="mono" style="font-size:11.5px">podinfo-helm</dd></dl>'
+      + f'<div style="margin-top:10px"><button class="btn g" style="height:24px;padding:0 6px">{ic("anchor",12)}Open Helm release</button></div>')}
+{fsec("Values", f'<div style="display:flex;flex-direction:column;gap:5px;font-size:12px"><span style="display:flex;gap:6px;align-items:center">{ic("file",12,C["dim"])}<span style="color:var(--dim)">ConfigMap</span><span class="mono" style="font-size:11.5px">podinfo-values</span></span><span style="display:flex;gap:6px;align-items:center">{ic("lock",12,C["dim"])}<span style="color:var(--dim)">Secret</span><span class="mono" style="font-size:11.5px">podinfo-secret-values</span><span style="color:var(--dim)">· values.yaml</span><span style="color:var(--faint)">values not shown</span></span><span style="display:flex;gap:6px"><span style="color:var(--dim)">inline</span><span class="mono" style="font-size:11.5px">resources</span></span></div>')}
+{fsec("Remediation", '<dl class="kv" style="margin:0;grid-template-columns:84px minmax(0,1fr)"><dt>Install</dt><dd>3 retries</dd><dt>Upgrade</dt><dd>3 retries</dd><dt>Last failure</dt><dd>remediated</dd><dt>Failures</dt><dd>install 0 · upgrade 0 · total 0</dd></dl>', True)}
+</aside>'''
+    tabs_ = [("Summary", ""), ("Inventory", "2"), ("History", "3"), ("Events", ""), ("Controller logs", "")]
+    content = f'''<div style="flex:1;display:flex;flex-direction:column;min-height:0">{flux_header("anchor", "podinfo-helm", "HelmRelease · helm.toolkit.fluxcd.io/v2", "Ready", "6.15.0", "10m")}{flux_subtabs("Summary", tabs_)}
+<div style="flex:1;display:flex;min-height:0">{left}{right}</div>
+{hints([("r","Reconcile"),("⇧r","With source"),("s","Suspend"),("l","Logs"),("e","Edit YAML"),("⌃d","Delete…")])}</div>'''
+    tb = tabs([("gauge", "Flux", False), ("anchor", "HelmReleases", False), ("anchor", "podinfo-helm", True)])
+    return page("Flux HelmRelease — Kubyl", flux_shell("HelmReleases", tb, content))
+
+def flux_sources_screen():
+    SC = "grid-template-columns: minmax(0,0.8fr) 118px 84px minmax(0,1.4fr) minmax(0,1.2fr) 150px 58px 50px"
+    rows = [
+        ("infra", "GitRepository", "flux-system", "Failed", "failed to checkout and determine revision: authentication required", "https://gitlab.example.com/platform/infra.git", "", "1m", "3m"),
+        ("podinfo", "GitRepository", "flux-demo", "Ready", "stored artifact for revision 'master@sha1:3e0ff8a…'", "https://github.com/stefanprodan/podinfo", "master@sha1:3e0ff8a", "5m", "4m"),
+        ("podinfo", "HelmRepository", "flux-demo", "Ready", "stored artifact: revision 'sha256:e7dc68a4…'", "https://stefanprodan.github.io/podinfo", "sha256:e7dc68a4", "30m", "4m"),
+        ("flux-demo-podinfo-helm", "HelmChart", "flux-demo", "Ready", "pulled 'podinfo' chart with version '6.15.0'", "HelmRepository/podinfo", "6.15.0", "10m", "4m"),
+        ("podinfo-manifests", "OCIRepository", "flux-demo", "Ready", "stored artifact for digest 'latest@sha256:87815bbd…'", "oci://ghcr.io/stefanprodan/manifests/podinfo", "latest@sha256:87815bbd", "30m", "4m"),
+        ("backups", "Bucket", "flux-system", "Suspended", "stored artifact: revision 'sha256:1c4e…'", "minio.storage.svc:9000", "sha256:1c4e88a0", "1h", "3d"),
+    ]
+    out = "".join(f'''<div class="tr{" on" if i == 1 else ""}" style="{SC};height:32px"><span class="mono" style="font-size:12px">{n}</span><span style="color:var(--muted)">{k}</span><span style="color:var(--muted)">{ns}</span>
+<span style="display:flex;gap:8px;align-items:center;min-width:0">{fpill(s)}<span style="font-size:12px;color:var(--dim);overflow:hidden;text-overflow:ellipsis">{m}</span></span><span class="mono" style="font-size:11.5px">{u}</span><span class="mono" style="font-size:11.5px">{r}</span><span class="mono" style="font-size:11.5px;color:var(--muted)">{iv}</span><span class="mono" style="font-size:11.5px;color:var(--muted)">{last}</span></div>''' for i, (n, k, ns, s, m, u, r, iv, last) in enumerate(rows))
+    center = f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0">
+{flux_toolbar("Sources", "branch", '<span>6</span><span style="color:var(--red)">· 1 failing</span><span style="color:var(--purple)">· 1 suspended</span>', kinds=True)}
+{flux_chips([("Ready", 4, False), ("Failed", 1, False), ("Suspended", 1, False)])}
+<div class="th" style="{SC}"><span>NAME {ic("cd",10)}</span><span>KIND</span><span>NAMESPACE</span><span>STATE</span><span>SOURCE</span><span>REVISION</span><span>INTERVAL</span><span>LAST</span></div>
+<div style="flex:1;overflow:hidden">{out}</div>
+{hints([("↵","Open"),("r","Reconcile"),("s","Suspend"),("u","Resume"),("l","Logs"),("e","Edit YAML"),("⌃d","Delete…"),("/","Filter")])}
+</div>'''
+    dock = f'''<aside class="dock" style="width:300px">
+<div class="phead" style="border-bottom:1px solid var(--bv)"><span style="flex:1;color:var(--text);font-weight:500">GitRepository details</span><button class="ib" aria-label="Close">{ic("x",13)}</button></div>
+<div class="dsec"><div class="mono" style="font-size:12.5px;margin-bottom:6px">podinfo</div><div style="display:flex;gap:10px;font-size:12px">{fpill("Ready")}<span class="mono" style="font-size:11.5px">master@sha1:3e0ff8a</span></div>
+<div style="display:flex;gap:6px;margin-top:10px"><button class="btn p" style="height:24px">{ic("refresh",12,"#1b1e24")}Reconcile</button><button class="btn" style="height:24px">{ic("pause",12)}Suspend</button><button class="btn g" style="height:24px">Open</button></div></div>
+{fsec("Source", '<dl class="kv" style="margin:0;grid-template-columns:84px minmax(0,1fr)"><dt>URL</dt><dd class="mono" style="font-size:11.5px">https://github.com/stefanprodan/podinfo</dd><dt>Ref</dt><dd class="mono" style="font-size:11.5px">branch master</dd><dt>Digest</dt><dd class="mono" style="font-size:11.5px">sha256:903f57ee86…</dd><dt>Last fetch</dt><dd>4m ago</dd></dl>')}
+{fsec("Used by · 6", '<div style="font-size:12px;line-height:22px"><span style="color:var(--dim)">Kustomization</span> <a href="#" class="mono" style="text-decoration:none">flux-demo/apps</a><br><span style="color:var(--dim)">Kustomization</span> <a href="#" class="mono" style="text-decoration:none">flux-demo/broken</a><br><span style="color:var(--dim)">ImageUpdateAutomation</span> <a href="#" class="mono" style="text-decoration:none">flux-demo/podinfo</a><br><span style="color:var(--faint)">and 3 more</span></div>', True)}
+</aside>'''
+    content = f'<div style="flex:1;display:flex;min-height:0">{center}{dock}</div>'
+    tb = tabs([("gauge", "Flux", False), ("branch", "Sources", True)])
+    return page("Flux sources — Kubyl", flux_shell("Sources", tb, content))
+
+def flux_managed_screen():
+    DC = "grid-template-columns: minmax(0,1fr) 70px 80px 90px 150px 60px"
+    rows = [("backend", "1/1", "1", "1", ("ks/apps", "ok", C["green"]), "2d"), ("checkout-api", "3/3", "3", "3", None, "41d"),
+            ("payment-gateway", "1/2", "2", "1", ("hr/payment-gateway", "err", C["red"]), "9d"), ("podinfo", "2/2", "2", "2", ("ks/podinfo", "ok", C["green"]), "2d"),
+            ("podinfo-helm", "1/1", "1", "1", ("hr/podinfo-helm", "ok", C["green"]), "2d"), ("paused-web", "1/1", "1", "1", ("ks/paused", "pause", C["purple"]), "8d")]
+    def fcell(f):
+        if not f:
+            return '<span style="color:var(--faint)">—</span>'
+        label, icon, col = f
+        return f'<span class="chip" style="height:20px;gap:5px">{ic(icon,11,col)}<span class="mono" style="font-size:11px;color:var(--text)">{label}</span></span>'
+    out = "".join(f'<div class="tr{" on" if i == 3 else ""}" style="{DC}"><span class="mono">{n}</span><span class="mono">{r}</span><span class="mono">{u}</span><span class="mono">{a}</span>{fcell(f)}<span class="mono" style="color:var(--muted)">{age}</span></div>' for i, (n, r, u, a, f, age) in enumerate(rows))
+    center = f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0">
+<div class="tool"><div class="crumb">{ic("layers",14,C["accent"])}<b>Deployments</b><span>·</span><span>6</span></div><div style="flex:1"></div><div class="inp" style="width:150px">{ic("filter",12)}Filter</div></div>
+<div class="th" style="{DC}"><span>NAME {ic("cd",10)}</span><span>READY</span><span>UP-TO-DATE</span><span>AVAILABLE</span><span>FLUX</span><span>AGE</span></div>
+<div style="flex:1;overflow:hidden">{out}</div>
+{hints([("↵","Details"),("l","Logs"),("s","Shell"),("e","Edit YAML"),("⌃d","Delete…"),("/","Filter")])}
+</div>'''
+    dock = f'''<aside class="dock" style="width:320px">
+<div class="phead" style="border-bottom:1px solid var(--bv)"><span style="flex:1;color:var(--text);font-weight:500">Deployment details</span><button class="ib" aria-label="Close">{ic("x",13)}</button></div>
+<div class="dsec"><div class="mono" style="font-size:12.5px;margin-bottom:6px">podinfo</div><div style="display:flex;gap:10px;font-size:12px">{st("Running")}<span style="color:var(--dim)">2/2 ready · flux-podinfo</span></div></div>
+{fsec("Flux", f'<div style="font-size:12px;display:flex;gap:6px">Managed by Flux Kustomization <a href="#" style="text-decoration:none">flux-demo/podinfo</a></div><div style="display:flex;gap:10px;font-size:12px;margin-top:6px">{fpill("Ready")}<span class="mono" style="font-size:11.5px">master@sha1:3e0ff8a</span></div><div style="font-size:12px;color:var(--dim);margin-top:6px;line-height:17px">kustomize-controller reverts changes made here at its next reconcile (every 10m).</div>')}
+{fsec("Pods · 2", '<div style="font-size:12px;line-height:22px"><span class="mono">podinfo-6f8c7b9d4-x2kqp</span> <span style="color:var(--green)">Running</span><br><span class="mono">podinfo-6f8c7b9d4-m8fzt</span> <span style="color:var(--green)">Running</span></div>', True)}
+</aside>'''
+    content = f'<div style="flex:1;display:flex;min-height:0">{center}{dock}</div>'
+    yaml_note = ""
+    tb = tabs([("layers", "Deployments", True), ("file", "podinfo.yaml", False)])
+    return page("Managed by Flux — Kubyl", flux_shell("Deployments", tb, content + yaml_note, workloads=True))
+
+def flux_dialog(title, icon, body, buttons, width=520):
+    return f'''<div style="position:absolute;inset:0;background:rgba(15,17,21,.55);display:flex;align-items:flex-start;justify-content:center;padding-top:120px">
+<div role="dialog" aria-label="{title}" style="width:{width}px;background:#2f343e;border:1px solid var(--border);border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,.5);overflow:hidden">
+<div style="display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--bv)">{ic(icon,16,C["accent"])}<b style="font-weight:600;flex:1">{title}</b><span class="prod" style="font-size:9.5px;padding:0 4px">PROD</span></div>
+<div style="padding:16px;display:flex;flex-direction:column;gap:12px">{body}</div>
+<div style="display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--bv)">{buttons}</div></div></div>'''
+
+def flux_actions_screen():
+    center = f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0">
+{flux_toolbar("Kustomizations", "layers", KS_COUNTS)}
+{flux_chips([("Ready", 2, False), ("Reconciling", 1, False), ("Failed", 2, False), ("Suspended", 1, False)], '<span style="font-size:12px;color:var(--muted)">2 selected</span>')}
+{KS_HEAD}
+<div style="flex:1;overflow:hidden">{flux_ks_rows((0, 3))}</div>
+{hints(KS_HINTS)}
+</div>'''
+    body = ('<div style="font-size:12.5px;color:var(--muted);line-height:19px">Flux stops reconciling them until they\'re resumed: changes in Git aren\'t applied and drift isn\'t corrected.</div>'
+            '<div class="card" style="padding:8px 12px;background:#2a2e36;display:flex;flex-direction:column;gap:4px;font-size:12px"><span class="mono">Kustomization flux-demo/apps</span><span class="mono">Kustomization flux-demo/infra</span></div>'
+            f'<div style="font-size:11.5px;color:var(--dim)">{ic("wheel",12)} Patches <span class="mono">spec.suspend: true</span> with your Kubernetes access, like <span class="mono">flux suspend ks</span>.</div>')
+    modal = flux_dialog("Suspend 2 objects?", "pause", body, f'<button class="btn g">Cancel</button><button class="btn" style="border-color:#7a4448;color:var(--red)">{ic("pause",12,C["red"])}Suspend</button>', 480)
+    content = f'<div style="flex:1;display:flex;min-height:0">{center}</div>'
+    tb = tabs([("gauge", "Flux", False), ("layers", "Kustomizations", True)])
+    return page("Flux suspend — Kubyl", flux_shell("Kustomizations", tb, content, modal))
+
+def flux_delete_screen():
+    center = f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0">
+{flux_toolbar("Kustomizations", "layers", KS_COUNTS)}
+{flux_chips([("Ready", 2, False), ("Reconciling", 1, False), ("Failed", 2, False), ("Suspended", 1, False)])}
+{KS_HEAD}
+<div style="flex:1;overflow:hidden">{flux_ks_rows((5,))}</div>
+{hints(KS_HINTS)}
+</div>'''
+    body = ('<div style="display:flex;gap:10px;padding:10px 12px;border-radius:7px;background:#3a2b2e;border:1px solid #6b3c41">' + ic("alert",15,C["red"]) +
+            '<div style="font-size:12.5px;line-height:18px">Prune is on: kustomize-controller deletes everything it applied (1 Deployment, 1 Service, 1 HorizontalPodAutoscaler).</div></div>'
+            '<div class="card" style="padding:8px 12px;background:#2a2e36;display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)"><span class="mono">prunes Deployment flux-podinfo/podinfo</span><span class="mono">prunes Service flux-podinfo/podinfo</span><span class="mono">prunes HorizontalPodAutoscaler flux-podinfo/podinfo</span></div>'
+            '<div style="display:flex;flex-direction:column;gap:6px"><div style="font-size:12px;color:var(--muted)">This is a production cluster. Type <span class="mono" style="color:var(--text)">podinfo</span> to confirm.</div>'
+            '<div class="inp focus" style="height:28px"><span class="mono" style="font-size:12.5px;color:var(--text)">podin</span><span style="display:inline-block;width:1px;height:15px;background:var(--accent);margin-left:-6px"></span></div></div>')
+    modal = flux_dialog("Delete Kustomization flux-demo/podinfo?", "trash", body, f'<button class="btn g">Cancel</button><button class="btn" style="border-color:#7a4448;color:var(--red);opacity:.55">{ic("trash",12,C["red"])}Delete</button>')
+    content = f'<div style="flex:1;display:flex;min-height:0">{center}</div>'
+    tb = tabs([("gauge", "Flux", False), ("layers", "Kustomizations", True)])
+    return page("Flux delete — Kubyl", flux_shell("Kustomizations", tb, content, modal))
+
+
 SCREENS = [
  ("Main.dc.html", "1 · Pods (k9s-style table + details)", pods_screen),
  ("Routes.dc.html", "1 · OpenShift Routes under Network, with details", routes_screen),
@@ -4167,6 +4542,15 @@ SCREENS = [
  ("Agent.dc.html", "19 · Agent panel: a thread with Kubyl tool calls, a plan and a command to approve", agent_screen),
  ("AgentStates.dc.html", "19 · Agent: new thread, agent picker, first-run note, sign-in and stopped states", agent_states_screen),
  ("AgentQuestions.dc.html", "19 · Agent questions: a form, a link to open, a file change", agent_questions_screen),
+ ("FluxOverview.dc.html", "21 · Flux overview: health, counts, needs attention, recent activity, controllers", flux_overview_screen),
+ ("FluxKustomizations.dc.html", "21 · Flux Kustomizations with the details dock (waiting for a dependency)", flux_kustomizations_screen),
+ ("FluxKustomization.dc.html", "21 · Kustomization: conditions, source and revision, settings, dependencies", flux_kustomization_screen),
+ ("FluxInventory.dc.html", "21 · Kustomization inventory: applied objects and their children from Kubyl's caches", flux_inventory_screen),
+ ("FluxHelmRelease.dc.html", "21 · HelmRelease: chart, values sources, remediation, releases, link to the Helm release", flux_helmrelease_screen),
+ ("FluxSources.dc.html", "21 · Flux sources (all source kinds) with what uses them", flux_sources_screen),
+ ("FluxManaged.dc.html", "21 · Managed by Flux in an object's details; the Flux column in Deployments", flux_managed_screen),
+ ("FluxSuspend.dc.html", "21 · Multi-select and the suspend confirmation", flux_actions_screen),
+ ("FluxDelete.dc.html", "21 · Delete on PROD: what prune removes, typed confirmation", flux_delete_screen),
 ]
 
 boards, order = {}, []
