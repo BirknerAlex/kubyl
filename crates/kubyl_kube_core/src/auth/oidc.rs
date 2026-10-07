@@ -178,6 +178,16 @@ pub struct OidcSecrets {
 }
 
 impl OidcSecrets {
+    /// Without the tokens (the client secret is configuration of the identity provider, not a
+    /// sign-in).
+    pub fn without_tokens(self) -> Self {
+        Self {
+            id_token: None,
+            refresh_token: None,
+            ..self
+        }
+    }
+
     pub fn from_auth_provider(config: &HashMap<String, String>) -> Self {
         let secret = |key: &str| config.get(key).cloned().map(SecretString::from);
         Self {

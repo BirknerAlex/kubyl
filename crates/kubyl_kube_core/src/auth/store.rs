@@ -55,6 +55,14 @@ impl Credentials {
         &self.scope
     }
 
+    /// Whether tokens written into a kubeconfig (an OIDC `refresh-token` or `id-token`, an
+    /// `oc login` token) may stand in for this handle's own sign-in. The default handle is one
+    /// user's, who made the kubeconfig: yes. A scoped handle belongs to someone else, so a missing
+    /// sign-in must stay missing instead of silently acting as the kubeconfig's author.
+    pub fn uses_kubeconfig_tokens(&self) -> bool {
+        self.scope.is_empty()
+    }
+
     /// `key` as stored, and as in-memory caches should key it so scopes stay apart too. `/` and
     /// `%` in the scope are escaped, so scope `a` with key `b/c` never meets scope `a/b` with key
     /// `c`.
