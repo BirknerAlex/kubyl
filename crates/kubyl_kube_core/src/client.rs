@@ -141,7 +141,7 @@ pub async fn build(
     let mut rebuild_at = None;
     match &info.auth {
         AuthMethod::Oidc(params) => {
-            let secrets = oidc_secrets(&config.auth_info);
+            let secrets = oidc_secrets(&config.auth_info, store);
             let params = OidcParams {
                 credentials: store.clone(),
                 ..params.clone()
@@ -153,7 +153,11 @@ pub async fn build(
         }
         AuthMethod::OpenShift => {
             // The kubeconfig token is only the first one to try; see `auth::openshift`.
-            let token = config.auth_info.token.take();
+            let token = config
+                .auth_info
+                .token
+                .take()
+                .filter(|_| store.uses_kubeconfig_tokens());
             credentials = Some(CredentialSource::OpenShift(OpenShiftAuth::shared(
                 OpenShiftParams {
                     server: info
@@ -262,11 +266,16 @@ impl ConnectError {
     }
 }
 
-fn oidc_secrets(user: &AuthInfo) -> OidcSecrets {
-    match (&user.auth_provider, &user.exec) {
+fn oidc_secrets(user: &AuthInfo, store: &Credentials) -> OidcSecrets {
+    let secrets = match (&user.auth_provider, &user.exec) {
         (Some(provider), _) => OidcSecrets::from_auth_provider(&provider.config),
         (None, Some(exec)) => OidcSecrets::from_kubelogin(exec),
         _ => OidcSecrets::default(),
+    };
+    if store.uses_kubeconfig_tokens() {
+        secrets
+    } else {
+        secrets.without_tokens()
     }
 }
 
@@ -290,7 +299,7 @@ pub fn oidc_auth(
         credentials: store.clone(),
         ..params.clone()
     };
-    Some(OidcAuth::new(params, oidc_secrets(user)))
+    Some(OidcAuth::new(params, oidc_secrets(user, store)))
 }
 
 /// Removes the credentials Kubyl provides itself, so kube doesn't run plugins or refresh OIDC.
@@ -523,6 +532,88 @@ Z3lPxQKGPo1SKrMwSFLkpQOC7VYOF47/c1j7PhYl36GH07J3zyNj69OQ
         ));
         let auth = kube::Error::Service(Box::new(AuthError::SignInRequired));
         assert_eq!(ConnectError::from_kube(&auth), ConnectError::SignInRequired);
+    }
+
+    /// A kubeconfig that carries its author's OIDC tokens: a default handle may use them, a
+    /// scoped one has to sign in itself.
+    #[tokio::test]
+    async fn scoped_handles_ignore_tokens_in_the_kubeconfig() {
+        use base64::Engine as _;
+        let exp = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(r#"{"exp":4102444800}"#);
+        let jwt = format!("e30.{exp}.sig");
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config");
+        let yaml = crate::kubeconfig::fixtures::OTHER.replace(
+            "client-id: kubernetes",
+            &format!("client-id: kubernetes\n          id-token: {jwt}\n          refresh-token: author-refresh"),
+        );
+        assert_ne!(yaml, crate::kubeconfig::fixtures::OTHER);
+        std::fs::write(&file, yaml).unwrap();
+        let specs = crate::kubeconfig::source_specs(
+            &crate::settings::KubeSettings {
+                load_default_kubeconfig: false,
+                kubeconfigs: vec![file.display().to_string()],
+                ..Default::default()
+            },
+            None,
+            None,
+            &dir.path().join("pasted"),
+        );
+        let loaded = crate::kubeconfig::load(&specs);
+        let info = loaded.contexts.iter().find(|c| c.auth.is_oidc()).unwrap();
+        let config = &loaded.configs[&info.file];
+
+        // SAFETY: tests in this crate don't read the variable concurrently with this write.
+        unsafe { std::env::set_var("KUBYL_CREDENTIAL_STORE", "memory") };
+        let own = oidc_auth(info, config, &Credentials::default()).unwrap();
+        assert_eq!(own.token().await.ok().unwrap().expose_secret(), jwt);
+        let other = oidc_auth(info, config, &Credentials::scoped("device/1")).unwrap();
+        assert!(matches!(
+            other.token().await,
+            Err(AuthError::SignInRequired)
+        ));
+
+        // An `oc login` token in the kubeconfig is the same: the default handle tries it first.
+        let oc = dir.path().join("oc");
+        std::fs::write(
+            &oc,
+            "apiVersion: v1\nkind: Config\nclusters:\n- name: c\n  cluster: {server: \"https://api.oc.example.com:6443\", insecure-skip-tls-verify: true}\ncontexts:\n- name: oc\n  context: {cluster: c, user: u}\nusers:\n- name: u\n  user: {token: sha256~author}\ncurrent-context: oc\n",
+        )
+        .unwrap();
+        let loaded = crate::kubeconfig::load(&crate::kubeconfig::source_specs(
+            &crate::settings::KubeSettings {
+                load_default_kubeconfig: false,
+                kubeconfigs: vec![oc.display().to_string()],
+                ..Default::default()
+            },
+            None,
+            None,
+            &dir.path().join("pasted"),
+        ));
+        let info = &loaded.contexts[0];
+        assert_eq!(info.auth, AuthMethod::OpenShift);
+        // Through `build`, which also wires `oidc_secrets` in for the OIDC contexts.
+        let token = |store: Credentials| {
+            let config = loaded.configs[&info.file].clone();
+            async move {
+                match build(info, config, &store).await.ok().unwrap().credentials {
+                    Some(CredentialSource::OpenShift(auth)) => auth.token().await,
+                    _ => panic!("not an OpenShift context"),
+                }
+            }
+        };
+        assert_eq!(
+            token(Credentials::default())
+                .await
+                .ok()
+                .unwrap()
+                .expose_secret(),
+            "sha256~author"
+        );
+        assert!(matches!(
+            token(Credentials::scoped("device/1")).await,
+            Err(AuthError::SignInRequired)
+        ));
     }
 
     #[tokio::test]
