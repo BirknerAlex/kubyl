@@ -211,5 +211,7 @@ ttf-parser = { opt-level = 3 }
 fjadra = { opt-level = 3 }
 
 [profile.release]
-lto = "thin"
+lto = "fat"
 codegen-units = 1
+# Drop debuginfo but keep the symbol table, so backtraces still show function names.
+strip = "debuginfo"
