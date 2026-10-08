@@ -19,19 +19,107 @@ use crate::format::{
 use crate::route::Route;
 pub use pods::{PodStatus, pod_status, status_tone};
 
+mod views;
+
+pub use views::{endpoint_counts, endpoint_ports};
+
 type CellFn = fn(&Value, &str, Timestamp) -> CellValue;
+type LinkFn = fn(&Value, &str) -> Option<CellLink>;
 /// Group, kind, columns and cells of one registered kind.
 type KindEntry = (&'static str, &'static str, fn() -> Vec<ColumnDef>, CellFn);
+
+/// An object a cell names (a binding's policy, an EndpointSlice's Service): the UI shows the
+/// cell as a link that opens its details.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CellLink {
+    pub group: String,
+    /// `None`: the version of the row's own resource (same group), else from discovery.
+    pub version: Option<String>,
+    pub resource: String,
+    pub namespace: Option<String>,
+    pub name: String,
+}
 
 /// Columns of one kind: `name` and `age` cells are handled here, the rest by `cell`.
 pub struct Kind {
     columns: fn() -> Vec<ColumnDef>,
     cell: CellFn,
+    link: LinkFn,
+}
+
+/// A column whose cells need other objects than the row's (a policy's bindings, the claims
+/// holding a slice's devices): the core cell is empty and the list fills it in from a store of
+/// the related kind, through a [`RelatedIndex`] built once per change of that store.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RelatedColumn {
+    pub group: &'static str,
+    pub kind: &'static str,
+    pub column: &'static str,
+    pub related_group: &'static str,
+    pub related_resource: &'static str,
+    /// Watch the related kind only in the namespaces that hold rows (a claim's pods), not the
+    /// whole cluster, when the list shows all namespaces.
+    pub per_row_namespace: bool,
+}
+
+/// The [`RelatedColumn`]s of the built-in column sets.
+pub const RELATED_COLUMNS: &[RelatedColumn] = &[
+    RelatedColumn {
+        group: crate::admission::GROUP,
+        kind: "ValidatingAdmissionPolicy",
+        column: "bindings",
+        related_group: crate::admission::GROUP,
+        related_resource: "validatingadmissionpolicybindings",
+        per_row_namespace: false,
+    },
+    RelatedColumn {
+        group: crate::admission::GROUP,
+        kind: "MutatingAdmissionPolicy",
+        column: "bindings",
+        related_group: crate::admission::GROUP,
+        related_resource: "mutatingadmissionpolicybindings",
+        per_row_namespace: false,
+    },
+    RelatedColumn {
+        group: crate::dra::GROUP,
+        kind: "ResourceSlice",
+        column: "allocated",
+        related_group: crate::dra::GROUP,
+        related_resource: "resourceclaims",
+        per_row_namespace: false,
+    },
+    RelatedColumn {
+        group: crate::dra::GROUP,
+        kind: "ResourceClaim",
+        column: "health",
+        related_group: "",
+        related_resource: "pods",
+        per_row_namespace: true,
+    },
+];
+
+/// Whether `(group, kind)`'s `column` is a [`RelatedColumn`] (empty from [`Kind::cell`]).
+pub fn is_related(group: &str, kind: &str, column: &str) -> bool {
+    RELATED_COLUMNS
+        .iter()
+        .any(|r| r.group == group && r.kind == kind && r.column == column)
+}
+
+pub use views::RelatedIndex;
+
+/// The cell of a [`RELATED_COLUMNS`] column from the index of the related objects.
+pub fn related_cell(kind: &str, column: &str, object: &Value, index: &RelatedIndex) -> CellValue {
+    views::related_cell(kind, column, object, index)
 }
 
 impl Kind {
     pub fn columns(&self) -> Vec<ColumnDef> {
         (self.columns)()
+    }
+
+    /// The object a cell names, if it is a link.
+    pub fn link(&self, object: &Value, column: &str) -> Option<CellLink> {
+        (self.link)(object, column)
     }
 
     pub fn cell(&self, object: &Value, column: &str) -> CellValue {
@@ -49,7 +137,7 @@ impl Kind {
 
 /// The built-in column sets: group, kind and columns of each.
 pub fn builtin() -> Vec<(&'static str, &'static str, Kind)> {
-    let kinds: [KindEntry; 24] = [
+    let kinds: Vec<KindEntry> = vec![
         ("", "Pod", pod_columns, pod_cell),
         ("apps", "Deployment", deployment_columns, deployment_cell),
         ("apps", "StatefulSet", statefulset_columns, statefulset_cell),
@@ -110,10 +198,26 @@ pub fn builtin() -> Vec<(&'static str, &'static str, Kind)> {
             binding_cell,
         ),
     ];
-    kinds
+    let mut out: Vec<(&'static str, &'static str, Kind)> = kinds
         .into_iter()
-        .map(|(group, kind, columns, cell)| (group, kind, Kind { columns, cell }))
-        .collect()
+        .map(|(group, kind, columns, cell)| {
+            (
+                group,
+                kind,
+                Kind {
+                    columns,
+                    cell,
+                    link: no_link,
+                },
+            )
+        })
+        .collect();
+    out.extend(views::kinds());
+    out
+}
+
+fn no_link(_: &Value, _: &str) -> Option<CellLink> {
+    None
 }
 
 // ----- Helpers -----
@@ -1082,6 +1186,7 @@ mod tests {
         let kind = Kind {
             columns: job_columns,
             cell: job_cell,
+            link: no_link,
         };
         assert_eq!(
             format!("{:?}", cell(&kind, &failed, "duration")),
@@ -1094,6 +1199,7 @@ mod tests {
         let kind = Kind {
             columns: job_columns,
             cell: job_cell,
+            link: no_link,
         };
         let failed = json!({"status": {"startTime": "2026-01-01T10:00:00Z",
             "conditions": [{"type": "Failed", "status": "True"}]}});
@@ -1121,6 +1227,7 @@ mod tests {
         let kind = Kind {
             columns: deployment_columns,
             cell: deployment_cell,
+            link: no_link,
         };
         let d = json!({"metadata": {"name": "web"}, "spec": {"replicas": 3}, "status": {"readyReplicas": 2}});
         assert_eq!(
@@ -1183,6 +1290,7 @@ mod tests {
         let kind = Kind {
             columns: route_columns,
             cell: route_cell,
+            link: no_link,
         };
         let admitted = |router: &str, status: &str, reason: Option<&str>| {
             json!({"routerName": router, "host": "shop.apps.example.com",

@@ -51,9 +51,15 @@ use serde_json::Value;
 use crate::catalog;
 use crate::dialogs::{self, ConfirmSpec};
 
+mod admission;
 mod data;
+mod devices;
+mod gateway;
 mod jobs;
+mod parts;
 mod routes;
+mod views;
+mod vpa;
 
 /// How long the selection must stay put before related objects are loaded.
 const SETTLE: Duration = Duration::from_millis(250);
@@ -179,6 +185,14 @@ struct Related {
     endpoint_slices: Option<StoreHandle>,
     /// Stores of owners, one per level of the chain.
     owners: Vec<StoreHandle>,
+    /// Stores the resource-view sections use (phase 24), by name: `claims`, `slices`,
+    /// `bindings`, `routes:HTTPRoute`…
+    named: HashMap<String, StoreHandle>,
+    /// Values the sections derive from named stores, with the generations they were built from
+    /// (`DetailsContent::derived`).
+    derived: views::Derived,
+    /// What the resource-view watches were started for (`views::views_inputs`), once loaded.
+    views_inputs: Option<String>,
     _observers: Vec<Subscription>,
 }
 
@@ -345,6 +359,7 @@ impl DetailsContent {
                 None if store.status().is_ready() => this.gone = true,
                 None => {}
             }
+            this.refresh_views_related(cx);
             cx.notify();
         }));
     }
@@ -542,6 +557,7 @@ impl DetailsContent {
             }
             _ => {}
         }
+        self.load_views_related(&target, &object, cx);
         self.load_owner_level(0, cx);
         cx.notify();
     }
@@ -703,8 +719,10 @@ fn section(title: impl Into<SharedString>, colors: &Colors) -> gpui::Stateful<gp
         "section-{}",
         title.split(" · ").next().unwrap_or_default()
     ));
+    let selector = id.clone();
     v_flex()
         .id(id)
+        .debug_selector(move || selector.to_string())
         .px(u(14.0))
         .py(u(12.0))
         .gap(u(8.0))
@@ -1058,11 +1076,17 @@ impl DetailsContent {
                 pills = routes::route_pills(&route::Route::parse(object), pills);
             }
             _ => {
-                if let Some(phase) = object.pointer("/status/phase").and_then(Value::as_str) {
+                if let Some((label, tone)) = views::header_state(target, object) {
+                    pills = pills.child(StatusPill::new(label, tone).selectable_as("status"));
+                } else if let Some(phase) = object.pointer("/status/phase").and_then(Value::as_str)
+                {
                     pills = pills.child(
                         StatusPill::new(phase.to_string(), status_tone(phase))
                             .selectable_as("status"),
                     );
+                }
+                for (ix, chip) in views::header_chips(target, object).into_iter().enumerate() {
+                    pills = pills.child(Chip::new(chip).selectable_as(("view-chip", ix as u64)));
                 }
             }
         }
@@ -1184,6 +1208,7 @@ impl DetailsContent {
             }
             _ => {}
         }
+        out.extend(self.render_views(object, target, &colors, cx));
         out.extend(self.contributed_sections(target, cx));
 
         // Pods selected by workloads (not Deployments: their pods show via ReplicaSets too),
@@ -2436,7 +2461,8 @@ impl DetailsContent {
                     .collect()
             })
             .unwrap_or_default();
-        let text = kubyl_resources::describe::describe(
+        let text = kubyl_resources::describe::describe_as(
+            &target.gvr.group,
             &target.kind,
             object,
             &events,
@@ -2749,8 +2775,64 @@ impl DetailsView {
     }
 }
 
+/// Kinds whose name isn't the capitalized singular of their plural.
+const KNOWN_KINDS: &[(&str, &str)] = &[
+    ("configmaps", "ConfigMap"),
+    ("persistentvolumeclaims", "PersistentVolumeClaim"),
+    ("persistentvolumes", "PersistentVolume"),
+    ("serviceaccounts", "ServiceAccount"),
+    ("statefulsets", "StatefulSet"),
+    ("daemonsets", "DaemonSet"),
+    ("replicasets", "ReplicaSet"),
+    ("cronjobs", "CronJob"),
+    ("storageclasses", "StorageClass"),
+    ("endpoints", "Endpoints"),
+    ("endpointslices", "EndpointSlice"),
+    ("networkpolicies", "NetworkPolicy"),
+    ("ingressclasses", "IngressClass"),
+    ("priorityclasses", "PriorityClass"),
+    ("runtimeclasses", "RuntimeClass"),
+    ("resourceclaims", "ResourceClaim"),
+    ("resourceclaimtemplates", "ResourceClaimTemplate"),
+    ("deviceclasses", "DeviceClass"),
+    ("resourceslices", "ResourceSlice"),
+    ("validatingadmissionpolicies", "ValidatingAdmissionPolicy"),
+    (
+        "validatingadmissionpolicybindings",
+        "ValidatingAdmissionPolicyBinding",
+    ),
+    ("mutatingadmissionpolicies", "MutatingAdmissionPolicy"),
+    (
+        "mutatingadmissionpolicybindings",
+        "MutatingAdmissionPolicyBinding",
+    ),
+    (
+        "validatingwebhookconfigurations",
+        "ValidatingWebhookConfiguration",
+    ),
+    (
+        "mutatingwebhookconfigurations",
+        "MutatingWebhookConfiguration",
+    ),
+    ("gatewayclasses", "GatewayClass"),
+    ("httproutes", "HTTPRoute"),
+    ("grpcroutes", "GRPCRoute"),
+    ("tlsroutes", "TLSRoute"),
+    ("tcproutes", "TCPRoute"),
+    ("udproutes", "UDPRoute"),
+    ("referencegrants", "ReferenceGrant"),
+    ("listenersets", "ListenerSet"),
+    ("xlistenersets", "XListenerSet"),
+    ("backendtlspolicies", "BackendTLSPolicy"),
+    ("devicetaintrules", "DeviceTaintRule"),
+    ("verticalpodautoscalers", "VerticalPodAutoscaler"),
+];
+
 /// `pods` → `Pod`, for tabs opened before discovery finished.
 fn kind_guess(resource: &str) -> String {
+    if let Some((_, kind)) = KNOWN_KINDS.iter().find(|(r, _)| *r == resource) {
+        return kind.to_string();
+    }
     let singular = resource
         .strip_suffix("ies")
         .map(|s| format!("{s}y"))
@@ -2949,8 +3031,14 @@ mod tests {
     fn guesses_kinds() {
         assert_eq!(kind_guess("pods"), "Pod");
         assert_eq!(kind_guess("ingresses"), "Ingress");
-        assert_eq!(kind_guess("networkpolicies"), "Networkpolicy");
-        assert_eq!(kind_guess("storageclasses"), "Storageclass");
+        assert_eq!(kind_guess("networkpolicies"), "NetworkPolicy");
+        assert_eq!(kind_guess("ingressclasses"), "IngressClass");
+        assert_eq!(kind_guess("endpoints"), "Endpoints");
+        assert_eq!(kind_guess("storageclasses"), "StorageClass");
+        assert_eq!(kind_guess("httproutes"), "HTTPRoute");
+        assert_eq!(kind_guess("resourceclaims"), "ResourceClaim");
+        assert_eq!(kind_guess("backendtlspolicies"), "BackendTLSPolicy");
+        assert_eq!(kind_guess("devicetaintrules"), "DeviceTaintRule");
     }
 
     #[test]
@@ -3027,6 +3115,266 @@ mod tests {
             content.set_target(None, None, None, cx);
             assert!(content.revealed.is_empty());
         });
+    }
+
+    /// The section titles a kind's Summary shows for an object (no cluster: only what the
+    /// object itself says).
+    fn summary_sections(
+        cx: &mut gpui::TestAppContext,
+        gvr: Gvr,
+        kind: &str,
+        object: Value,
+        expected: &[&str],
+    ) {
+        let cluster = ClusterId::new("c");
+        let namespace = object["metadata"]["namespace"].as_str().map(String::from);
+        let name = object["metadata"]["name"].as_str().unwrap().to_string();
+        let store_key = StoreKey::new(cluster.clone(), gvr.clone(), namespace.clone());
+        let target = Target {
+            cluster,
+            gvr,
+            kind: kind.into(),
+            namespace,
+            name,
+        };
+        let (_, cx) = cx.add_window_view(|_, cx| {
+            let store = cx.new(|_| ResourceStore::from_objects(store_key, [object]));
+            let mut content = DetailsContent::new(Mode::Summary, cx);
+            content.set_target(Some(target), None, Some(store), cx);
+            content
+        });
+        cx.run_until_parked();
+        for title in expected {
+            assert!(
+                cx.debug_bounds(Box::leak(format!("section-{title}").into_boxed_str()))
+                    .is_some(),
+                "{kind}: no {title} section"
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn derived_values_are_rebuilt_only_when_their_stores_change(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            kubyl_core::init(cx);
+            kubyl_settings::init_with_dir(cx, dir.path());
+            kubyl_ui::init(cx);
+            kubyl_resources::init(cx);
+        });
+        let key = StoreKey::new(
+            ClusterId::new("c"),
+            Gvr::new("resource.k8s.io", "v1", "resourceclaims"),
+            None,
+        );
+        let claim = |name: &str, device: &str| {
+            json!({"metadata": {"name": name, "namespace": "ns"},
+                "status": {"allocation": {"devices": {"results": [
+                    {"driver": "d", "pool": "p", "device": device}]}}}})
+        };
+        let (content, cx) = cx.add_window_view(|_, cx| DetailsContent::new(Mode::Summary, cx));
+        let store = content.update(cx, |content, cx| {
+            let store = cx.new(|_| ResourceStore::from_objects(key.clone(), [claim("a", "gpu-0")]));
+            content
+                .related
+                .named
+                .insert("claims".into(), StoreHandle::detached(store.clone()));
+            store
+        });
+        let builds = std::rc::Rc::new(std::cell::Cell::new(0));
+        let count = |content: &DetailsContent, cx: &App| {
+            let builds = builds.clone();
+            content.derived("test", &["claims"], cx, move |this| {
+                builds.set(builds.get() + 1);
+                this.named("claims", cx).len()
+            })
+        };
+        content.update(cx, |content, cx| {
+            assert_eq!(*count(content, cx), 1);
+            assert_eq!(*count(content, cx), 1);
+            let holders = content.holders(cx).expect("the claims loaded");
+            assert_eq!(holders.holders("d", "p", "gpu-0"), ["ns/a"]);
+        });
+        assert_eq!(builds.get(), 1, "a second render reuses the value");
+        store.update(cx, |store, cx| {
+            let b = claim("b", "gpu-0");
+            store.apply(
+                vec![kubyl_resources::store::Change::Upsert(
+                    kubyl_resources::key_of(&b),
+                    Arc::new(b),
+                )],
+                cx,
+            )
+        });
+        content.update(cx, |content, cx| {
+            assert_eq!(*count(content, cx), 2);
+            // A device two claims hold lists both.
+            let holders = content.holders(cx).unwrap();
+            assert_eq!(holders.holders("d", "p", "gpu-0"), ["ns/a", "ns/b"]);
+        });
+        assert_eq!(builds.get(), 2, "a store change rebuilds it");
+    }
+
+    #[gpui::test]
+    fn resource_views_show_their_sections(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            kubyl_core::init(cx);
+            kubyl_settings::init_with_dir(cx, dir.path());
+            kubyl_ui::init(cx);
+            kubyl_resources::init(cx);
+        });
+        let meta = |name: &str, ns: Option<&str>| {
+            let mut m = json!({"name": name, "creationTimestamp": "2026-10-07T10:00:00Z"});
+            if let Some(ns) = ns {
+                m["namespace"] = json!(ns);
+            }
+            m
+        };
+        let dra = |r: &str| Gvr::new("resource.k8s.io", "v1", r);
+        summary_sections(
+            cx,
+            dra("resourceclaims"),
+            "ResourceClaim",
+            json!({"metadata": meta("shared-gpu", Some("ns")),
+            "spec": {"devices": {"requests": [{"name": "gpus", "exactly": {"deviceClassName": "gpu.example.com", "count": 2,
+                "selectors": [{"cel": {"expression": "device.attributes['gpu.example.com'].model == 'A'"}}]}}]}},
+            "status": {"allocation": {"devices": {"results": [{"request": "gpus", "driver": "gpu.example.com", "pool": "w", "device": "gpu-0"}]},
+                "nodeSelector": {"nodeSelectorTerms": [{"matchFields": [{"key": "metadata.name", "operator": "In", "values": ["w"]}]}]}},
+                "reservedFor": [{"resource": "pods", "name": "gpu-shared"}],
+                "devices": [{"driver": "gpu.example.com", "pool": "w", "device": "gpu-0",
+                    "conditions": [{"type": "Ready", "status": "True"}], "data": {"model": {"string": "A"}}}]}}),
+            &["Requests", "Allocation", "Reserved for", "Device status"],
+        );
+        summary_sections(
+            cx,
+            dra("resourceclaimtemplates"),
+            "ResourceClaimTemplate",
+            json!({"metadata": meta("t", Some("ns")),
+            "spec": {"spec": {"devices": {"requests": [{"name": "gpu", "deviceClassName": "gpu.example.com"}]}}}}),
+            &["Requests"],
+        );
+        summary_sections(
+            cx,
+            dra("deviceclasses"),
+            "DeviceClass",
+            json!({"metadata": meta("gpu.example.com", None),
+            "spec": {"selectors": [{"cel": {"expression": "device.driver == 'gpu.example.com'"}}],
+                "config": [{"opaque": {"driver": "gpu.example.com", "parameters": {"a": 1}}}]}}),
+            &["Device class", "Selectors", "Config"],
+        );
+        summary_sections(
+            cx,
+            dra("resourceslices"),
+            "ResourceSlice",
+            json!({"metadata": meta("s", None),
+            "spec": {"driver": "gpu.example.com", "nodeName": "w", "pool": {"name": "w", "generation": 1, "resourceSliceCount": 1},
+                "devices": [{"name": "gpu-0", "basic": {"attributes": {"index": {"int": 0}}, "capacity": {"memory": {"value": "80Gi"}}}}]}}),
+            &["Slice", "Devices"],
+        );
+        summary_sections(
+            cx,
+            Gvr::new("", "v1", "pods"),
+            "Pod",
+            json!({"metadata": meta("gpu-shared", Some("ns")),
+            "spec": {"containers": [{"name": "ctr", "resources": {"claims": [{"name": "gpus"}]}}],
+                "resourceClaims": [{"name": "gpus", "resourceClaimName": "shared-gpu"}]},
+            "status": {"phase": "Running"}}),
+            &["Containers", "Resource claims"],
+        );
+
+        let ar = |r: &str| Gvr::new("admissionregistration.k8s.io", "v1", r);
+        summary_sections(
+            cx,
+            ar("validatingadmissionpolicies"),
+            "ValidatingAdmissionPolicy",
+            json!({"metadata": meta("p", None),
+            "spec": {"matchConstraints": {"resourceRules": [{"apiGroups": ["apps"], "apiVersions": ["v1"], "resources": ["deployments"], "operations": ["CREATE"]}]},
+                "matchConditions": [{"name": "c", "expression": "true"}],
+                "variables": [{"name": "v", "expression": "1"}],
+                "validations": [{"expression": "variables.v < 2", "message": "m"}],
+                "auditAnnotations": [{"key": "k", "valueExpression": "'x'"}]}}),
+            &[
+                "Match constraints",
+                "Match conditions",
+                "Variables",
+                "Validations",
+                "Audit annotations",
+            ],
+        );
+        summary_sections(
+            cx,
+            ar("mutatingadmissionpolicies"),
+            "MutatingAdmissionPolicy",
+            json!({"metadata": meta("m", None),
+            "spec": {"mutations": [{"patchType": "JSONPatch", "jsonPatch": {"expression": "[]"}}]}}),
+            &["Mutations"],
+        );
+        summary_sections(
+            cx,
+            ar("validatingadmissionpolicybindings"),
+            "ValidatingAdmissionPolicyBinding",
+            json!({"metadata": meta("b", None),
+            "spec": {"policyName": "p", "validationActions": ["Deny"],
+                "matchResources": {"namespaceSelector": {"matchLabels": {"a": "b"}}}}}),
+            &["Binding", "Matches"],
+        );
+        summary_sections(
+            cx,
+            ar("validatingwebhookconfigurations"),
+            "ValidatingWebhookConfiguration",
+            json!({"metadata": meta("w", None),
+            "webhooks": [{"name": "w.example.com", "clientConfig": {"service": {"namespace": "ops", "name": "hook"}},
+                "matchConditions": [{"name": "c", "expression": "true"}]}]}),
+            &["Webhooks"],
+        );
+
+        let gw = |r: &str| Gvr::new("gateway.networking.k8s.io", "v1", r);
+        summary_sections(
+            cx,
+            gw("gateways"),
+            "Gateway",
+            json!({"metadata": meta("web-gateway", Some("ns")),
+            "spec": {"gatewayClassName": "c", "listeners": [{"name": "http", "protocol": "HTTP", "port": 80}]}}),
+            &["Gateway", "Listeners"],
+        );
+        summary_sections(
+            cx,
+            gw("gatewayclasses"),
+            "GatewayClass",
+            json!({"metadata": meta("c", None),
+            "spec": {"controllerName": "example.com/gw"}}),
+            &["Gateway class"],
+        );
+        summary_sections(
+            cx,
+            gw("httproutes"),
+            "HTTPRoute",
+            json!({"kind": "HTTPRoute", "metadata": meta("shop", Some("ns")),
+            "spec": {"hostnames": ["shop.example.com"], "parentRefs": [{"name": "web-gateway"}],
+                "rules": [{"matches": [{"path": {"value": "/"}}], "backendRefs": [{"name": "web", "port": 80}]}]}}),
+            &["Hostnames", "Parents", "Rules"],
+        );
+        summary_sections(
+            cx,
+            Gvr::new("discovery.k8s.io", "v1", "endpointslices"),
+            "EndpointSlice",
+            json!({
+            "metadata": {"name": "web-x", "namespace": "ns", "labels": {"kubernetes.io/service-name": "web"}},
+            "addressType": "IPv4", "endpoints": [{"addresses": ["10.0.0.1"], "targetRef": {"kind": "Pod", "name": "web-1"}}],
+            "ports": [{"port": 80}]}),
+            &["Endpoint slice", "Endpoints"],
+        );
+        summary_sections(
+            cx,
+            Gvr::new("autoscaling.k8s.io", "v1", "verticalpodautoscalers"),
+            "VerticalPodAutoscaler",
+            json!({
+            "metadata": meta("web", Some("ns")),
+            "spec": {"targetRef": {"apiVersion": "apps/v1", "kind": "Deployment", "name": "web"}},
+            "status": {"recommendation": {"containerRecommendations": [{"containerName": "nginx", "target": {"cpu": "80m"}}]}}}),
+            &["Target", "Recommendations"],
+        );
     }
 
     #[test]

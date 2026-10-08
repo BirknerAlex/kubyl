@@ -1,6 +1,7 @@
 //! A `kubectl describe`-like text rendering for any object, with related events.
 //!
-//! Pods, Deployments, Nodes, Services, Secrets and OpenShift Routes get tailored sections;
+//! Pods, Deployments, Nodes, Services, Secrets, OpenShift Routes and the kinds of phase 24
+//! (device resources, admission policies, the Gateway API, VPAs…) get tailored sections;
 //! other kinds print their `spec` and `status` as nested fields, like kubectl's generic
 //! describer. Secret values are never printed, only their sizes, and neither is a Route's inline
 //! TLS key.
@@ -75,8 +76,26 @@ fn title_case(key: &str) -> String {
     }
 }
 
-/// Renders `object` (of `kind`) and its `events` like `kubectl describe`.
+mod views;
+
+/// Renders `object` (of `kind`) and its `events` like `kubectl describe`. The API group comes
+/// from the object's `apiVersion` (use [`describe_as`] when it may be missing).
 pub fn describe(kind: &str, object: &Value, events: &[Value], now: Timestamp) -> String {
+    let group = str_at(object, "/apiVersion")
+        .rsplit_once('/')
+        .map(|(group, _)| group)
+        .unwrap_or_default();
+    describe_as(group, kind, object, events, now)
+}
+
+/// [`describe`] for a kind of a known API group.
+pub fn describe_as(
+    group: &str,
+    kind: &str,
+    object: &Value,
+    events: &[Value],
+    now: Timestamp,
+) -> String {
     // Whatever describes it, a Route's inline key never reaches the text.
     let masked;
     let object = if route::has_key_material(object) {
@@ -139,6 +158,7 @@ pub fn describe(kind: &str, object: &Value, events: &[Value], now: Timestamp) ->
                 }
             }
         }
+        _ if views::describe(&mut out, group, kind, object) => {}
         _ => {
             for section in ["spec", "status"] {
                 if let Some(value) = object.get(section).filter(|v| !v.is_null()) {

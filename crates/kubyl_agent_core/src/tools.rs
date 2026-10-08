@@ -539,11 +539,7 @@ async fn list_resources(context: &ToolContext, args: &Value) -> Result<String, S
         .collect();
     match kind {
         Some(kind) => {
-            let defs: Vec<_> = kind
-                .columns()
-                .into_iter()
-                .filter(|c| !matches!(c.id.as_ref(), "cpu" | "memory") && c.id != "namespace")
-                .collect();
+            let defs = tool_columns(kind, &info.gvk.group, &info.gvk.kind);
             headers.extend(defs.iter().map(|c| c.title.to_uppercase()));
             for (row, object) in rows.iter_mut().zip(&objects) {
                 row.extend(defs.iter().map(|c| cell_text(kind.cell(object, &c.id))));
@@ -567,6 +563,17 @@ async fn list_resources(context: &ToolContext, args: &Value) -> Result<String, S
         .ok();
     }
     Ok(out)
+}
+
+/// The columns `list_resources` prints: the list's, without usage (no metrics here), the
+/// namespace (a column of its own) and the columns the list fills from other objects (a
+/// policy's bindings, a claim's device health).
+fn tool_columns(kind: &columns::Kind, group: &str, kind_name: &str) -> Vec<kubyl_base::ColumnDef> {
+    kind.columns()
+        .into_iter()
+        .filter(|c| !matches!(c.id.as_ref(), "cpu" | "memory") && c.id != "namespace")
+        .filter(|c| !columns::is_related(group, kind_name, &c.id))
+        .collect()
 }
 
 async fn get_object(
@@ -636,7 +643,13 @@ async fn describe_object(context: &ToolContext, args: &Value) -> Result<String, 
             *message = Value::String(redact::scrub_text(text).into_owned());
         }
     }
-    let text = describe::describe(&info.gvk.kind, &value, &events, Timestamp::now());
+    let text = describe::describe_as(
+        &info.gvk.group,
+        &info.gvk.kind,
+        &value,
+        &events,
+        Timestamp::now(),
+    );
     Ok(text)
 }
 
@@ -959,6 +972,26 @@ fn api_resources(context: &ToolContext, args: &Value) -> Result<String, String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn list_columns_skip_what_only_the_list_fills() {
+        let builtin = columns::builtin();
+        let policies = builtin
+            .iter()
+            .find(|(_, kind, _)| *kind == "ValidatingAdmissionPolicy")
+            .map(|(_, _, kind)| kind)
+            .unwrap();
+        let ids: Vec<String> = tool_columns(
+            policies,
+            "admissionregistration.k8s.io",
+            "ValidatingAdmissionPolicy",
+        )
+        .iter()
+        .map(|c| c.id.to_string())
+        .collect();
+        assert!(ids.contains(&"validations".to_string()));
+        assert!(!ids.contains(&"bindings".to_string()));
+    }
 
     #[test]
     fn every_tool_has_a_schema_and_a_dispatch_arm() {

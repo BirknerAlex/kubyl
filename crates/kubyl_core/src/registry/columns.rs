@@ -24,6 +24,8 @@ pub struct CellButton {
     pub tooltip: Option<SharedString>,
     /// Highlighted (e.g. already open).
     pub active: bool,
+    /// Drawn as a link (the name of another object) instead of a bordered button.
+    pub link: bool,
     pub action: CellAction,
 }
 
@@ -37,6 +39,7 @@ impl CellButton {
             icon: None,
             tooltip: None,
             active: false,
+            link: false,
             action: Arc::new(action),
         }
     }
@@ -55,6 +58,12 @@ impl CellButton {
         self.active = active;
         self
     }
+
+    /// Drawn as a link.
+    pub fn link(mut self) -> Self {
+        self.link = true;
+        self
+    }
 }
 
 impl PartialEq for CellButton {
@@ -63,6 +72,7 @@ impl PartialEq for CellButton {
             && self.icon == other.icon
             && self.tooltip == other.tooltip
             && self.active == other.active
+            && self.link == other.link
             && Arc::ptr_eq(&self.action, &other.action)
     }
 }

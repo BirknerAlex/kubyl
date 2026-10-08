@@ -14,17 +14,23 @@
 //! - [`format`]: ages, quantities and JSON helpers.
 //! - [`usage`]: CPU and memory usage as metrics providers report it.
 //! - [`route`]: OpenShift Routes (model, URL, weights, target port resolution, key masking).
+//! - [`dra`], [`admission`], [`gateway`], [`vpa`]: device resources (DRA), admission policies
+//!   and webhooks, the Gateway API and VerticalPodAutoscalers, read the same across their API
+//!   versions (phase 24).
 //! - [`redact`]: masking for the clipboard and agents (Secret values, Route keys, Helm release
 //!   storage, token shapes in text).
 //!
 //! `kubyl_resources` re-exports these modules and adds the GPUI side: shared store entities,
 //! column providers, the selection and the metrics provider registry.
 
+pub mod admission;
 pub mod columns;
 pub mod describe;
+pub mod dra;
 pub mod errors;
 pub mod filter;
 pub mod format;
+pub mod gateway;
 pub mod ops;
 pub mod redact;
 pub mod route;
@@ -32,3 +38,4 @@ pub mod source;
 pub mod status;
 pub mod store;
 pub mod usage;
+pub mod vpa;

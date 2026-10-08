@@ -30,6 +30,7 @@ use kubyl_core::{
 };
 use kubyl_kube::access::AccessQuery;
 use kubyl_kube::{ConnectionEvent, ConnectionManager};
+use kubyl_resources::columns::RelatedIndex;
 use kubyl_resources::table::ServerTable;
 use kubyl_resources::{
     Filter, ResourceSelection, ResourceStores, Selected, StoreHandle, StoreKey, StoreMode,
@@ -175,6 +176,37 @@ struct Source {
     _observe: Subscription,
 }
 
+/// The watches of another kind that a shown column needs (a policy's bindings, the claims
+/// holding a slice's devices: `kubyl_resources::columns::RELATED_COLUMNS`), one set per source,
+/// and the index the cells look up, rebuilt when one of the stores changes.
+struct RelatedSource {
+    spec: RelatedSpec,
+    stores: Vec<StoreHandle>,
+    /// The stores' generations `index` was built from.
+    built: Vec<u64>,
+    index: RelatedIndex,
+    _observers: Vec<Subscription>,
+}
+
+/// What a [`RelatedSource`] watches.
+#[derive(Clone, Debug, PartialEq)]
+struct RelatedSpec {
+    source: usize,
+    /// The source's cluster and namespace scope: a change rebuilds the watches.
+    cluster: ClusterId,
+    scope: Option<String>,
+    kind: String,
+    column: &'static str,
+    gvr: Gvr,
+    /// One watch per namespace; `None`: one watch in the source's scope (the whole cluster for
+    /// a cluster-scoped related kind).
+    namespaces: Option<Vec<String>>,
+}
+
+/// Above this many namespaces with rows, a per-row-namespace related column watches the whole
+/// cluster instead of each namespace.
+const RELATED_NAMESPACES_MAX: usize = 10;
+
 /// How the list's columns are produced.
 #[derive(Clone)]
 enum Columns {
@@ -204,6 +236,7 @@ pub struct ResourceListView {
     /// Selected namespaces (cluster mode). Empty: all namespaces.
     namespaces: Vec<String>,
     sources: Vec<Source>,
+    related: Vec<RelatedSource>,
     columns_source: Columns,
     columns: Vec<ColumnDef>,
     rows: Vec<rows::Row>,
@@ -373,6 +406,7 @@ impl ResourceListView {
             namespaced: true,
             namespaces: Vec::new(),
             sources: Vec::new(),
+            related: Vec::new(),
             columns_source: Columns::Server,
             columns: Vec::new(),
             rows: Vec::new(),
@@ -605,6 +639,8 @@ impl ResourceListView {
         let desired = self.desired_scopes(cx);
         let current: Vec<&ScopeSpec> = self.sources.iter().map(|s| &s.spec).collect();
         if current.len() == desired.len() && current.iter().zip(&desired).all(|(a, b)| *a == b) {
+            // Discovery may have come since: the related watches can start now.
+            self.sync_related(window, cx);
             return;
         }
         let manager = ConnectionManager::try_global(cx);
@@ -639,12 +675,157 @@ impl ResourceListView {
             });
         }
         self.sources = sources;
+        self.sync_related(window, cx);
         self.sort_cache.clear();
         self.update_columns(cx);
         for ix in 0..self.sources.len() {
             self.source_changed(ix, window, cx);
         }
         self.refresh_rows(window, cx);
+    }
+
+    /// The related watches the shown columns need, per source: in the source's namespace, the
+    /// whole cluster for a cluster-scoped kind, or only the namespaces holding rows for a
+    /// per-row-namespace column of a cluster-wide list.
+    fn related_specs(&self, cx: &App) -> Vec<RelatedSpec> {
+        let Some(kind) = self.kind.as_deref() else {
+            return Vec::new();
+        };
+        let mut wanted: Vec<&kubyl_resources::columns::RelatedColumn> =
+            kubyl_resources::columns::RELATED_COLUMNS
+                .iter()
+                .filter(|r| r.group == self.gvr.group && r.kind == kind)
+                .collect();
+        if wanted.is_empty() {
+            return Vec::new();
+        }
+        // Hidden columns (or wide ones outside wide mode) need no watch.
+        let visible: Vec<SharedString> = self.visible_columns().into_iter().map(|c| c.id).collect();
+        wanted.retain(|r| visible.iter().any(|v| v.as_ref() == r.column));
+        let Some(manager) = ConnectionManager::try_global(cx) else {
+            return Vec::new();
+        };
+        let mut specs = Vec::new();
+        for (ix, source) in self.sources.iter().enumerate() {
+            let Some(discovery) = manager.read(cx).discovery(&source.spec.cluster) else {
+                continue;
+            };
+            for related in &wanted {
+                let Some(info) =
+                    catalog::find(&discovery, related.related_group, related.related_resource)
+                else {
+                    continue;
+                };
+                let namespaces = (info.namespaced
+                    && related.per_row_namespace
+                    && source.spec.namespace.is_none())
+                .then(|| row_namespaces(source, cx))
+                .flatten();
+                specs.push(RelatedSpec {
+                    source: ix,
+                    cluster: source.spec.cluster.clone(),
+                    scope: source.spec.namespace.clone(),
+                    kind: kind.to_string(),
+                    column: related.column,
+                    gvr: info.gvr.clone(),
+                    namespaces: if info.namespaced { namespaces } else { None },
+                });
+            }
+        }
+        specs
+    }
+
+    /// Makes the related watches match [`Self::related_specs`] (the shown columns, the
+    /// sources, discovery and, per row namespace, the rows).
+    fn sync_related(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let specs = self.related_specs(cx);
+        if specs.len() == self.related.len()
+            && specs.iter().zip(&self.related).all(|(a, b)| *a == b.spec)
+        {
+            return;
+        }
+        // New handles first, so stores both sets share aren't torn down in between.
+        let mut related = Vec::with_capacity(specs.len());
+        for spec in specs {
+            let source = &self.sources[spec.source];
+            let namespaced = spec.namespaces.clone();
+            let scopes: Vec<Option<String>> = match namespaced {
+                Some(namespaces) => namespaces.into_iter().map(Some).collect(),
+                None => {
+                    let namespaced = ConnectionManager::try_global(cx)
+                        .and_then(|m| m.read(cx).discovery(&source.spec.cluster))
+                        .and_then(|d| {
+                            catalog::find(&d, &spec.gvr.group, &spec.gvr.resource)
+                                .map(|i| i.namespaced)
+                        })
+                        .unwrap_or(false);
+                    vec![if namespaced {
+                        source.spec.namespace.clone()
+                    } else {
+                        None
+                    }]
+                }
+            };
+            let mut stores = Vec::with_capacity(scopes.len());
+            let mut observers = Vec::with_capacity(scopes.len());
+            for namespace in scopes {
+                let key = StoreKey::new(source.spec.cluster.clone(), spec.gvr.clone(), namespace);
+                let store = ResourceStores::acquire(cx, key);
+                observers.push(
+                    cx.observe_in(store.entity(), window, |this, _, window, cx| {
+                        this.related_changed(window, cx)
+                    }),
+                );
+                stores.push(store);
+            }
+            related.push(RelatedSource {
+                spec,
+                stores,
+                built: Vec::new(),
+                index: RelatedIndex::Empty,
+                _observers: observers,
+            });
+        }
+        self.related = related;
+        self.related_changed(window, cx);
+    }
+
+    /// Rebuilds the indexes whose stores changed; re-sorts when sorted by their column.
+    fn related_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut changed: Vec<&'static str> = Vec::new();
+        for related in &mut self.related {
+            let generations: Vec<u64> = related
+                .stores
+                .iter()
+                .map(|s| s.read(cx).generation())
+                .collect();
+            if generations == related.built && !related.built.is_empty() {
+                continue;
+            }
+            related.index = RelatedIndex::build(
+                &related.spec.kind,
+                related.spec.column,
+                related
+                    .stores
+                    .iter()
+                    .flat_map(|s| s.read(cx).objects().values().map(|o| &**o)),
+            );
+            related.built = generations;
+            changed.push(related.spec.column);
+        }
+        if changed.is_empty() {
+            return;
+        }
+        let sorted_by_it = self
+            .sort
+            .as_ref()
+            .is_some_and(|(column, _)| changed.contains(&column.as_ref()));
+        if sorted_by_it {
+            self.sort_cache.clear();
+            self.refresh_rows(window, cx);
+        } else {
+            cx.notify();
+        }
     }
 
     fn source_changed(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -654,6 +835,10 @@ impl ResourceListView {
             .is_some_and(|s| s.spec.mode == StoreMode::Metadata)
         {
             self.schedule_table_fetch(ix, cx);
+        }
+        // Rows in new namespaces may need related watches there.
+        if self.related.iter().any(|r| r.spec.namespaces.is_some()) || self.related.is_empty() {
+            self.sync_related(window, cx);
         }
         self.refresh_rows(window, cx);
     }
@@ -922,6 +1107,19 @@ impl ResourceListView {
             }
             _ => {}
         }
+        if let Some(related) = self
+            .related
+            .iter()
+            .find(|r| r.spec.source == row.source && r.spec.column == column.id.as_ref())
+        {
+            return kubyl_resources::columns::related_cell(
+                &related.spec.kind,
+                &column.id,
+                object,
+                &related.index,
+            )
+            .map_buttons(|button: std::convert::Infallible| match button {});
+        }
         match &self.columns_source {
             Columns::Provider(provider) => {
                 provider.cell_in(&source.spec.cluster, object, &column.id, cx)
@@ -967,19 +1165,22 @@ impl ResourceListView {
         });
     }
 
-    fn toggle_column(&mut self, id: &str, cx: &mut Context<Self>) {
+    fn toggle_column(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(ix) = self.prefs.hidden.iter().position(|h| h == id) {
             self.prefs.hidden.remove(ix);
         } else {
             self.prefs.hidden.push(id.to_string());
         }
         self.save_prefs(cx);
+        // A hidden related column needs no watch.
+        self.sync_related(window, cx);
         cx.notify();
     }
 
-    fn toggle_wide(&mut self, cx: &mut Context<Self>) {
+    fn toggle_wide(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.prefs.wide = !self.prefs.wide;
         self.save_prefs(cx);
+        self.sync_related(window, cx);
         cx.notify();
     }
 
@@ -1530,5 +1731,96 @@ impl TabView for ResourceListView {
 impl Render for ResourceListView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         table::render(self, window, cx)
+    }
+}
+
+/// The namespaces of a cluster-wide source's rows, for per-row-namespace related watches;
+/// `None` (watch the whole cluster) above [`RELATED_NAMESPACES_MAX`].
+fn row_namespaces(source: &Source, cx: &App) -> Option<Vec<String>> {
+    distinct_namespaces(
+        source
+            .store
+            .read(cx)
+            .objects()
+            .values()
+            .filter_map(|o| format::namespace(o)),
+        source.spec.only.as_deref(),
+        RELATED_NAMESPACES_MAX,
+    )
+}
+
+/// The distinct namespaces among `namespaces` (only those in `only`, when given), sorted;
+/// `None` when there are more than `max`.
+fn distinct_namespaces<'a>(
+    namespaces: impl IntoIterator<Item = &'a str>,
+    only: Option<&[String]>,
+    max: usize,
+) -> Option<Vec<String>> {
+    let mut out: Vec<String> = Vec::new();
+    for ns in namespaces {
+        if only.is_some_and(|only| !only.iter().any(|o| o == ns)) {
+            continue;
+        }
+        if !out.iter().any(|n| n == ns) {
+            if out.len() == max {
+                return None;
+            }
+            out.push(ns.to_string());
+        }
+    }
+    out.sort();
+    Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn related_watches_follow_the_namespaces_of_the_rows() {
+        let rows = ["b", "a", "b", "c"];
+        assert_eq!(
+            distinct_namespaces(rows, None, RELATED_NAMESPACES_MAX),
+            Some(vec!["a".to_string(), "b".into(), "c".into()])
+        );
+        // Only the selected namespaces of a source.
+        let only = ["b".to_string()];
+        assert_eq!(
+            distinct_namespaces(rows, Some(&only), RELATED_NAMESPACES_MAX),
+            Some(vec!["b".to_string()])
+        );
+        // No rows: no watch.
+        assert_eq!(distinct_namespaces([], None, 2), Some(vec![]));
+        // Up to the cap one watch per namespace, above it one for the whole cluster.
+        assert_eq!(distinct_namespaces(["a", "b"], None, 2).unwrap().len(), 2);
+        assert_eq!(distinct_namespaces(["a", "b", "c"], None, 2), None);
+    }
+
+    #[test]
+    fn related_specs_differ_by_source_scope() {
+        let spec = RelatedSpec {
+            source: 0,
+            cluster: ClusterId::new("a"),
+            scope: None,
+            kind: "ValidatingAdmissionPolicy".into(),
+            column: "bindings",
+            gvr: Gvr::new(
+                "admissionregistration.k8s.io",
+                "v1",
+                "validatingadmissionpolicybindings",
+            ),
+            namespaces: None,
+        };
+        assert_eq!(spec, spec.clone());
+        let other_scope = RelatedSpec {
+            scope: Some("shop".into()),
+            ..spec.clone()
+        };
+        assert_ne!(spec, other_scope);
+        let other_cluster = RelatedSpec {
+            cluster: ClusterId::new("b"),
+            ..spec.clone()
+        };
+        assert_ne!(spec, other_cluster);
     }
 }

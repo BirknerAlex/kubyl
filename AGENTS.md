@@ -126,6 +126,12 @@ cargo run -p kubyl
   notifications); `--delete` removes what it marked (a Flux that was there before stays). Live
   tests: `crates/kubyl_flux_core/tests/live.rs`, and `crates/kubyl_flux/tests/live_ui.rs`
   (uninstalls and reinstalls Flux).
+- Resource views: `script/views-dev.sh` adds the DRA example driver with claims and pods using
+  them (`--fake-dra`: hand-made ResourceSlices instead), admission policies with bindings, the
+  Gateway API CRDs with a Gateway and routes, the VPA CRDs with a VPA (statuses written by the
+  script) in namespace `kubyl-views`; `--delete` removes only what it marked. It refuses a
+  context other than `kind-*` (`KUBYL_VIEWS_CONTEXT`, default `kind-kubyl-dev`) without
+  `--force`, and namespaces it didn't create.
 - Live tests against those clusters are ignored by default: see the header of
   `crates/kubyl_kube/tests/live.rs` (and of `crates/kubyl_metrics/tests/live.rs`,
   `crates/kubyl_alerts/tests/live.rs`, `crates/kubyl_operators/tests/live.rs`,
@@ -136,8 +142,9 @@ cargo run -p kubyl
   uninstall, OCI) after `helm-dev.sh`,
   `crates/kubyl_updates/tests/live.rs` for the update providers and pre-flight checks on the
   `updates-dev.sh` clusters, `crates/kubyl_portforward/tests/live.rs` for Route backends,
-  `KUBYL_TEST_ROUTE_NAMESPACE`, and `crates/kubyl_netflow/tests/live.rs` for the Hubble, Whisker
-  and NetObserv backends on the `netflow-dev.sh` clusters, `KUBYL_TEST_KUBECONFIG`).
+  `KUBYL_TEST_ROUTE_NAMESPACE`, `crates/kubyl_resources/tests/live_views.rs` for the resource
+  views on `views-dev.sh`'s objects, and `crates/kubyl_netflow/tests/live.rs` for the Hubble,
+  Whisker and NetObserv backends on the `netflow-dev.sh` clusters, `KUBYL_TEST_KUBECONFIG`).
 - Cloud update providers (`--features updates-eks,updates-gke,updates-aks`) are tested with
   recorded responses (`crates/kubyl_updates/tests/fixtures/`). For screenshots without an
   account, `KUBYL_UPDATES_{EKS,GKE,AKS}_ENDPOINT=http://127.0.0.1:<port>` points a provider at a

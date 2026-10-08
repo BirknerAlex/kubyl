@@ -16,6 +16,8 @@
 //! - [`describe`]: `kubectl describe`-like text.
 //! - [`format`]: ages, quantities and JSON helpers.
 //! - [`route`]: OpenShift Routes (model, URL, weights, target port resolution, key masking).
+//! - [`dra`], [`admission`], [`gateway`], [`vpa`]: device resources, admission policies, the
+//!   Gateway API and VPAs (phase 24).
 //!
 //! The parts without UI live in `kubyl_resources_core` and are re-exported here.
 
@@ -25,7 +27,9 @@ pub mod selection;
 pub mod store;
 pub mod table;
 
-pub use kubyl_resources_core::{describe, filter, format, ops, redact, route, source};
+pub use kubyl_resources_core::{
+    admission, describe, dra, filter, format, gateway, ops, redact, route, source, vpa,
+};
 
 pub use filter::Filter;
 pub use selection::{ResourceSelection, Selected};

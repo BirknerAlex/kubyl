@@ -262,7 +262,11 @@ impl CommandPalette {
                         gvr: r.gvr.clone(),
                         kind: r.gvk.kind.clone(),
                         singular: r.singular.clone(),
-                        short_names: r.short_names.clone(),
+                        short_names: kubyl_explorer::catalog::short_names(
+                            &r.gvr.group,
+                            &r.gvr.resource,
+                            &r.short_names,
+                        ),
                         categories: r.categories.clone(),
                         namespaced: r.namespaced,
                         icon: kubyl_explorer::catalog::icon_for(&r.gvr.group, &r.gvr.resource),

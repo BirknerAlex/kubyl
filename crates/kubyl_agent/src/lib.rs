@@ -208,7 +208,13 @@ pub(crate) fn object_chip(
                 kubyl_resources::redact::mask_object(&mut value);
                 format!(
                     "{label} ({how}):\n{}",
-                    kubyl_resources::describe::describe(kind, &value, &[], jiff::Timestamp::now())
+                    kubyl_resources::describe::describe_as(
+                        &target.gvr.group,
+                        kind,
+                        &value,
+                        &[],
+                        jiff::Timestamp::now()
+                    )
                 )
             }
         }
