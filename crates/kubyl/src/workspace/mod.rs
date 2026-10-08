@@ -606,10 +606,6 @@ impl Render for Workspace {
         let body = self.render_body(window, cx);
         let status_bar = self.render_status_bar(cx);
         let overlay = self.render_overlay(cx);
-        // gpui-component's Root leaves its overlay layers to the root view.
-        let sheet_layer = gpui_component::Root::render_sheet_layer(window, cx);
-        let dialog_layer = gpui_component::Root::render_dialog_layer(window, cx);
-        let notification_layer = gpui_component::Root::render_notification_layer(window, cx);
 
         v_flex()
             .id("workspace")
@@ -700,9 +696,6 @@ impl Render for Workspace {
             .child(div().flex_1().min_h_0().flex().child(body))
             .child(status_bar)
             .children(overlay)
-            .children(sheet_layer)
-            .children(dialog_layer)
-            .children(notification_layer)
     }
 }
 
