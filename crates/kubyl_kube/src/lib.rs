@@ -54,7 +54,8 @@ pub mod settings;
 pub mod ui;
 
 pub use kubyl_kube_core::{
-    access, auth, client, cluster_info, discovery, groups, kubeconfig, openapi, transport, watches,
+    access, auth, cli, client, cluster_info, discovery, groups, kubeconfig, openapi, transport,
+    watches,
 };
 
 pub use manager::{

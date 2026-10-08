@@ -1,6 +1,7 @@
-//! A Helm release's tab (board 7): Values (user-supplied or with the chart's defaults, masked
-//! until revealed), Manifest (Secret data masked), Notes, History and Resources, for any
-//! revision. Read-only: rollback and uninstall are commands to copy.
+//! A Helm release's tab (board 7, writes from board 20): Values (user-supplied or with the
+//! chart's defaults, masked until revealed), Manifest (Secret data masked), Notes, History and
+//! Resources, for any revision; Upgrade, Roll back and Uninstall (phase 22, hidden on read-only
+//! clusters), Ask agent, and the `helm` commands to copy as a secondary action.
 //!
 //! The decoded release lives only in this tab; revealing values is per tab and never
 //! remembered; copying them is an explicit action.
@@ -24,9 +25,9 @@ use kubyl_core::{
 use kubyl_kube::ConnectionManager;
 use kubyl_ui::{ActiveColors, Button, Colors, Icon, IconName, fonts, h_flex, sizes, u, v_flex};
 
-use crate::helm::decode::{Driver, Release, Summary};
-use crate::helm::present::{self, Line, ManifestObject};
-use crate::helm::service::{self, Helm, HelmLease, ReleaseRow, Revision};
+use crate::decode::{Driver, Release, Summary};
+use crate::present::{self, Line, ManifestObject};
+use crate::service::{self, Helm, HelmLease, ReleaseRow, Revision};
 use crate::widgets;
 
 /// `ViewKind::Custom` of a release tab; the target is the storage object of a revision.
@@ -54,6 +55,14 @@ actions!(
         NewerRevision,
         /// Copies a `helm` command.
         CopyHelmCommand,
+        /// Upgrades the release.
+        Upgrade,
+        /// Rolls the release back (to the shown revision when it's older).
+        RollBack,
+        /// Uninstalls the release.
+        Uninstall,
+        /// Asks the agent about the release.
+        AskAgent,
     ]
 );
 
@@ -139,6 +148,22 @@ pub(crate) fn init(cx: &mut App) {
         (
             ActionSpec::new("Helm Release: Newer Revision", NewerRevision).hint("Newer"),
             "]",
+        ),
+        (
+            ActionSpec::new("Helm Release: Upgrade…", Upgrade).hint("Upgrade…"),
+            "u",
+        ),
+        (
+            ActionSpec::new("Helm Release: Roll Back…", RollBack).hint("Roll back…"),
+            "b",
+        ),
+        (
+            ActionSpec::new("Helm Release: Uninstall…", Uninstall).hint("Uninstall…"),
+            "ctrl-d",
+        ),
+        (
+            ActionSpec::new("Helm Release: Ask Agent", AskAgent).hint("Ask agent"),
+            "shift-a",
         ),
         (
             ActionSpec::new("Helm Release: Copy helm Command…", CopyHelmCommand)
@@ -473,8 +498,36 @@ impl ReleaseView {
             &self.namespace,
             self.revision().unwrap_or(latest),
             latest,
-            crate::view::helm_target(&self.cluster, cx).as_ref(),
+            self.driver,
+            crate::releases::kube_target(&self.cluster, cx).as_ref(),
         )
+    }
+
+    fn upgrade(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(row) = self.row(cx) {
+            crate::dialogs::open_upgrade(self.cluster.clone(), row, window, cx);
+        }
+    }
+
+    /// Rolls back to the shown revision when it's older than the latest, else asks.
+    fn rollback(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(row) = self.row(cx) else {
+            return;
+        };
+        let to = self.revision().filter(|r| *r < row.latest().revision);
+        crate::dialogs::open_rollback(self.cluster.clone(), row, to, window, cx);
+    }
+
+    fn uninstall(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(row) = self.row(cx) {
+            crate::dialogs::open_uninstall(self.cluster.clone(), row, window, cx);
+        }
+    }
+
+    fn ask(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(row) = self.row(cx) {
+            ask_agent(&self.cluster, &row, window, cx);
+        }
     }
 
     fn copy_command(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -579,7 +632,7 @@ impl ReleaseView {
                 )
                 .child(div().flex_none().w(u(130.0)).child(widgets::pill(
                     revision.status.clone(),
-                    crate::view::helm_status_tone(&revision.status),
+                    crate::releases::status_tone(&revision.status),
                     &colors,
                 )))
                 .child(
@@ -747,6 +800,153 @@ impl ReleaseView {
     }
 }
 
+impl ReleaseView {
+    /// A running Kubyl operation on the release, or how to recover a stuck one.
+    fn render_banner(&mut self, writable: bool, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let colors = cx.colors().clone();
+        let row = self.row(cx)?;
+        if let Some(title) = crate::ops::HelmOps::global(cx).and_then(|ops| {
+            ops.read(cx)
+                .running_on(&self.cluster, &row.namespace, &row.name)
+                .map(|op| {
+                    format!(
+                        "{} · {}",
+                        op.title(),
+                        op.lines
+                            .last()
+                            .cloned()
+                            .unwrap_or_else(|| "helm is running…".into())
+                    )
+                })
+        }) {
+            return Some(
+                h_flex()
+                    .flex_none()
+                    .gap(u(8.0))
+                    .px(u(14.0))
+                    .py(u(7.0))
+                    .bg(colors.accent.opacity(0.08))
+                    .border_b_1()
+                    .border_color(colors.border_variant)
+                    .text_size(u(12.5))
+                    .child(
+                        Icon::new(IconName::RefreshCw)
+                            .size(13.0)
+                            .color(colors.accent),
+                    )
+                    .child(div().flex_1().min_w_0().truncate().child(title))
+                    .into_any_element(),
+            );
+        }
+        if !row.latest().status.starts_with("pending-") {
+            return None;
+        }
+        let target = crate::dialogs::rollback::default_target(&row.revisions).filter(|r| {
+            row.revisions
+                .iter()
+                .any(|x| x.revision == *r && matches!(x.status.as_str(), "deployed" | "superseded"))
+        });
+        Some(
+            h_flex()
+                .flex_none()
+                .items_start()
+                .gap(u(10.0))
+                .px(u(14.0))
+                .py(u(9.0))
+                .bg(colors.yellow.opacity(0.1))
+                .border_b_1()
+                .border_color(colors.yellow.opacity(0.3))
+                .text_size(u(12.5))
+                .child(
+                    Icon::new(IconName::TriangleAlert)
+                        .size(14.0)
+                        .color(colors.yellow),
+                )
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .child(
+                            div()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(format!("The release is stuck in {}", row.latest().status)),
+                        )
+                        .child(
+                            div()
+                                .text_color(colors.text_muted)
+                                .child(crate::releases::stuck_hint(&row)),
+                        ),
+                )
+                .when_some(target.filter(|_| writable), |this, target| {
+                    this.child(
+                        Button::new("release-unstick")
+                            .primary()
+                            .icon(IconName::RotateCcw)
+                            .label(format!("Roll back to {target}…"))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                if let Some(row) = this.row(cx) {
+                                    crate::dialogs::open_rollback(
+                                        this.cluster.clone(),
+                                        row,
+                                        Some(target),
+                                        window,
+                                        cx,
+                                    );
+                                }
+                            })),
+                    )
+                })
+                .into_any_element(),
+        )
+    }
+}
+
+/// Attaches the release to the agent's prompt (phase 21): chart, versions, status, the last
+/// revisions and the workloads that aren't ready. Never values, manifests or notes.
+pub fn ask_agent(cluster: &ClusterId, row: &ReleaseRow, window: &mut Window, cx: &mut App) {
+    let Some(client) = ConnectionManager::try_global(cx).and_then(|m| m.read(cx).client(cluster))
+    else {
+        return;
+    };
+    let (driver, namespace, object, name) = (
+        row.driver,
+        row.namespace.clone(),
+        row.latest().object.clone(),
+        row.name.clone(),
+    );
+    let revisions = row.revisions.clone();
+    let summary = row.summary().map(|s| (**s).clone());
+    let cluster = cluster.clone();
+    let work = spawn_kube(cx, async move {
+        let failing = match service::load(client.clone(), driver, namespace.clone(), object).await {
+            Ok(release) => {
+                let objects = present::manifest_objects(&release.manifest);
+                crate::agent::failing(client, &namespace, &objects).await
+            }
+            Err(_) => Vec::new(),
+        };
+        crate::agent::release_text(&namespace, &name, summary.as_ref(), &revisions, &failing)
+    });
+    let (label_ns, label_name) = (row.namespace.clone(), row.name.clone());
+    window
+        .spawn(cx, async move |cx| {
+            let text = work.await;
+            cx.update(|window, cx| {
+                window.dispatch_action(
+                    Box::new(kubyl_core::actions::AskAgent {
+                        cluster: cluster.clone(),
+                        label: format!("Helm release {label_ns}/{label_name}"),
+                        uri: format!("kubyl://helm/{label_ns}/{label_name}"),
+                        text,
+                    }),
+                    cx,
+                )
+            })
+            .ok();
+        })
+        .detach();
+}
+
 impl Focusable for ReleaseView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
@@ -796,6 +996,8 @@ impl Render for ReleaseView {
             .or_else(|| summary.as_ref().map(|s| s.status.clone()))
             .unwrap_or_default();
         let revisions = self.revisions(cx);
+        let revisions_count = revisions.len();
+        let writable = !crate::cli::read_only(&self.cluster, cx);
         let weak = cx.entity().downgrade();
         let current = self.object.clone();
         let revision_menu = MenuButton::new("release-revision")
@@ -856,7 +1058,7 @@ impl Render for ReleaseView {
             .when(!status.is_empty(), |this| {
                 this.child(div().flex_none().child(widgets::pill(
                     status.clone(),
-                    crate::view::helm_status_tone(&status),
+                    crate::releases::status_tone(&status),
                     &colors,
                 )))
             })
@@ -882,11 +1084,45 @@ impl Render for ReleaseView {
             })
             .when(summary.is_none(), |this| this.child(div().flex_1()))
             .child(revision_menu)
+            .when(writable, |this| {
+                this.child(
+                    Button::new("release-upgrade")
+                        .primary()
+                        .icon(IconName::ArrowUp)
+                        .label("Upgrade…")
+                        .on_click(cx.listener(|this, _, window, cx| this.upgrade(window, cx))),
+                )
+                .child(
+                    Button::new("release-rollback")
+                        .icon(IconName::RotateCcw)
+                        .label("Roll back…")
+                        .disabled(revisions_count < 2)
+                        .on_click(cx.listener(|this, _, window, cx| this.rollback(window, cx))),
+                )
+                .child(
+                    Button::new("release-uninstall")
+                        .danger()
+                        .icon(IconName::Trash)
+                        .label("Uninstall…")
+                        .on_click(cx.listener(|this, _, window, cx| this.uninstall(window, cx))),
+                )
+            })
+            .child(
+                Button::new("release-ask")
+                    .ghost()
+                    .icon(IconName::Zap)
+                    .label("Ask agent")
+                    .on_click(cx.listener(|this, _, window, cx| this.ask(window, cx))),
+            )
             .child(
                 Button::new("release-commands")
                     .ghost()
                     .icon(IconName::Copy)
-                    .label("Copy helm command…")
+                    .label(if writable {
+                        "Commands…"
+                    } else {
+                        "Copy helm command…"
+                    })
                     .on_click(cx.listener(|this, _, window, cx| this.copy_command(window, cx))),
             );
         let tab =
@@ -1038,7 +1274,9 @@ impl Render for ReleaseView {
                 },
             },
         };
-        let hints: Vec<(SharedString, SharedString)> = ActionRegistry::global(cx).hints(CONTEXT);
+        let hints: Vec<(SharedString, SharedString)> =
+            crate::visible_hints(ActionRegistry::global(cx).hints(CONTEXT), writable);
+        let banner = self.render_banner(writable, cx);
         v_flex()
             .key_context(CONTEXT)
             .track_focus(&self.focus)
@@ -1070,7 +1308,25 @@ impl Render for ReleaseView {
             .on_action(
                 cx.listener(|this, _: &CopyHelmCommand, window, cx| this.copy_command(window, cx)),
             )
+            .on_action(cx.listener(|this, _: &Upgrade, window, cx| this.upgrade(window, cx)))
+            .on_action(
+                cx.listener(|this, _: &crate::UpgradeRelease, window, cx| this.upgrade(window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &RollBack, window, cx| this.rollback(window, cx)))
+            .on_action(
+                cx.listener(|this, _: &crate::RollBackRelease, window, cx| {
+                    this.rollback(window, cx)
+                }),
+            )
+            .on_action(cx.listener(|this, _: &Uninstall, window, cx| this.uninstall(window, cx)))
+            .on_action(
+                cx.listener(|this, _: &crate::UninstallRelease, window, cx| {
+                    this.uninstall(window, cx)
+                }),
+            )
+            .on_action(cx.listener(|this, _: &AskAgent, window, cx| this.ask(window, cx)))
             .child(header)
+            .children(banner)
             .child(tabs)
             .children(values_bar)
             .children(manifest_bar)

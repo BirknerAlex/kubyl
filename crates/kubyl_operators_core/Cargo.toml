@@ -1,6 +1,6 @@
 [package]
 name = "kubyl_operators_core"
-description = "Operators without the UI: OLM v0 and v1 objects, installed operators, upgrade reviews, OperatorHub, installs, and Helm releases."
+description = "Operators without the UI: OLM v0 and v1 objects, installed operators, upgrade reviews, OperatorHub and installs."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -23,6 +23,7 @@ jiff.workspace = true
 k8s-openapi.workspace = true
 kube.workspace = true
 kubyl_base.workspace = true
+kubyl_helm_core.workspace = true
 kubyl_kube_core.workspace = true
 kubyl_resources_core.workspace = true
 kubyl_yaml_core.workspace = true

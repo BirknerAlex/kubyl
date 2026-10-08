@@ -2,7 +2,6 @@
 //! Subscriptions · Helm releases (· Extensions with OLM v1), each a list with a details pane.
 
 mod extensions;
-mod helm;
 mod installed;
 mod plans;
 mod states;
@@ -25,12 +24,11 @@ use kubyl_core::{
 use kubyl_kube::ConnectionManager;
 use kubyl_ui::{ActiveColors, Colors, Icon, IconName, fonts, h_flex, sizes, u, v_flex};
 
-use crate::helm::service::{Helm, HelmLease};
 use crate::service::{Availability, Olm, OlmLease, Snapshot};
 use crate::widgets;
+use kubyl_helm::releases::ReleasesView;
+use kubyl_helm::service::Helm;
 
-pub(crate) use helm::HelmResources;
-pub(crate) use helm::{kube_target as helm_target, status_tone as helm_status_tone};
 pub(crate) use installed::Instances;
 
 /// `ViewKind::Custom` of the Helm Releases sidebar row: it opens the Operators tab on its Helm
@@ -42,7 +40,7 @@ pub const VIEW_CONTEXT: &str = "OperatorsView";
 pub const INSTALLED_CONTEXT: &str = "OperatorsInstalled";
 pub const PLANS_CONTEXT: &str = "OperatorsPlans";
 pub const SUBSCRIPTIONS_CONTEXT: &str = "OperatorsSubscriptions";
-pub const HELM_CONTEXT: &str = "HelmReleases";
+pub const HELM_CONTEXT: &str = kubyl_helm::releases::CONTEXT;
 pub const EXTENSIONS_CONTEXT: &str = "OperatorsExtensions";
 
 actions!(
@@ -62,16 +60,6 @@ actions!(
         EditYaml,
         /// Uninstalls the selected operator.
         Uninstall,
-        /// Opens the selected Helm release.
-        OpenRelease,
-        /// Opens the selected release on its values.
-        ReleaseValues,
-        /// Opens the selected release on its manifest.
-        ReleaseManifest,
-        /// Opens the selected release on its history.
-        ReleaseHistory,
-        /// Copies a `helm` command for the selected release.
-        HelmCommands,
         /// Opens a ClusterExtension template.
         NewExtension,
         /// Focuses the filter.
@@ -189,8 +177,9 @@ pub(crate) fn init(cx: &mut App) {
             );
             let namespace = target.namespace.clone();
             Some(Box::new(cx.new(|cx| {
-                let mut view = OperatorsView::new(cluster, window, cx);
-                view.helm_namespace = namespace;
+                let view = OperatorsView::new(cluster, window, cx);
+                view.helm
+                    .update(cx, |helm, cx| helm.set_namespace(namespace, cx));
                 view
             })))
         },
@@ -269,31 +258,6 @@ fn actions_init(cx: &mut App) {
             ActionSpec::new("Subscriptions: Uninstall…", Uninstall).hint("Uninstall…"),
             "ctrl-d",
             SUBSCRIPTIONS_CONTEXT,
-        ),
-        (
-            ActionSpec::new("Helm: Open Release", OpenRelease).hint("Open release"),
-            "enter",
-            HELM_CONTEXT,
-        ),
-        (
-            ActionSpec::new("Helm: Values", ReleaseValues).hint("Values"),
-            "v",
-            HELM_CONTEXT,
-        ),
-        (
-            ActionSpec::new("Helm: Manifest", ReleaseManifest).hint("Manifest"),
-            "m",
-            HELM_CONTEXT,
-        ),
-        (
-            ActionSpec::new("Helm: History", ReleaseHistory).hint("History"),
-            "h",
-            HELM_CONTEXT,
-        ),
-        (
-            ActionSpec::new("Helm: Copy helm Command…", HelmCommands).hint("Copy helm command"),
-            "c",
-            HELM_CONTEXT,
         ),
         (
             ActionSpec::new("Extensions: Details", Details).hint("Details"),
@@ -392,17 +356,14 @@ pub struct OperatorsView {
     pub(crate) keys: Vec<String>,
     /// The sub-tab shows a state instead of its list (no OLM, loading…): no list key hints.
     blocked: bool,
-    /// Namespace the Helm list is limited to (opened from a favorite).
-    pub(crate) helm_namespace: Option<String>,
+    /// The Helm releases sub-tab (`kubyl_helm`'s list, with its own selection and details).
+    pub(crate) helm: Entity<ReleasesView>,
     pub(crate) instances: Option<Instances>,
-    pub(crate) helm_resources: Option<(String, HelmResources)>,
     // The rows each list shows (built on render, read by its `uniform_list`).
     pub(crate) installed_rows: Vec<crate::olm::join::Operator>,
     pub(crate) plan_rows: Vec<plans::PlanRow>,
     pub(crate) subscription_rows: Vec<std::sync::Arc<crate::olm::model::Subscription>>,
-    pub(crate) helm_rows: Vec<crate::helm::service::ReleaseRow>,
     _olm: Option<OlmLease>,
-    _helm: Option<HelmLease>,
     _ticker: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -418,7 +379,7 @@ impl OperatorsView {
                     this.scroll.scroll_to_item(0, ScrollStrategy::Top);
                     cx.notify();
                 }
-                InputEvent::PressEnter { .. } => this.focus.focus(window, cx),
+                InputEvent::PressEnter { .. } => this.list_focus(cx).focus(window, cx),
                 _ => {}
             },
         )];
@@ -443,7 +404,7 @@ impl OperatorsView {
             }
         });
         let olm = Olm::watch(&cluster, cx);
-        let helm = Helm::watch(&cluster, cx);
+        let helm = cx.new(|cx| ReleasesView::new(cluster.clone(), cx));
         Self {
             cluster,
             tab: SubTab::Installed,
@@ -454,15 +415,12 @@ impl OperatorsView {
             details_open: true,
             keys: Vec::new(),
             blocked: false,
-            helm_namespace: None,
+            helm,
             instances: None,
-            helm_resources: None,
             installed_rows: Vec::new(),
             plan_rows: Vec::new(),
             subscription_rows: Vec::new(),
-            helm_rows: Vec::new(),
             _olm: olm,
-            _helm: helm,
             _ticker: ticker,
             _subscriptions: subscriptions,
         }
@@ -514,6 +472,15 @@ impl OperatorsView {
         self.selected.get(&self.tab)
     }
 
+    /// What takes the list's keys: the Helm sub-tab's own view, else this view's focus area.
+    pub(crate) fn list_focus(&self, cx: &App) -> FocusHandle {
+        if self.tab == SubTab::Helm {
+            self.helm.read(cx).focus_handle(cx)
+        } else {
+            self.focus.clone()
+        }
+    }
+
     /// The list row of a key (lists with group rows count those too).
     fn row_index(&self, key: &str) -> Option<usize> {
         match self.tab {
@@ -534,6 +501,11 @@ impl OperatorsView {
     }
 
     fn move_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if self.tab == SubTab::Helm {
+            self.helm
+                .update(cx, |helm, cx| helm.move_selection(delta, cx));
+            return;
+        }
         if self.keys.is_empty() {
             return;
         }
@@ -558,8 +530,12 @@ impl OperatorsView {
                 input.set_value("", window, cx);
                 input.set_placeholder(placeholder, window, cx);
             });
+            if tab == SubTab::Helm {
+                self.helm
+                    .update(cx, |helm, cx| helm.set_query(String::new(), cx));
+            }
         }
-        self.focus.focus(window, cx);
+        self.list_focus(cx).focus(window, cx);
         cx.notify();
     }
 
@@ -576,8 +552,12 @@ impl OperatorsView {
             self.set_tab(tab, window, cx);
         }
         if let Some(key) = pending.select {
-            self.selected.insert(self.tab, key);
-            self.details_open = true;
+            if self.tab == SubTab::Helm {
+                self.helm.update(cx, |helm, cx| helm.select(key, cx));
+            } else {
+                self.selected.insert(self.tab, key);
+                self.details_open = true;
+            }
         }
     }
 
@@ -661,6 +641,18 @@ impl OperatorsView {
                     .child(summary),
             )
             .child(input)
+            .when(helm, |this| {
+                let cluster = self.cluster.clone();
+                this.child(
+                    kubyl_ui::Button::new("browse-charts")
+                        .primary()
+                        .icon(IconName::Store)
+                        .label("Browse charts")
+                        .on_click(move |_, window, cx| {
+                            kubyl_helm::charts::open(&cluster, window, cx)
+                        }),
+                )
+            })
             .when(show_hub, |this| {
                 this.child(
                     kubyl_ui::Button::new("browse-operatorhub")
@@ -675,7 +667,7 @@ impl OperatorsView {
 
     fn summary(&self, cx: &App) -> String {
         if self.tab == SubTab::Helm {
-            return self.helm_summary(cx);
+            return kubyl_helm::releases::summary(&self.cluster, cx);
         }
         let Some(snapshot) = self.snapshot(cx) else {
             return String::new();
@@ -835,7 +827,11 @@ impl OperatorsView {
         let mut hints: Vec<(SharedString, SharedString)> = ActionRegistry::global(cx)
             .hints(self.tab.context())
             .into_iter()
-            .filter(|(_, hint)| !read_only || !WRITE_HINTS.contains(&hint.as_ref()))
+            .filter(|(_, hint)| {
+                !read_only
+                    || !(WRITE_HINTS.contains(&hint.as_ref())
+                        || kubyl_helm::WRITE_HINTS.contains(&hint.as_ref()))
+            })
             .collect();
         hints.push(("/".into(), "Filter".into()));
         hints
@@ -847,11 +843,15 @@ impl OperatorsView {
             focus.focus(window, cx);
         }))
         .on_action(cx.listener(|view, _: &BlurFilter, window, cx| {
-            view.focus.focus(window, cx);
+            view.list_focus(cx).focus(window, cx);
         }))
         .on_action(cx.listener(|view, _: &SelectNext, _, cx| view.move_selection(1, cx)))
         .on_action(cx.listener(|view, _: &SelectPrevious, _, cx| view.move_selection(-1, cx)))
         .on_action(cx.listener(|view, _: &Details, _, cx| {
+            if view.tab == SubTab::Helm {
+                view.helm.update(cx, |helm, cx| helm.toggle_details(cx));
+                return;
+            }
             view.details_open = !view.details_open || view.selected_key().is_none();
             if view.selected_key().is_none()
                 && let Some(first) = view.keys.first().cloned()
@@ -866,19 +866,6 @@ impl OperatorsView {
         .on_action(cx.listener(|view, _: &ViewYaml, window, cx| view.yaml(false, window, cx)))
         .on_action(cx.listener(|view, _: &EditYaml, window, cx| view.yaml(true, window, cx)))
         .on_action(cx.listener(|view, _: &Uninstall, window, cx| view.uninstall(window, cx)))
-        .on_action(
-            cx.listener(|view, _: &OpenRelease, window, cx| view.open_release(None, window, cx)),
-        )
-        .on_action(cx.listener(|view, _: &ReleaseValues, window, cx| {
-            view.open_release(Some(crate::release::ReleaseTab::Values), window, cx)
-        }))
-        .on_action(cx.listener(|view, _: &ReleaseManifest, window, cx| {
-            view.open_release(Some(crate::release::ReleaseTab::Manifest), window, cx)
-        }))
-        .on_action(cx.listener(|view, _: &ReleaseHistory, window, cx| {
-            view.open_release(Some(crate::release::ReleaseTab::History), window, cx)
-        }))
-        .on_action(cx.listener(|view, _: &HelmCommands, window, cx| view.helm_commands(window, cx)))
         .on_action(cx.listener(|view, _: &NewExtension, window, cx| view.new_extension(window, cx)))
     }
 
@@ -1001,8 +988,8 @@ impl OperatorsView {
 }
 
 impl Focusable for OperatorsView {
-    fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus.clone()
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        self.list_focus(cx)
     }
 }
 
@@ -1067,7 +1054,12 @@ impl Render for OperatorsView {
                 SubTab::Installed => self.render_installed(window, cx),
                 SubTab::Plans => self.render_plans(window, cx),
                 SubTab::Subscriptions => self.render_subscriptions(window, cx),
-                SubTab::Helm => self.render_helm(window, cx),
+                SubTab::Helm => {
+                    self.keys.clear();
+                    let query = self.query(cx);
+                    self.helm.update(cx, |helm, cx| helm.set_query(query, cx));
+                    self.helm.clone().into_any_element()
+                }
                 SubTab::Extensions => self.render_extensions(window, cx),
             }
         };

@@ -1,5 +1,5 @@
 //! Dialogs (board 7): install an operator, review and approve an upgrade, uninstall, pick a kind
-//! to create, copy a `helm` command.
+//! to create. (The `helm` commands dialog moved to `kubyl_helm` in phase 22.)
 //!
 //! Every write shows what it creates or deletes first, is hidden on read-only clusters and asks
 //! for a typed name on production clusters (uninstalling with CRDs always does). The writes run
@@ -23,7 +23,6 @@ use kubyl_kube::ConnectionManager;
 use kubyl_resources::{ResourceStores, StoreHandle, StoreKey};
 use kubyl_ui::{ActiveColors, Button, Colors, Icon, IconName, ProdBadge, fonts, h_flex, u, v_flex};
 
-use crate::helm::present::Command;
 use crate::olm::hub::Package;
 use crate::olm::join::Operator;
 use crate::olm::model::{self, Approval, Csv, InstallMode, InstallPlan, OwnedCrd};
@@ -1991,108 +1990,5 @@ impl Render for KindPicker {
                     })),
             )
             .child(footer(None, vec![close_button("Cancel")], &colors))
-    }
-}
-
-// ----- helm commands -----
-
-/// Opens the list of `helm` commands for a release: Kubyl shows releases read-only, the user
-/// runs rollback and uninstall with their `helm`.
-pub fn open_helm_commands(
-    title: String,
-    commands: Vec<Command>,
-    window: &mut Window,
-    cx: &mut App,
-) {
-    let view = cx.new(|cx| HelmCommands {
-        title,
-        commands,
-        focus: cx.focus_handle(),
-    });
-    let focus = view.read(cx).focus.clone();
-    open(view, 620.0, Some(focus), window, cx);
-}
-
-struct HelmCommands {
-    title: String,
-    commands: Vec<Command>,
-    focus: FocusHandle,
-}
-
-impl Focusable for HelmCommands {
-    fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus.clone()
-    }
-}
-
-impl Render for HelmCommands {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = cx.colors().clone();
-        v_flex()
-            .track_focus(&self.focus)
-            .text_color(colors.text)
-            .text_size(u(13.0))
-            .child(header(
-                Icon::new(IconName::Anchor)
-                    .size(16.0)
-                    .color(colors.accent)
-                    .into_any_element(),
-                self.title.clone(),
-                Vec::new(),
-                &colors,
-            ))
-            .child(
-                v_flex()
-                    .p(u(8.0))
-                    .gap(u(2.0))
-                    .children(self.commands.iter().enumerate().map(|(i, command)| {
-                        let text = command.command.clone();
-                        let label = command.label.clone();
-                        h_flex()
-                            .id(("helm-command", i))
-                            .items_start()
-                            .gap(u(10.0))
-                            .px(u(10.0))
-                            .py(u(6.0))
-                            .rounded(u(5.0))
-                            .cursor_pointer()
-                            .hover(|s| s.bg(colors.hover))
-                            .child(
-                                v_flex()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .child(div().text_size(u(12.5)).child(command.label.clone()))
-                                    .child(
-                                        div()
-                                            .font_family(fonts::MONO)
-                                            .text_size(u(11.0))
-                                            .text_color(colors.text_dim)
-                                            .child(command.command.clone()),
-                                    ),
-                            )
-                            .child(Icon::new(IconName::Copy).size(13.0).color(colors.text_dim))
-                            .on_click(move |_, window, cx| {
-                                widgets::copy(
-                                    text.clone(),
-                                    &format!("the {} command", label.to_lowercase()),
-                                    cx,
-                                );
-                                window.close_dialog(cx);
-                            })
-                    })),
-            )
-            .child(footer(
-                Some(
-                    div()
-                        .text_size(u(11.5))
-                        .text_color(colors.text_dim)
-                        .child(
-                            "Kubyl shows Helm releases read-only. Run the command in a terminal.",
-                        )
-                        .into_any_element(),
-                ),
-                vec![close_button("Close")],
-                &colors,
-            ))
     }
 }

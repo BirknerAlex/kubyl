@@ -9,6 +9,8 @@
 //! - [`filter`]: the list filter language.
 //! - [`ops`]: delete, scale, restart, undo, cordon, drain, trigger CronJob…
 //! - [`describe`]: `kubectl describe`-like text.
+//! - [`errors`]: user-facing messages for failed API requests (a 403 names the verb, resource and
+//!   scope).
 //! - [`format`]: ages, quantities and JSON helpers.
 //! - [`usage`]: CPU and memory usage as metrics providers report it.
 //! - [`route`]: OpenShift Routes (model, URL, weights, target port resolution, key masking).
@@ -20,6 +22,7 @@
 
 pub mod columns;
 pub mod describe;
+pub mod errors;
 pub mod filter;
 pub mod format;
 pub mod ops;

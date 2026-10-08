@@ -88,6 +88,14 @@ cargo run -p kubyl
   OperatorHub in Kubyl), `--delete` removes what it installed (it marks the namespaces;
   an OLM or cert-manager that was there stays). Helm releases come from
   `prometheus-dev.sh`.
+- Helm: `script/helm-dev.sh` (helm 3.13+, docker, python3) serves a chart repository `kubyl-dev`
+  on `http://127.0.0.1:8879` (`kubyl-demo` 0.1.0 and 0.2.0 with a values schema, a hook, a CRD and
+  a kept PVC; `kubyl-hookfail`), pushes `kubyl-demo` 0.2.0 to an OCI registry
+  (`oci://localhost:5022/charts`, container `kubyl-helm-registry`) and leaves releases in
+  `kubyl-helm`, one stuck in `pending-upgrade` (`--stuck` makes it again, `--delete` removes what it
+  marked). It adds the repository to Helm's own `repositories.yaml`: set
+  `HELM_REPOSITORY_CONFIG`, `HELM_REPOSITORY_CACHE` and `HELM_REGISTRY_CONFIG` to scratch paths for
+  the script and Kubyl to keep it out of your Helm setup.
 - Cluster updates and Routes: `script/updates-dev.sh` adds a PDB that blocks drains and a Helm
   release whose manifest uses removed APIs (namespace `kubyl-updates`) to the kind cluster, and
   creates a second kind cluster `kubyl-ocp` (`KUBECONFIG=/tmp/kubyl-dev/ocp-kubeconfig`) that
@@ -124,6 +132,8 @@ cargo run -p kubyl
   `crates/kubyl_agent_core/tests/live.rs` for the agent tools through the MCP server,
   `crates/kubyl_agent_core/tests/adapters.rs` for the ACP protocol of installed agent adapters
   (no prompts: never spend tokens in tests),
+  `crates/kubyl_helm_core/tests/live.rs` for the real `helm` (install, upgrade, rollback,
+  uninstall, OCI) after `helm-dev.sh`,
   `crates/kubyl_updates/tests/live.rs` for the update providers and pre-flight checks on the
   `updates-dev.sh` clusters, `crates/kubyl_portforward/tests/live.rs` for Route backends,
   `KUBYL_TEST_ROUTE_NAMESPACE`, and `crates/kubyl_netflow/tests/live.rs` for the Hubble, Whisker

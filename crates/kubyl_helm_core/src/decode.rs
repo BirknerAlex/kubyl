@@ -105,6 +105,15 @@ struct RawInfo {
 struct RawChart {
     metadata: ChartMetadata,
     values: Option<Value>,
+    /// Files outside `templates/` (base64): `crds/` holds the CRDs Helm installs once.
+    files: Option<Vec<RawFile>>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct RawFile {
+    name: String,
+    data: String,
 }
 
 #[derive(Deserialize, Default)]
@@ -178,6 +187,9 @@ pub struct Release {
     pub manifest: String,
     pub notes: Option<String>,
     pub hooks: Vec<Hook>,
+    /// The CRDs of the chart's `crds/` folder (names): Helm installs them once and never
+    /// upgrades or deletes them.
+    pub crds: Vec<String>,
 }
 
 impl fmt::Debug for Release {
@@ -267,8 +279,26 @@ pub fn decode_summary(encoded: &[u8]) -> Result<Summary, DecodeError> {
 /// Decodes the whole release.
 pub fn decode(encoded: &[u8]) -> Result<Release, DecodeError> {
     let json = unpack(encoded)?;
-    let raw = parse(&json)?;
+    from_json(&json)
+}
+
+/// A release as JSON (what `helm install|upgrade --output json` prints, dry run or not).
+pub fn from_json(json: &[u8]) -> Result<Release, DecodeError> {
+    let raw = parse(json)?;
     let summary = summary_of(&raw);
+    let crds = raw
+        .chart
+        .files
+        .iter()
+        .flatten()
+        .filter(|f| f.name.starts_with("crds/"))
+        .filter_map(|f| {
+            base64::engine::general_purpose::STANDARD
+                .decode(f.data.trim())
+                .ok()
+        })
+        .flat_map(|bytes| crate::preview::crd_names(&String::from_utf8_lossy(&bytes)))
+        .collect();
     Ok(Release {
         summary,
         values: raw.config.unwrap_or(Value::Object(Default::default())),
@@ -290,6 +320,7 @@ pub fn decode(encoded: &[u8]) -> Result<Release, DecodeError> {
                 manifest: h.manifest,
             })
             .collect(),
+        crds,
     })
 }
 

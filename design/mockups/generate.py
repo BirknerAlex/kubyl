@@ -4112,6 +4112,233 @@ def agent_questions_screen():
     body = ag_user("Fix it in the repo, please.") + form + url + write
     return page("Agent: questions, links and file changes — Kubyl", ag_app(ag_dock(body), AG_WAITING))
 
+# ---------- 20. Helm: charts, install, upgrade, rollback, uninstall (phase 22) ----------
+HELM_CHARTS = [
+ ("kubyl-demo", "kubyl-dev", "0.2.0", "1.1.0", "A small chart for Kubyl's Helm views."),
+ ("kubyl-hookfail", "kubyl-dev", "0.1.0", "0.1.0", "A chart whose post-install hook fails."),
+ ("ingress-nginx", "ingress-nginx", "4.13.3", "1.13.3", "Ingress controller for Kubernetes using NGINX as a reverse proxy."),
+ ("kube-prometheus-stack", "prometheus-community", "84.1.0", "v0.86.1", "Prometheus, Alertmanager, Grafana and the Prometheus Operator."),
+ ("metrics-server", "metrics-server", "3.13.0", "0.8.0", "Metrics Server for the Kubernetes resource metrics API."),
+ ("cert-manager", "jetstack", "v1.19.1", "v1.19.1", "A Helm chart for cert-manager."),
+ ("external-secrets", "external-secrets", "0.20.4", "v0.20.4", "External secret management for Kubernetes."),
+ ("argo-cd", "argo", "9.0.5", "v3.1.9", "A Helm chart for Argo CD, a declarative GitOps tool."),
+ ("redis", "bitnami", "21.2.13", "8.2.1", "Redis(R) is an open source, advanced key-value store."),
+]
+HCC = "grid-template-columns: minmax(0,1fr) 120px 76px 80px minmax(0,1.4fr)"
+
+def helm_charts_center(selected=0, query="", oci=False):
+    rows = []
+    if oci:
+        rows.append(f'<div class="tr on" style="{HCC};height:34px"><span class="mono" style="display:flex;gap:6px;align-items:center">{ic("box",12,C["accent"])}kubyl-demo</span><span style="color:var(--muted)">OCI reference</span><span class="mono">0.2.0</span><span class="mono" style="color:var(--muted)">1.1.0</span><span class="mono" style="font-size:11.5px;color:var(--dim)">oci://localhost:5022/charts/kubyl-demo</span></div>')
+    for i, (n, repo, v, av, d) in enumerate(HELM_CHARTS if not oci else []):
+        rows.append(f'<div class="tr{" on" if i == selected else ""}" style="{HCC};height:34px"><span class="mono">{n}</span><span class="mono" style="color:var(--muted)">{repo}</span><span class="mono">{v}</span><span class="mono" style="color:var(--muted)">{av}</span><span style="color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{d}</span></div>')
+    repos = [("All repositories", "41", True), ("kubyl-dev", "2", False), ("argo", "6", False), ("bitnami", "112", False), ("ingress-nginx", "1", False), ("jetstack", "2", False), ("metrics-server", "1", False), ("prometheus-community", "48", False)]
+    rrows = "".join(f'<div style="display:flex;align-items:center;height:24px;padding:0 8px;border-radius:5px;font-size:12.5px;{"background:var(--sel);color:var(--text)" if on else "color:var(--muted)"}"><span style="flex:1" class="{"" if i == 0 else "mono"}">{n}</span><span class="mono" style="font-size:11px;color:var(--dim)">{k}</span></div>' for i, (n, k, on) in enumerate(repos))
+    q = query or "Search charts, or oci://…"
+    return f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0">
+<div class="tool"><div class="crumb">{ic("anchor",14,C["accent"])}<b>Charts</b><span>·</span><span>173 charts · 8 repositories</span></div><div style="flex:1"></div>
+<div class="inp{" focus" if query else ""}" style="width:330px">{ic("search",12)}<span style="color:{"var(--text)" if query else "var(--dim)"}" class="{"mono" if query else ""}">{q}</span></div><button class="btn g">{ic("refresh",12)}Update</button><button class="btn">{ic("gear",12)}Repositories…</button></div>
+<div style="flex:1;display:flex;min-height:0">
+<div style="width:200px;flex-shrink:0;border-right:1px solid var(--bv);padding:12px 10px;display:flex;flex-direction:column;gap:6px"><p class="dtitle" style="padding-left:8px">Repositories</p>{rrows}
+<div style="flex:1"></div><div style="font-size:11px;color:var(--dim);padding:0 8px;line-height:16px">From Helm's own repositories.yaml (helm env). Artifact Hub search: off (helm.artifact_hub).</div></div>
+<div style="flex:1;display:flex;flex-direction:column;min-width:0">
+<div class="th" style="{HCC}"><span>CHART</span><span>REPOSITORY</span><span>VERSION</span><span>APP</span><span>DESCRIPTION</span></div>
+<div style="flex:1;overflow:hidden">{"".join(rows)}</div></div></div>
+{hints([("↵","Details"),("i","Install…"),("/","Search"),("⇧u","Update repositories")])}
+</div>'''
+
+def helm_chart_details():
+    readme = ('<div style="font-size:16px;font-weight:600;margin-bottom:6px">kubyl-demo 0.2.0</div>'
+              '<div style="font-size:12.5px;color:var(--muted);line-height:18px;margin-bottom:8px">A small chart to try Kubyl\'s Helm views: install, upgrade, rollback and uninstall.</div>'
+              '<div style="display:grid;grid-template-columns:110px 84px 1fr;font-size:12px;border-top:1px solid var(--bv)">'
+              + "".join(f'<span class="mono" style="padding:4px 0;border-bottom:1px solid var(--bv)">{a}</span><span class="mono" style="padding:4px 0;border-bottom:1px solid var(--bv);color:var(--muted)">{b}</span><span style="padding:4px 0;border-bottom:1px solid var(--bv);color:var(--muted)">{c}</span>' for a, b, c in [("replicaCount", "1", "How many pods run"), ("greeting", "hello", "Shown in the ConfigMap"), ("auth.password", "change-me", "Rendered into a Secret")])
+              + '</div>')
+    return f'''<aside class="dock" style="width:390px">
+<div class="phead" style="border-bottom:1px solid var(--bv);height:auto;padding:12px 12px 12px 14px;align-items:flex-start">{op_tile("KD",C["accent"],34)}<div style="flex:1;margin-left:6px;min-width:0"><div style="color:var(--text);font-weight:600;font-size:14px" class="mono">kubyl-demo</div><div style="font-size:11.5px;color:var(--dim)">kubyl-dev · A small chart for Kubyl's Helm views.</div></div><button class="ib" aria-label="Close">{ic("x",13)}</button></div>
+<div class="dsec"><div style="display:flex;gap:8px;align-items:center"><button class="btn p">{ic("download",13,"#1b1e24")}Install…</button><button class="btn" style="width:150px;justify-content:space-between"><span class="mono" style="font-size:12px">0.2.0</span><span style="color:var(--dim)">latest</span>{ic("cd",12)}</button></div></div>
+<div class="dsec"><dl class="kv" style="margin:0"><dt>App version</dt><dd class="mono" style="font-size:11.5px">1.1.0</dd><dt>Versions</dt><dd>0.2.0 · 0.1.0</dd><dt>Type</dt><dd>application</dd><dt>Home</dt><dd><a href="#">kubyl.dev</a></dd><dt>Maintainers</dt><dd>Kubyl</dd><dt>Keywords</dt><dd><span class="chip">kubyl</span> <span class="chip">demo</span></dd><dt>CRDs</dt><dd class="mono" style="font-size:11.5px">widgets.demo.kubyl.dev</dd><dt>Values schema</dt><dd style="color:var(--green)">yes</dd></dl></div>
+<div style="display:flex;gap:2px;padding:0 8px;border-bottom:1px solid var(--bv);height:32px;align-items:stretch">{"".join(f'<span style="display:flex;align-items:center;padding:0 10px;{"color:var(--text);box-shadow:inset 0 -2px 0 var(--accent)" if t == "README" else "color:var(--dim)"}">{t}</span>' for t in ["README", "Default values", "CRDs"])}</div>
+<div class="dsec" style="border-bottom:0">{readme}</div>
+</aside>'''
+
+def helm_tabs(on):
+    return tabs([("anchor", "Charts", on == "charts"), ("blocks", "Helm Releases", on == "releases"), ("anchor", "kubyl-demo", on == "release")])
+
+def helm_charts_screen():
+    content = f'<div style="flex:1;display:flex;min-height:0">{helm_charts_center()}{helm_chart_details()}</div>'
+    return page("Helm charts — Kubyl", op_shell("Helm", helm_tabs("charts"), content))
+
+def helm_modal(width, title, lead, extra, body, footer, top=50):
+    return f'''<div style="position:absolute;inset:0;background:rgba(15,17,21,.55);display:flex;align-items:flex-start;justify-content:center;padding-top:{top}px">
+<div role="dialog" aria-label="{title}" style="width:{width}px;background:#2f343e;border:1px solid var(--border);border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,.5);overflow:hidden">
+<div style="display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--bv)">{lead}<b style="font-weight:600">{title}</b><span style="flex:1"></span>{extra}</div>
+{body}
+<div style="display:flex;align-items:center;gap:8px;padding:12px 16px;border-top:1px solid var(--bv)">{footer}</div>
+</div></div>'''
+
+def helm_steps(current):
+    out = []
+    for i, s in enumerate(["Configure", "Preview", "Install"]):
+        on = i == current
+        done = i < current
+        col = C["accent"] if on else (C["green"] if done else C["dim"])
+        out.append(f'<span style="display:flex;gap:6px;align-items:center;font-size:12px;color:{col}"><span style="width:16px;height:16px;border-radius:50%;border:1px solid {col};display:flex;align-items:center;justify-content:center;font-size:10px">{i + 1}</span>{s}</span>')
+    return '<span style="display:flex;gap:14px">' + f'<span style="color:var(--faint)">›</span>'.join(out) + '</span>'
+
+def values_rows(lines, start=1, marks=None):
+    marks = marks or {}
+    return "".join(f'<div class="mono" style="display:flex;height:20px;align-items:center;font-size:12.5px;white-space:pre"><span style="width:38px;text-align:right;padding-right:10px;color:var(--faint)">{i + start}</span><span style="width:3px;height:20px;background:{marks.get(i, "transparent")}"></span><span style="padding-left:10px">{t}</span></div>' for i, t in enumerate(lines))
+
+def helm_install_screen():
+    N = C["orange"]
+    com = lambda t: f'<span style="color:var(--dim);font-style:italic"># {t}</span>'
+    L = [com("How many pods run."), yl("replicaCount", 0, "2", N), yl("image"), yl("repository", 2, "registry.k8s.io/pause"), yl("tag", 2, '"3.10"'), yl("service"), yl("port", 2, "80", N),
+         com("Shown in the ConfigMap."), yl("greeting", 0, "hello from Kubyl"), yl("auth"), "  " + com("Rendered into a Secret."), yl("password", 2, "s3cret-pass"), yl("storage", 0, '<span style="text-decoration:underline wavy #e06c75">5Mi</span>')]
+    editor = f'''<div style="border:1px solid var(--border);border-radius:6px;overflow:hidden;background:var(--bg)">
+<div style="display:flex;gap:6px;align-items:center;padding:0 8px;height:30px;border-bottom:1px solid var(--bv);font-size:12px"><span class="chip on" style="height:20px">Chart defaults</span><span class="chip" style="height:20px">Override only</span><span style="flex:1"></span><span style="color:var(--dim);display:flex;gap:5px;align-items:center">{ic("ok",12,C["green"])}values.schema.json</span></div>
+<div style="padding:4px 0;height:262px;overflow:hidden">{values_rows(L, marks={1: C["accent"], 8: C["accent"], 11: C["accent"]})}</div>
+<div style="display:flex;gap:6px;align-items:center;padding:4px 10px;border-top:1px solid var(--bv);font-size:11.5px;color:var(--red)">{ic("err",12,C["red"])}storage: Unsupported value “5Mi”: supported values are “1Mi”, “2Mi”</div></div>'''
+    opts = (f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 16px">{check(True, "Roll back on failure", "--atomic (Helm 4: --rollback-on-failure)")}{check(False, "Wait until ready", "--wait, up to the timeout")}'
+            f'{check(False, "Skip CRDs", "1 CRD in crds/: widgets.demo.kubyl.dev")}<div style="display:flex;gap:8px;align-items:center;font-size:12.5px">Timeout<div class="inp" style="width:80px;height:24px"><span class="mono" style="font-size:12px;color:var(--text)">5m0s</span></div></div></div>')
+    left = f'''<div style="width:380px;flex-shrink:0;padding:16px;display:flex;flex-direction:column;gap:12px;border-right:1px solid var(--bv)">
+{form_row("Chart", '<span class="mono" style="font-size:12.5px">kubyl-dev/kubyl-demo</span>')}
+{form_row("Version", f'<button class="btn" style="width:100%;justify-content:space-between"><span class="mono" style="font-size:12px">0.2.0</span><span style="color:var(--dim)">latest · app 1.1.0</span>{ic("cd",12)}</button>')}
+{form_row("Release name", '<div class="inp focus" style="height:28px"><span class="mono" style="font-size:12.5px;color:var(--text)">web</span></div>')}
+{form_row("Namespace", f'<div class="inp" style="height:28px;justify-content:space-between"><span class="mono" style="font-size:12.5px;color:var(--text)">shop</span>{ic("cd",12)}</div><div style="font-size:11.5px;color:var(--dim);margin-top:5px">{check(True, "Create it (--create-namespace)")}</div>')}
+{form_row("Description", '<div class="inp" style="height:28px"><span style="color:var(--dim)">optional</span></div>')}
+<div><p class="dtitle">Options</p>{opts}</div></div>'''
+    body = f'<div style="display:flex;height:470px">{left}<div style="flex:1;min-width:0;padding:16px;display:flex;flex-direction:column;gap:8px"><p class="dtitle" style="margin:0">Values</p>{editor}<div style="font-size:11.5px;color:var(--dim);line-height:16px">Values go to helm on stdin, never into a file. They can hold passwords: Kubyl keeps them in this dialog only.</div></div></div>'
+    footer = f'<span style="font-size:12px;color:var(--dim)">Into kind-kubyl-dev · helm 4.3.0</span><span style="flex:1"></span><button class="btn g">Cancel</button><button class="btn p" style="opacity:.55">{ic("eye",12,"#1b1e24")}Preview</button>'
+    modal = helm_modal(1000, "Install kubyl-demo", op_tile("KD", C["accent"]), helm_steps(0), body, footer)
+    content = f'<div style="flex:1;display:flex;min-height:0">{helm_charts_center()}</div>'
+    return page("Install a chart — Kubyl", op_shell("Helm", helm_tabs("charts"), content, modal))
+
+def helm_object_list(items, selected):
+    tag = {"+": (C["green"], "added"), "~": (C["yellow"], "changed"), "-": (C["red"], "removed"), "=": (C["dim"], "")}
+    out = []
+    for i, (t, kind, name) in enumerate(items):
+        col, word = tag[t]
+        on = i == selected
+        out.append(f'<div style="display:flex;gap:8px;align-items:center;padding:5px 8px;border-radius:5px;font-size:12px;{"background:var(--sel);outline:1px solid var(--accent);outline-offset:-1px" if on else ""}"><span class="mono" style="width:10px;color:{col};font-weight:600">{t if t != "=" else ""}</span><span style="color:var(--dim);width:86px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{kind}</span><span class="mono" style="flex:1;font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{name}</span><span style="font-size:11px;color:{col}">{word}</span></div>')
+    return "".join(out)
+
+def helm_install_preview_screen():
+    groups = [("Deployment", ["web"]), ("Service", ["web"]), ("ConfigMap", ["web-settings"]), ("Secret", ["web-auth"]), ("PersistentVolumeClaim", ["web-data"])]
+    glist = "".join(f'<div style="padding:4px 8px"><div style="font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em">{k} · {len(ns)}</div>' + "".join(f'<div class="mono" style="font-size:12px;padding:3px 0 3px 8px;{"background:var(--sel);border-radius:4px" if k == "Secret" else ""}">{n}</div>' for n in ns) + '</div>' for k, ns in groups)
+    M = '<span style="color:var(--dim)">••••••••</span>'
+    L = [f'<span style="color:var(--dim);font-style:italic"># Source: kubyl-demo/templates/secret.yaml</span>', yl("apiVersion", 0, "v1"), yl("kind", 0, "Secret"), yl("metadata"), yl("name", 2, "web-auth"), yl("namespace", 2, "shop"), yl("type", 0, "Opaque"), yl("stringData"), yl("password", 2, M)]
+    right = f'''<div style="width:300px;flex-shrink:0;border-left:1px solid var(--bv);padding:12px 14px;display:flex;flex-direction:column;gap:12px">
+<div><p class="dtitle">Hooks that run</p>{op_chg("zap",C["accent"],f'Job <span {MONO11}>web-migrate</span> · post-install, post-upgrade')}</div>
+<div><p class="dtitle">CRDs (crds/)</p>{op_chg("file",C["yellow"],f'<span {MONO11}>widgets.demo.kubyl.dev</span> is installed once; Helm never upgrades or deletes it')}</div>
+<div><p class="dtitle">Namespace</p>{op_chg("plus",C["green"],f'<span {MONO11}>shop</span> is created (--create-namespace)')}</div>
+<div><p class="dtitle">Notes</p><div class="mono" style="font-size:11.5px;color:var(--muted);line-height:17px">kubyl-demo 0.2.0 is installed as web in shop.</div></div></div>'''
+    body = f'''<div style="display:flex;align-items:center;gap:8px;padding:8px 16px;border-bottom:1px solid var(--bv);font-size:12.5px;background:#2b3a2f">{ic("ok",13,C["green"])}<span>Server-side dry run passed: 5 objects in 5 kinds, 1 hook, 1 CRD. Nothing was applied.</span></div>
+<div style="display:flex;height:420px"><div style="width:270px;flex-shrink:0;border-right:1px solid var(--bv);padding:8px;overflow:hidden">{glist}</div>
+<div style="flex:1;min-width:0;display:flex;flex-direction:column"><div style="display:flex;align-items:center;gap:8px;height:32px;padding:0 12px;border-bottom:1px solid var(--bv);font-size:12px"><span class="mono">Secret web-auth</span><span style="flex:1"></span><span style="display:flex;gap:5px;align-items:center;color:var(--dim)">{ic("lock",12)}Secret data is masked</span></div><div style="padding:6px 0">{values_rows(L)}</div></div>{right}</div>'''
+    footer = f'<span style="font-size:12px;color:var(--muted)">Type <span class="mono" style="color:var(--text)">kind-kubyl-dev</span> to install on a production cluster</span><div class="inp focus" style="width:180px;height:28px"><span class="mono" style="font-size:12.5px;color:var(--text)">kind-kubyl</span></div><span style="flex:1"></span><button class="btn g">{ic("left",12)}Back</button><button class="btn p" style="opacity:.55">{ic("download",12,"#1b1e24")}Install</button>'
+    modal = helm_modal(1000, "Install kubyl-demo as web", op_tile("KD", C["accent"]), helm_steps(1) + '<span class="prod" style="font-size:9.5px;padding:0 4px;margin-left:10px">PROD</span>', body, footer)
+    content = f'<div style="flex:1;display:flex;min-height:0">{helm_charts_center()}</div>'
+    return page("Install preview — Kubyl", op_shell("Helm", helm_tabs("charts"), content, modal))
+
+def helm_release_header(status="deployed", buttons=True):
+    btns = (f'<button class="btn p" style="height:26px">{ic("up",12,"#1b1e24")}Upgrade…</button><button class="btn" style="height:26px">{ic("rollback",12)}Roll back…</button><button class="btn d" style="height:26px">{ic("trash",12,C["red"])}Uninstall…</button>' if buttons else "")
+    return (f'<div style="display:flex;align-items:center;gap:10px;padding:0 12px 0 16px;height:44px;flex-shrink:0;border-bottom:1px solid var(--bv)">{ic("anchor",15,C["accent"])}<span class="mono" style="font-size:14px;font-weight:600">web</span><span style="color:var(--dim)">shop</span>{helm_status(status)}'
+            f'<span class="mono" style="font-size:12px;color:var(--muted)">kubyl-demo-0.1.0 · app 1.0.0 · revision</span><button class="btn" style="height:24px;padding:0 8px"><span class="mono" style="font-size:12px">3</span>{ic("cd",11)}</button><div style="flex:1"></div>{btns}<button class="btn g" style="height:26px">{ic("zap",12)}Ask agent</button><button class="btn g" style="height:26px;padding:0 6px">{ic("copy",12)}{ic("cd",11)}</button></div>')
+
+def helm_release_bg(status="deployed", buttons=True):
+    sub = "".join(f'<span style="display:flex;align-items:center;gap:6px;padding:0 10px;{"color:var(--text);box-shadow:inset 0 -2px 0 var(--accent)" if t == "History" else "color:var(--dim)"}">{t}</span>' for t in ["Values", "Manifest", "Notes", "History", "Resources"])
+    return f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0">{helm_release_header(status, buttons)}
+<div style="display:flex;gap:2px;padding:0 8px;border-bottom:1px solid var(--bv);height:34px;align-items:stretch;flex-shrink:0">{sub}</div><div style="flex:1"></div>
+{hints([("1–5","Tabs"),("u","Upgrade…"),("b","Roll back…"),("⌃d","Uninstall…"),("c","Copy helm command")])}</div>'''
+
+def helm_upgrade_screen():
+    items = [("~", "Deployment", "web"), ("~", "ConfigMap", "web-settings"), ("~", "Secret", "web-auth"), ("+", "Job", "web-migrate (hook)"), ("+", "PersistentVolumeClaim", "web-data"), ("=", "Service", "web")]
+    lines = [("@", "   spec"), (" ", "   replicas:"), ("-", "   replicas: 1"), ("+", "   replicas: 2"), (" ", "   selector:"), (" ", "     matchLabels:"), (" ", "       app.kubernetes.io/instance: web"), ("@", "   spec.template.spec.containers[0]"), (" ", "       - name: app"), ("-", '         image: "registry.k8s.io/pause:3.9"'), ("+", '         image: "registry.k8s.io/pause:3.10"')]
+    dl = "".join(diff_line(k, t) for k, t in lines)
+    M = "••••••••"
+    vlines = [(" ", "auth:"), (" ", f"  password: {M}"), ("-", f"greeting: {M}"), ("+", f"greeting: {M}"), ("-", f"replicaCount: {M}"), ("+", f"replicaCount: {M}"), ("+", f"storage: {M}")]
+    vl = "".join(diff_line(k, t) for k, t in vlines)
+    body = f'''<div style="display:flex;align-items:center;gap:8px;padding:8px 16px;border-bottom:1px solid var(--bv);font-size:12.5px;background:#35322a">{ic("alert",13,C["yellow"])}<span>The chart's CRD <span class="mono" style="font-size:11.5px">widgets.demo.kubyl.dev</span> (crds/) isn't applied by an upgrade: Helm only installs CRDs. Hook <span class="mono" style="font-size:11.5px">web-migrate</span> runs post-upgrade.</span></div>
+<div style="display:flex;height:430px">
+<div style="width:280px;flex-shrink:0;border-right:1px solid var(--bv);padding:8px;display:flex;flex-direction:column;gap:2px"><p class="dtitle" style="padding-left:6px">Objects · 3 changed · 2 added · 1 unchanged</p>{helm_object_list(items, 0)}
+<div style="flex:1"></div><div style="font-size:11px;color:var(--dim);padding:0 6px;line-height:16px">Rendered by a server-side dry run of 0.2.0, compared with revision 3's manifest. Secret data changes are reported, not shown.</div></div>
+<div style="flex:1;min-width:0;display:flex;flex-direction:column">
+<div style="display:flex;align-items:center;gap:8px;height:34px;padding:0 12px;border-bottom:1px solid var(--bv);font-size:12px"><span class="chip on" style="height:20px">Manifest</span><span class="chip" style="height:20px">Values · 3 changes</span><span style="flex:1"></span><span class="mono">Deployment web</span><span style="color:var(--dim)">· revision 3 → new</span><span class="chip" style="height:18px">side by side</span></div>
+<div style="flex:1;overflow:hidden;padding:4px 0">{dl}</div>
+<div style="border-top:1px solid var(--bv);padding:6px 0"><div style="display:flex;gap:8px;align-items:center;padding:0 12px 4px;font-size:11.5px;color:var(--dim)">{ic("lock",12)}Values diff (masked)<span style="flex:1"></span><button class="btn g" style="height:22px">{ic("eye",11)}Reveal</button></div>{vl}</div></div></div>'''
+    footer = f'<span style="font-size:12px;color:var(--dim)">kubyl-dev/kubyl-demo 0.1.0 → <span style="color:var(--green)">0.2.0</span> · values: edited (--reset-values) · --atomic</span><span style="flex:1"></span><button class="btn g">{ic("left",12)}Back</button><button class="btn p">{ic("up",12,"#1b1e24")}Upgrade</button>'
+    modal = helm_modal(1080, "Upgrade web", ic("up", 16, C["accent"]), '<span style="display:flex;gap:14px">' + '<span style="font-size:12px;color:var(--green)">1 Configure</span><span style="color:var(--faint)">›</span><span style="font-size:12px;color:var(--accent)">2 Review</span><span style="color:var(--faint)">›</span><span style="font-size:12px;color:var(--dim)">3 Upgrade</span></span>', body, footer, top=36)
+    return page("Upgrade review — Kubyl", op_shell("Helm", helm_tabs("release"), helm_release_bg(), modal))
+
+def helm_rollback_screen():
+    revs = [("3", "deployed", "Upgrade complete", "kubyl-demo-0.1.0", "2m", False), ("2", "superseded", "Upgrade complete", "kubyl-demo-0.1.0", "1h", True), ("1", "superseded", "Install complete", "kubyl-demo-0.1.0", "1h", False)]
+    rl = "".join(f'<div style="display:grid;grid-template-columns:16px 26px 100px minmax(0,1fr) 40px;gap:8px;align-items:center;padding:7px 10px;border-radius:6px;font-size:12px;{"background:var(--sel);outline:1px solid var(--accent);outline-offset:-1px" if on else ""}"><span style="width:12px;height:12px;border-radius:50%;border:1px solid {C["accent"] if on else C["faint"]};display:flex;align-items:center;justify-content:center">{"<span style=\"width:6px;height:6px;border-radius:50%;background:var(--accent)\"></span>" if on else ""}</span><span class="mono">{r}</span>{helm_status(s)}<span style="color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{d} · {c}</span><span class="mono" style="color:var(--dim)">{a}</span></div>' for r, s, d, c, a, on in revs)
+    items = [("~", "ConfigMap", "web-settings"), ("=", "Deployment", "web"), ("=", "Secret", "web-auth"), ("=", "Service", "web")]
+    lines = [("@", "   data"), ("-", '   greeting: "hi"'), ("+", '   greeting: "hello"')]
+    dl = "".join(diff_line(k, t) for k, t in lines)
+    opts = f'<div style="display:flex;flex-direction:column;gap:7px">{check(False, "Wait until ready")}{check(True, "Clean up on failure", "--cleanup-on-fail")}{check(False, "No hooks", "--no-hooks")}</div>'
+    body = f'''<div style="display:flex;height:390px">
+<div style="width:360px;flex-shrink:0;border-right:1px solid var(--bv);padding:12px;display:flex;flex-direction:column;gap:4px"><p class="dtitle" style="padding-left:4px">Roll back to</p>{rl}<div style="flex:1"></div><p class="dtitle" style="padding-left:4px">Options</p>{opts}</div>
+<div style="flex:1;min-width:0;display:flex;flex-direction:column"><div style="display:flex;align-items:center;gap:8px;height:34px;padding:0 12px;border-bottom:1px solid var(--bv);font-size:12px"><span>revision 3 → 2</span><span style="color:var(--dim)">· 1 changed · 3 unchanged · values: 1 change</span></div>
+<div style="display:flex;flex:1;min-height:0"><div style="width:230px;flex-shrink:0;border-right:1px solid var(--bv);padding:8px">{helm_object_list(items, 0)}</div><div style="flex:1;min-width:0;padding:4px 0">{dl}</div></div></div></div>'''
+    footer = f'<span style="font-size:12px;color:var(--dim)">Creates revision 4 with revision 2\'s manifest and values</span><span style="flex:1"></span><button class="btn g">Cancel</button><button class="btn p">{ic("rollback",12,"#1b1e24")}Roll back to 2</button>'
+    modal = helm_modal(900, "Roll back web", ic("rollback", 16, C["accent"]), '<span style="font-size:12px;color:var(--dim)">shop · kind-kubyl-dev</span>', body, footer, top=60)
+    return page("Roll back a release — Kubyl", op_shell("Helm", helm_tabs("release"), helm_release_bg(), modal))
+
+def helm_uninstall_screen():
+    gone = [("Deployment", "web"), ("Service", "web"), ("ConfigMap", "web-settings"), ("Secret", "web-auth"), ("Secret", "sh.helm.release.v1.web.v1–v3 (history)")]
+    gl = "".join(f'<div style="display:flex;gap:8px;align-items:center;font-size:12px;padding:4px 0;border-bottom:1px solid var(--bv)">{ic("minus",12,C["red"])}<span style="width:120px;color:var(--dim)">{k}</span><span class="mono" style="font-size:11.5px">{n}</span></div>' for k, n in gone)
+    stay = [("PersistentVolumeClaim web-data", "helm.sh/resource-policy: keep"), ("CustomResourceDefinition widgets.demo.kubyl.dev", "installed from crds/: Helm never deletes it"), ("PersistentVolumeClaims data-db-*", "created by the StatefulSet, not by Helm")]
+    sl = "".join(f'<div style="display:flex;gap:8px;align-items:flex-start;font-size:12px;padding:4px 0;border-bottom:1px solid var(--bv)">{ic("lock",12,C["yellow"])}<div><div class="mono" style="font-size:11.5px">{n}</div><div style="color:var(--dim);font-size:11.5px">{w}</div></div></div>' for n, w in stay)
+    body = f'''<div style="padding:14px 16px;display:flex;flex-direction:column;gap:14px">
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:18px"><div><p class="dtitle">Deleted · 4 objects</p>{gl}</div><div><p class="dtitle">Stays</p>{sl}</div></div>
+<div><p class="dtitle">Hooks</p>{op_chg("zap",C["accent"],f'Job <span {MONO11}>web-cleanup</span> runs pre-delete')}</div>
+<div style="display:flex;gap:18px">{check(False, "Keep history", "--keep-history: rollback stays possible")}{check(False, "No hooks", "--no-hooks")}{check(False, "Wait", "until the objects are gone")}</div>
+<div style="display:flex;flex-direction:column;gap:6px"><span style="font-size:12px;color:var(--muted)">Type <span class="mono" style="color:var(--text)">web</span> to uninstall on a production cluster</span><div class="inp focus" style="height:28px"><span class="mono" style="font-size:12.5px;color:var(--text)">we</span></div></div></div>'''
+    footer = f'<span style="font-size:12px;color:var(--dim)">helm uninstall web -n shop</span><span style="flex:1"></span><button class="btn g">Cancel</button><button class="btn" style="background:#5c2b30;border-color:#7a3a40;color:#f2b8bd;opacity:.6">{ic("trash",12,"#f2b8bd")}Uninstall</button>'
+    modal = helm_modal(760, "Uninstall web", ic("trash", 16, C["red"]), '<span class="prod" style="font-size:9.5px;padding:0 4px">PROD</span>', body, footer, top=80)
+    return page("Uninstall a release — Kubyl", op_shell("Helm", helm_tabs("release"), helm_release_bg(), modal))
+
+def helm_repos_screen():
+    repos = [("kubyl-dev", "http://127.0.0.1:8879"), ("argo", "https://argoproj.github.io/argo-helm"), ("bitnami", "https://charts.bitnami.com/bitnami"), ("ingress-nginx", "https://kubernetes.github.io/ingress-nginx"), ("jetstack", "https://charts.jetstack.io"), ("prometheus-community", "https://prometheus-community.github.io/helm-charts")]
+    rl = "".join(f'<div style="display:grid;grid-template-columns:150px minmax(0,1fr) 54px 28px;gap:8px;align-items:center;font-size:12px;padding:6px 4px;border-bottom:1px solid var(--bv)"><span class="mono">{n}</span><span class="mono" style="font-size:11.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{u}</span><button class="btn g" style="height:22px">{ic("refresh",11)}</button><button class="btn g" style="height:22px;padding:0 4px">{ic("trash",11,C["red"])}</button></div>' for n, u in repos)
+    inp = lambda v, ph=False, mono=True: f'<div class="inp" style="height:26px"><span class="{"mono" if mono else ""}" style="font-size:12px;color:{"var(--dim)" if ph else "var(--text)"}">{v}</span></div>'
+    add = f'''<div style="display:flex;flex-direction:column;gap:8px">
+{form_row("Name", inp("private"))}{form_row("URL", inp("https://charts.example.com/stable"))}
+{form_row("User name", inp("optional", True, False))}{form_row("Password", inp("••••••••"))}
+{form_row("CA file", inp("optional, PEM", True, False))}{form_row("Client cert", inp("optional: certificate and key files", True, False))}
+<div style="display:flex;gap:8px;align-items:flex-start;padding:8px 10px;border-radius:6px;background:#35322a;font-size:11.5px;line-height:16px;color:var(--muted)">{ic("alert",13,C["yellow"])}<span>Helm stores a repository's user name and password in plain text in <span class="mono">~/Library/Preferences/helm/repositories.yaml</span>. Kubyl keeps no copy. Prefer tokens scoped to reading charts.</span></div>
+<div style="display:flex;justify-content:flex-end"><button class="btn p">{ic("plus",12,"#1b1e24")}Add repository</button></div></div>'''
+    oci = f'''<div style="display:flex;flex-direction:column;gap:8px">{form_row("Registry", inp("ghcr.io"))}{form_row("User name", inp("octocat"))}{form_row("Password", inp("••••••••"))}
+<div style="font-size:11.5px;color:var(--dim);line-height:16px">helm registry login: the login goes to Docker's credential store (or Helm's registry config.json). Type oci:// references into the Charts search.</div>
+<div style="display:flex;justify-content:flex-end"><button class="btn">{ic("key",12)}Log in</button></div></div>'''
+    body = f'''<div style="display:flex;height:440px"><div style="flex:1;min-width:0;padding:12px 16px;border-right:1px solid var(--bv);display:flex;flex-direction:column"><div style="display:flex;align-items:center;margin-bottom:6px"><p class="dtitle" style="margin:0;flex:1">Repositories · 6</p><button class="btn g" style="height:24px">{ic("refresh",12)}Update all</button></div>{rl}
+<div style="flex:1"></div><div style="font-size:11px;color:var(--dim)">The same list as helm repo list (HELM_REPOSITORY_CONFIG).</div></div>
+<div style="width:400px;flex-shrink:0;padding:12px 16px;display:flex;flex-direction:column;gap:10px"><div style="display:flex;gap:6px"><span class="chip on" style="height:22px;padding:0 10px">HTTP repository</span><span class="chip" style="height:22px;padding:0 10px">OCI registry login</span></div>{add}</div></div>'''
+    footer = '<span style="flex:1"></span><button class="btn g">Close</button>'
+    modal = helm_modal(940, "Helm repositories", ic("gear", 16, C["accent"]), "", body, footer, top=60)
+    content = f'<div style="flex:1;display:flex;min-height:0">{helm_charts_center()}</div>'
+    return page("Helm repositories — Kubyl", op_shell("Helm", helm_tabs("charts"), content, modal))
+
+def helm_missing_screen():
+    missing = f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0;border-right:1px solid var(--border)">
+{tabs([("anchor", "Charts", True)], tools=False)}
+<div style="flex:1;display:flex;flex-direction:column;gap:14px;padding:30px 34px">
+<div style="display:flex;gap:12px;align-items:center">{ic("anchor",22,C["dim"])}<div><div style="font-size:16px;font-weight:600">helm isn't installed</div><div style="font-size:12.5px;color:var(--muted);margin-top:2px">Kubyl runs your <span class="mono" style="font-size:11.5px">helm</span> (3.13 or newer) for charts, installs and upgrades. It looked in your login shell's PATH.</div></div></div>
+<div class="card" style="padding:10px 14px;display:flex;flex-direction:column;gap:8px;font-size:12.5px;color:var(--muted);line-height:19px">
+<div style="display:flex;gap:8px;align-items:center"><div class="mono" style="flex:1;font-size:11.5px;padding:6px 8px;border-radius:5px;background:#23272e;color:var(--text)">brew install helm</div><button class="btn g" style="height:24px">{ic("copy",12)}</button></div>
+<div>Or set <span class="mono" style="font-size:11.5px;color:var(--text)">helm.path</span> in settings.json. Helm releases stay visible without it (read-only), and their commands can be copied.</div></div>
+<div style="display:flex;gap:8px"><button class="btn">{ic("refresh",13)}Check again</button><button class="btn g">{ic("ext",13)}helm.sh/docs/intro/install</button></div>
+</div></div>'''
+    stuck = f'''<div style="flex:1;display:flex;flex-direction:column;min-width:0">
+<div style="display:flex;align-items:center;gap:10px;padding:0 12px 0 16px;height:44px;flex-shrink:0;border-bottom:1px solid var(--bv)">{ic("anchor",15,C["accent"])}<span class="mono" style="font-size:14px;font-weight:600">kubyl-stuck</span><span style="color:var(--dim)">kubyl-helm</span>{helm_status("pending-upgrade")}<div style="flex:1"></div><button class="btn" style="height:26px">{ic("rollback",12)}Roll back…</button></div>
+<div style="display:flex;gap:10px;align-items:flex-start;padding:10px 14px;background:#35322a;border-bottom:1px solid #5a4f33;font-size:12.5px;line-height:18px">{ic("alert",14,C["yellow"])}<div style="flex:1"><b style="font-weight:600">The release is stuck in pending-upgrade</b><div style="color:var(--muted)">No helm is running on it: an upgrade was interrupted. Helm refuses new upgrades ("another operation is in progress") until you roll back to revision 1, the last deployed one.</div></div><button class="btn p" style="height:24px">{ic("rollback",12,"#1b1e24")}Roll back to 1…</button></div>
+<div style="padding:12px 16px"><p class="dtitle">An upgrade in progress (the dialog closed)</p>
+<div class="card" style="padding:10px 12px;display:flex;flex-direction:column;gap:6px"><div style="display:flex;gap:8px;align-items:center;font-size:12.5px">{ic("refresh",13,C["accent"])}<b style="font-weight:500">Upgrading web in shop</b><span style="color:var(--dim)">· 1m 12s · --wait 5m0s</span><span style="flex:1"></span><button class="btn g" style="height:22px">Cancel</button></div>
+<div class="mono" style="font-size:11.5px;color:var(--dim);line-height:17px">Pulled: localhost:5022/charts/kubyl-demo:0.2.0<br>beginning wait for 6 resources with timeout of 5m0s<br>Deployment is not ready: shop/web. 1 out of 2 expected pods are ready</div></div></div>
+</div>'''
+    content = f'<div style="flex:1;display:flex;min-height:0">{missing}{stuck}</div>'
+    return page("helm isn't installed, a stuck release — Kubyl", op_shell("Helm", "", content))
 # ---------- 21. Flux (phase 23) ----------
 FLUX_STATE = {"Ready": C["green"], "Reconciling": C["accent"], "Failed": C["red"], "Stalled": C["orange"],
               "Suspended": C["purple"], "Unknown": C["dim"]}
@@ -4542,6 +4769,14 @@ SCREENS = [
  ("Agent.dc.html", "19 · Agent panel: a thread with Kubyl tool calls, a plan and a command to approve", agent_screen),
  ("AgentStates.dc.html", "19 · Agent: new thread, agent picker, first-run note, sign-in and stopped states", agent_states_screen),
  ("AgentQuestions.dc.html", "19 · Agent questions: a form, a link to open, a file change", agent_questions_screen),
+ ("HelmCharts.dc.html", "20 · Helm charts: repositories, search, a chart's details (versions, README, default values)", helm_charts_screen),
+ ("HelmInstall.dc.html", "20 · Install a chart: name, namespace, version, values editor with the chart's schema, options", helm_install_screen),
+ ("HelmInstallPreview.dc.html", "20 · Install preview: the dry run's objects by kind (Secrets masked), hooks, CRDs; typed name on PROD", helm_install_preview_screen),
+ ("HelmUpgrade.dc.html", "20 · Upgrade review: per-object manifest diff, values diff (masked), CRDs Helm won't upgrade", helm_upgrade_screen),
+ ("HelmRollback.dc.html", "20 · Roll back: pick a revision, what changes", helm_rollback_screen),
+ ("HelmUninstall.dc.html", "20 · Uninstall: what gets deleted, what stays", helm_uninstall_screen),
+ ("HelmRepos.dc.html", "20 · Repositories and OCI registry login", helm_repos_screen),
+ ("HelmMissing.dc.html", "20 · helm isn't installed; a release stuck in pending-upgrade; an upgrade running", helm_missing_screen),
  ("FluxOverview.dc.html", "21 · Flux overview: health, counts, needs attention, recent activity, controllers", flux_overview_screen),
  ("FluxKustomizations.dc.html", "21 · Flux Kustomizations with the details dock (waiting for a dependency)", flux_kustomizations_screen),
  ("FluxKustomization.dc.html", "21 · Kustomization: conditions, source and revision, settings, dependencies", flux_kustomization_screen),

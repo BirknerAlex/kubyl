@@ -8,6 +8,7 @@
 //! - [`client`], [`transport`]: building and probing clients on Kubyl's HTTP/2 stack.
 //! - [`discovery`], [`cluster_info`], [`access`], [`openapi`], [`watches`]: what the cluster
 //!   serves and the watches every connection runs.
+//! - [`cli`]: how a user's CLI (`helm`) reaches a context: kubeconfig, context, Kubyl's token.
 //! - [`manager`]: [`ManagerCore`](manager::ManagerCore), the sources, contexts and connections
 //!   state machine.
 //!
@@ -15,6 +16,7 @@
 
 pub mod access;
 pub mod auth;
+pub mod cli;
 pub mod client;
 pub mod cluster_info;
 pub mod discovery;

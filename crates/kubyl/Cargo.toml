@@ -51,6 +51,7 @@ kubyl_core.workspace = true
 kubyl_explorer.workspace = true
 kubyl_files.workspace = true
 kubyl_flux.workspace = true
+kubyl_helm.workspace = true
 kubyl_keymap.workspace = true
 kubyl_kube.workspace = true
 kubyl_kubeconfig.workspace = true
