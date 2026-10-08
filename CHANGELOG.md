@@ -2,6 +2,21 @@
 
 All notable changes to Kubyl are documented here.
 
+## [0.6.0] - 2026-10-08
+
+### Bug Fixes
+
+- Address CodeRabbit review on phase 21 (review) ([5f60d44](https://github.com/BirknerAlex/kubyl/commit/5f60d44dcedf3f429810dd8ded39a83b9485a49e))
+
+### Features
+
+- Agents over ACP with Kubyl's cluster tools (phase 21) ([96ddb5f](https://github.com/BirknerAlex/kubyl/commit/96ddb5fcbe09aa9adea0b411db34e75fbb48d47f))
+- One Credentials handle for every stored secret, with optional scopes ([a14a655](https://github.com/BirknerAlex/kubyl/commit/a14a655ead68d155498e15cd547c66cfc5fbf706))
+- Scoped credential handles ignore tokens written into the kubeconfig ([6740fdb](https://github.com/BirknerAlex/kubyl/commit/6740fdb5e5600c3c081fe9c9a38222f5094137d7))
+- Flux CD sources, Kustomizations, HelmReleases, reconcile and suspend (phase 23) ([ac26db5](https://github.com/BirknerAlex/kubyl/commit/ac26db5da599818e8e73aa9779b72d31d8490306))
+- Charts, install, upgrade, rollback and uninstall (phase 22) ([9546aef](https://github.com/BirknerAlex/kubyl/commit/9546aefc1fe531803d53c8607cd31d1293310d6c))
+- Device resources, admission policies, Gateway API, VPA and EndpointSlice views (phase 24) (#45) ([2fa5584](https://github.com/BirknerAlex/kubyl/commit/2fa558430d15da894871332839f3edefae581a02))
+
 ## [0.5.0] - 2026-10-06
 
 ### Bug Fixes
