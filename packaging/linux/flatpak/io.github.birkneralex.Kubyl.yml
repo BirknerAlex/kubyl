@@ -5,7 +5,7 @@
 # (kubyl_webview), and only the GNOME runtime ships them.
 app-id: io.github.birkneralex.Kubyl
 runtime: org.gnome.Platform
-runtime-version: '48'
+runtime-version: '50'
 sdk: org.gnome.Sdk
 command: kubyl
 
