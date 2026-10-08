@@ -548,13 +548,4 @@ jobs:
             dist/*.deb
             dist/*.rpm
             dist/*.pkg.tar.zst
-
-      # A separate step and channel: a Flatpak channel is an OSTree remote of its own
-      # (`flatpak remote-add silo https://silo.tyrola.dev/kubyl/flatpak/silo.flatpakrepo`).
-      - uses: BirknerAlex/silo/.github/actions/publish@v0.15.0
-        with:
-          server: https://silo.tyrola.dev
-          token: ${{ secrets.SILO_KUBYL_TOKEN }}
-          repo: kubyl
-          channel: flatpak
-          files: dist/*.flatpak
+            dist/*.flatpak

@@ -39,8 +39,8 @@ After the GitHub Release publishes, three more jobs distribute it further:
 - `publish-winget` submits a manifest update to `microsoft/winget-pkgs` via `wingetcreate`.
 - `publish-silo` pushes the `.deb`/`.rpm`/`.pkg.tar.zst` to the `kubyl` repo (channel `stable`)
   on the silo instance at `silo.tyrola.dev`, via the reusable action in
-  `BirknerAlex/silo/.github/actions/publish`. A second step pushes the `.flatpak` bundles to
-  channel `flatpak` of the same repo, which silo serves as an OSTree remote.
+  `BirknerAlex/silo/.github/actions/publish`. The `.flatpak` bundles go to the same channel;
+  silo serves them as an OSTree remote under `/kubyl/stable/ostree/`, separate from the apt/dnf/pacman indexes.
 
 Flatpak: `script/build-flatpak.sh` (called from `build-linux`) wraps the release binary with
 `packaging/linux/flatpak/` (manifest on the GNOME runtime, because Kubyl needs GTK 3 and WebKitGTK;
@@ -48,7 +48,7 @@ metainfo) into `kubyl-$VERSION-linux-<amd64|arm64>.flatpak`. It is not submitted
 add silo's remote and install from it:
 
 ```sh
-flatpak remote-add --user kubyl https://silo.tyrola.dev/kubyl/flatpak/silo.flatpakrepo
+flatpak remote-add --user kubyl https://silo.tyrola.dev/kubyl/stable/silo.flatpakrepo
 flatpak install kubyl io.github.birkneralex.Kubyl
 ```
 
