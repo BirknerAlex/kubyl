@@ -398,6 +398,15 @@ jobs:
             "$([ '${{ matrix.arch }}' = amd64 ] && echo x86_64 || echo aarch64)" \
             "target/${{ matrix.target }}/release/kubyl"
 
+      # Bundle for silo's Flatpak remote (not Flathub). Needs flatpak-builder and the GNOME
+      # runtime/SDK from Flathub, installed per-user by the script.
+      - name: Build Flatpak
+        run: |
+          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder
+          ./script/build-flatpak.sh "$VERSION" \
+            "$([ '${{ matrix.arch }}' = amd64 ] && echo x86_64 || echo aarch64)" \
+            "target/${{ matrix.target }}/release/kubyl"
+
       - uses: actions/upload-artifact@v4
         with:
           name: kubyl-linux-${{ matrix.arch }}
@@ -407,6 +416,7 @@ jobs:
             *.rpm
             *.pkg.tar.zst
             *.AppImage
+            *.flatpak
           retention-days: 7
 
   build-update-manifest:
@@ -528,7 +538,7 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - uses: BirknerAlex/silo/.github/actions/publish@v0.14.0
+      - uses: BirknerAlex/silo/.github/actions/publish@v0.15.0
         with:
           server: https://silo.tyrola.dev
           token: ${{ secrets.SILO_KUBYL_TOKEN }}
@@ -538,3 +548,13 @@ jobs:
             dist/*.deb
             dist/*.rpm
             dist/*.pkg.tar.zst
+
+      # A separate step and channel: a Flatpak channel is an OSTree remote of its own
+      # (`flatpak remote-add silo https://silo.tyrola.dev/kubyl/flatpak/silo.flatpakrepo`).
+      - uses: BirknerAlex/silo/.github/actions/publish@v0.15.0
+        with:
+          server: https://silo.tyrola.dev
+          token: ${{ secrets.SILO_KUBYL_TOKEN }}
+          repo: kubyl
+          channel: flatpak
+          files: dist/*.flatpak

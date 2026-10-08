@@ -19,7 +19,7 @@ trigger it — regular CI (`.github/workflows/ci.yml`) still runs on every push 
    that tag and the release job publishes it.
 
 Artifacts published: macOS universal (arm64+x86_64) notarized `.dmg`; Windows `x86_64`/`aarch64`
-`.zip` (unsigned — see below); Linux `x86_64`/`aarch64` `.tar.gz`, `.deb`, `.rpm`, `.AppImage`;
+`.zip` (unsigned — see below); Linux `x86_64`/`aarch64` `.tar.gz`, `.deb`, `.rpm`, `.AppImage`, `.flatpak`;
 Arch `.pkg.tar.zst` (amd64 only — Arch Linux is x86_64-only upstream). Plus `SHA256SUMS` and the
 signed self-update manifest (`updates-stable.json` + `.minisig`).
 
@@ -39,7 +39,18 @@ After the GitHub Release publishes, three more jobs distribute it further:
 - `publish-winget` submits a manifest update to `microsoft/winget-pkgs` via `wingetcreate`.
 - `publish-silo` pushes the `.deb`/`.rpm`/`.pkg.tar.zst` to the `kubyl` repo (channel `stable`)
   on the silo instance at `silo.tyrola.dev`, via the reusable action in
-  `BirknerAlex/silo/.github/actions/publish`.
+  `BirknerAlex/silo/.github/actions/publish`. A second step pushes the `.flatpak` bundles to
+  channel `flatpak` of the same repo, which silo serves as an OSTree remote.
+
+Flatpak: `script/build-flatpak.sh` (called from `build-linux`) wraps the release binary with
+`packaging/linux/flatpak/` (manifest on the GNOME runtime, because Kubyl needs GTK 3 and WebKitGTK;
+metainfo) into `kubyl-$VERSION-linux-<amd64|arm64>.flatpak`. It is not submitted to Flathub. Users
+add silo's remote and install from it:
+
+```sh
+flatpak remote-add --user kubyl https://silo.tyrola.dev/kubyl/flatpak/silo.flatpakrepo
+flatpak install kubyl io.github.birkneralex.Kubyl
+```
 
 The macOS Homebrew cask (`birkneralex/homebrew-tap`) isn't pushed from this repo's CI at all —
 that tap's own scheduled workflow polls `kubyl`'s GitHub releases and opens its own PR (see
