@@ -4,7 +4,9 @@
 //!   files stream `cat`, and large ones are fetched in `dd` chunks appended to a `.kubyl-part`
 //!   file, so a retry after a network blip resumes at the last complete chunk.
 //! - Uploads stream a local tar archive into `tar xof - -C <dir>` (modes and mtimes kept, owned
-//!   by the container's user), or `cat >` for a single file when the image has no tar.
+//!   by the container's user), or `cat >` for a single file when the image has no tar. The
+//!   input is sized (`head -c`) where possible so the exit status survives clusters without the
+//!   v5 exec protocol.
 //! - Verification compares SHA-256 on both sides (`sha256sum` in the container).
 //!
 //! Progress is reported as byte deltas on a channel; the queue turns them into speed and ETA.
@@ -472,11 +474,29 @@ async fn upload(job: &TransferJob, progress: &ProgressTx) -> anyhow::Result<()> 
         }
         return upload_cat(job, progress).await;
     }
+    let (source, name, is_dir) = (job.local.clone(), job.dest_name.clone(), job.is_dir);
+    // The exact archive size lets `head -c` end the input (see `remote::read_input`).
+    let size = if caps.head {
+        let (source, name) = (source.clone(), name.clone());
+        let count = tokio::task::spawn_blocking(move || {
+            archive(&source, &name, is_dir, ByteCount::default())
+        })
+        .await
+        .context("archiving")?
+        .context("reading the local files")?;
+        Some(count.0)
+    } else {
+        None
+    };
+    let script = match size {
+        Some(_) => "mkdir -p -- \"$1\" && head -c \"$2\" | tar xof - -C \"$1\"",
+        None => "mkdir -p -- \"$1\" && tar xof - -C \"$1\"",
+    };
     let mut process = remote::exec_stream(
         &job.target,
         sh(
-            "mkdir -p -- \"$1\" && tar xof - -C \"$1\"",
-            [job.target.real(&job.remote)],
+            script,
+            [job.target.real(&job.remote), size.unwrap_or(0).to_string()],
         ),
         true,
     )
@@ -494,52 +514,125 @@ async fn upload(job: &TransferJob, progress: &ProgressTx) -> anyhow::Result<()> 
         text
     });
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
-    let (source, name, is_dir) = (job.local.clone(), job.dest_name.clone(), job.is_dir);
+    let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
     let build = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
         let writer = std::io::BufWriter::with_capacity(1 << 16, ChannelWriter { tx });
-        let mut builder = tar::Builder::new(writer);
-        builder.follow_symlinks(false);
-        if is_dir {
-            builder.append_dir_all(&name, &source)?;
-        } else {
-            builder.append_path_with_name(&source, &name)?;
-        }
-        builder.into_inner()?.flush()
+        archive(&source, &name, is_dir, writer)?.flush()
     });
-    let mut sent = 0u64;
-    while let Some(chunk) = rx.recv().await {
-        stdin.write_all(&chunk).await?;
-        // Tar adds headers and padding: don't report more than the payload.
-        let n = chunk.len() as u64;
-        let report = if total > 0 {
-            n.min(total.saturating_sub(sent))
-        } else {
-            n
-        };
-        sent += n;
-        progress.unbounded_send(Progress::Bytes(report)).ok();
+    let mut write_failed = false;
+    let sent = async {
+        let mut rx = rx;
+        let mut sent = 0u64;
+        while let Some(chunk) = rx.recv().await {
+            let n = chunk.len() as u64;
+            if size.is_some_and(|size| sent + n > size) {
+                anyhow::bail!("the local files changed during the upload");
+            }
+            if let Err(err) = stdin.write_all(&chunk).await {
+                write_failed = true;
+                return Err(err.into());
+            }
+            // Tar adds headers and padding: don't report more than the payload.
+            let report = if total > 0 {
+                n.min(total.saturating_sub(sent))
+            } else {
+                n
+            };
+            sent += n;
+            progress.unbounded_send(Progress::Bytes(report)).ok();
+        }
+        build
+            .await
+            .context("archiving")?
+            .context("reading the local files")?;
+        // Files that shrank since counting: tar ignores zeros after the end of the archive.
+        if let Some(size) = size {
+            let zeros = vec![0u8; 1 << 16];
+            while sent < size {
+                let n = (size - sent).min(zeros.len() as u64);
+                if let Err(err) = stdin.write_all(&zeros[..n as usize]).await {
+                    write_failed = true;
+                    return Err(err.into());
+                }
+                sent += n;
+            }
+        }
+        anyhow::Ok(())
     }
-    build
-        .await
-        .context("archiving")?
-        .context("reading the local files")?;
-    stdin.shutdown().await.ok();
+    .await;
+    if let Err(err) = sent {
+        drop(stdin);
+        let err_text = stderr_task.await.unwrap_or_default();
+        // The command stopped reading: its own error (no space, no permission) is the useful one.
+        return match check_status(status, &err_text).await {
+            Err(remote) if write_failed => Err(remote),
+            _ => Err(err),
+        };
+    }
+    finish_input(stdin, size.is_some(), status, stderr_task).await
+}
+
+/// Writes the upload archive of `source` (named `name` inside) into `writer`.
+fn archive<W: Write>(source: &Path, name: &str, is_dir: bool, writer: W) -> std::io::Result<W> {
+    let mut builder = tar::Builder::new(writer);
+    builder.follow_symlinks(false);
+    if is_dir {
+        builder.append_dir_all(name, source)?;
+    } else {
+        builder.append_path_with_name(source, name)?;
+    }
+    builder.into_inner()
+}
+
+/// A `Write` that only counts (the archive size, before sending it).
+#[derive(Default)]
+struct ByteCount(u64);
+
+impl Write for ByteCount {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0 += buf.len() as u64;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Ends an upload's input and waits for the command. A `sized` input keeps stdin open until
+/// the command exits, so its status still arrives (see `remote::read_input`).
+async fn finish_input(
+    mut stdin: impl tokio::io::AsyncWrite + Unpin,
+    sized: bool,
+    status: Option<
+        impl std::future::Future<
+            Output = Option<k8s_openapi::apimachinery::pkg::apis::meta::v1::Status>,
+        >,
+    >,
+    stderr: tokio::task::JoinHandle<String>,
+) -> anyhow::Result<()> {
+    if !sized {
+        stdin.shutdown().await.ok();
+    }
+    let err_text = stderr.await.unwrap_or_default();
+    let result = check_status(status, &err_text).await;
     drop(stdin);
-    let err_text = stderr_task.await.unwrap_or_default();
-    check_status(status, &err_text).await
+    result
 }
 
 /// `cat > dir/name` for a single file (images without tar), through a temporary name so a
 /// failed upload doesn't replace an existing file with a partial one.
 async fn upload_cat(job: &TransferJob, progress: &ProgressTx) -> anyhow::Result<()> {
     let dest = crate::entry::join(&job.remote, &job.dest_name);
+    let size = tokio::fs::metadata(&job.local).await?.len();
+    let sized = job.target.caps.head;
+    let script = format!(
+        "tmp=\"$1.kubyl-part\"; if {} > \"$tmp\" && [ \"$(wc -c < \"$tmp\")\" -eq \"$2\" ]; then mv -f -- \"$tmp\" \"$1\"; rc=$?; else echo \"the upload was incomplete\" >&2; rc=1; fi; rm -f \"$tmp\"; exit $rc",
+        remote::read_input(sized)
+    );
     let mut process = remote::exec_stream(
         &job.target,
-        sh(
-            "tmp=\"$1.kubyl-part\"; cat > \"$tmp\" && mv -f -- \"$tmp\" \"$1\"; rc=$?; rm -f \"$tmp\"; exit $rc",
-            [job.target.real(&dest)],
-        ),
+        sh(&script, [job.target.real(&dest), size.to_string()]),
         true,
     )
     .await?;
@@ -547,23 +640,30 @@ async fn upload_cat(job: &TransferJob, progress: &ProgressTx) -> anyhow::Result<
     let mut stdin = process
         .stdin()
         .ok_or_else(|| anyhow::anyhow!("no input stream"))?;
-    let mut file = tokio::fs::File::open(&job.local).await?;
+    let stderr = process.stderr();
+    let stderr_task = tokio::spawn(async move {
+        let mut text = String::new();
+        if let Some(mut stderr) = stderr {
+            stderr.read_to_string(&mut text).await.ok();
+        }
+        text
+    });
+    let mut file = tokio::fs::File::open(&job.local).await?.take(size);
     let mut buf = vec![0u8; 1 << 16];
+    let mut sent = 0u64;
     loop {
         let n = file.read(&mut buf).await?;
         if n == 0 {
             break;
         }
         stdin.write_all(&buf[..n]).await?;
+        sent += n as u64;
         report(progress, n as u64);
     }
-    stdin.shutdown().await.ok();
-    drop(stdin);
-    let mut err_text = String::new();
-    if let Some(mut stderr) = process.stderr() {
-        stderr.read_to_string(&mut err_text).await.ok();
+    if sent < size {
+        anyhow::bail!("the file changed during the upload");
     }
-    check_status(status, &err_text).await
+    finish_input(stdin, sized, status, stderr_task).await
 }
 
 /// Compares SHA-256 of every file on both sides.
@@ -680,6 +780,20 @@ mod tests {
         let mut seen = 0;
         pump(&mut data, tx, |n| seen += n).await.unwrap();
         assert_eq!(seen, 1 << 20);
+    }
+
+    #[test]
+    fn counted_archive_size_matches_the_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("site");
+        std::fs::create_dir_all(root.join("a".repeat(120))).unwrap();
+        std::fs::write(root.join("index.html"), vec![b'x'; 1500]).unwrap();
+        std::fs::write(root.join("a".repeat(120)).join("b".repeat(90)), b"deep").unwrap();
+        let counted = archive(&root, "site", true, ByteCount::default())
+            .unwrap()
+            .0;
+        let bytes = archive(&root, "site", true, Vec::new()).unwrap();
+        assert_eq!(counted, bytes.len() as u64);
     }
 
     #[test]
