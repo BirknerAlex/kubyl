@@ -69,14 +69,14 @@ kubyl_webview_core = { path = "crates/kubyl_webview_core" }
 kubyl_yaml = { path = "crates/kubyl_yaml" }
 kubyl_yaml_core = { path = "crates/kubyl_yaml_core" }
 
-# GPUI. `gpui-pre-*` are crates.io snapshots of zed-industries/zed (0.3.6 = zed@bcf6582),
-# the exact snapshot gpui-component 0.6.6 is built against. Bump all of these together, in their own PR.
-gpui = { package = "gpui-pre", version = "=0.3.6" }
-gpui_platform = { package = "gpui-pre-platform", version = "=0.3.6", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
-gpui-base = "=0.6.6"
+# GPUI. `gpui-pre-*` are crates.io snapshots of zed-industries/zed (0.3.8 = zed@279fe07),
+# the exact snapshot gpui-component 0.7.1 is built against. Bump all of these together, in their own PR.
+gpui = { package = "gpui-pre", version = "=0.3.8" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.8", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
+gpui-base = "=0.7.1"
 # `gpui::SharedString` on its own (no UI), for GPUI-free core crates. Bump with gpui.
-gpui_shared_string = { package = "gpui-pre-shared-string", version = "=0.3.6" }
-gpui-component = "=0.6.6"
+gpui_shared_string = { package = "gpui-pre-shared-string", version = "=0.3.8" }
+gpui-component = "=0.7.1"
 
 # Kubernetes
 kube = { version = "4.2.0", default-features = false, features = ["client", "config", "runtime", "ws", "oauth", "oidc", "gzip", "rustls-tls", "ring", "http-proxy", "socks5"] }
@@ -106,7 +106,7 @@ rustls-pki-types = "1.15.1"
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12", "logging"] }
 
 # Assets
-gpui-kit-assets = "=0.6.6"
+gpui-kit-assets = "=0.7.1"
 
 # macOS integration (already in the tree through GPUI)
 block2 = "0.6.2"
