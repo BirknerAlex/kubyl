@@ -4747,11 +4747,11 @@ def rv_sidebar(active, open_groups):
     rows += [root("prod-eu-west-1", "on", color=C["red"], prod=True), root("staging-eu-west-1", "on", color=C["yellow"])]
     return '<aside class="side">' + "\n".join(rows) + '</aside>'
 
-def rv_app(title, active, open_groups, tb, content, ns="kubyl-views"):
+def rv_app(title, active, open_groups, tb, content, ns="kubyl-views", overlay=""):
     inner = f'''<div class="app">
 {titlebar(RV_CLUSTER, ns, False, "kind · v1.37.0")}
 <div class="body">{rv_sidebar(active, open_groups)}<main class="main">{tb}{content}</main></div>
-{statusbar(cluster=RV_CLUSTER, ns=ns)}
+{statusbar(cluster=RV_CLUSTER, ns=ns)}{overlay}
 </div>'''
     return page(title, inner)
 
@@ -4951,6 +4951,51 @@ def vpa_screen():
     return rv_app("VerticalPodAutoscalers — Kubyl", "VerticalPodAutoscalers", ("Workloads",), tb, content)
 
 
+# ---------- 23 · Lens parity (phase 25) ----------
+def menu_item(label, checked=None, icon=None, kbd=None, dim=False, on=False):
+    lead = ic("check", 12, C["accent"], 2.5) if checked else ('<span style="width:12px"></span>' if checked is False else (ic(icon, 12, "currentColor") if icon else ""))
+    k = f'<span class="kbd" style="margin-left:auto">{kbd}</span>' if kbd else ""
+    bg = "background:var(--sel);" if on else ""
+    col = "var(--faint)" if dim else "var(--text)"
+    return f'<div style="display:flex;align-items:center;gap:8px;height:26px;padding:0 10px;border-radius:4px;color:{col};{bg}">{lead}<span>{label}</span>{k}</div>'
+
+def menu_box(items, left, top, width=220):
+    return (f'<div style="position:absolute;left:{left}px;top:{top}px;width:{width}px;padding:4px;border-radius:7px;background:var(--elev);border:1px solid var(--border);'
+            f'box-shadow:0 8px 24px rgba(0,0,0,.45);font-size:12.5px;z-index:5">' + "".join(items) + "</div>")
+
+def menu_sep(): return '<div style="height:1px;background:var(--bv);margin:4px 2px"></div>'
+def menu_label(t): return f'<div style="padding:4px 10px;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--dim)">{t}</div>'
+
+def toast(kind, text, left=None, bottom=44, right=16, buttons=""):
+    col = {"ok": C["green"], "err": C["red"], "info": C["accent"]}[kind]
+    icon = {"ok": "ok", "err": "alert", "info": "info"}[kind]
+    return (f'<div style="position:absolute;right:{right}px;bottom:{bottom}px;width:380px;padding:10px 12px;border-radius:7px;background:var(--elev);border:1px solid var(--border);'
+            f'box-shadow:0 8px 24px rgba(0,0,0,.45);display:flex;gap:9px;align-items:flex-start;font-size:12.5px;z-index:6">{ic(icon, 14, col)}'
+            f'<div style="flex:1;line-height:18px">{text}</div>{buttons}</div>')
+
+def csv_screen():
+    cols = "grid-template-columns: minmax(0,1fr) 60px 120px 70px 80px 90px 150px 54px"
+    pods = [("api-7d9c5b6f4-2xk8q", "1/1", "Running", "0", "184m", "212Mi", "node-a", "3d"),
+            ("api-7d9c5b6f4-9wm4z", "1/1", "Running", "0", "171m", "208Mi", "node-b", "3d"),
+            ("checkout-5b7d8f9c6-4hq2n", "0/1", "CrashLoopBackOff", "12", "—", "—", "node-b", "41m"),
+            ("ledger-0", "1/1", "Running", "0", "402m", "1.1Gi", "node-c", "9d"),
+            ("web-6c8f7d55b-m2xvq", "2/2", "Running", "1", "36m", "96Mi", "node-a", "5h")]
+    def tone(st): return C["green"] if st == "Running" else C["red"]
+    rows = [[m(n, s=12), m(r), tpill(st, tone(st)), m(rs), m(cpu), m(mem), m(node, "var(--muted)"), m(age, "var(--muted)")] for n, r, st, rs, cpu, mem, node, age in pods]
+    center = rv_list("box", "Pods", "5 in shop", cols, ["NAME", "READY", "STATUS", "RESTARTS", "CPU", "MEMORY", "NODE", "AGE"], rows,
+                     [("↵", "Details"), ("l", "Logs"), ("s", "Shell"), ("e", "Edit YAML"), ("/", "Filter"), (":", "Kinds")])
+    menu = menu_box([menu_label("Columns"), menu_item("Ready", True), menu_item("Status", True), menu_item("Restarts", True), menu_item("CPU", True), menu_item("Memory", True),
+                     menu_item("Node", True), menu_item("Age", True), menu_item("IP", False), menu_sep(), menu_item("Wide (-o wide)", False), menu_sep(),
+                     menu_item("Export CSV…", icon="download", on=True)], 1130, 74)
+    t = toast("ok", 'Saved <b style="font-weight:500">5 rows</b> to <span class="mono" style="font-size:11.5px">~/Downloads/pods-shop-20261009-130509.csv</span>')
+    note = ('<div style="position:absolute;left:300px;bottom:44px;width:420px;padding:9px 12px;border-radius:7px;background:var(--elev);border:1px solid var(--border);font-size:12px;line-height:18px;color:var(--muted);z-index:4">'
+            f'{ic("info",13,C["accent"])} The file holds what the table shows: <b style="font-weight:500;color:var(--text)">visible columns</b> in the current <b style="font-weight:500;color:var(--text)">sort and filter</b>, related columns included. '
+            'Secret lists export key counts only. Cells that start with <span class="mono">= + - @</span> get a leading <span class="mono">\'</span> so spreadsheets never run them.</div>')
+    content = f'<div style="flex:1;display:flex;min-height:0">{center}</div>'
+    tb = tabs([("box", "Pods", True), ("layers", "Deployments", False)])
+    return rv_app("Export CSV — Kubyl", "Pods", ("Workloads",), tb, content, ns="shop", overlay=note + menu + t)
+
+
 SCREENS = [
  ("Main.dc.html", "1 · Pods (k9s-style table + details)", pods_screen),
  ("Routes.dc.html", "1 · OpenShift Routes under Network, with details", routes_screen),
@@ -5028,6 +5073,7 @@ SCREENS = [
  ("AdmissionPolicies.dc.html", "22 · Resource views: admission policies under Cluster, CEL validations and bindings", admission_screen),
  ("GatewayApi.dc.html", "22 · Resource views: a Gateway's listeners and attached routes, a Service's Routes", gateway_screen),
  ("VerticalPodAutoscalers.dc.html", "22 · Resource views: VerticalPodAutoscalers with recommendations", vpa_screen),
+ ("CsvExport.dc.html", "23 · Lens parity: Export CSV from any table (the Columns menu, a toast)", csv_screen),
 ]
 
 boards, order = {}, []

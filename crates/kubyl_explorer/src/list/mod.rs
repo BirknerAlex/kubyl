@@ -25,8 +25,8 @@ use gpui::{
 use gpui_component::input::{InputEvent, InputState};
 use kubyl_core::{
     ActionRegistry, ActionSpec, ActiveContext, CellValue, ClusterId, ColumnDef, ColumnProvider,
-    ColumnWidth, Gvr, ResourceColumns, ResourceRef, TabContext, TabNamespace, TabView, ViewKind,
-    ViewRequest,
+    ColumnWidth, Gvr, Notification, NotificationCenter, ResourceColumns, ResourceRef, TabContext,
+    TabNamespace, TabView, ViewKind, ViewRequest,
 };
 use kubyl_kube::access::AccessQuery;
 use kubyl_kube::{ConnectionEvent, ConnectionManager};
@@ -116,6 +116,11 @@ pub(crate) fn init(cx: &mut App) {
     ] {
         ActionRegistry::register(cx, spec.bind(keys, list));
     }
+    // No default key: the palette and the table's menu offer it.
+    ActionRegistry::register(
+        cx,
+        ActionSpec::new("List: Export CSV", kubyl_core::actions::ExportCsv).in_context(CONTEXT),
+    );
 }
 
 /// Replaces the filter of the focused list (the palette's `/` mode).
@@ -1139,6 +1144,35 @@ impl ResourceListView {
         }
     }
 
+    /// The table as shown (visible columns, current sort and filter, related columns
+    /// included) as header and records of text.
+    pub(crate) fn csv_table(&self, cx: &App) -> (Vec<String>, Vec<Vec<String>>) {
+        let kind = export_kind(&self.gvr, self.kind.as_deref());
+        let columns = exportable_columns(self.visible_columns(), &self.gvr.group, kind);
+        csv_records(&columns, &self.rows, |row, def| self.cell(row, def, cx))
+    }
+
+    /// "Export CSV": asks where to save the visible table.
+    pub(crate) fn export_csv(&mut self, cx: &mut Context<Self>) {
+        let (header, rows) = self.csv_table(cx);
+        if rows.is_empty() {
+            NotificationCenter::push(cx, Notification::info("The table has no rows to export."));
+            return;
+        }
+        let name = match self.namespaces.as_slice() {
+            [one] if self.mode != Mode::Favorites => format!("{}-{one}", self.gvr.resource),
+            _ => self.gvr.resource.clone(),
+        };
+        let file = kubyl_core::export::file_name(&name, "csv", jiff::Timestamp::now());
+        let what = format!(
+            "{} {}",
+            rows.len(),
+            if rows.len() == 1 { "row" } else { "rows" }
+        );
+        let text = kubyl_core::csv::write(&header, &rows);
+        kubyl_core::export::save_text(cx, &file, what, text);
+    }
+
     /// Columns shown right now (wide and hidden columns applied).
     pub(crate) fn visible_columns(&self) -> Vec<ColumnDef> {
         self.columns
@@ -1637,6 +1671,44 @@ impl ResourceListView {
     }
 }
 
+/// The kind the export guard checks: keyed on the resource too, as `kind` is unknown until
+/// discovery resolves it.
+fn export_kind<'a>(gvr: &Gvr, kind: Option<&'a str>) -> &'a str {
+    if gvr.group.is_empty() && gvr.resource == "secrets" {
+        "Secret"
+    } else {
+        kind.unwrap_or_default()
+    }
+}
+
+/// The columns a CSV export holds: the visible ones, minus any a kind keeps out of exports
+/// (Secret lists have key counts only).
+fn exportable_columns(columns: Vec<ColumnDef>, group: &str, kind: &str) -> Vec<ColumnDef> {
+    columns
+        .into_iter()
+        .filter(|c| kubyl_resources::columns::exportable(group, kind, &c.id))
+        .collect()
+}
+
+/// Header and one record of cell text per row.
+fn csv_records<R>(
+    columns: &[ColumnDef],
+    rows: &[R],
+    cell: impl Fn(&R, &ColumnDef) -> CellValue,
+) -> (Vec<String>, Vec<Vec<String>>) {
+    let header = columns.iter().map(|c| c.title.to_string()).collect();
+    let records = rows
+        .iter()
+        .map(|row| {
+            columns
+                .iter()
+                .map(|def| kubyl_core::csv::cell_text(&cell(row, def), |b| b.label.as_ref()))
+                .collect()
+        })
+        .collect();
+    (header, records)
+}
+
 /// Whether a spec's context predicate could apply to this list's key context. Only simple
 /// `ResourceList && kind == X` predicates are checked; anything else counts as a match.
 fn spec_matches_context(spec: &kubyl_core::ActionSpec, context: &KeyContext) -> bool {
@@ -1775,6 +1847,68 @@ fn distinct_namespaces<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kubyl_core::CellButton;
+
+    fn column(id: &str, title: &str) -> ColumnDef {
+        ColumnDef::new(id.to_string(), title.to_string(), ColumnWidth::Fixed(80.0))
+    }
+
+    #[test]
+    fn csv_has_the_visible_columns_in_the_order_of_the_rows() {
+        let columns = [column("name", "Name"), column("status", "Status")];
+        // Rows arrive sorted and filtered, the export keeps their order.
+        let rows = ["web-2", "web-1"];
+        let (header, records) = csv_records(&columns, &rows, |row, def| match def.id.as_ref() {
+            "name" => CellValue::Text((*row).into()),
+            _ => CellValue::Status {
+                label: "Running".into(),
+                tone: kubyl_core::Tone::Good,
+            },
+        });
+        let text = kubyl_core::csv::write(&header, &records);
+        assert_eq!(text, "Name,Status\r\nweb-2,Running\r\nweb-1,Running\r\n");
+    }
+
+    #[test]
+    fn csv_guards_object_controlled_text_and_flattens_links() {
+        let columns = [column("name", "Name"), column("bindings", "Bindings")];
+        let (header, records) =
+            csv_records(&columns, &["=cmd|' /C calc'!A0"], |row, def| {
+                match def.id.as_ref() {
+                    "name" => CellValue::Text((*row).into()),
+                    _ => CellValue::Buttons(vec![
+                        CellButton::new("a", |_| unreachable!()),
+                        CellButton::new("b,c", |_| unreachable!()),
+                    ]),
+                }
+            });
+        let text = kubyl_core::csv::write(&header, &records);
+        assert_eq!(text, "Name,Bindings\r\n'=cmd|' /C calc'!A0,\"a, b,c\"\r\n");
+    }
+
+    #[test]
+    fn secrets_are_guarded_before_discovery_names_the_kind() {
+        assert_eq!(export_kind(&Gvr::new("", "v1", "secrets"), None), "Secret");
+        assert_eq!(
+            export_kind(&Gvr::new("apps", "v1", "deployments"), None),
+            ""
+        );
+    }
+
+    #[test]
+    fn secret_exports_drop_every_column_but_counts() {
+        let columns = vec![
+            column("name", "Name"),
+            column("type", "Type"),
+            column("data", "Data"),
+            column("value", "Value"),
+            column("age", "Age"),
+        ];
+        let kept = exportable_columns(columns.clone(), "", "Secret");
+        let ids: Vec<&str> = kept.iter().map(|c| c.id.as_ref()).collect();
+        assert_eq!(ids, ["name", "type", "data", "age"]);
+        assert_eq!(exportable_columns(columns, "", "ConfigMap").len(), 5);
+    }
 
     #[test]
     fn related_watches_follow_the_namespaces_of_the_rows() {

@@ -105,6 +105,19 @@ pub fn is_related(group: &str, kind: &str, column: &str) -> bool {
         .any(|r| r.group == group && r.kind == kind && r.column == column)
 }
 
+/// Whether a table export (CSV) may include `column` of `(group, kind)`. Secret lists hold key
+/// counts and the type only; any other column a Secret list might get later (a decoded value,
+/// a preview of `data`) stays out of exports. Every other kind exports what it shows.
+pub fn exportable(group: &str, kind: &str, column: &str) -> bool {
+    if group.is_empty() && kind == "Secret" {
+        return matches!(
+            column,
+            "cluster" | "namespace" | "name" | "type" | "data" | "age"
+        );
+    }
+    true
+}
+
 pub use views::RelatedIndex;
 
 /// The cell of a [`RELATED_COLUMNS`] column from the index of the related objects.
@@ -1138,6 +1151,39 @@ mod tests {
     fn conditions(types: &[&str]) -> Value {
         json!({"status": {"conditions": types.iter()
             .map(|t| json!({"type": t, "status": "True"})).collect::<Vec<_>>()}})
+    }
+
+    #[test]
+    fn secret_lists_export_counts_and_never_values() {
+        let kinds = builtin();
+        let (_, _, secret) = kinds
+            .iter()
+            .find(|(group, kind, _)| group.is_empty() && *kind == "Secret")
+            .expect("Secret columns");
+        let object = json!({
+            "metadata": {"name": "db", "namespace": "shop"},
+            "type": "Opaque",
+            "data": {"password": "aHVudGVyMg=="},
+            "stringData": {"token": "hunter2"},
+        });
+        for column in secret.columns() {
+            assert!(exportable("", "Secret", &column.id), "{}", column.id);
+            let text =
+                kubyl_base::csv::cell_text(&secret.cell(&object, &column.id), |b| match *b {});
+            assert!(
+                !text.contains("hunter2") && !text.contains("aHVudGVyMg"),
+                "{text}"
+            );
+        }
+        assert_eq!(
+            kubyl_base::csv::cell_text(&secret.cell(&object, "data"), |b| match *b {}),
+            "2"
+        );
+        // A column a Secret list might get later stays out of exports.
+        assert!(!exportable("", "Secret", "value"));
+        assert!(!exportable("", "Secret", "preview"));
+        assert!(exportable("", "ConfigMap", "value"));
+        assert!(exportable("example.com", "Secret", "value"));
     }
 
     #[test]

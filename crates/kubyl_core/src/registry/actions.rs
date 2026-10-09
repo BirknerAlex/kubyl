@@ -47,6 +47,12 @@ impl ActionSpec {
         self
     }
 
+    /// Lists the action in the palette where `context` is active, without a key binding.
+    pub fn in_context(mut self, context: &str) -> Self {
+        self.context = Some(SharedString::from(context.to_string()));
+        self
+    }
+
     pub fn available_when(
         mut self,
         f: impl Fn(&ResourceRef, &ClusterCaps) -> bool + 'static,

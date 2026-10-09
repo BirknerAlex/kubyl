@@ -14,13 +14,14 @@
 pub mod actions;
 pub mod cluster_ids;
 pub mod context;
+pub mod export;
 pub mod forwards;
 pub mod host;
 pub mod notify;
 pub mod registry;
 pub mod runtime;
 
-pub use kubyl_base::{error, notice, types};
+pub use kubyl_base::{csv, error, notice, types};
 
 pub use cluster_ids::ClusterIds;
 pub use context::{ActiveContext, ClusterBadge, TabContext, TabNamespace};
