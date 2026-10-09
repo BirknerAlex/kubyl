@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use kubyl_kube_core::cli::CliTarget;
+pub use kubyl_kube_core::cli::{CliEnv, EnvPolicy};
 
 use crate::decode::Driver;
 use secrecy::{ExposeSecret as _, SecretString};
@@ -110,6 +111,9 @@ pub struct HelmInfo {
     pub env: HelmEnv,
     /// The `PATH` `helm` runs with (the login shell's, so exec plugins are found).
     pub search_path: Option<OsString>,
+    /// What `helm` and its plugins inherit from this process (everything, by default).
+    /// Shared: keeps [`Probe`]'s variants close in size.
+    pub cli_env: Arc<CliEnv>,
 }
 
 /// What looking for `helm` found.
@@ -219,6 +223,16 @@ fn is_executable(_path: &Path) -> bool {
 /// Finds and probes `helm` (on Tokio). `configured` is `helm.path`; `search_path` the login
 /// shell's `PATH`.
 pub async fn probe(configured: Option<&str>, search_path: Option<OsString>) -> Probe {
+    probe_with(configured, search_path, CliEnv::default()).await
+}
+
+/// [`probe`] with an environment policy: `helm` runs with it, here and in [`run`] (through
+/// [`HelmInfo::cli_env`]).
+pub async fn probe_with(
+    configured: Option<&str>,
+    search_path: Option<OsString>,
+    cli_env: CliEnv,
+) -> Probe {
     let configured = configured.map(str::trim).filter(|c| !c.is_empty());
     let Some(path) = resolve(configured.unwrap_or("helm"), search_path.as_deref()) else {
         return Probe::Missing {
@@ -226,7 +240,18 @@ pub async fn probe(configured: Option<&str>, search_path: Option<OsString>) -> P
         };
     };
     let base = Invocation::read(["version", "--short"]).timeout(Duration::from_secs(20));
-    let output = match run_raw(&path, None, None, search_path.as_deref(), base, None, None).await {
+    let output = match run_raw(
+        &path,
+        None,
+        None,
+        search_path.as_deref(),
+        &cli_env,
+        base,
+        None,
+        None,
+    )
+    .await
+    {
         Ok(output) => output,
         Err(err) => {
             // Helm 2 fails without Tiller ("could not find tiller"); still "too old".
@@ -260,6 +285,7 @@ pub async fn probe(configured: Option<&str>, search_path: Option<OsString>) -> P
         None,
         None,
         search_path.as_deref(),
+        &cli_env,
         Invocation::read(["env"]).timeout(Duration::from_secs(20)),
         None,
         None,
@@ -273,6 +299,7 @@ pub async fn probe(configured: Option<&str>, search_path: Option<OsString>) -> P
         version_text,
         env,
         search_path,
+        cli_env: Arc::new(cli_env),
     })
 }
 
@@ -626,6 +653,7 @@ pub async fn run_with_token(
         target.filter(|_| invocation.cluster),
         token,
         helm.search_path.as_deref(),
+        helm.cli_env.as_ref(),
         invocation,
         progress,
         cancel,
@@ -655,17 +683,20 @@ const DRAIN: Duration = if cfg!(test) {
     Duration::from_secs(3)
 };
 
+#[allow(clippy::too_many_arguments)]
 async fn run_raw(
     program: &Path,
     target: Option<&CliTarget>,
     token: Option<SecretString>,
     search_path: Option<&OsStr>,
+    cli_env: &CliEnv,
     invocation: Invocation,
     progress: Option<Progress>,
     cancel: Option<oneshot::Receiver<()>>,
 ) -> Result<Output, HelmError> {
     let write = invocation.is_write();
     let mut command = tokio::process::Command::new(program);
+    cli_env.apply(command.as_std_mut());
     // Kubyl's own `--kube-*` flags and variables decide which cluster, how and where releases
     // are stored; the user's shell variables don't.
     for (key, _) in std::env::vars_os() {
@@ -923,6 +954,8 @@ pub struct HelmCliCore {
     state: CliState,
     /// `helm.path` from the settings.
     configured: Option<String>,
+    /// What `helm` inherits from this process.
+    cli_env: CliEnv,
     probing: Option<kubyl_base::TaskHandle>,
 }
 
@@ -937,7 +970,27 @@ impl HelmCliCore {
         Self {
             state: CliState::Probing,
             configured,
+            cli_env: CliEnv::default(),
             probing: None,
+        }
+    }
+
+    /// [`Self::new`] with an environment policy for `helm` and its plugins.
+    pub fn with_cli_env(mut self, cli_env: CliEnv) -> Self {
+        self.cli_env = cli_env;
+        self
+    }
+
+    pub fn cli_env(&self) -> &CliEnv {
+        &self.cli_env
+    }
+
+    /// Changes the environment policy and looks for `helm` again with it. A no-op when it's
+    /// the one in use.
+    pub fn set_cli_env(&mut self, cli_env: CliEnv, host: &mut dyn kubyl_base::Host<Self>) {
+        if cli_env != self.cli_env {
+            self.cli_env = cli_env;
+            self.reprobe(host);
         }
     }
 
@@ -985,6 +1038,7 @@ impl HelmCliCore {
         use kubyl_base::HostExt as _;
         self.state = CliState::Probing;
         let configured = self.configured.clone();
+        let cli_env = self.cli_env.clone();
         self.probing = Some(host.spawn(
             async move {
                 let path = match search_path {
@@ -994,7 +1048,7 @@ impl HelmCliCore {
                         .ok()
                         .flatten(),
                 };
-                probe(configured.as_deref(), path).await
+                probe_with(configured.as_deref(), path, cli_env).await
             },
             |this, probe, host| {
                 if let Probe::Ready(info) = &probe {

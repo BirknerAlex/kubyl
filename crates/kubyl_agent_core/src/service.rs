@@ -23,6 +23,7 @@ use agent_client_protocol_schema::v1::{
 use futures::StreamExt as _;
 use kubyl_base::host::{Flow, Host, HostExt as _, Pace, Service, TaskHandle};
 use kubyl_base::{ClusterId, Notice};
+use kubyl_kube_core::cli::CliEnv;
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, watch};
 
@@ -267,6 +268,10 @@ pub struct AgentCore {
     settings: AgentSettings,
     env: AgentEnv,
     path: Option<OsString>,
+    /// What agents and their commands inherit from this process.
+    cli_env: CliEnv,
+    capabilities: acp::ClientCapabilities,
+    session_meta: Option<Value>,
     agents: Vec<AgentInfo>,
     slots: HashMap<String, Slot>,
     threads: Vec<Thread>,
@@ -301,6 +306,9 @@ impl AgentCore {
             settings,
             env,
             path: None,
+            cli_env: CliEnv::default(),
+            capabilities: acp::ClientCapabilities::default(),
+            session_meta: None,
             agents,
             slots: HashMap::new(),
             threads: Vec::new(),
@@ -310,6 +318,74 @@ impl AgentCore {
             _lookup: None,
             ticker: None,
         }
+    }
+
+    /// What agent processes and the commands they run inherit from this process (everything,
+    /// by default). A host that keeps secrets in its own environment sets an allow-list. Applies
+    /// to agents started after the call.
+    pub fn set_cli_env(&mut self, cli_env: CliEnv) {
+        self.cli_env = cli_env;
+    }
+
+    /// The client capabilities offered to agents in `initialize` (all, by default). A capability
+    /// that is off isn't advertised and its requests are refused. Applies to agents started
+    /// after the call.
+    pub fn set_client_capabilities(&mut self, capabilities: acp::ClientCapabilities) {
+        self.capabilities = capabilities;
+    }
+
+    /// A JSON object sent as `_meta` of `session/new` and `session/load`, for adapter options
+    /// the ACP schema carries there (none, by default). Applies to agents started after the call.
+    pub fn set_session_meta(&mut self, meta: Option<Value>) {
+        self.session_meta = meta;
+    }
+
+    /// Sets where `agent` is installed (`None`: not installed) and marks it as looked up, so
+    /// the login-shell search doesn't decide. A host that provides its own adapter binary calls
+    /// this. Agents already running keep their process; the next start uses `program`. Does
+    /// nothing for an id that isn't in [`Self::agents`]. Notifies observers (the agent list
+    /// changed).
+    pub fn set_program(
+        &mut self,
+        agent: &str,
+        program: Option<PathBuf>,
+        host: &mut dyn Host<Self>,
+    ) {
+        if self.assign_program(agent, program) {
+            host.notify();
+        }
+    }
+
+    fn assign_program(&mut self, agent: &str, program: Option<PathBuf>) -> bool {
+        let Some(info) = self.agents.iter_mut().find(|a| a.spec.id == agent) else {
+            return false;
+        };
+        info.program = program;
+        info.checked = true;
+        true
+    }
+
+    /// Adds a line to the end of `thread`'s transcript, shown as a note (`error`: in the error
+    /// style). Nothing is sent to the agent. Notifies observers; does nothing for an unknown
+    /// thread.
+    pub fn notice(
+        &mut self,
+        thread: ThreadId,
+        text: impl Into<String>,
+        error: bool,
+        host: &mut dyn Host<Self>,
+    ) {
+        if self.push_notice(thread, text.into(), error) {
+            host.notify();
+        }
+    }
+
+    fn push_notice(&mut self, thread: ThreadId, text: String, error: bool) -> bool {
+        let Some(thread) = self.thread_mut(thread) else {
+            return false;
+        };
+        thread.transcript.notice(text, error);
+        true
     }
 
     pub fn settings(&self) -> &AgentSettings {
@@ -759,6 +835,9 @@ impl AgentCore {
             path: self.path.clone(),
             kubeconfig: self.env.data_dir.join("empty-kubeconfig"),
             cwd: self.env.home.clone(),
+            cli_env: self.cli_env.clone(),
+            capabilities: self.capabilities,
+            session_meta: self.session_meta.clone(),
         };
         let agent_id = agent.to_string();
         let task = host.spawn(
@@ -1167,6 +1246,7 @@ impl AgentCore {
                 let session = request.session_id.0.to_string();
                 let connection = self.connection(agent);
                 let path = self.path.clone();
+                let cli_env = self.cli_env.clone();
                 let next = self.next_pending + 1;
                 let Some(thread) = self.thread_of_session(agent, &session) else {
                     responder.err(RpcError::internal("The thread was closed"));
@@ -1194,6 +1274,7 @@ impl AgentCore {
                     output_limit: request.output_byte_limit,
                     path,
                     kubeconfig: scope.map(|s| s.kubeconfig),
+                    cli_env,
                 };
                 let inner = policy::shell_inner(&request.command, &request.args);
                 let mut lines = vec![line.as_str()];
@@ -1611,10 +1692,7 @@ impl AgentCore {
 impl AgentCore {
     /// Marks `agent` as looked up: installed at `program`, or not installed.
     pub fn set_program_for_tests(&mut self, agent: &str, program: Option<PathBuf>) {
-        if let Some(info) = self.agents.iter_mut().find(|a| a.spec.id == agent) {
-            info.program = program;
-            info.checked = true;
-        }
+        self.assign_program(agent, program);
     }
 
     /// A thread whose session is open, without an agent process (prompts go nowhere).
@@ -1835,6 +1913,44 @@ mod tests {
                 _ => None,
             })
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn a_host_can_add_a_notice_to_a_transcript() {
+        let (mut h, id) = harness(vec![]);
+        let before = h.host.notified;
+        h.core.notice(id, "Heads up", false, &mut h.host);
+        h.core.notice(id, "Broke", true, &mut h.host);
+        assert_eq!(h.host.notified, before + 2);
+        let entries = &h.core.thread(id).unwrap().transcript.entries;
+        assert!(matches!(
+            &entries[entries.len() - 2..],
+            [Entry::Notice { text: a, error: false }, Entry::Notice { text: b, error: true }]
+                if a == "Heads up" && b == "Broke"
+        ));
+        // An unknown thread changes nothing and tells nobody.
+        let before = h.host.notified;
+        h.core.notice(ThreadId(999), "lost", false, &mut h.host);
+        assert_eq!(h.host.notified, before);
+    }
+
+    #[test]
+    fn a_host_can_set_where_an_agent_is_installed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut core = AgentCore::new(AgentSettings::default(), env(dir.path()));
+        let mut host = TestHost::new();
+        let program = PathBuf::from("/opt/host/claude-agent-acp");
+        core.set_program("claude", Some(program.clone()), &mut host);
+        let info = core.agent("claude").unwrap();
+        assert_eq!(info.program.as_deref(), Some(program.as_path()));
+        assert!(info.checked);
+        assert_eq!(host.notified, 1);
+        core.set_program("claude", None, &mut host);
+        assert_eq!(core.agent("claude").unwrap().program, None);
+        // An id that isn't an agent changes nothing.
+        core.set_program("nope", Some(program), &mut host);
+        assert_eq!(host.notified, 2);
+        assert!(core.agent("nope").is_none());
     }
 
     #[test]

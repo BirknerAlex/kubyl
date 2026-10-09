@@ -32,6 +32,7 @@ fn helm() -> HelmInfo {
         version_text: "v4.3.0".into(),
         env: HelmEnv::default(),
         search_path: None,
+        cli_env: Default::default(),
     }
 }
 

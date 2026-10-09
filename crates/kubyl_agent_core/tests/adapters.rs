@@ -75,6 +75,9 @@ async fn check(
         path: path.clone(),
         kubeconfig: kubeconfig.to_path_buf(),
         cwd: cwd.clone(),
+        cli_env: Default::default(),
+        capabilities: Default::default(),
+        session_meta: None,
     })
     .await
     .unwrap_or_else(|err| panic!("{name}: initialize failed: {err}"));

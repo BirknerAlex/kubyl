@@ -22,6 +22,7 @@ use agent_client_protocol_schema::v1::{
     NewSessionResponse, PromptResponse, ReadTextFileRequest, RequestPermissionRequest,
     SessionNotification, WriteTextFileRequest,
 };
+use kubyl_kube_core::cli::CliEnv;
 use parking_lot::Mutex;
 use serde_json::{Value, json};
 use tokio::io::AsyncReadExt as _;
@@ -49,6 +50,68 @@ pub struct Launch {
     /// `KUBECONFIG` for the agent process (an empty file by default).
     pub kubeconfig: PathBuf,
     pub cwd: PathBuf,
+    /// What the agent process inherits from this process (everything, by default). `KUBECONFIG`,
+    /// `PATH` and `env` are set on top.
+    pub cli_env: CliEnv,
+    /// What Kubyl offers the agent in `initialize` (everything, by default).
+    pub capabilities: ClientCapabilities,
+    /// Sent as `_meta` of `session/new` and `session/load`: adapter options the ACP schema
+    /// carries there. Only a JSON object is sent.
+    pub session_meta: Option<Value>,
+}
+
+/// The client capabilities Kubyl advertises in `initialize`. One that is off isn't advertised
+/// and the matching requests (`terminal/*`, `fs/*`, `elicitation/create`) are answered with
+/// "method not found".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClientCapabilities {
+    /// `terminal/*`: commands the agent runs through Kubyl.
+    pub terminal: bool,
+    /// `fs/read_text_file`.
+    pub fs_read: bool,
+    /// `fs/write_text_file`.
+    pub fs_write: bool,
+    /// `elicitation/create`: questions for the user.
+    pub elicitation: bool,
+}
+
+impl Default for ClientCapabilities {
+    fn default() -> Self {
+        Self {
+            terminal: true,
+            fs_read: true,
+            fs_write: true,
+            elicitation: true,
+        }
+    }
+}
+
+impl ClientCapabilities {
+    /// The `clientCapabilities` of `initialize`.
+    fn to_json(self) -> Value {
+        let mut caps = json!({ "session": { "configOptions": { "boolean": {} } } });
+        if self.fs_read || self.fs_write {
+            caps["fs"] = json!({ "readTextFile": self.fs_read, "writeTextFile": self.fs_write });
+        }
+        if self.terminal {
+            caps["terminal"] = json!(true);
+        }
+        if self.elicitation {
+            caps["elicitation"] = json!({ "form": {}, "url": {} });
+        }
+        caps
+    }
+
+    /// Whether the agent may send `method`.
+    fn allows(self, method: &str) -> bool {
+        match method {
+            "fs/read_text_file" => self.fs_read,
+            "fs/write_text_file" => self.fs_write,
+            "elicitation/create" => self.elicitation,
+            m if m.starts_with("terminal/") => self.terminal,
+            _ => true,
+        }
+    }
 }
 
 /// What `initialize` told us.
@@ -157,6 +220,7 @@ pub struct AgentConnection {
     pub terminals: Arc<Terminals>,
     sessions: Sessions,
     prompts: Prompts,
+    session_meta: Option<Value>,
 }
 
 impl std::fmt::Debug for AgentConnection {
@@ -181,6 +245,7 @@ pub async fn start(
     launch: Launch,
 ) -> Result<(Arc<AgentConnection>, mpsc::UnboundedReceiver<ClientCall>), String> {
     let mut cmd = crate::agents::command(&launch.program);
+    launch.cli_env.apply(cmd.as_std_mut());
     cmd.args(&launch.args)
         .current_dir(&launch.cwd)
         .stdin(Stdio::piped())
@@ -206,7 +271,9 @@ pub async fn start(
     tokio::spawn(pump_stderr(stderr_pipe, stderr.clone()));
 
     // On failure `child` drops here, which kills it.
-    let (connection, calls) = connect(stdout, stdin, stderr.clone()).await?;
+    let (mut connection, calls) =
+        connect(stdout, stdin, stderr.clone(), launch.capabilities).await?;
+    connection.session_meta = launch.session_meta.filter(Value::is_object);
     *connection.child.lock() = Some(child);
     Ok((Arc::new(connection), calls))
 }
@@ -216,6 +283,7 @@ pub(crate) async fn connect(
     reader: impl tokio::io::AsyncRead + Unpin + Send + 'static,
     writer: impl tokio::io::AsyncWrite + Unpin + Send + 'static,
     stderr: Arc<Mutex<Stderr>>,
+    capabilities: ClientCapabilities,
 ) -> Result<(AgentConnection, mpsc::UnboundedReceiver<ClientCall>), String> {
     let (peer, incoming) = jsonrpc::connect(reader, writer);
     let terminals = Arc::new(Terminals::default());
@@ -229,16 +297,12 @@ pub(crate) async fn connect(
         sessions.clone(),
         prompts.clone(),
         stderr.clone(),
+        capabilities,
     ));
 
     let params = json!({
         "protocolVersion": ProtocolVersion::V1,
-        "clientCapabilities": {
-            "fs": { "readTextFile": true, "writeTextFile": true },
-            "terminal": true,
-            "elicitation": { "form": {}, "url": {} },
-            "session": { "configOptions": { "boolean": {} } },
-        },
+        "clientCapabilities": capabilities.to_json(),
         "clientInfo": { "name": "kubyl", "title": "Kubyl", "version": env!("CARGO_PKG_VERSION") },
     });
     let answer = tokio::time::timeout(
@@ -282,6 +346,7 @@ pub(crate) async fn connect(
             terminals,
             sessions,
             prompts,
+            session_meta: None,
         },
         calls_rx,
     ))
@@ -335,17 +400,19 @@ impl AgentConnection {
         scope: SessionScope,
         mcp: Value,
     ) -> Result<NewSessionResponse, RpcError> {
-        let response: NewSessionResponse = self
-            .peer
-            .request(
-                "session/new",
-                json!({ "cwd": scope.root, "mcpServers": [mcp] }),
-            )
-            .await?;
+        let mut params = json!({ "cwd": scope.root, "mcpServers": [mcp] });
+        self.add_meta(&mut params);
+        let response: NewSessionResponse = self.peer.request("session/new", params).await?;
         self.sessions
             .lock()
             .insert(response.session_id.0.to_string(), scope);
         Ok(response)
+    }
+
+    fn add_meta(&self, params: &mut Value) {
+        if let Some(meta) = &self.session_meta {
+            params["_meta"] = meta.clone();
+        }
     }
 
     /// Reopens a session the agent stored (`loadSession`). Its history arrives as updates.
@@ -358,13 +425,9 @@ impl AgentConnection {
         self.sessions
             .lock()
             .insert(session.to_string(), scope.clone());
-        let result = self
-            .peer
-            .request_value(
-                "session/load",
-                json!({ "sessionId": session, "cwd": scope.root, "mcpServers": [mcp] }),
-            )
-            .await;
+        let mut params = json!({ "sessionId": session, "cwd": scope.root, "mcpServers": [mcp] });
+        self.add_meta(&mut params);
+        let result = self.peer.request_value("session/load", params).await;
         if result.is_err() {
             self.sessions.lock().remove(session);
         }
@@ -449,6 +512,7 @@ async fn route(
     sessions: Sessions,
     prompts: Prompts,
     stderr: Arc<Mutex<Stderr>>,
+    capabilities: ClientCapabilities,
 ) {
     while let Some(message) = incoming.recv().await {
         match message {
@@ -475,6 +539,11 @@ async fn route(
                 {
                     calls.send(ClientCall::Update(Box::new(update))).ok();
                 }
+            }
+            Incoming::Request {
+                method, responder, ..
+            } if !capabilities.allows(&method) => {
+                responder.err(RpcError::method_not_found(&method));
             }
             Incoming::Request {
                 method,
@@ -701,6 +770,28 @@ pub(crate) mod fake {
         script: Vec<Step>,
         http_mcp: bool,
     ) -> (Arc<AgentConnection>, mpsc::UnboundedReceiver<ClientCall>) {
+        let (connection, calls, _) =
+            start_with(script, http_mcp, ClientCapabilities::default(), None).await;
+        (connection, calls)
+    }
+
+    /// The requests the fake agent got, in order: method and params.
+    pub type Received = Arc<Mutex<Vec<(String, Value)>>>;
+
+    /// [`start`] with the client's capabilities and `_meta` for sessions; also returns what the
+    /// agent received.
+    pub async fn start_with(
+        script: Vec<Step>,
+        http_mcp: bool,
+        capabilities: ClientCapabilities,
+        session_meta: Option<Value>,
+    ) -> (
+        Arc<AgentConnection>,
+        mpsc::UnboundedReceiver<ClientCall>,
+        Received,
+    ) {
+        let received = Received::default();
+        let log = received.clone();
         let (client_side, agent_side) = tokio::io::duplex(1 << 20);
         let (agent_read, agent_write) = tokio::io::split(agent_side);
         let (peer, mut incoming) = jsonrpc::connect(agent_read, agent_write);
@@ -716,6 +807,7 @@ pub(crate) mod fake {
                 else {
                     continue;
                 };
+                log.lock().push((method.clone(), params.clone()));
                 match method.as_str() {
                     "initialize" => {
                         responder.ok(json!({
@@ -780,10 +872,12 @@ pub(crate) mod fake {
             }
         });
         let (client_read, client_write) = tokio::io::split(client_side);
-        let (connection, calls) = connect(client_read, client_write, Arc::default())
-            .await
-            .expect("fake agent initializes");
-        (Arc::new(connection), calls)
+        let (mut connection, calls) =
+            connect(client_read, client_write, Arc::default(), capabilities)
+                .await
+                .expect("fake agent initializes");
+        connection.session_meta = session_meta;
+        (Arc::new(connection), calls, received)
     }
 
     fn fake_config(model: &str, effort: &str) -> Value {
@@ -1075,6 +1169,7 @@ mod tests {
                             output_limit: None,
                             path: None,
                             kubeconfig: Some(scope.kubeconfig),
+                            cli_env: CliEnv::default(),
                         })
                         .unwrap();
                     responder.ok(json!({ "terminalId": id }));
@@ -1090,11 +1185,134 @@ mod tests {
         prompt.await.unwrap().unwrap();
     }
 
+    fn received(log: &fake::Received, method: &str) -> Vec<Value> {
+        log.lock()
+            .iter()
+            .filter(|(m, _)| m == method)
+            .map(|(_, p)| p.clone())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn default_capabilities_are_what_kubyl_always_offered() {
+        let (_agent, _calls, log) =
+            fake::start_with(vec![], true, ClientCapabilities::default(), None).await;
+        let caps = &received(&log, "initialize")[0]["clientCapabilities"];
+        assert_eq!(caps["terminal"], json!(true));
+        assert_eq!(
+            caps["fs"],
+            json!({ "readTextFile": true, "writeTextFile": true })
+        );
+        assert_eq!(caps["elicitation"], json!({ "form": {}, "url": {} }));
+    }
+
+    #[tokio::test]
+    async fn capabilities_that_are_off_are_not_advertised_and_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.txt");
+        std::fs::write(&file, "inside\n").unwrap();
+        let caps = ClientCapabilities {
+            terminal: false,
+            fs_read: false,
+            fs_write: false,
+            elicitation: false,
+        };
+        let (agent, mut calls, log) = fake::start_with(
+            vec![
+                Step::Run("echo hi".into()),
+                Step::Read(file.clone()),
+                Step::Write {
+                    path: dir.path().join("b.txt"),
+                    content: "x".into(),
+                },
+                Step::Ask(json!({ "mode": "form", "message": "?" })),
+            ],
+            true,
+            caps,
+            None,
+        )
+        .await;
+        let sent = &received(&log, "initialize")[0]["clientCapabilities"];
+        assert!(sent.get("terminal").is_none(), "{sent}");
+        assert!(sent.get("fs").is_none(), "{sent}");
+        assert!(sent.get("elicitation").is_none(), "{sent}");
+        agent
+            .new_session(scope(dir.path()), json!({}))
+            .await
+            .unwrap();
+        let prompt = {
+            let agent = agent.clone();
+            tokio::spawn(async move { agent.prompt("s1", vec![]).await })
+        };
+        let mut said = Vec::new();
+        while said.len() < 4 {
+            match calls.recv().await.unwrap() {
+                ClientCall::Update(update) => said.push(format!("{:?}", update.update)),
+                other => panic!("a refused request reached the app: {other:?}"),
+            }
+        }
+        prompt.await.unwrap().unwrap();
+        assert!(
+            said[0].contains("terminal refused: Method not found"),
+            "{said:?}"
+        );
+        assert!(
+            said[1].contains("read refused: Method not found"),
+            "{said:?}"
+        );
+        assert!(said[2].contains("write: false"), "{said:?}");
+        assert!(said[3].contains("ask failed: Method not found"), "{said:?}");
+        assert!(!dir.path().join("b.txt").exists());
+
+        // Writes alone: only `writeTextFile` is advertised.
+        let only_write = ClientCapabilities {
+            fs_write: true,
+            ..caps
+        };
+        let (_agent, _calls, log) = fake::start_with(vec![], true, only_write, None).await;
+        let sent = &received(&log, "initialize")[0]["clientCapabilities"];
+        assert_eq!(
+            sent["fs"],
+            json!({ "readTextFile": false, "writeTextFile": true })
+        );
+    }
+
+    #[tokio::test]
+    async fn session_meta_goes_into_session_new() {
+        let meta = json!({ "adapter": { "allowedTools": ["a"], "disallowedTools": ["b"] } });
+        let (agent, _calls, log) = fake::start_with(
+            vec![],
+            true,
+            ClientCapabilities::default(),
+            Some(meta.clone()),
+        )
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        agent
+            .new_session(scope(dir.path()), json!({}))
+            .await
+            .unwrap();
+        assert_eq!(received(&log, "session/new")[0]["_meta"], meta);
+        // Without it the request has no `_meta`.
+        let (agent, _calls, log) =
+            fake::start_with(vec![], true, ClientCapabilities::default(), None).await;
+        agent
+            .new_session(scope(dir.path()), json!({}))
+            .await
+            .unwrap();
+        assert!(received(&log, "session/new")[0].get("_meta").is_none());
+    }
+
     #[tokio::test]
     async fn closing_the_agent_fails_requests_and_reports() {
         let (client_side, agent_side) = tokio::io::duplex(4096);
         let (read, write) = tokio::io::split(client_side);
-        let starting = tokio::spawn(connect(read, write, Arc::default()));
+        let starting = tokio::spawn(connect(
+            read,
+            write,
+            Arc::default(),
+            ClientCapabilities::default(),
+        ));
         drop(agent_side);
         assert!(starting.await.unwrap().is_err());
     }

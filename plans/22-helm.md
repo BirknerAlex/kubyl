@@ -398,3 +398,12 @@ Each finding was checked against the code first.
 commands, `kubyl_helm`'s install dialog test extended. Live (`tests/live.rs`, 5) pass with helm
 3.19.0 and 4.3.0 run back to back against `kubyl-dev`; `helm-dev.sh --stuck` re-run. The upgrade
 dialog re-checked in the app (one repository has the chart: picked as before).
+
+- **Environment policy (library only, default unchanged).** `HelmInfo::cli_env`
+  (`CliEnv`, re-exported from `kubyl_helm_core::cli`) says what `helm` and its plugins inherit:
+  everything (default), or an allow-list of names and prefixes plus fixed variables the host adds
+  (`HELM_CONFIG_HOME`, `HOME`, …). `probe_with`, `run`, `run_with_token` (so repo, ops and preview
+  too) all use it; Kubyl's own `PATH`, `HELM_*`, `NO_COLOR` and token variables are set on top and
+  the `HELM_KUBE*` scrub still applies. `HelmCliCore::with_cli_env` / `set_cli_env` set it.
+  `HelmInfo` got the field: struct literals need `cli_env: Default::default()`. Test:
+  `tests/fake_helm_allowlist.rs`.

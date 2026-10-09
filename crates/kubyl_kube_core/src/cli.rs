@@ -12,12 +12,110 @@
 //! is an error ([`AuthError::SignInRequired`]), never "let the CLI use the tokens written into
 //! the kubeconfig" (what the default handle, the desktop's one user, may do).
 
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::path::PathBuf;
 
 use secrecy::SecretString;
 
 use crate::auth::{AuthError, CredentialSource, Credentials};
+
+/// Which variables of this process a child CLI (or agent) inherits.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum EnvPolicy {
+    /// Everything (the desktop app's behaviour).
+    #[default]
+    Inherit,
+    /// Only these: the child's environment is cleared, then the variables whose name is in
+    /// `names` or starts with one of `prefixes` are passed on. A host process that keeps secrets
+    /// in its own environment uses this so they don't reach the child or its plugins.
+    AllowList {
+        names: Vec<String>,
+        prefixes: Vec<String>,
+    },
+}
+
+/// The environment a child process gets: what it inherits ([`EnvPolicy`]) plus fixed variables
+/// the host adds (`HOME`, `TMPDIR`, a tool's config and cache directories), so it need not set
+/// them process-wide. Variables the caller sets itself (`PATH` from the login shell, the
+/// bearer token, …) come on top of both.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CliEnv {
+    pub policy: EnvPolicy,
+    /// Set on top of what the policy passes on, in order.
+    pub extra: Vec<(OsString, OsString)>,
+}
+
+impl CliEnv {
+    /// Inherits everything, adds nothing (the default).
+    pub fn inherit() -> Self {
+        Self::default()
+    }
+
+    /// Passes on only the variables named in `names` or starting with one of `prefixes`.
+    pub fn allow_list<N, P>(
+        names: impl IntoIterator<Item = N>,
+        prefixes: impl IntoIterator<Item = P>,
+    ) -> Self
+    where
+        N: Into<String>,
+        P: Into<String>,
+    {
+        Self {
+            policy: EnvPolicy::AllowList {
+                names: names.into_iter().map(Into::into).collect(),
+                prefixes: prefixes.into_iter().map(Into::into).collect(),
+            },
+            extra: Vec::new(),
+        }
+    }
+
+    /// Adds a fixed variable for the child.
+    pub fn with_var(mut self, name: impl Into<OsString>, value: impl Into<OsString>) -> Self {
+        self.extra.push((name.into(), value.into()));
+        self
+    }
+
+    /// Whether the policy passes `name` on.
+    pub fn allows(&self, name: &OsStr) -> bool {
+        match &self.policy {
+            EnvPolicy::Inherit => true,
+            EnvPolicy::AllowList { names, prefixes } => {
+                let name = name.to_string_lossy();
+                // Windows variable names are case-insensitive.
+                let same = |a: &str, b: &str| {
+                    if cfg!(windows) {
+                        a.eq_ignore_ascii_case(b)
+                    } else {
+                        a == b
+                    }
+                };
+                names.iter().any(|n| same(n, &name))
+                    || prefixes.iter().any(|p| {
+                        name.len() >= p.len()
+                            && name.get(..p.len()).is_some_and(|head| same(head, p))
+                    })
+            }
+        }
+    }
+
+    /// Sets up `command`'s environment: with an allow-list the inherited one is cleared and
+    /// the allowed variables copied, then the extra ones are set. Call it before the variables
+    /// the caller sets itself. Never logs a value.
+    pub fn apply(&self, command: &mut std::process::Command) {
+        if matches!(self.policy, EnvPolicy::AllowList { .. }) {
+            command.env_clear();
+            for (key, value) in std::env::vars_os() {
+                if self.allows(&key) {
+                    command.env(key, value);
+                }
+            }
+        }
+        for (key, value) in &self.extra {
+            command.env(key, value);
+        }
+    }
+}
 
 /// A context as a CLI reaches it.
 #[derive(Clone)]
@@ -136,5 +234,20 @@ mod tests {
             .with_credentials(&Credentials::scoped("alice"), false);
         assert!(!exec.sign_in_required());
         assert!(matches!(exec.token().await, Ok(None)));
+    }
+}
+
+#[cfg(test)]
+mod env_tests {
+    use super::*;
+
+    #[test]
+    fn allow_lists_match_names_and_prefixes() {
+        let env = CliEnv::allow_list(["HOME"], ["AWS_"]);
+        assert!(env.allows(OsStr::new("HOME")));
+        assert!(env.allows(OsStr::new("AWS_REGION")));
+        assert!(!env.allows(OsStr::new("HOMEBREW")));
+        assert!(!env.allows(OsStr::new("SECRET")));
+        assert!(CliEnv::inherit().allows(OsStr::new("SECRET")));
     }
 }

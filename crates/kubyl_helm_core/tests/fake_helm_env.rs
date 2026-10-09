@@ -47,6 +47,7 @@ async fn the_users_helm_variables_are_scrubbed() {
         search_path: Some(
             std::env::join_paths([Path::new("/usr/bin"), Path::new("/bin")]).unwrap(),
         ),
+        cli_env: Default::default(),
     };
     let target = CliTarget::new("/home/me/kube/dev.yaml", "kind-kubyl-dev");
     let read_env = || std::fs::read_to_string(dir.path().join("env")).unwrap();
