@@ -343,6 +343,40 @@ impl AgentPanel {
         cx.notify();
     }
 
+    /// Puts `text` into the composer for `cluster` and focuses it, without sending: the user
+    /// reads the question (it only holds a reference to an object) and presses Enter. A shown
+    /// thread about the same cluster keeps going; anything else starts a new one.
+    pub fn prefill(
+        &mut self,
+        cluster: ClusterId,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let same_cluster = self
+            .thread
+            .and_then(|id| {
+                AgentService::global(cx)?
+                    .read(cx)
+                    .thread(id)
+                    .map(|t| t.cluster.clone())
+            })
+            .is_some_and(|c| c == cluster);
+        if !same_cluster {
+            self.thread = None;
+            self.chips.clear();
+            self.draft_cluster = Some(cluster);
+        }
+        self.show_threads = false;
+        self.drafting = self.thread.is_none();
+        self.ensure_draft(cx);
+        self.input.update(cx, |input, cx| {
+            input.set_value(text.to_string(), window, cx);
+            input.focus(window, cx);
+        });
+        cx.notify();
+    }
+
     /// Shows `thread` scrolled to its end, where waiting prompts are.
     pub fn show_thread(&mut self, thread: ThreadId, cx: &mut Context<Self>) {
         if self.thread != Some(thread) {
@@ -2388,7 +2422,9 @@ mod gpui_tests {
 
     use gpui::{TestAppContext, VisualTestContext};
     use kubyl_agent_core::elicitation::{Field, FieldKind};
+    use kubyl_agent_core::prompts::{Prompt, Subject};
     use kubyl_agent_core::thread::Entry;
+    use kubyl_core::DetailsSection as _;
     use kubyl_core::actions::AskAgent;
     use serde_json::json;
 
@@ -2572,6 +2608,94 @@ mod gpui_tests {
                 chips[0].text
             );
             assert!(chips[0].text.contains("OOMKilled"));
+        });
+    }
+
+    fn deployment() -> kubyl_core::ResourceRef {
+        kubyl_core::ResourceRef::object(
+            ClusterId::new("kind-dev"),
+            kubyl_core::Gvr::new("apps", "v1", "deployments"),
+            Some("shop".into()),
+            "web".into(),
+        )
+    }
+
+    #[gpui::test]
+    fn a_canned_question_fills_the_composer_and_sends_nothing(cx: &mut TestAppContext) {
+        let (_dir, panel, cx) = open(cx);
+        let draft = prepare(&panel, cx);
+        let text = Prompt::Summarize.text(&Subject {
+            cluster: "kind-dev".into(),
+            kind: "Deployment".into(),
+            group: "apps".into(),
+            resource: "deployments".into(),
+            namespace: Some("shop".into()),
+            name: "web".into(),
+        });
+        panel.update_in(cx, |panel, window, cx| {
+            panel.prefill(ClusterId::new("kind-dev"), &text, window, cx);
+            // The question waits in the composer: the user reads it and presses Enter.
+            assert_eq!(panel.input.read(cx).value().to_string(), text);
+            assert!(panel.thread.is_none() && panel.chips.is_empty());
+        });
+        let service = service(cx);
+        service.read_with(cx, |service, _| {
+            assert!(
+                service.thread(draft).unwrap().is_unused(),
+                "nothing was sent"
+            );
+        });
+        // Enter sends exactly that text, with no attached data.
+        panel.update_in(cx, |panel, window, cx| panel.submit(window, cx));
+        cx.run_until_parked();
+        service.read_with(cx, |service, _| {
+            let thread = service.thread(draft).unwrap();
+            let Entry::User { text: sent, chips } = &thread.transcript.entries[0] else {
+                panic!("{:?}", thread.transcript.entries);
+            };
+            assert_eq!(sent, &text);
+            assert!(chips.is_empty());
+            assert!(sent.contains("Deployment.apps `shop/web`"));
+        });
+    }
+
+    #[gpui::test]
+    fn ask_entries_are_hidden_until_an_agent_is_installed(cx: &mut TestAppContext) {
+        let (_dir, panel, cx) = open(cx);
+        // Agents are marked not installed.
+        cx.update(|_, cx| {
+            assert!(!crate::ask::agent_ready(cx));
+            assert!(
+                crate::ask::AskDetails
+                    .build(&deployment(), "Deployment", cx)
+                    .is_none()
+            );
+            // Nothing happens (and no panel opens) without an agent.
+            crate::ask::ask_about(&deployment(), "Deployment", Prompt::Logs, cx);
+        });
+        cx.run_until_parked();
+        panel.read_with(cx, |panel, cx| {
+            assert!(panel.input.read(cx).value().is_empty())
+        });
+        prepare(&panel, cx);
+        cx.update(|_, cx| {
+            assert!(crate::ask::agent_ready(cx));
+            assert!(
+                crate::ask::AskDetails
+                    .build(&deployment(), "Deployment", cx)
+                    .is_some()
+            );
+            // A list isn't an object.
+            let list = kubyl_core::ResourceRef::list(
+                ClusterId::new("kind-dev"),
+                kubyl_core::Gvr::new("apps", "v1", "deployments"),
+                None,
+            );
+            assert!(
+                crate::ask::AskDetails
+                    .build(&list, "Deployment", cx)
+                    .is_none()
+            );
         });
     }
 

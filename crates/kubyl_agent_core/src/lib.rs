@@ -8,6 +8,7 @@ pub mod kubeconfig;
 pub mod mcp;
 pub mod mentions;
 pub mod policy;
+pub mod prompts;
 pub mod service;
 pub mod settings;
 pub mod terminal;

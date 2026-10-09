@@ -1,6 +1,6 @@
 # Phase 25: Lens parity: CSV export, local terminal, Applications, Ask AI, Security Center, Cost, cloud discovery
 
-**Status:** in progress (branch `phase/25-lens-parity`, one commit per feature; 3 of 7 done)
+**Status:** in progress (branch `phase/25-lens-parity`, one commit per feature; 4 of 7 done)
 **Depends on:** 02 (tables, details), 05 (terminal), 07 (metrics, charts), 11 (kubeconfig, cloud import), 21 (agents), 22 (Helm), 24 (resource views)
 **Owns:** `kubyl_security`, `kubyl_security_core`, `kubyl_cost`, `kubyl_cost_core` (new); `kubyl_apps`, `kubyl_apps_core` (new, if the Applications view doesn't fit an existing crate); shared commits listed under each feature. `script/trivy-dev.sh`, `script/opencost-dev.sh`.
 **Mockups:** board 23 · Lens parity, one or more boards per feature in `design/mockups/generate.py` (`CsvExport.dc.html`, …).
@@ -75,7 +75,13 @@ settings, state, `Debug` output or prompts.
 - [x] Mockup boards `Applications.dc.html`, `ApplicationsEmpty.dc.html`
 
 ### 4. Ask AI on any resource
-- [ ] to be filled in with the commit
+- [x] `kubyl_agent_core::prompts`: Summarize, Analyze events, Analyze logs, Analyze metrics, Analyze related resources; text names only cluster, kind, namespace and name and the read-only tools to use; references are reduced to name characters; tests (injection, no data, every named tool exists, which kinds a question applies to)
+- [x] "Ask: …" entries on generic resource rows (the list's context menu, the palette's `>` mode: registry actions in the `ResourceList` context, available for objects the question fits) and an "Ask agent" details section with the buttons
+- [x] Hidden while no agent is installed (`ask::agent_ready`; the registry predicates read a flag the agent service keeps current)
+- [x] A click opens the Agent panel with the question in the composer; nothing is sent until Enter (`AgentPanel::prefill`)
+- [x] No Secret data in the prompt (references only, tested with a Secret subject); the tools redact as before; the live test reads a Deployment and a Secret through the MCP tools the questions name
+- [x] Doesn't depend on phase 21 part 2 (writes)
+- [x] Mockup board `AskAgent.dc.html`
 
 ### 5. Security Center (Trivy Operator)
 - [ ] to be filled in with the commit
@@ -144,3 +150,15 @@ new entry point in `kubyl_logs` and is Later. Sorting is by health (worst first)
 namespace and instance; `DataTable` has no clickable headers. Checked against the kind cluster with `script/apps-dev.sh`: screenshot
 `design/screenshots/phase-25-applications.png` (table, details, links rendered; clicking the links, the Logs menu and
 the CSV save dialog were not clicked through by hand).
+
+**4. Ask AI on any resource.** The canned question is a *prefill*, not an auto-send: a click
+costs no tokens and the user sees (and can edit) exactly what will be sent. The existing
+"Resource: Ask Agent" (`shift-a`) still attaches a masked description of the object as a
+chip; the new questions don't attach anything: the agent calls `describe`, `events`, `logs`,
+`top`, `query_prometheus` and `list_resources` itself, so the redaction of those tools applies
+and output stays capped. The registry's availability predicates can't see the app, so
+`ask::READY` mirrors "an agent is installed" and the details section checks it when it is
+built (an agent found after the details opened shows on the next selection). The row's menu
+lists the five questions flat (gpui-component's submenus need an entity per menu). Not
+clicked through in the app: an installed agent is needed to show the entries; the GPUI tests
+check the composer, the hiding and the section.

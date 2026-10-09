@@ -81,3 +81,17 @@ pub struct AskAgent {
     pub uri: String,
     pub text: String,
 }
+
+/// Asks the user's agent one of the canned questions about an object (phase 25, `kubyl_agent`
+/// handles it): opens the Agent panel with the question in the composer, ready to send. The
+/// question carries only a reference to the object (cluster, kind, namespace, name); the agent
+/// reads the rest through Kubyl's read-only tools. `prompt` is a
+/// `kubyl_agent_core::prompts::Prompt` id (`summarize`, `events`, `logs`, `metrics`, `related`).
+#[derive(Clone, PartialEq, Debug, Deserialize, Action)]
+#[action(namespace = kubyl, no_json)]
+pub struct AskAgentAbout {
+    pub target: ResourceRef,
+    /// The object's kind (`Deployment`).
+    pub kind: String,
+    pub prompt: String,
+}

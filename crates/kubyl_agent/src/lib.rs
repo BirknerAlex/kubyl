@@ -11,6 +11,7 @@
 //! `kubyl mcp-bridge` (see [`bridge`]) is the stdio side of Kubyl's MCP server for agents that
 //! can't reach it over HTTP; the binary checks for it before starting the UI.
 
+pub mod ask;
 pub mod panel;
 pub mod service;
 mod status;
@@ -121,6 +122,7 @@ pub fn init_with(live: bool, cx: &mut App) {
         };
         attach(ask.cluster.clone(), chip, cx);
     });
+    ask::init(cx);
     cx.on_action(|_: &ShowOutput, cx| {
         let agent = AgentService::global(cx).and_then(|service| {
             let service = service.read(cx);
@@ -144,7 +146,7 @@ pub fn init_with(live: bool, cx: &mut App) {
 
 /// Runs `f` in the focused window, after the dispatching window's update (global action
 /// handlers run inside it).
-fn with_window(cx: &mut App, f: impl FnOnce(&mut Window, &mut App) + 'static) {
+pub(crate) fn with_window(cx: &mut App, f: impl FnOnce(&mut Window, &mut App) + 'static) {
     cx.defer(move |cx| {
         let window = cx.active_window().or_else(|| cx.windows().first().copied());
         if let Some(window) = window {
