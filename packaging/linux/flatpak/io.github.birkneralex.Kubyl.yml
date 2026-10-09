@@ -1,0 +1,57 @@
+# Flatpak manifest for the Kubyl release binary. Built by script/build-flatpak.sh in the
+# `build-linux` release job and published to silo (not Flathub), see docs/RELEASING.md.
+#
+# GNOME runtime, not freedesktop: Kubyl links GTK 3 and WebKitGTK 4.1 for service web views
+# (kubyl_webview), and only the GNOME runtime ships them.
+app-id: io.github.birkneralex.Kubyl
+runtime: org.gnome.Platform
+runtime-version: '50'
+sdk: org.gnome.Sdk
+command: kubyl
+
+finish-args:
+  # Kubernetes API, OIDC and web views
+  - --share=network
+  - --share=ipc
+  # Wayland and X11 display, GPU for GPUI's Vulkan renderer
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  # kubeconfig, certificates and client key files the kubeconfig points at
+  - --filesystem=home
+  # OS keychain (Secret Service) for stored tokens
+  - --talk-name=org.freedesktop.secrets
+
+modules:
+  - name: kubyl
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 kubyl /app/bin/kubyl
+      - install -Dm644 io.github.birkneralex.Kubyl.desktop /app/share/applications/io.github.birkneralex.Kubyl.desktop
+      - install -Dm644 io.github.birkneralex.Kubyl.metainfo.xml /app/share/metainfo/io.github.birkneralex.Kubyl.metainfo.xml
+      - |
+        for size in 16 32 48 64 128 256 512; do
+          install -Dm644 app-icon-$size.png /app/share/icons/hicolor/${size}x${size}/apps/io.github.birkneralex.Kubyl.png
+        done
+    sources:
+      # Staged next to this manifest by script/build-flatpak.sh.
+      - type: file
+        path: stage/kubyl
+      - type: file
+        path: stage/io.github.birkneralex.Kubyl.desktop
+      - type: file
+        path: stage/io.github.birkneralex.Kubyl.metainfo.xml
+      - type: file
+        path: stage/app-icon-16.png
+      - type: file
+        path: stage/app-icon-32.png
+      - type: file
+        path: stage/app-icon-48.png
+      - type: file
+        path: stage/app-icon-64.png
+      - type: file
+        path: stage/app-icon-128.png
+      - type: file
+        path: stage/app-icon-256.png
+      - type: file
+        path: stage/app-icon-512.png

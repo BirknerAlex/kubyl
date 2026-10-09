@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.birkneralex.Kubyl</id>
+  <name>Kubyl</name>
+  <summary>Native Kubernetes desktop client</summary>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT OR Apache-2.0</project_license>
+  <description>
+    <p>
+      Kubyl is a free, native Kubernetes desktop client for macOS, Windows and Linux, built in
+      Rust on GPUI. It covers what k9s and the Kubernetes Dashboard do, plus selected OpenShift
+      console features, in a fast, keyboard-first window with a command palette for clusters,
+      namespaces and resources.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.birkneralex.Kubyl.desktop</launchable>
+  <url type="homepage">https://kubyl.dev</url>
+  <url type="bugtracker">https://github.com/BirknerAlex/kubyl/issues</url>
+  <url type="vcs-browser">https://github.com/BirknerAlex/kubyl</url>
+  <content_rating type="oars-1.1"/>
+  <!-- script/build-flatpak.sh inserts the <releases> block for the version being built. -->
+</component>

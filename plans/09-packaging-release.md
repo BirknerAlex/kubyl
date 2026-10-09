@@ -24,6 +24,7 @@ a public 1.0: accessibility, performance budgets, crash reporting (opt-in) and d
 - [x] **Linux**: `.deb`, `.rpm`, amd64 Arch `.pkg.tar.zst`. `.desktop` file (`packaging/linux/kubyl.desktop`) plus hicolor icons. Wayland and X11
 - [x] **Linux silo**: `publish-silo` CI job pushes `.deb`/`.rpm`/`.pkg.tar.zst` to silo repo `kubyl` channel `stable` via the reusable `BirknerAlex/silo/.github/actions/publish` action (GitHub Actions, not GitLab). `package.kubyl.dev` CNAME alias still open (needs `kubyl.dev`, itself unregistered — see Docs and site)
 - [x] **Linux AppImage**: `script/build-appimage.sh` (`linuxdeploy` + GTK plugin, both Linux archs, wired into `build-linux`). Not verified on a real Linux desktop yet — see handoff log
+- [x] **Linux Flatpak (silo)**: `script/build-flatpak.sh` builds a `.flatpak` bundle per arch from the release binary (`packaging/linux/flatpak/`, GNOME 50 runtime for GTK 3 + WebKitGTK), `build-linux` uploads it and `publish-silo` pushes it to silo repo `kubyl` channel `stable` next to the packages (silo >= 0.15.0). Not on Flathub (its policy rejects AI-assisted apps, see handoff log). Not yet run in CI or on a real desktop
 - [ ] Per-platform "open with / register URL handler" `kubyl://` for deep links (open a context/namespace/resource)
 - [ ] CLI shim `kubyl` (optional), e.g. `kubyl --context prod -n payments pods`
 
@@ -226,3 +227,4 @@ a public 1.0: accessibility, performance budgets, crash reporting (opt-in) and d
     explanatory comment on the PR. `10. Validation Completed: SUCCESS` overall; now in the
     `New-Package` queue for a human moderator (see the "no human involved?" discussion — the
     checks are the first gate, not the whole review).
+- **2026-10-08**: Flatpak is back, published to silo instead of Flathub (branch `chore/flatpak-silo`). The old Flathub manifest used the freedesktop runtime, which has no GTK 3 or WebKitGTK, so web views could not have worked; the new one uses `org.gnome.Platform//50` (48 is end-of-life since spring 2026). Also fixed: the desktop file's `Icon=kubyl` did not match the app-id-named icons. Untested: written without flatpak available locally, the first release run is the test (check the runtime version exists on Flathub, that `silo publish` accepts the bundle, and that WebKit starts inside the sandbox). Exec-plugin kubeconfigs (`aws`, `gcloud`) cannot run inside the sandbox.
