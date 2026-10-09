@@ -112,9 +112,14 @@ macro_rules! pod_psi {
 }
 
 /// node-exporter series carry `instance`, not the node name: join through node_uname_info.
+///
+/// The right side is aggregated to one series per `(instance, nodename)`: an `instance` often has
+/// several `node_uname_info` series (two scrape jobs for the same exporter, the old and the new
+/// kernel's labels after a reboot), and Prometheus rejects a join with "found duplicate series
+/// for the match group" when the right side isn't unique.
 macro_rules! node_join {
     () => {
-        " * on (instance) group_left(nodename) node_uname_info{nodename!=\"\"$sel}"
+        " * on (instance) group_left(nodename) max by (instance, nodename) (node_uname_info{nodename!=\"\"$sel})"
     };
 }
 
@@ -446,6 +451,24 @@ mod tests {
             }
         }
         assert!(plain.render("nope", &[]).is_none());
+    }
+
+    #[test]
+    fn node_names_join_a_unique_right_side() {
+        // `instance` can have several node_uname_info series (two scrape jobs, a kernel change):
+        // an unaggregated right side fails with "found duplicate series for the match group".
+        let queries = Queries::default();
+        let mut joined = 0;
+        for def in LIBRARY {
+            let promql = queries.render(def.id, &[]).unwrap();
+            let joins = promql.matches("group_left(nodename)").count();
+            let unique = promql
+                .matches("group_left(nodename) max by (instance, nodename) (node_uname_info{")
+                .count();
+            assert_eq!(joins, unique, "{}: {promql}", def.id);
+            joined += joins;
+        }
+        assert!(joined > 0, "no query joins the node name any more");
     }
 
     #[test]
