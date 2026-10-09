@@ -12,6 +12,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use kubyl_kube_core::cli::CliEnv;
 use parking_lot::Mutex;
 use tokio::io::{AsyncRead, AsyncReadExt as _};
 use tokio::sync::{oneshot, watch};
@@ -37,6 +38,8 @@ pub struct Launch {
     /// `PATH` for the process (the login shell's).
     pub path: Option<OsString>,
     pub kubeconfig: Option<PathBuf>,
+    /// What the command inherits from this process (everything, by default).
+    pub cli_env: CliEnv,
 }
 
 #[derive(Default)]
@@ -148,6 +151,7 @@ impl Terminals {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        launch.cli_env.apply(cmd.as_std_mut());
         if let Some(path) = &launch.path {
             cmd.env("PATH", path);
         }
@@ -275,6 +279,7 @@ mod tests {
             output_limit: limit,
             path: None,
             kubeconfig: Some(PathBuf::from("/nonexistent/kubeconfig")),
+            cli_env: CliEnv::default(),
         }
     }
 

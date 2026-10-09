@@ -288,6 +288,7 @@ mod tests {
             version_text: "v4.3.0".into(),
             env: Default::default(),
             search_path: Some(std::env::join_paths(["/usr/bin", "/bin"]).unwrap()),
+            cli_env: Default::default(),
         };
         (dir, info)
     }

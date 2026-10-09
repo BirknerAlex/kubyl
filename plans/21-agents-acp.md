@@ -364,3 +364,13 @@ titles are scrubbed before state.json. Argo CD sources go to the agent without U
 (`repo_short`). The MCP accept loop backs off after errors. The explorer's Copy YAML adds
 `kind`/`apiVersion` to store objects before masking (a Secret without them wasn't masked).
 
+
+- **Host hooks (library only, defaults unchanged).** `acp::Launch` has `cli_env`
+  (`kubyl_kube_core::cli::CliEnv`: inherit everything, or an allow-list plus fixed variables),
+  `capabilities` (`acp::ClientCapabilities`: terminal, fs read/write, elicitation; one that is off
+  isn't advertised and its requests get method-not-found) and `session_meta` (`_meta` of
+  `session/new` and `session/load`). `AgentCore` has `set_cli_env`, `set_client_capabilities`,
+  `set_session_meta` (for agents started afterwards; commands the agent runs get the same
+  `cli_env`), and the public `notice(thread, text, error, host)` and `set_program(agent,
+  program, host)`, which `transcript_for_tests`' notice use and `set_program_for_tests` wrap
+  or mirror. Tests: `acp::tests` (capabilities, `_meta`), `tests/launch_env.rs`, `service::tests`.
