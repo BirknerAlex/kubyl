@@ -5037,6 +5037,32 @@ def apps_states_screen():
     return rv_app("Applications (empty) — Kubyl", "Applications", ("Workloads",), tb, content, ns="default", applications="0")
 
 
+def ask_agent_screen():
+    """Ask agent on any resource: the row's menu, the details section and the prefilled composer."""
+    cols = "grid-template-columns: minmax(0,1fr) 60px 120px 70px 54px"
+    pods = [("api-7d9c5b6f4-2xk8q", "1/1", "Running", "0", "3d", C["green"]), ("checkout-5b7d8f9c6-4hq2n", "0/1", "CrashLoopBackOff", "12", "41m", C["red"]),
+            ("ledger-0", "1/1", "Running", "0", "9d", C["green"])]
+    rows = [[m(n, s=12), m(r), tpill(st, col), m(rs), m(a, "var(--muted)")] for n, r, st, rs, a, col in pods]
+    center = rv_list("box", "Pods", "3 in shop", cols, ["NAME", "READY", "STATUS", "RESTARTS", "AGE"], rows, [("↵", "Details"), ("l", "Logs"), ("s", "Shell"), ("shift-a", "Ask"), ("/", "Filter")])
+    menu = menu_box([menu_item("Show Logs", icon="list", kbd="l"), menu_item("Exec Shell", icon="terminal", kbd="s"), menu_sep(),
+                     menu_item("Ask: Summarize", icon="zap", on=True), menu_item("Ask: Analyze events", icon="zap"), menu_item("Ask: Analyze logs", icon="zap"),
+                     menu_item("Ask: Analyze metrics", icon="zap"), menu_item("Ask: Analyze related resources", icon="zap"), menu_sep(),
+                     menu_item("Copy Name"), menu_item("Copy YAML"), menu_item("Open in New Tab")], 300, 214, 280)
+    buttons = "".join(f'<button class="btn g" style="border:1px solid var(--border)">{ic("zap",12)}{l}</button>' for l in ["Summarize", "Analyze events", "Analyze logs", "Analyze metrics", "Analyze related resources"])
+    details = rv_dock("Pod details", 340, [
+        rv_head("checkout-5b7d8f9c6-4hq2n", tpill("CrashLoopBackOff", C["red"]) + '<span class="chip">restarts 12</span>', "shop"),
+        rv_sec("Ask agent", f'<div style="display:flex;flex-wrap:wrap;gap:6px">{buttons}</div>', last=True),
+    ])
+    composer = (f'<aside class="dock" style="width:380px"><div class="phead" style="border-bottom:1px solid var(--bv)"><span style="flex:1;color:var(--text);font-weight:500">Agent</span></div>'
+                f'<div style="flex:1;padding:14px;font-size:12.5px;color:var(--dim);line-height:19px">New thread about <span class="mono">kind-dev</span>. Nothing is sent until you press Enter: the question below only names the object, the agent reads the rest with Kubyl\'s read-only tools.</div>'
+                f'<div style="flex-shrink:0;display:flex;flex-direction:column;gap:6px;padding:10px 12px;border-top:1px solid var(--bv)">'
+                f'<div class="inp focus" style="height:120px;align-items:flex-start;padding:8px;line-height:18px;white-space:normal;color:var(--text);font-size:12.5px">Analyze the events of Pod `shop/checkout-5b7d8f9c6-4hq2n` in cluster `kind-dev`. Read them with `events` (for this object, and the namespace\'s warnings when the object itself has none): what happened, in what order, what is repeating, and the likely cause. Use Kubyl\'s read-only tools only, change nothing, and don\'t print Secret values or credentials.</div>'
+                f'<div style="display:flex;align-items:center;gap:6px"><span class="chip on">Ask</span><span style="flex:1;font-size:11.5px;color:var(--faint)">Claude · kind-dev</span><button class="btn p" style="height:24px">Send</button></div></div></aside>')
+    content = f'<div style="flex:1;display:flex;min-height:0">{center}{details}{composer}</div>'
+    tb = tabs([("box", "Pods", True)])
+    return rv_app("Ask agent — Kubyl", "Pods", ("Workloads",), tb, content, ns="shop", overlay=menu)
+
+
 def local_term_panel(tabs_html, body):
     return f'''<div style="height:300px;flex-shrink:0;border-top:1px solid var(--border);display:flex;flex-direction:column;background:var(--bg)">
 <div class="tabs" style="height:32px">{tabs_html}<div class="tabtools"><button class="ib" aria-label="New terminal">{ic("plus",14)}</button><button class="ib" aria-label="Maximize">{ic("max",13)}</button></div></div>
@@ -5171,6 +5197,7 @@ SCREENS = [
  ("LocalTerminal.dc.html", "23 · Lens parity: a local shell tab with the cluster's context, the palette entry, the warning chip", local_terminal_screen),
  ("LocalTerminalProd.dc.html", "23 · Lens parity: a local shell on PROD asks for the cluster's name", local_terminal_prod_screen),
  ("Applications.dc.html", "23 · Lens parity: Applications by app.kubernetes.io labels, managed by Helm/Argo CD/Flux, objects and logs", apps_screen),
+ ("AskAgent.dc.html", "23 · Lens parity: Ask agent on any resource (row menu, details section, the question waits in the composer)", ask_agent_screen),
  ("ApplicationsEmpty.dc.html", "23 · Lens parity: Applications with nothing labelled yet (the empty state says how objects join one)", apps_states_screen),
 ]
 

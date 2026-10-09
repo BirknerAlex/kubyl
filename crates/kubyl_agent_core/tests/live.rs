@@ -236,3 +236,78 @@ async fn tools_read_the_cluster_and_never_return_secrets() {
         .await
         .ok();
 }
+
+/// What the canned "Ask agent" questions tell an agent to do, done by hand: the tools they name
+/// answer for a real Deployment of the cluster, and a Secret next to it stays masked.
+#[tokio::test]
+#[ignore]
+async fn canned_prompts_name_tools_that_answer_for_a_real_deployment() {
+    use kubyl_agent_core::prompts::{Prompt, Subject};
+
+    let client = client().await;
+    let discovery = kubyl_kube_core::discovery::discover(&client).await.unwrap();
+    let context = ToolContext {
+        cluster_name: "kind-kubyl-dev".into(),
+        client: Some(client.clone()),
+        discovery: Some(Arc::new(discovery)),
+        max_output: 64 * 1024,
+        log_lines: 50,
+        ..ToolContext::default()
+    };
+    let (_tx, rx) = watch::channel(context);
+    let server = mcp::serve(rx, None).await.unwrap();
+
+    // CoreDNS is on every kind cluster.
+    let subject = Subject {
+        cluster: "kind-kubyl-dev".into(),
+        kind: "Deployment".into(),
+        group: "apps".into(),
+        resource: "deployments".into(),
+        namespace: Some("kube-system".into()),
+        name: "coredns".into(),
+    };
+    for prompt in Prompt::ALL {
+        assert!(prompt.applies_to("apps", "deployments"));
+        let text = prompt.text(&subject);
+        assert!(
+            text.contains("Deployment.apps `kube-system/coredns`"),
+            "{text}"
+        );
+    }
+    let (described, error) = call(
+        &server,
+        "describe",
+        json!({"kind": "deployments.apps", "namespace": "kube-system", "name": "coredns"}),
+    )
+    .await;
+    assert!(!error && described.contains("coredns"), "{described}");
+    let (events, error) = call(
+        &server,
+        "events",
+        json!({"namespace": "kube-system", "kind": "Deployment", "name": "coredns", "limit": 10}),
+    )
+    .await;
+    assert!(!error, "{events}");
+    let (related, error) = call(
+        &server,
+        "list_resources",
+        json!({"kind": "pods", "namespace": "kube-system", "label_selector": "k8s-app=kube-dns"}),
+    )
+    .await;
+    assert!(!error && related.contains("coredns"), "{related}");
+    let (usage, _) = call(
+        &server,
+        "top",
+        json!({"kind": "pods", "namespace": "kube-system"}),
+    )
+    .await;
+    println!("top: {usage}");
+    // The summary of a Secret has no values.
+    let (secret, _) = call(
+        &server,
+        "describe",
+        json!({"kind": "secret", "namespace": NAMESPACE, "name": "db"}),
+    )
+    .await;
+    assert!(!secret.contains(SECRET_VALUE), "{secret}");
+}
