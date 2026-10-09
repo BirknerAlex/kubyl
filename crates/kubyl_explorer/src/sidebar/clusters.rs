@@ -1130,10 +1130,21 @@ impl ClustersSection {
                 }
                 row
             }
-            Item::View { entry, depth, .. } => TreeRow::new(id, entry.label)
-                .depth(*depth)
-                .icon(entry.icon)
-                .selected(selected),
+            Item::View {
+                cluster,
+                entry,
+                depth,
+                ..
+            } => {
+                let row = TreeRow::new(id, entry.label)
+                    .depth(*depth)
+                    .icon(entry.icon)
+                    .selected(selected);
+                match catalog::view_count(entry.id, cluster, cx) {
+                    Some(count) => row.count(count.to_string()),
+                    None => row,
+                }
+            }
             Item::Row {
                 cluster,
                 row,

@@ -1,0 +1,27 @@
+[package]
+name = "kubyl_apps_core"
+description = "The Applications view without the UI: objects grouped by their app.kubernetes.io labels, who manages them and how healthy they are."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+jiff.workspace = true
+kubyl_argocd_core.workspace = true
+kubyl_base.workspace = true
+kubyl_flux_core.workspace = true
+kubyl_helm_core.workspace = true
+kubyl_resources_core.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+k8s-openapi.workspace = true
+kube.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

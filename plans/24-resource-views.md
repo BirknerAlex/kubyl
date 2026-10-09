@@ -99,7 +99,7 @@ Each has a recommendation. Record the outcomes in the README's decision table.
 
 - CEL syntax highlighting and a CEL playground (evaluate a policy against an object).
 - CSV export of any table (done in phase 25).
-- An "Applications" view grouping objects by `app.kubernetes.io/*` labels.
+- An "Applications" view grouping objects by `app.kubernetes.io/*` labels (done in phase 25).
 
 ## Handoff log
 

@@ -20,5 +20,6 @@ pub mod run;
 pub mod settings;
 pub mod sso;
 pub mod state;
+pub mod tracking;
 pub mod tree;
 pub mod windows;

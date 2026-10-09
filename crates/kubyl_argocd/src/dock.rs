@@ -24,78 +24,13 @@ use serde_json::Value;
 
 use crate::actions;
 use crate::dialogs;
-use crate::model::{Application, GROUP, SyncStatus, TRACKING_ANNOTATION, TRACKING_LABEL};
+use crate::model::{Application, GROUP, SyncStatus};
 use crate::ops::PolicyChange;
 use crate::run::{self, Op};
 use crate::state::{self, ArgoCd};
 use crate::widgets;
 
-/// Which app manages an object.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ManagedBy {
-    /// Set for apps outside Argo CD's own namespace (`<namespace>_<name>`).
-    pub app_namespace: Option<String>,
-    pub app_name: String,
-    /// Found through the instance label (needs an Application of that name to count).
-    pub via_label: bool,
-}
-
-fn split_app(value: &str) -> (Option<String>, String) {
-    match value.split_once('_') {
-        Some((ns, name)) => (Some(ns.to_string()), name.to_string()),
-        None => (None, value.to_string()),
-    }
-}
-
-/// The app that tracks `object`, if any.
-pub fn managed_by(object: &Value) -> Option<ManagedBy> {
-    let meta = object.get("metadata")?;
-    if let Some(id) = meta
-        .pointer("/annotations")
-        .and_then(|a| a.get(TRACKING_ANNOTATION))
-        .and_then(Value::as_str)
-    {
-        // `<app>:<group>/<kind>:<namespace>/<name>`.
-        let mut parts = id.splitn(3, ':');
-        let app = parts.next()?;
-        let group_kind = parts.next()?;
-        let ns_name = parts.next()?;
-        let kind = group_kind.rsplit('/').next()?;
-        let (ns, name) = ns_name.split_once('/')?;
-        let object_kind = object
-            .get("kind")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let object_ns = meta
-            .get("namespace")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let object_name = meta.get("name").and_then(Value::as_str).unwrap_or_default();
-        if kind == object_kind
-            && name == object_name
-            && (ns == object_ns || object_ns.is_empty())
-            && !app.is_empty()
-        {
-            let (app_namespace, app_name) = split_app(app);
-            return Some(ManagedBy {
-                app_namespace,
-                app_name,
-                via_label: false,
-            });
-        }
-        return None;
-    }
-    let label = meta
-        .pointer("/labels")
-        .and_then(|l| l.get(TRACKING_LABEL))
-        .and_then(Value::as_str)?;
-    let (app_namespace, app_name) = split_app(label);
-    Some(ManagedBy {
-        app_namespace,
-        app_name,
-        via_label: true,
-    })
-}
+pub use kubyl_argocd_core::tracking::{ManagedBy, managed_by};
 
 /// The Applications watch of a cluster (all namespaces), if some view runs it.
 fn loaded_apps(cluster: &ClusterId, cx: &App) -> Vec<Application> {
@@ -602,50 +537,5 @@ impl Render for AppDock {
             .child(policy_section)
             .children(last)
             .into_any_element()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn tracking_annotation_must_match_the_object() {
-        let deployment = json!({"kind": "Deployment", "metadata": {"name": "guestbook-ui", "namespace": "guestbook",
-            "annotations": {TRACKING_ANNOTATION: "guestbook:apps/Deployment:guestbook/guestbook-ui"}}});
-        assert_eq!(
-            managed_by(&deployment),
-            Some(ManagedBy {
-                app_namespace: None,
-                app_name: "guestbook".into(),
-                via_label: false
-            })
-        );
-        // Apps in any namespace: `<namespace>_<name>`.
-        let service = json!({"kind": "Service", "metadata": {"name": "ui", "namespace": "team",
-            "annotations": {TRACKING_ANNOTATION: "argocd-apps_guestbook-team:/Service:team/ui"}}});
-        assert_eq!(
-            managed_by(&service),
-            Some(ManagedBy {
-                app_namespace: Some("argocd-apps".into()),
-                app_name: "guestbook-team".into(),
-                via_label: false
-            })
-        );
-        // A copy under another name isn't managed.
-        let copy = json!({"kind": "Deployment", "metadata": {"name": "copy", "namespace": "guestbook",
-            "annotations": {TRACKING_ANNOTATION: "guestbook:apps/Deployment:guestbook/guestbook-ui"}}});
-        assert_eq!(managed_by(&copy), None);
-        // Cluster-scoped objects have no namespace.
-        let ns = json!({"kind": "Namespace", "metadata": {"name": "guestbook",
-            "annotations": {TRACKING_ANNOTATION: "guestbook:/Namespace:/guestbook"}}});
-        assert_eq!(managed_by(&ns).unwrap().app_name, "guestbook");
-        let label = json!({"kind": "Service", "metadata": {"name": "x", "labels": {TRACKING_LABEL: "web"}}});
-        assert!(managed_by(&label).unwrap().via_label);
-        assert_eq!(
-            managed_by(&json!({"kind": "Service", "metadata": {"name": "x"}})),
-            None
-        );
     }
 }

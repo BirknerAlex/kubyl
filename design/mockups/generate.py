@@ -4717,7 +4717,7 @@ def flux_delete_screen():
 # ---------- 22 · Resource views (phase 24) ----------
 RV_CLUSTER = "kind-dev"
 
-def rv_sidebar(active, open_groups):
+def rv_sidebar(active, open_groups, applications=None):
     """kind-dev with the groups phase 24 adds to (only kinds the cluster serves show)."""
     groups = [
         ("Workloads", [("Pods", "box", "21"), ("Deployments", "layers", "4"), ("StatefulSets", "db", "1"), ("Jobs", "play", "2"), ("VerticalPodAutoscalers", "activity", "1")]),
@@ -4744,13 +4744,15 @@ def rv_sidebar(active, open_groups):
         rows.append(ti(g, 1, open_=is_open))
         if is_open:
             rows += [ti(n, 2, icon, cnt, on=n == active) for n, icon, cnt in kinds]
+        if g == "Workloads" and applications:
+            rows.append(ti("Applications", 1, "blocks", applications, on=active == "Applications"))
     rows += [root("prod-eu-west-1", "on", color=C["red"], prod=True), root("staging-eu-west-1", "on", color=C["yellow"])]
     return '<aside class="side">' + "\n".join(rows) + '</aside>'
 
-def rv_app(title, active, open_groups, tb, content, ns="kubyl-views", overlay=""):
+def rv_app(title, active, open_groups, tb, content, ns="kubyl-views", overlay="", applications=None):
     inner = f'''<div class="app">
 {titlebar(RV_CLUSTER, ns, False, "kind · v1.37.0")}
-<div class="body">{rv_sidebar(active, open_groups)}<main class="main">{tb}{content}</main></div>
+<div class="body">{rv_sidebar(active, open_groups, applications)}<main class="main">{tb}{content}</main></div>
 {statusbar(cluster=RV_CLUSTER, ns=ns)}{overlay}
 </div>'''
     return page(title, inner)
@@ -4996,6 +4998,45 @@ def csv_screen():
     return rv_app("Export CSV — Kubyl", "Pods", ("Workloads",), tb, content, ns="shop", overlay=note + menu + t)
 
 
+def apps_screen():
+    cols = "grid-template-columns: minmax(0,1.2fr) minmax(0,.8fr) minmax(0,1.2fr) 110px 56px 124px"
+    apps = [("ledger", "kubyl-apps", "Helm · ledger", "16.4", "2d", "Degraded", C["red"]),
+            ("shop", "kubyl-apps", "kustomize", "2.3.0, 2.3.1", "2d", "Healthy", C["green"]),
+            ("metrics-server", "kube-system", "Helm · metrics-server", "0.9.0", "5d", "Healthy", C["green"]),
+            ("kube-prometheus-stack", "monitoring", "Helm · kube-prometheus-stack", "91.9.0", "4d", "Healthy", C["green"]),
+            ("podinfo", "flux-demo", "Flux · Kustomization flux-system/podinfo", "6.7.1", "1d", "Progressing", C["accent"]),
+            ("guestbook", "guestbook", "Argo CD · guestbook", "v0.2", "6d", "Healthy", C["green"]),
+            ("report", "kubyl-apps", "", "0.9.0", "2d", "Suspended", C["dim"])]
+    rows = [[m(i, s=12), f'<span style="color:var(--muted)">{ns}</span>', f'<span style="font-size:12px;color:var(--muted)">{mg or "—"}</span>', m(v), m(a, "var(--muted)"), tpill(st, col)]
+            for i, ns, mg, v, a, st, col in apps]
+    toolbar_extra = f'''<span style="font-size:12px;color:var(--dim)">All namespaces{ic("cd",11)}</span>'''
+    center = rv_list("blocks", "Applications", "7 · 1 degraded", cols, ["INSTANCE", "NAMESPACE", "MANAGED BY", "VERSION", "AGE", "STATUS"], rows,
+                     [("↵", "Open"), ("l", "Logs"), ("/", "Filter")], toolbar_extra)
+    def member(kind_first, kind, name, detail="", st=None, col=None):
+        head = f'<div style="padding-top:6px;font-size:11.5px;color:var(--dim)">{kind}</div>' if kind_first else ""
+        right = f'<span style="font-size:11.5px;color:var(--dim)">{detail}</span>{tpill(st, col)}' if st else ""
+        return head + f'<div style="display:flex;align-items:center;gap:8px;height:24px">{lk(name, 12)}<span style="flex:1"></span>{right}</div>'
+    kvs = "".join(rkv(k, v, 96) for k, v in [("Managed by", "Helm · ledger"), ("Version", m("16.4")), ("Name", "postgres"), ("Part of", "—"), ("Age", "2d"), ("Selector", m("app.kubernetes.io/instance=ledger", s=11.5))])
+    dock = rv_dock("ledger", 400, [
+        f'<div class="dsec"><div class="mono" style="font-size:12.5px;margin-bottom:8px">ledger</div><div style="display:flex;gap:6px;align-items:center">{tpill("Degraded", C["red"])}<span class="chip">kubyl-apps</span><span class="chip">Helm</span><span style="flex:1"></span><button class="btn">{ic("list",12)}Logs</button></div></div>',
+        rv_sec("Application", '<div style="display:flex;flex-direction:column;gap:6px;font-size:12px">' + kvs + "</div>"),
+        rv_sec("Objects · 3", member(True, "StatefulSet", "ledger-db", "0/2 ready", "Degraded", C["red"]) + member(True, "Service", "ledger-db") + member(True, "ConfigMap", "ledger-config"), last=True),
+    ])
+    content = f'<div style="flex:1;display:flex;min-height:0">{center}{dock}</div>'
+    tb = tabs([("blocks", "Applications", True), ("box", "Pods", False)])
+    return rv_app("Applications — Kubyl", "Applications", ("Workloads",), tb, content, ns="kubyl-apps", applications="7")
+
+def apps_states_screen():
+    """Nothing labelled yet."""
+    empty = (f'<div style="flex:1;display:flex;align-items:center;justify-content:center;padding:24px;color:var(--dim);font-size:12.5px;text-align:center;max-width:560px;margin:auto;line-height:19px">'
+             f'No application found. Objects join one through the <span class="mono">app.kubernetes.io/instance</span> label (Helm sets it; so do most charts, Argo CD and Kustomize setups).</div>')
+    toolbar = f'''<div class="tool"><div class="crumb">{ic("blocks",14,C["accent"])}<b>Applications</b><span>·</span><span>0</span></div><div style="flex:1"></div>
+<div class="inp" style="width:180px">{ic("filter",12)}Filter</div><span class="chip" style="color:var(--green)">{dot(C["green"])}live</span></div>'''
+    content = f'<div style="flex:1;display:flex;flex-direction:column;min-width:0">{toolbar}{empty}{hints([("/", "Filter")])}</div>'
+    tb = tabs([("blocks", "Applications", True)])
+    return rv_app("Applications (empty) — Kubyl", "Applications", ("Workloads",), tb, content, ns="default", applications="0")
+
+
 def local_term_panel(tabs_html, body):
     return f'''<div style="height:300px;flex-shrink:0;border-top:1px solid var(--border);display:flex;flex-direction:column;background:var(--bg)">
 <div class="tabs" style="height:32px">{tabs_html}<div class="tabtools"><button class="ib" aria-label="New terminal">{ic("plus",14)}</button><button class="ib" aria-label="Maximize">{ic("max",13)}</button></div></div>
@@ -5129,6 +5170,8 @@ SCREENS = [
  ("CsvExport.dc.html", "23 · Lens parity: Export CSV from any table (the Columns menu, a toast)", csv_screen),
  ("LocalTerminal.dc.html", "23 · Lens parity: a local shell tab with the cluster's context, the palette entry, the warning chip", local_terminal_screen),
  ("LocalTerminalProd.dc.html", "23 · Lens parity: a local shell on PROD asks for the cluster's name", local_terminal_prod_screen),
+ ("Applications.dc.html", "23 · Lens parity: Applications by app.kubernetes.io labels, managed by Helm/Argo CD/Flux, objects and logs", apps_screen),
+ ("ApplicationsEmpty.dc.html", "23 · Lens parity: Applications with nothing labelled yet (the empty state says how objects join one)", apps_states_screen),
 ]
 
 boards, order = {}, []
