@@ -9,6 +9,7 @@
 //! `kubyl_core` re-exports all of it next to the GPUI parts (registries, `spawn_kube`).
 
 pub mod columns;
+pub mod csv;
 pub mod error;
 pub mod host;
 pub mod notice;

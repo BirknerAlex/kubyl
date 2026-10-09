@@ -14,6 +14,8 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
+dirs.workspace = true
+jiff.workspace = true
 kubyl_base.workspace = true
 futures.workspace = true
 gpui.workspace = true

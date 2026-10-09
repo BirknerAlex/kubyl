@@ -111,6 +111,9 @@ pub(super) fn render(
         }))
         .on_action(cx.listener(|this, _: &ToggleWide, window, cx| this.toggle_wide(window, cx)))
         .on_action(
+            cx.listener(|this, _: &kubyl_core::actions::ExportCsv, _, cx| this.export_csv(cx)),
+        )
+        .on_action(
             |_: &CopySelection, window, cx| match kubyl_ui::selected_text(window, cx) {
                 Some(text) => cx.write_to_clipboard(gpui::ClipboardItem::new_string(text)),
                 None => window.dispatch_action(Box::new(crate::actions::CopyName), cx),
@@ -369,6 +372,7 @@ fn render_toolbar(
                 );
             }
             let weak = columns_weak.clone();
+            let export = columns_weak.clone();
             menu.separator()
                 .item(PopupMenuItem::new("Wide (-o wide)").checked(wide).on_click(
                     move |_, window, cx| {
@@ -376,6 +380,10 @@ fn render_toolbar(
                             .ok();
                     },
                 ))
+                .separator()
+                .item(PopupMenuItem::new("Export CSV…").on_click(move |_, _, cx| {
+                    export.update(cx, |this, cx| this.export_csv(cx)).ok();
+                }))
         });
 
     h_flex()

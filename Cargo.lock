@@ -5141,8 +5141,10 @@ name = "kubyl_core"
 version = "0.6.0"
 dependencies = [
  "anyhow",
+ "dirs 7.0.0",
  "futures",
  "gpui-pre",
+ "jiff",
  "kubyl_base",
  "parking_lot",
  "serde",

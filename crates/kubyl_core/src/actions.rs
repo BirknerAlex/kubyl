@@ -28,6 +28,9 @@ actions!(
         FilterSidebar,
         /// Opens the "New kubeconfig" wizard (phase 11).
         NewKubeconfig,
+        /// Saves the table in focus as a CSV file (phase 25). Tables handle it in their own
+        /// key context; see `kubyl_base::csv`.
+        ExportCsv,
     ]
 );
 
