@@ -140,15 +140,37 @@ pub fn exit_code(status: &Status) -> Option<i32> {
 /// Stores stdin (`$2` bytes) in a temporary file next to `$1` first and copies it over `$1`
 /// only when it arrived complete, so a dropped connection can't leave a truncated file. The
 /// copy (not `mv`) keeps the file's mode, owner, symlink and bind mount.
-const WRITE_SCRIPT: &str = r#"tmp="$1.kubyl-tmp.$$"; if cat > "$tmp" && [ "$(wc -c < "$tmp")" -eq "$2" ]; then cat "$tmp" > "$1"; rc=$?; else echo "the upload was incomplete" >&2; rc=1; fi; rm -f "$tmp"; exit $rc"#;
+const WRITE_SCRIPT: &str = r#"tmp="$1.kubyl-tmp.$$"; if READ > "$tmp" && [ "$(wc -c < "$tmp")" -eq "$2" ]; then cat "$tmp" > "$1"; rc=$?; else echo "the upload was incomplete" >&2; rc=1; fi; rm -f "$tmp"; exit $rc"#;
 
-/// Runs `command` and collects its output. `stdin` is written and closed first.
+fn write_script(sized: bool) -> String {
+    WRITE_SCRIPT.replace("READ", read_input(sized))
+}
+
+/// The command that reads a script's input: `$2` bytes with `head -c` when `sized`, else
+/// everything until stdin closes.
+///
+/// Clusters without the `v5.channel.k8s.io` exec protocol (before Kubernetes 1.30) can only
+/// close stdin by closing the whole connection, which loses the command's exit status. A sized
+/// read ends by itself, so stdin stays open until the status arrives.
+pub fn read_input(sized: bool) -> &'static str {
+    if sized { "head -c \"$2\"" } else { "cat" }
+}
+
+/// Input for a command.
+pub struct Input {
+    pub bytes: Vec<u8>,
+    /// The command reads exactly `bytes.len()` bytes ([`read_input`]): keep stdin open until it
+    /// exits instead of closing it.
+    pub sized: bool,
+}
+
+/// Runs `command` and collects its output. `stdin` is written first.
 pub async fn exec_capture(
     api: &Api<Pod>,
     pod: &str,
     container: &str,
     command: Vec<String>,
-    stdin: Option<Vec<u8>>,
+    stdin: Option<Input>,
 ) -> anyhow::Result<ExecOutput> {
     let params = AttachParams::default()
         .container(container)
@@ -157,12 +179,17 @@ pub async fn exec_capture(
         .stderr(true);
     let mut process = api.exec(pod, command, &params).await?;
     let mut stdin_error = None;
-    if let Some(bytes) = stdin
+    let mut held_stdin = None;
+    if let Some(input) = stdin
         && let Some(mut writer) = process.stdin()
     {
         // A command that exits early stops reading: its own error is the useful one.
-        stdin_error = writer.write_all(&bytes).await.err();
-        writer.shutdown().await.ok();
+        stdin_error = writer.write_all(&input.bytes).await.err();
+        if input.sized {
+            held_stdin = Some(writer);
+        } else {
+            writer.shutdown().await.ok();
+        }
     }
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
@@ -183,6 +210,7 @@ pub async fn exec_capture(
         Some(status) => status.await,
         None => None,
     };
+    drop(held_stdin);
     // No status means the stream ended before the command finished (the API always sends one),
     // so partial output isn't mistaken for a result.
     let mut success = status
@@ -272,7 +300,7 @@ impl RemoteTarget {
     pub async fn exec(
         &self,
         command: Vec<String>,
-        stdin: Option<Vec<u8>>,
+        stdin: Option<Input>,
     ) -> anyhow::Result<ExecOutput> {
         exec_capture(&self.api(), &self.pod, &self.exec_container, command, stdin).await
     }
@@ -353,8 +381,12 @@ impl RemoteTarget {
     /// Overwrites a file with `bytes`, keeping its mode.
     pub async fn write(&self, path: &str, bytes: Vec<u8>) -> anyhow::Result<()> {
         let len = bytes.len().to_string();
+        let sized = self.caps.head;
         let output = self
-            .exec(sh(WRITE_SCRIPT, [self.real(path), len]), Some(bytes))
+            .exec(
+                sh(&write_script(sized), [self.real(path), len]),
+                Some(Input { bytes, sized }),
+            )
             .await?;
         if output.success {
             Ok(())
@@ -610,11 +642,17 @@ mod tests {
     use super::*;
 
     #[cfg(unix)]
-    fn run_write_script(dir: &std::path::Path, target: &str, data: &[u8], len: usize) -> bool {
+    fn run_write_script(
+        sized: bool,
+        dir: &std::path::Path,
+        target: &str,
+        data: &[u8],
+        len: usize,
+    ) -> bool {
         use std::io::Write as _;
         use std::process::{Command, Stdio};
         let mut child = Command::new("sh")
-            .args(["-c", WRITE_SCRIPT, "sh"])
+            .args(["-c", &write_script(sized), "sh"])
             .arg(dir.join(target))
             .arg(len.to_string())
             .stdin(Stdio::piped())
@@ -628,15 +666,17 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn write_script_keeps_the_file_unless_the_upload_is_complete() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("app.conf");
-        std::fs::write(&file, "old").unwrap();
-        assert!(!run_write_script(dir.path(), "app.conf", b"new", 10));
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "old");
-        assert!(run_write_script(dir.path(), "app.conf", b"new!", 4));
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "new!");
-        let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
-        assert_eq!(left.len(), 1, "temp file left behind");
+        for sized in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("app.conf");
+            std::fs::write(&file, "old").unwrap();
+            assert!(!run_write_script(sized, dir.path(), "app.conf", b"new", 10));
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), "old");
+            assert!(run_write_script(sized, dir.path(), "app.conf", b"new!", 4));
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), "new!");
+            let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
+            assert_eq!(left.len(), 1, "temp file left behind");
+        }
     }
 
     #[test]
