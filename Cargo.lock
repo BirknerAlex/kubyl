@@ -4883,6 +4883,7 @@ dependencies = [
  "image",
  "kubyl_agent",
  "kubyl_alerts",
+ "kubyl_apps",
  "kubyl_argocd",
  "kubyl_charts",
  "kubyl_core",
@@ -5036,6 +5037,42 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "kubyl_apps"
+version = "0.6.0"
+dependencies = [
+ "gpui-component",
+ "gpui-pre",
+ "jiff",
+ "kubyl_apps_core",
+ "kubyl_argocd_core",
+ "kubyl_core",
+ "kubyl_explorer",
+ "kubyl_kube",
+ "kubyl_palette",
+ "kubyl_resources",
+ "kubyl_settings",
+ "kubyl_ui",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "kubyl_apps_core"
+version = "0.6.0"
+dependencies = [
+ "jiff",
+ "k8s-openapi",
+ "kube",
+ "kubyl_argocd_core",
+ "kubyl_base",
+ "kubyl_flux_core",
+ "kubyl_helm_core",
+ "kubyl_resources_core",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

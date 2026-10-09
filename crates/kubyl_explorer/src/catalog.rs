@@ -70,6 +70,17 @@ fn overview_views() -> Vec<ViewEntry> {
     }]
 }
 
+/// Applications (phase 25) sits in Workloads: it groups the workloads by their labels.
+fn workloads_views() -> Vec<ViewEntry> {
+    vec![ViewEntry {
+        id: "applications",
+        label: "Applications",
+        icon: IconName::Blocks,
+        kind: ViewKind::Custom("applications".into()),
+        needs_olm: false,
+    }]
+}
+
 fn administration_views() -> Vec<ViewEntry> {
     vec![
         ViewEntry {
@@ -417,7 +428,7 @@ pub const GROUPS: &[GroupDef] = &[
         label: "Workloads",
         collapsible: true,
         kinds: WORKLOADS,
-        views: no_views,
+        views: workloads_views,
     },
     GroupDef {
         id: "network",
@@ -702,9 +713,14 @@ pub struct NamespaceView {
     pub kind: ViewKind,
 }
 
+/// How many things a view has (a count at the end of its row, like the kinds'), for a cluster.
+pub type ViewCountFn = Arc<dyn Fn(&ClusterId, &App) -> Option<usize>>;
+
 /// View rows and root markers other crates added.
 #[derive(Default)]
 pub struct ViewRows {
+    /// Counts of view entries inside groups (`ViewEntry::id`), e.g. Workloads' Applications.
+    pub counts: Vec<(&'static str, ViewCountFn)>,
     pub rows: Vec<ViewRow>,
     pub markers: Vec<RootMarkerFn>,
     pub namespace_views: Vec<NamespaceView>,
@@ -715,6 +731,20 @@ impl Global for ViewRows {}
 /// Adds a top-level row under every cluster (from a feature crate's `init`).
 pub fn register_view_row(cx: &mut App, row: ViewRow) {
     cx.default_global::<ViewRows>().rows.push(row);
+}
+
+/// Adds a count to the row of a view entry of a group (`ViewEntry::id`).
+pub fn register_view_count(cx: &mut App, id: &'static str, count: ViewCountFn) {
+    cx.default_global::<ViewRows>().counts.push((id, count));
+}
+
+/// The count of a view entry's row for `cluster`, if one was registered and has a value.
+pub fn view_count(id: &str, cluster: &ClusterId, cx: &App) -> Option<usize> {
+    cx.try_global::<ViewRows>()?
+        .counts
+        .iter()
+        .find(|(entry, _)| *entry == id)
+        .and_then(|(_, count)| count(cluster, cx))
 }
 
 /// Adds a marker to the cluster root rows.

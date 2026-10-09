@@ -50,6 +50,7 @@ kubyl_charts.workspace = true
 kubyl_core.workspace = true
 kubyl_explorer.workspace = true
 kubyl_files.workspace = true
+kubyl_apps.workspace = true
 kubyl_flux.workspace = true
 kubyl_helm.workspace = true
 kubyl_keymap.workspace = true
