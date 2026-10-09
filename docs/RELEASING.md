@@ -45,9 +45,10 @@ After the GitHub Release publishes, three more jobs distribute it further:
 Flatpak: `script/build-flatpak.sh` (called from `build-linux`) wraps the release binary with
 `packaging/linux/flatpak/` (manifest on the GNOME runtime, because Kubyl needs GTK 3 and WebKitGTK;
 metainfo) into `kubyl-$VERSION-linux-<amd64|arm64>.flatpak`. It is not submitted to Flathub. Users
-add silo's remote and install from it:
+add silo's remote and install from it. Flathub is needed too, for the GNOME runtime, which silo does not host:
 
 ```sh
+flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 flatpak remote-add --user kubyl https://silo.tyrola.dev/kubyl/stable/silo.flatpakrepo
 flatpak install kubyl io.github.birkneralex.Kubyl
 ```

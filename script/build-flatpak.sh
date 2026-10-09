@@ -54,10 +54,14 @@ flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/fl
     --repo=repo build "$APP_ID.yml"
   # Fail the release here, not on a user's machine, if the runtime lacks a library the binary
   # links (GTK 3 or WebKitGTK 4.1 are the ones a runtime bump can drop).
-  missing="$(flatpak-builder --run build "$APP_ID.yml" ldd /app/bin/kubyl | grep 'not found' || true)"
-  if [ -n "$missing" ]; then
+  if ! linked="$(flatpak-builder --run build "$APP_ID.yml" ldd /app/bin/kubyl 2>&1)"; then
+    echo "::error::could not inspect the binary's libraries inside the runtime:"
+    echo "$linked"
+    exit 1
+  fi
+  if grep -q 'not found' <<< "$linked"; then
     echo "::error::the runtime is missing libraries kubyl links:"
-    echo "$missing"
+    grep 'not found' <<< "$linked"
     exit 1
   fi
   flatpak build-bundle --arch="$ARCH" \
