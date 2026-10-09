@@ -36,8 +36,12 @@ use serde::Deserialize;
 use crate::exec::{self, DebugSpec, ExecTarget, Mode, PodInfo};
 use crate::grid::{CellSnapshot, CursorStyle, Snapshot, TermColor, TerminalGrid, xterm_color};
 use crate::input::{self, KeyInput, KeyModes, MouseReport};
+use crate::local;
 use crate::settings::TerminalSettings;
 use crate::shell;
+
+/// Printed first in a local shell: it is the user's own `kubectl`.
+const LOCAL_NOTE: &[u8] = b"\x1b[2mLocal shell: KUBECONFIG holds only this cluster's context. kubectl and other tools here are not limited by Kubyl's read-only or PROD protection.\x1b[0m\r\n";
 
 /// Key context of a terminal. Control keys are bound here so the app's and gpui-component's
 /// bindings (`ctrl-c` copy, `tab` focus, `ctrl-p` palette on Linux…) don't swallow them.
@@ -127,6 +131,9 @@ pub enum SessionMode {
     /// A privileged pod on the node with a shell in the host's namespaces. `target` is the
     /// node.
     NodeShell { image: String, namespace: String },
+    /// A shell on this machine (phase 25) whose `KUBECONFIG` holds only the cluster's context.
+    /// `target` is the cluster (and the namespace it was opened in), without a name.
+    Local,
 }
 
 /// A terminal to open: the pod (or node), container and session mode.
@@ -138,6 +145,15 @@ pub struct TerminalSpec {
 }
 
 impl TerminalSpec {
+    /// A local shell with the cluster's context (in `namespace`).
+    pub fn local(cluster: ClusterId, namespace: Option<String>) -> Self {
+        Self {
+            target: ResourceRef::list(cluster, kubyl_core::Gvr::new("", "", ""), namespace),
+            container: None,
+            mode: SessionMode::Local,
+        }
+    }
+
     pub fn exec(target: ResourceRef) -> Self {
         Self {
             target,
@@ -214,6 +230,8 @@ pub struct TerminalView {
     /// Program title (OSC 0/2).
     title: Option<String>,
     pod_info: Option<PodInfo>,
+    /// The cluster's display name, for the title of a local shell.
+    cluster_label: String,
     input_tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
     resize_tx: Option<mpsc::UnboundedSender<(u16, u16)>>,
     session_id: Option<SessionId>,
@@ -248,6 +266,15 @@ impl TerminalView {
         if target.gvr.resource == "nodes" {
             return Self::new_unconfirmed_node_shell(target, cx);
         }
+        // `kubyl_terminal::open_local` confirmed it (read-only, PROD) before asking for the
+        // tab, and a local shell is never restored.
+        if target.name.is_none() && target.gvr.resource.is_empty() {
+            return Self::new(
+                TerminalSpec::local(target.cluster, target.namespace),
+                false,
+                cx,
+            );
+        }
         Self::new(TerminalSpec::exec(target), true, cx)
     }
 
@@ -279,6 +306,9 @@ impl TerminalView {
     ) -> Self {
         let settings = kubyl_settings::Settings::get::<TerminalSettings>(cx).clone();
         let (columns, rows) = (80, 24);
+        let cluster_label = ConnectionManager::try_global(cx)
+            .map(|m| m.read(cx).display_name(&spec.target.cluster).to_string())
+            .unwrap_or_default();
         let mut this = Self {
             focus: cx.focus_handle(),
             restorable: restorable && matches!(spec.mode, SessionMode::Exec { .. }),
@@ -292,6 +322,7 @@ impl TerminalView {
             command: None,
             title: None,
             pod_info: None,
+            cluster_label,
             input_tx: None,
             resize_tx: None,
             session_id: None,
@@ -327,12 +358,13 @@ impl TerminalView {
             }
         });
         this._subscriptions.push(quit);
-        let has_target = this
-            .spec
-            .target
-            .name
-            .as_deref()
-            .is_some_and(|n| !n.is_empty());
+        let has_target = matches!(this.spec.mode, SessionMode::Local)
+            || this
+                .spec
+                .target
+                .name
+                .as_deref()
+                .is_some_and(|n| !n.is_empty());
         if !has_target {
             this.status = Status::Failed("nothing to connect to".into());
         } else if auto_start {
@@ -349,6 +381,12 @@ impl TerminalView {
 
     /// `exec · x2kqp/api · /bin/sh`, for tabs and the session row.
     pub fn title(&self) -> String {
+        if matches!(self.spec.mode, SessionMode::Local) {
+            return match &self.command {
+                Some(shell) => format!("local · {} · {shell}", self.cluster_label),
+                None => format!("local · {}", self.cluster_label),
+            };
+        }
         let name = self.spec.target.name.clone().unwrap_or_default();
         let short = kubyl_logs::line::short_pod_name(&name).to_string();
         let target = match &self.container {
@@ -363,6 +401,7 @@ impl TerminalView {
             SessionMode::Attach => format!("attach · {target}"),
             SessionMode::Debug(spec) => format!("debug · {target} · {}", spec.image),
             SessionMode::NodeShell { .. } => format!("node shell · {name}"),
+            SessionMode::Local => unreachable!("handled above"),
         }
     }
 
@@ -382,7 +421,11 @@ impl TerminalView {
             Status::NotConnected => ("not connected".into(), Tone::Muted),
             Status::Starting(step) => (step.clone(), Tone::Info),
             Status::Connected => {
-                let mut label = "websocket".to_string();
+                let mut label = if matches!(self.spec.mode, SessionMode::Local) {
+                    "local".to_string()
+                } else {
+                    "websocket".to_string()
+                };
                 if let Some(command) = &self.command {
                     label = format!("{command} · {label}");
                 }
@@ -436,6 +479,10 @@ impl TerminalView {
     }
 
     fn start(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.spec.mode, SessionMode::Local) {
+            self.start_local(cx);
+            return;
+        }
         let Some(client) = ConnectionManager::global(cx)
             .read(cx)
             .client(&self.spec.target.cluster)
@@ -456,7 +503,7 @@ impl TerminalView {
         let name = spec.target.name.clone().unwrap_or_default();
 
         let (input_tx, input_rx) = mpsc::unbounded();
-        let (output_tx, mut output_rx) = mpsc::channel(OUTPUT_QUEUE);
+        let (output_tx, output_rx) = mpsc::channel(OUTPUT_QUEUE);
         let (resize_tx, resize_rx) = mpsc::unbounded();
         // The current size goes first, so the program starts with the right dimensions.
         resize_tx
@@ -474,6 +521,7 @@ impl TerminalView {
             // Prepare the pod/container/command off the UI thread.
             let setup_client = client.clone();
             let prepared = match &spec.mode {
+                SessionMode::Local => Err("a local shell isn't a pod session".to_string()),
                 SessionMode::NodeShell { image, namespace } => {
                     if !step(&this, cx, "starting a node-shell pod…") {
                         return;
@@ -631,59 +679,151 @@ impl TerminalView {
                     exec::run(client, target, input_rx, output_tx, resize_rx, connected_tx).await
                 })
             });
-            match connected_rx.await {
-                Ok(Ok(())) => {
-                    this.update(cx, |this, cx| this.set_status(Status::Connected, cx))
-                        .ok();
-                }
-                Ok(Err(message)) => {
-                    this.update(cx, |this, cx| {
-                        if let Some(pod) = this.node_pod.take() {
-                            pod.delete();
-                        }
-                        this.set_status(Status::Failed(message.into()), cx)
-                    })
-                    .ok();
-                    return;
-                }
-                Err(_) => {
-                    this.update(cx, |this, cx| {
-                        if let Some(pod) = this.node_pod.take() {
-                            pod.delete();
-                        }
-                        this.set_status(Status::Ended("disconnected".into()), cx)
-                    })
-                    .ok();
-                    return;
-                }
-            }
+            Self::drive(this, cx, connected_rx, output_rx, run).await;
+        }));
+    }
 
-            while let Some(bytes) = output_rx.next().await {
-                let mut batch = bytes;
-                fill_batch(&mut batch, &mut output_rx);
-                let alive = this.update(cx, |this, cx| this.receive(&batch, cx)).is_ok();
-                if !alive {
-                    break;
-                }
-                cx.background_executor()
-                    .timer(Duration::from_millis(8))
-                    .await;
+    /// Shows what a session prints until it ends: waits for the connection, feeds the output to
+    /// the grid, then reports how it ended. Shared by the exec and local sessions.
+    async fn drive(
+        this: gpui::WeakEntity<Self>,
+        cx: &mut gpui::AsyncApp,
+        connected_rx: futures::channel::oneshot::Receiver<Result<(), String>>,
+        mut output_rx: mpsc::Receiver<Vec<u8>>,
+        run: Task<anyhow::Result<bool>>,
+    ) {
+        match connected_rx.await {
+            Ok(Ok(())) => {
+                this.update(cx, |this, cx| this.set_status(Status::Connected, cx))
+                    .ok();
             }
-            let exited = matches!(run.await, Ok(true));
-            this.update(cx, |this, cx| {
-                this.input_tx = None;
-                if let Some(pod) = this.node_pod.take() {
-                    pod.delete();
+            Ok(Err(message)) => {
+                this.update(cx, |this, cx| {
+                    if let Some(pod) = this.node_pod.take() {
+                        pod.delete();
+                    }
+                    this.set_status(Status::Failed(message.into()), cx)
+                })
+                .ok();
+                return;
+            }
+            Err(_) => {
+                this.update(cx, |this, cx| {
+                    if let Some(pod) = this.node_pod.take() {
+                        pod.delete();
+                    }
+                    this.set_status(Status::Ended("disconnected".into()), cx)
+                })
+                .ok();
+                return;
+            }
+        }
+
+        while let Some(bytes) = output_rx.next().await {
+            let mut batch = bytes;
+            fill_batch(&mut batch, &mut output_rx);
+            let alive = this.update(cx, |this, cx| this.receive(&batch, cx)).is_ok();
+            if !alive {
+                break;
+            }
+            cx.background_executor()
+                .timer(Duration::from_millis(8))
+                .await;
+        }
+        let exited = matches!(run.await, Ok(true));
+        this.update(cx, |this, cx| {
+            this.input_tx = None;
+            if let Some(pod) = this.node_pod.take() {
+                pod.delete();
+            }
+            // The shell or container exited (`exit`): its tab closes, a new one starts a
+            // new session. A dropped connection keeps the output and can reconnect.
+            this.exited = exited;
+            this.set_status(
+                Status::Ended("session ended · press Enter to reconnect".into()),
+                cx,
+            );
+        })
+        .ok();
+    }
+
+    /// A local shell: prepares the one-context kubeconfig and the environment on Tokio, then
+    /// runs the shell in a PTY.
+    fn start_local(&mut self, cx: &mut Context<Self>) {
+        let cluster = self.spec.target.cluster.clone();
+        let Some(target) = ConnectionManager::global(cx).read(cx).cli_target(&cluster) else {
+            self.set_status(
+                Status::Failed("this cluster isn't in a kubeconfig Kubyl knows".into()),
+                cx,
+            );
+            return;
+        };
+        self.ensure_session(cx);
+        let shell = kubyl_settings::Settings::get::<TerminalSettings>(cx)
+            .local_shell
+            .clone();
+        let namespace = self.spec.target.namespace.clone();
+
+        let (input_tx, input_rx) = mpsc::unbounded();
+        let (output_tx, output_rx) = mpsc::channel(OUTPUT_QUEUE);
+        let (resize_tx, resize_rx) = mpsc::unbounded();
+        let size = (self.columns as u16, self.rows as u16);
+        self.input_tx = Some(input_tx);
+        self.resize_tx = Some(resize_tx);
+        self.set_status(Status::Starting("preparing the shell…".into()), cx);
+
+        self._task = Some(cx.spawn(async move |this, cx| {
+            let prepared = cx.update(|cx| {
+                kubyl_core::spawn_kube(cx, async move {
+                    // The first call asks the login shell: not on a runtime thread.
+                    let path = tokio::task::spawn_blocking(kubyl_kube::auth::shell_env::path)
+                        .await
+                        .ok()
+                        .flatten();
+                    local::prepare(local::Request {
+                        target,
+                        namespace,
+                        shell,
+                        path,
+                    })
+                    .await
+                })
+            });
+            let plan = match prepared.await {
+                Ok(plan) => plan,
+                Err(err) => {
+                    this.update(cx, |this, cx| {
+                        this.input_tx = None;
+                        this.set_status(Status::Failed(format!("{err:#}").into()), cx)
+                    })
+                    .ok();
+                    return;
                 }
-                // The shell or container exited (`exit`): its tab closes, a new one starts a
-                // new session. A dropped connection keeps the output and can reconnect.
-                this.exited = exited;
-                this.set_status(
-                    Status::Ended("session ended · press Enter to reconnect".into()),
-                    cx,
-                );
-            })
-            .ok();
+            };
+            let program = std::path::Path::new(&plan.program)
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let alive = this
+                .update(cx, |this, cx| {
+                    this.command = Some(program);
+                    this.grid.advance(LOCAL_NOTE);
+                    cx.notify();
+                })
+                .is_ok();
+            if !alive {
+                return;
+            }
+            let (connected_tx, connected_rx) = futures::channel::oneshot::channel();
+            let run = cx.update(|cx| {
+                kubyl_core::spawn_kube(cx, async move {
+                    let ending =
+                        local::run(plan, size, input_rx, output_tx, resize_rx, connected_tx)
+                            .await?;
+                    anyhow::Ok(matches!(ending, exec::Ending::Exited { .. }))
+                })
+            });
+            Self::drive(this, cx, connected_rx, output_rx, run).await;
         }));
     }
 
@@ -1174,6 +1314,7 @@ impl TerminalView {
             .child(
                 Icon::new(match self.spec.mode {
                     SessionMode::NodeShell { .. } => IconName::Server,
+                    SessionMode::Local => IconName::Terminal,
                     _ => IconName::Terminal,
                 })
                 .size(12.0)
@@ -1189,6 +1330,11 @@ impl TerminalView {
             )
             .children(container_menu)
             .children(shell_menu)
+            .children(
+                matches!(self.spec.mode, SessionMode::Local).then(|| {
+                    kubyl_ui::Chip::new("local · not protected").text_color(colors.yellow)
+                }),
+            )
             .child(kubyl_ui::StatusDot::new(kubyl_ui::tone_color(
                 tone, &colors,
             )))
@@ -1746,5 +1892,52 @@ mod tests {
         }
         assert_eq!(total, 20 * chunk.len());
         assert!(rounds > 1);
+    }
+
+    #[gpui::test]
+    fn a_local_shell_for_an_unknown_cluster_fails_and_is_never_restored(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            kubyl_settings::init_with_dir(cx, dir.path());
+            kubyl_settings::Settings::register::<TerminalSettings>(cx);
+            kubyl_settings::Settings::register::<kubyl_kube::settings::KubeSettings>(cx);
+            ConnectionManager::install(dir.path().join("kubeconfigs"), false, cx);
+        });
+        let view = cx.new(|cx| {
+            TerminalView::new(
+                TerminalSpec::local(ClusterId::new("missing@/nowhere"), Some("shop".into())),
+                // Even asked to restore: a local shell must be confirmed again.
+                true,
+                cx,
+            )
+        });
+        view.read_with(cx, |view, cx| {
+            let Status::Failed(message) = &view.status else {
+                panic!("{:?}", view.status);
+            };
+            assert!(message.contains("kubeconfig"), "{message}");
+            assert!(view.title().starts_with("local"), "{}", view.title());
+            assert!(view.view_request(cx).is_none());
+        });
+        // No session was started: nothing to leave behind.
+        view.read_with(cx, |view, _| {
+            assert!(view.input_tx.is_none() && view.session_id.is_none());
+        });
+    }
+
+    #[test]
+    fn local_shell_requests_are_told_apart_from_pod_shells() {
+        let local = TerminalSpec::local(ClusterId::new("c@/f"), None);
+        assert_eq!(local.mode, SessionMode::Local);
+        assert!(local.target.name.is_none() && local.target.gvr.resource.is_empty());
+        let pod = TerminalSpec::exec(ResourceRef::object(
+            ClusterId::new("c@/f"),
+            kubyl_core::Gvr::new("", "v1", "pods"),
+            Some("shop".into()),
+            "web".into(),
+        ));
+        assert_ne!(pod.mode, SessionMode::Local);
     }
 }

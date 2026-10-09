@@ -129,6 +129,9 @@ webkit2gtk = { version = "=2.0.2", features = ["v2_38"] }
 
 # Terminal backend (Apache-2.0, same approach as Zed without Zed's GPL view code).
 alacritty_terminal = "0.26.0"
+# Local shell tab (phase 25): the pseudo-terminal behind it, on macOS, Linux (openpty) and
+# Windows (ConPTY). MIT, from WezTerm.
+portable-pty = "0.9.0"
 
 # gRPC client for Hubble Relay (phase 16): client only (no server, no axum), TLS on ring like
 # kube. Code is generated from vendored .proto files in build.rs by protox (pure Rust, no protoc).

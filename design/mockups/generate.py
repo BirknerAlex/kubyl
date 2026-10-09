@@ -4996,6 +4996,59 @@ def csv_screen():
     return rv_app("Export CSV — Kubyl", "Pods", ("Workloads",), tb, content, ns="shop", overlay=note + menu + t)
 
 
+def local_term_panel(tabs_html, body):
+    return f'''<div style="height:300px;flex-shrink:0;border-top:1px solid var(--border);display:flex;flex-direction:column;background:var(--bg)">
+<div class="tabs" style="height:32px">{tabs_html}<div class="tabtools"><button class="ib" aria-label="New terminal">{ic("plus",14)}</button><button class="ib" aria-label="Maximize">{ic("max",13)}</button></div></div>
+{body}</div>'''
+
+def local_terminal_screen():
+    """A local shell tab in the Terminal panel: the context's kubectl, a note, the warning chip."""
+    header = (f'<div style="height:26px;flex-shrink:0;display:flex;align-items:center;gap:6px;padding:0 8px;border-bottom:1px solid var(--bv);background:var(--panel);font-size:11.5px;color:var(--dim)">'
+              f'{ic("terminal",12,C["dim"])}<span class="mono" style="flex:1">local · kind-dev · zsh</span>'
+              f'<span class="chip" style="color:var(--yellow)">local · not protected</span>{dot(C["green"])}<span>local</span></div>')
+    body = header + f'''<div class="mono" style="padding:10px 14px;font-size:12.5px;line-height:20px;white-space:pre;color:var(--text)"><span style="color:var(--faint)">Local shell: KUBECONFIG holds only this cluster's context. kubectl and other tools here are not limited by Kubyl's read-only or PROD protection.</span>
+<span style="color:var(--green)">~ $</span> kubectl config get-contexts -o name
+<span style="color:var(--muted)">kind-dev</span>
+<span style="color:var(--green)">~ $</span> kubectl get pods
+<span style="color:var(--muted)">NAME                        READY   STATUS    RESTARTS   AGE
+api-7d9c5b6f4-2xk8q         1/1     Running   0          3d
+ledger-0                    1/1     Running   0          9d
+web-6c8f7d55b-m2xvq         2/2     Running   1          5h</span>
+<span style="color:var(--green)">~ $</span> <span style="background:var(--accent);color:var(--bg)"> </span></div>'''
+    term_tabs = (f'<div class="tab on">{ic("terminal",13,C["accent"])}<span>local · kind-dev · zsh</span><span class="tabx">{ic("x",11)}</span></div>'
+                 f'<div class="tab">{ic("terminal",13)}<span>exec · api-7d9c5b6f4-2xk8q/api · /bin/sh</span><span class="tabx">{ic("x",11)}</span></div>')
+    cols = "grid-template-columns: minmax(0,1fr) 60px 120px 70px 54px"
+    rows = [[m("api-7d9c5b6f4-2xk8q", s=12), m("1/1"), tpill("Running", C["green"]), m("0"), m("3d", "var(--muted)")],
+            [m("ledger-0", s=12), m("1/1"), tpill("Running", C["green"]), m("0"), m("9d", "var(--muted)")],
+            [m("web-6c8f7d55b-m2xvq", s=12), m("2/2"), tpill("Running", C["green"]), m("1"), m("5h", "var(--muted)")]]
+    table = rv_list("box", "Pods", "3 in shop", cols, ["NAME", "READY", "STATUS", "RESTARTS", "AGE"], rows, [("↵", "Details"), ("l", "Logs"), ("s", "Shell"), ("/", "Filter")])
+    center = f'<div style="flex:1;display:flex;flex-direction:column;min-width:0"><div style="flex:1;display:flex;flex-direction:column;min-height:0">{table}</div>{local_term_panel(term_tabs, body)}</div>'
+    palette = (f'<div style="position:absolute;left:50%;top:60px;transform:translateX(-50%);width:560px;border-radius:9px;background:var(--elev);border:1px solid var(--border);box-shadow:0 12px 36px rgba(0,0,0,.5);z-index:7;font-size:13px">'
+               f'<div style="display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--bv)">{ic("search",14,C["dim"])}<span class="mono">&gt; local shell</span></div>'
+               + menu_item("Terminal: Open Local Shell for This Cluster", icon="terminal", on=True)
+               + menu_item("Terminal: Exec Shell in Editor Tab", icon="terminal", dim=True) + '<div style="height:6px"></div></div>')
+    tb = tabs([("box", "Pods", True), ("layers", "Deployments", False)])
+    return rv_app("Local terminal — Kubyl", "Pods", ("Workloads",), tb, f'<div style="flex:1;display:flex;min-height:0">{center}</div>', ns="shop", overlay=palette)
+
+def local_terminal_prod_screen():
+    """Opening a local shell on a PROD cluster: the cluster's name must be typed."""
+    body = (f'<div style="font-size:12.5px;line-height:19px;color:var(--muted)">{ic("alert",13,C["yellow"])} <b style="font-weight:500;color:var(--text)">prod-eu-west-1</b> is marked production in Kubyl. A local shell runs the kubectl (and any other tool) on your machine with this cluster\'s credentials, so Kubyl\'s read-only and PROD protection do not apply to what you run there.</div>'
+            f'<div style="font-size:12px;color:var(--dim)">Type the cluster name to open it</div>'
+            f'<div class="inp focus" style="height:30px"><span class="mono" style="color:var(--text);font-size:12.5px">prod-eu-west-1</span></div>')
+    buttons = '<button class="btn">Cancel</button><button class="btn d" style="border-color:var(--red)">Open Local Shell</button>'
+    pods = [("api-7d9c5b6f4-2xk8q", "1/1", "Running", "0", "3d"), ("ledger-0", "1/1", "Running", "0", "9d")]
+    cols = "grid-template-columns: minmax(0,1fr) 60px 120px 70px 54px"
+    rows = [[m(n, s=12), m(r), tpill(st, C["green"]), m(rs), m(a, "var(--muted)")] for n, r, st, rs, a in pods]
+    table = rv_list("box", "Pods", "2 in payments", cols, ["NAME", "READY", "STATUS", "RESTARTS", "AGE"], rows, [("↵", "Details"), ("l", "Logs"), ("/", "Filter")])
+    dialog = flux_dialog("Open a local shell for prod-eu-west-1?", "terminal", body, buttons, 500)
+    inner = f'''<div class="app">
+{titlebar("prod-eu-west-1", "payments", True, "EKS · v1.30.4")}
+<div class="body">{rv_sidebar("Pods", ("Workloads",))}<main class="main">{tabs([("box", "Pods", True)])}<div style="flex:1;display:flex;min-height:0">{table}</div></main></div>
+{statusbar(cluster="prod-eu-west-1", ns="payments")}{dialog}
+</div>'''
+    return page("Local terminal on PROD — Kubyl", inner)
+
+
 SCREENS = [
  ("Main.dc.html", "1 · Pods (k9s-style table + details)", pods_screen),
  ("Routes.dc.html", "1 · OpenShift Routes under Network, with details", routes_screen),
@@ -5074,6 +5127,8 @@ SCREENS = [
  ("GatewayApi.dc.html", "22 · Resource views: a Gateway's listeners and attached routes, a Service's Routes", gateway_screen),
  ("VerticalPodAutoscalers.dc.html", "22 · Resource views: VerticalPodAutoscalers with recommendations", vpa_screen),
  ("CsvExport.dc.html", "23 · Lens parity: Export CSV from any table (the Columns menu, a toast)", csv_screen),
+ ("LocalTerminal.dc.html", "23 · Lens parity: a local shell tab with the cluster's context, the palette entry, the warning chip", local_terminal_screen),
+ ("LocalTerminalProd.dc.html", "23 · Lens parity: a local shell on PROD asks for the cluster's name", local_terminal_prod_screen),
 ]
 
 boards, order = {}, []

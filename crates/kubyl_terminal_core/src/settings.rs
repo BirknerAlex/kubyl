@@ -20,6 +20,8 @@ pub enum OpenIn {
 pub struct TerminalSettings {
     /// Overrides shell auto-detection (`/bin/bash` -> `/bin/sh` -> `sh`) for every exec.
     pub shell_override: Option<String>,
+    /// The shell of local terminal tabs. Default: `$SHELL`, else `%COMSPEC%`, else `/bin/sh`.
+    pub local_shell: Option<String>,
     /// Scrollback lines kept per terminal.
     pub scrollback_lines: usize,
     /// Font size of terminals, in pixels.
@@ -43,6 +45,7 @@ impl Default for TerminalSettings {
     fn default() -> Self {
         Self {
             shell_override: None,
+            local_shell: None,
             scrollback_lines: 10_000,
             font_size: 13.0,
             option_as_meta: !cfg!(target_os = "macos"),
