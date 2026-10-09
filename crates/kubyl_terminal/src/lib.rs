@@ -19,13 +19,13 @@ pub mod dialog;
 pub mod panel;
 pub mod view;
 
-pub use kubyl_terminal_core::{exec, grid, input, settings, shell};
+pub use kubyl_terminal_core::{exec, grid, input, local, settings, shell};
 
 use gpui::{App, AppContext as _, KeyBinding, Window, actions};
 use kubyl_core::actions::{ActivateDockPanel, OpenView};
 use kubyl_core::{
-    ActionRegistry, ActionSpec, ChromeRegistry, ClusterCaps, ResourceRef, ViewKind, ViewRegistry,
-    ViewRequest,
+    ActionRegistry, ActionSpec, ActiveContext, ChromeRegistry, ClusterCaps, ClusterId, ResourceRef,
+    ViewKind, ViewRegistry, ViewRequest,
 };
 use kubyl_explorer::dialogs::{self, ConfirmSpec};
 use kubyl_kube::ConnectionManager;
@@ -50,6 +50,8 @@ actions!(
         NodeShell,
         /// Shows the Terminal panel.
         ShowTerminalPanel,
+        /// Opens a shell on this machine with the active cluster's context (phase 25).
+        OpenLocalShell,
     ]
 );
 
@@ -109,7 +111,19 @@ pub fn init(cx: &mut App) {
         cx,
         ActionSpec::new("View: Terminal Panel", ShowTerminalPanel),
     );
+    ActionRegistry::register(
+        cx,
+        ActionSpec::new(
+            "Terminal: Open Local Shell for This Cluster",
+            OpenLocalShell,
+        ),
+    );
     cx.bind_keys([KeyBinding::new("ctrl-`", ShowTerminalPanel, None)]);
+    // A crash or kill leaves the folders of open local shells behind.
+    std::thread::Builder::new()
+        .name("kubyl-local-shell-sweep".into())
+        .spawn(local::sweep_stale)
+        .ok();
 
     cx.on_action(|_: &ShowShell, cx| {
         if let Some(target) = selected(cx, "pods") {
@@ -144,6 +158,21 @@ pub fn init(cx: &mut App) {
         if let Some(target) = selected(cx, "nodes") {
             node_shell(target, cx);
         }
+    });
+    cx.on_action(|_: &OpenLocalShell, cx| {
+        let Some(cluster) = ActiveContext::global(cx)
+            .cluster
+            .as_ref()
+            .map(|c| c.id.clone())
+        else {
+            notify_error(cx, "Select a cluster first.");
+            return;
+        };
+        let namespace = ActiveContext::global(cx)
+            .namespace
+            .as_ref()
+            .map(|n| n.to_string());
+        open_local(cluster, namespace, cx);
     });
     cx.on_action(|_: &ShowTerminalPanel, cx| {
         with_window(cx, |window, cx| {
@@ -182,7 +211,7 @@ fn selected(cx: &mut App, resource: &str) -> Option<ResourceRef> {
 /// Opens a terminal: in the Terminal panel, or (`in_tab`, exec only) as an editor tab.
 pub fn open(spec: TerminalSpec, in_tab: bool, cx: &mut App) {
     with_window(cx, move |window, cx| {
-        let exec = matches!(spec.mode, SessionMode::Exec { .. });
+        let exec = matches!(spec.mode, SessionMode::Exec { .. } | SessionMode::Local);
         if in_tab && exec {
             window.dispatch_action(
                 Box::new(OpenView(ViewRequest::for_resource(
@@ -205,6 +234,59 @@ pub fn open(spec: TerminalSpec, in_tab: bool, cx: &mut App) {
             );
         }
     });
+}
+
+/// What the confirmation of a local shell says and asks for, from the cluster's flags:
+/// `None` on a plain cluster (the shell opens with a note in its first line), a warning on a
+/// read-only one, the typed cluster name on PROD.
+pub(crate) fn local_shell_confirmation(name: &str, caps: &ClusterCaps) -> Option<ConfirmSpec> {
+    if !caps.read_only && !caps.production {
+        return None;
+    }
+    let mut spec = ConfirmSpec::new(
+        format!("Open a local shell for {name}?"),
+        "Open Local Shell",
+    );
+    let flags = match (caps.production, caps.read_only) {
+        (true, true) => "production and read-only",
+        (true, false) => "production",
+        _ => "read-only",
+    };
+    spec.note = Some(
+        format!(
+            "{name} is marked {flags} in Kubyl. A local shell runs the kubectl (and any other \
+             tool) on your machine with this cluster's credentials, so Kubyl's read-only and \
+             PROD protection do not apply to what you run there."
+        )
+        .into(),
+    );
+    spec.danger = true;
+    spec.typed = caps.production.then(|| name.to_string());
+    Some(spec)
+}
+
+/// Opens a shell on this machine with the cluster's context in the Terminal panel (or an
+/// editor tab, `terminal.open_in`). Read-only and PROD clusters ask first: a local shell
+/// bypasses Kubyl's protection, so PROD needs the typed cluster name.
+pub fn open_local(cluster: ClusterId, namespace: Option<String>, cx: &mut App) {
+    let manager = ConnectionManager::global(cx);
+    let (name, caps) = {
+        let manager = manager.read(cx);
+        (manager.display_name(&cluster), manager.caps(&cluster))
+    };
+    let in_tab = Settings::get::<TerminalSettings>(cx).open_in == OpenIn::Tab;
+    let spec = TerminalSpec::local(cluster, namespace);
+    match local_shell_confirmation(&name, &caps) {
+        None => open(spec, in_tab, cx),
+        Some(confirmation) => with_window(cx, move |window, cx| {
+            dialogs::confirm(
+                confirmation,
+                move |_, _, cx| open(spec.clone(), in_tab, cx),
+                window,
+                cx,
+            );
+        }),
+    }
 }
 
 fn debug_container(target: ResourceRef, cx: &mut App) {
@@ -307,4 +389,36 @@ pub(crate) fn node_shell(target: ResourceRef, cx: &mut App) {
             cx,
         );
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn caps(read_only: bool, production: bool) -> ClusterCaps {
+        ClusterCaps {
+            read_only,
+            production,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_local_shell_asks_where_kubyl_protects_the_cluster() {
+        // Plain clusters open at once (the shell prints a note).
+        assert!(local_shell_confirmation("kind-dev", &caps(false, false)).is_none());
+        // Read-only: a warning, no typed name.
+        let spec = local_shell_confirmation("kind-dev", &caps(true, false)).unwrap();
+        assert!(spec.typed.is_none() && spec.danger);
+        assert!(spec.note.unwrap().contains("read-only"));
+        // PROD: the cluster's name must be typed.
+        let spec = local_shell_confirmation("prod-eu", &caps(false, true)).unwrap();
+        assert_eq!(spec.typed.as_deref(), Some("prod-eu"));
+        let note = spec.note.unwrap();
+        assert!(note.contains("production") && note.contains("do not apply"));
+        // Both flags: still the typed name.
+        let spec = local_shell_confirmation("prod-eu", &caps(true, true)).unwrap();
+        assert_eq!(spec.typed.as_deref(), Some("prod-eu"));
+        assert!(spec.note.unwrap().contains("production and read-only"));
+    }
 }

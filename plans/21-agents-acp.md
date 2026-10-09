@@ -271,7 +271,7 @@ sees what was read.
 - Installing agents from the ACP registry (downloads code: needs consent and checksums).
 - Threads across clusters; a "compare clusters" tool.
 - A plain local terminal tab with `KUBECONFIG` set to the active context (the other half of
-  Lens's "smart terminal").
+  Lens's "smart terminal"): done in phase 25.
 - Kubyl as an ACP **agent** or MCP server for other editors (Zed could use Kubyl's cluster tools).
 
 ## Handoff log

@@ -182,6 +182,11 @@ impl TerminalPanel {
                 crate::node_shell(current.target, cx);
                 return;
             }
+            // Another local shell asks again where the cluster asks (PROD).
+            SessionMode::Local => {
+                crate::open_local(current.target.cluster, current.target.namespace, cx);
+                return;
+            }
             _ => TerminalSpec {
                 mode: SessionMode::Exec { shell: None },
                 ..current

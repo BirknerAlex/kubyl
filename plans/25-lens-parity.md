@@ -1,6 +1,6 @@
 # Phase 25: Lens parity: CSV export, local terminal, Applications, Ask AI, Security Center, Cost, cloud discovery
 
-**Status:** in progress (branch `phase/25-lens-parity`, one commit per feature; 1 of 7 done)
+**Status:** in progress (branch `phase/25-lens-parity`, one commit per feature; 2 of 7 done)
 **Depends on:** 02 (tables, details), 05 (terminal), 07 (metrics, charts), 11 (kubeconfig, cloud import), 21 (agents), 22 (Helm), 24 (resource views)
 **Owns:** `kubyl_security`, `kubyl_security_core`, `kubyl_cost`, `kubyl_cost_core` (new); `kubyl_apps`, `kubyl_apps_core` (new, if the Applications view doesn't fit an existing crate); shared commits listed under each feature. `script/trivy-dev.sh`, `script/opencost-dev.sh`.
 **Mockups:** board 23 · Lens parity, one or more boards per feature in `design/mockups/generate.py` (`CsvExport.dc.html`, …).
@@ -32,6 +32,8 @@ settings, state, `Debug` output or prompts.
 | 1 CSV | `kubyl_core` | `export::{save_text, file_name}`, `actions::ExportCsv`, `ActionSpec::in_context`, re-export of `csv`; deps `dirs`, `jiff` |
 | 1 CSV | `kubyl_resources_core` | `columns::exportable` (Secret lists export key counts only) |
 | 1 CSV | `kubyl_explorer` | the list's `csv_table`/`export_csv`, the table menu entry and the `List: Export CSV` palette action |
+| 2 Local terminal | `kubyl_terminal_core`, `kubyl_terminal` | (owned by phase 05) `local` module, `SessionMode::Local`, `terminal.local_shell`, `Terminal: Open Local Shell for This Cluster` |
+| 2 Local terminal | root `Cargo.toml` | `portable-pty` 0.9 (MIT) in `[workspace.dependencies]` |
 
 ## Tasks
 
@@ -46,7 +48,14 @@ settings, state, `Debug` output or prompts.
 - [x] Reusable for Security and Cost (`kubyl_core::csv`, `export::save_text`, `ExportCsv`)
 
 ### 2. Local terminal tab
-- [ ] to be filled in with the commit
+- [x] `kubyl_terminal_core::local`: one-context kubeconfig from the file that defines the context (relative CA, client cert/key, token file and exec command made absolute), private folder (0700/0600) removed when the tab closes and swept at startup after a crash; unit tests with fixtures
+- [x] Kubyl-signed-in contexts (OIDC, OpenShift): the user becomes an exec plugin that prints `KUBYL_KUBE_TOKEN` from the shell's environment; the token is never in arguments, files, logs or `Debug` output (tests)
+- [x] `local::run`: PTY (`portable-pty`) on Tokio with the channels of `exec::run`; killed when the tab closes; tests with real PTYs on Unix
+- [x] `SessionMode::Local` in the terminal view, panel and (per `terminal.open_in`) editor tabs; never restored at startup; `+` opens another one
+- [x] Read-only note and typed cluster name on PROD (`local_shell_confirmation`), a note in the shell's first line and a "local · not protected" chip
+- [x] `Terminal: Open Local Shell for This Cluster` in the palette; `terminal.local_shell` setting (default `$SHELL`, `%COMSPEC%`, `/bin/sh`)
+- [x] Live tests with the real `kubectl` on kind (`crates/kubyl_terminal/tests/live_local.rs`): only one context, and a token that reaches `kubectl` through the environment only
+- [x] Mockup boards `LocalTerminal.dc.html`, `LocalTerminalProd.dc.html`
 
 ### 3. Applications view
 - [ ] to be filled in with the commit
@@ -90,3 +99,20 @@ anything starting with `= + - @`, tab or CR, including negative numbers (`-5` be
 Secret lists keep to name, namespace, type, key count and age (`columns::exportable`).
 Checked by hand: not clicked through (no display session during the run); the live test
 exports real Pods and Secrets from kind.
+
+**2. Local terminal tab.** Reaching the context: `ConnectionManager::cli_target` (kubeconfig file,
+context, Kubyl's sign-in) feeds `local::prepare`. kubectl has no environment variable for a
+bearer token (helm does), so a context that signs in through Kubyl gets a user whose exec plugin
+(`sh -c printf …` / PowerShell on Windows) prints `$KUBYL_KUBE_TOKEN` as an `ExecCredential`;
+the token is the sign-in at the time the tab opened and expires like it (open a new tab).
+Static credentials of other contexts (client certificate and key, static token) are copied from
+the user's kubeconfig into the private one-context file, because kubectl can't read inline data
+from another file; the file is 0600 in a 0700 folder under `<temp>/kubyl-local-shells-<uid>/`
+and is deleted with the tab (`ShellKubeconfig`'s `Drop`, also when the future is dropped).
+Unlike the agent's `context_kubeconfig`, which refuses inline credentials, a local shell is the
+user's own, so it keeps them. The shell inherits Kubyl's environment except `KUBECONFIG`,
+`PATH` (the login shell's), `TERM`, `COLORTERM`; it starts as an interactive non-login shell, so
+a `KUBECONFIG` exported by the user's rc file wins over ours (documented, not fought).
+The Windows ConPTY and PowerShell exec plugin are written but not run by hand (CI compiles
+them). Not clicked through in the app (no display session during the run); the tests drive a
+real PTY and the real `kubectl`.
