@@ -1,0 +1,261 @@
+{
+ "apiVersion": "aquasecurity.github.io/v1alpha1",
+ "kind": "ConfigAuditReport",
+ "metadata": {
+  "creationTimestamp": "2026-10-10T02:24:48Z",
+  "labels": {
+   "app.kubernetes.io/managed-by": "trivy-operator",
+   "plugin-config-hash": "9f85fb657",
+   "resource-spec-hash": "6f979bc7d9",
+   "trivy-operator.resource.kind": "Pod",
+   "trivy-operator.resource.name": "privileged",
+   "trivy-operator.resource.namespace": "kubyl-trivy"
+  },
+  "name": "pod-privileged",
+  "namespace": "kubyl-trivy"
+ },
+ "report": {
+  "checks": [
+   {
+    "category": "Kubernetes Security Check",
+    "checkID": "AVD-KSV-0118",
+    "description": "Security context controls the allocation of security parameters for the pod/container/volume, ensuring the appropriate level of protection. Relying on default security context may expose vulnerabilities to potential attacks that rely on privileged access.",
+    "messages": [
+     "pod privileged in kubyl-trivy namespace is using the default security context, which allows root privileges"
+    ],
+    "remediation": "To enhance security, it is strongly recommended not to rely on the default security context. Instead, it is advisable to explicitly define the required security parameters (such as runAsNonRoot, capabilities, readOnlyRootFilesystem, etc.) within the security context.",
+    "severity": "HIGH",
+    "success": false,
+    "title": "Default security context configured"
+   },
+   {
+    "category": "Kubernetes Security Check",
+    "checkID": "AVD-KSV-0014",
+    "description": "An immutable root file system prevents applications from writing to their local disk. This can limit intrusions, as attackers will not be able to tamper with the file system or write foreign executables to disk.",
+    "messages": [
+     "Container 'shell' of Pod 'privileged' should set 'securityContext.readOnlyRootFilesystem' to true"
+    ],
+    "remediation": "Change 'containers[].securityContext.readOnlyRootFilesystem' to 'true'.",
+    "severity": "HIGH",
+    "success": false,
+    "title": "Root file system is not read-only"
+   },
+   {
+    "category": "Kubernetes Security Check",
+    "checkID": "AVD-KSV-0104",
+    "description": "A program inside the container can bypass Seccomp protection policies.",
+    "messages": [
+     "container \"shell\" of pod \"privileged\" in \"kubyl-trivy\" namespace should specify a seccomp profile"
+    ],
+    "remediation": "Specify seccomp either by annotation or by seccomp profile type having allowed values as per pod security standards",
+    "severity": "MEDIUM",
+    "success": false,
+    "title": "Seccomp policies disabled"
+   },
+   {
+    "category": "Kubernetes Security Check",
+    "checkID": "AVD-KSV-0011",
+    "description": "Enforcing CPU limits prevents DoS via resource exhaustion.",
+    "messages": [
+     "Container 'shell' of Pod 'privileged' should set 'resources.limits.cpu'"
+    ],
+    "remediation": "Set a limit value under 'containers[].resources.limits.cpu'.",
+    "severity": "LOW",
+    "success": false,
+    "title": "CPU not limited"
+   },
+   {
+    "category": "Kubernetes Security Check",
+    "checkID": "AVD-KSV-0009",
+    "description": "Sharing the host\u2019s network namespace permits processes in the pod to communicate with processes bound to the host\u2019s loopback adapter.",
+    "messages": [
+     "Pod 'privileged' should not set 'spec.template.spec.hostNetwork' to true"
+    ],
+    "remediation": "Do not set 'spec.template.spec.hostNetwork' to true.",
+    "severity": "HIGH",
+    "success": false,
+    "title": "Access to host network"
+   },
+   {
+    "category": "Kubernetes Security Check",
+    "checkID": "AVD-KSV-0016",
+    "description": "When containers have memory requests specified, the scheduler can make better decisions about which nodes to place pods on, and how to deal with resource contention.",
+    "messages": [
+     "Container 'shell' of Pod 'privileged' should set 'resources.requests.memory'"
+    ],
+    "remediation": "Set 'containers[].resources.requests.memory'.",
+    "severity": "LOW",
+    "success": false,
+    "title": "Memory requests not specified"
+   },
+   {
+    "category": "Kubernetes Security Check",
+    "checkID": "AVD-KSV-0036",
+    "description": "ensure that Pod specifications disable the secret token being mounted by setting automountServiceAccountToken: false",
+    "messages": [
+     "Container of Pod 'privileged' should set 'spec.automountServiceAccountToken' to false"
+    ],
+    "remediation": "Disable the mounting of service account secret token by setting automountServiceAccountToken to false",
+    "severity": "MEDIUM",
+    "success": false,
+    "title": "Protecting Pod service account tokens"
+   },
+   {
+    "category": "Kubernetes Security Check",
+    "checkID": "AVD-KSV-0020",
+    "description": "Force the container to run with user ID > 10000 to avoid conflicts with the host\u2019s user table.",
+    "messages": [
+     "Container 'shell' of Pod 'privileged' should set 'securityContext.runAsUser' > 10000"
+    ],
+    "remediation": "Set 'containers[].securityContext.runAsUser' to an integer > 10000.",
+    "severity": "LOW",
+    "success": false,
+    "title": "Runs with UID <= 10000"
+   },
+   {
+    "category": "Kubernetes Security Check",
+    "checkID": "AVD-KSV-0030",
+    "description": "According to pod security standard 'Seccomp', the RuntimeDefault seccomp profile must be required, or allow specific additional profiles.",
+    "messages": [
+     "Either Pod or Container should set 'securityContext.seccompProfile.type' to 'RuntimeDefault'"
+    ],
+    "remediation": "Set 'spec.securityContext.seccompProfile.type', 'spec.containers[*].securityContext.seccompProfile' and 'spec.initContainers[*].securityContext.seccompProfile' to 'RuntimeDefault' or undefined.",
+    "severity": "LOW",
+    "success": false,
+    "title": "Runtime/Default Seccomp profile not set"
+   },
+   {
+    "category": "Kubernetes Security Check",
+    "checkID": "AVD-KSV-0001",
+    "description": "A program inside the container can elevate its own privileges and run as root, which might give the program control over the container and node.",
+    "messages": [
+     "Container 'shell' of Pod 'privileged' should set 'securityContext.allowPrivilegeEscalation' to false"
+    ],
+    "remediation": "Set 'set containers[].securityContext.allowPrivilegeEscalation' to 'false'.",
+    "severity": "MEDIUM",
+    "success": false,
+    "title": "Can elevate its own privileges"
+   },
+   {
+    "category": "Kubernetes Security Check",
+    "checkID": "AVD-KSV-0017",
+    "description": "Privileged containers share namespaces with the host system and do not offer any security. They should be used exclusively for system containers that require high privileges.",
+    "messages": [
+     "Container 'shell' of Pod 'privileged' should set 'securityContext.privileged' to false"
+    ],
+    "remediation": "Change 'containers[].securityContext.privileged' to 'false'.",
+    "severity": "HIGH",
+    "success": false,
+    "title": "Privileged"
+   },
+   {
+    "category": "Kubernetes Security Check",
+    "checkID": "AVD-KSV-0018",
+    "description": "Enforcing memory limits prevents DoS via resource exhaustion.",
+    "messages": [
+     "Container 'shell' of Pod 'privileged' should set 'resources.limits.memory'"
+    ],
+    "remediation": "Set a limit value under 'containers[].resources.limits.memory'.",
+    "severity": "LOW",
+    "success": false,
+    "title": "Memory not limited"
+   },
+   {
+    "category": "Kubernetes Security Check",
+    "checkID": "AVD-KSV-0021",
+    "description": "Force the container to run with group ID > 10000 to avoid conflicts with the host\u2019s user table.",
+    "messages": [
+     "Container 'shell' of Pod 'privileged' should set 'securityContext.runAsGroup' > 10000"
+    ],
+    "remediation": "Set 'containers[].securityContext.runAsGroup' to an integer > 10000.",
+    "severity": "LOW",
+    "success": false,
+    "title": "Runs with GID <= 10000"
+   },
+   {
+    "category": "Kubernetes Security Check",
+    "checkID": "AVD-KSV-0105",
+    "description": "Containers should be forbidden from running with a root UID.",
+    "messages": [
+     "securityContext.runAsUser should be set to a value greater than 0"
+    ],
+    "remediation": "Set 'securityContext.runAsUser' to a non-zero integer or leave undefined.",
+    "severity": "LOW",
+    "success": false,
+    "title": "Containers must not set runAsUser to 0"
+   },
+   {
+    "category": "Kubernetes Security Check",
+    "checkID": "AVD-KSV-0015",
+    "description": "When containers have resource requests specified, the scheduler can make better decisions about which nodes to place pods on, and how to deal with resource contention.",
+    "messages": [
+     "Container 'shell' of Pod 'privileged' should set 'resources.requests.cpu'"
+    ],
+    "remediation": "Set 'containers[].resources.requests.cpu'.",
+    "severity": "LOW",
+    "success": false,
+    "title": "CPU requests not specified"
+   },
+   {
+    "category": "Kubernetes Security Check",
+    "checkID": "AVD-KSV-0106",
+    "description": "Containers must drop ALL capabilities, and are only permitted to add back the NET_BIND_SERVICE capability.",
+    "messages": [
+     "container should drop all"
+    ],
+    "remediation": "Set 'spec.containers[*].securityContext.capabilities.drop' to 'ALL' and only add 'NET_BIND_SERVICE' to 'spec.containers[*].securityContext.capabilities.add'.",
+    "severity": "LOW",
+    "success": false,
+    "title": "Container capabilities must only include NET_BIND_SERVICE"
+   },
+   {
+    "category": "Kubernetes Security Check",
+    "checkID": "AVD-KSV-0003",
+    "description": "The container should drop all default capabilities and add only those that are needed for its execution.",
+    "messages": [
+     "Container 'shell' of Pod 'privileged' should add 'ALL' to 'securityContext.capabilities.drop'"
+    ],
+    "remediation": "Add 'ALL' to containers[].securityContext.capabilities.drop.",
+    "severity": "LOW",
+    "success": false,
+    "title": "Default capabilities: some containers do not drop all"
+   },
+   {
+    "category": "Kubernetes Security Check",
+    "checkID": "AVD-KSV-0012",
+    "description": "Force the running image to run as a non-root user to ensure least privileges.",
+    "messages": [
+     "Container 'shell' of Pod 'privileged' should set 'securityContext.runAsNonRoot' to true"
+    ],
+    "remediation": "Set 'containers[].securityContext.runAsNonRoot' to true.",
+    "severity": "MEDIUM",
+    "success": false,
+    "title": "Runs as root user"
+   },
+   {
+    "category": "Kubernetes Security Check",
+    "checkID": "AVD-KSV-0004",
+    "description": "Security best practices require containers to run with minimal required capabilities.",
+    "messages": [
+     "Container 'shell' of 'pod' 'privileged' in 'kubyl-trivy' namespace should set securityContext.capabilities.drop"
+    ],
+    "remediation": "Specify at least one unneeded capability in 'containers[].securityContext.capabilities.drop'",
+    "severity": "LOW",
+    "success": false,
+    "title": "Default capabilities: some containers do not drop any"
+   }
+  ],
+  "scanner": {
+   "name": "Trivy",
+   "vendor": "Aqua Security",
+   "version": "0.35.0"
+  },
+  "summary": {
+   "criticalCount": 0,
+   "highCount": 4,
+   "lowCount": 11,
+   "mediumCount": 4
+  },
+  "updateTimestamp": "2026-10-10T02:24:48Z"
+ }
+}

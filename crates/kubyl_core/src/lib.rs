@@ -37,7 +37,8 @@ pub use registry::{
 };
 pub use runtime::spawn_kube;
 pub use types::{
-    ArgoCdCaps, ClusterCaps, ClusterId, ContextName, FluxCaps, Gvk, Gvr, ResourceRef, ViewKind,
+    ArgoCdCaps, ClusterCaps, ClusterId, ContextName, FluxCaps, Gvk, Gvr, ResourceRef, TrivyCaps,
+    ViewKind,
 };
 
 use gpui::App;

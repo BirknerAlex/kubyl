@@ -221,6 +221,8 @@ pub struct ClusterCaps {
     pub argocd: ArgoCdCaps,
     /// Which Flux CRDs the cluster serves (`*.toolkit.fluxcd.io`, phase 23).
     pub flux: FluxCaps,
+    /// Which Trivy Operator report CRDs the cluster serves (`aquasecurity.github.io`, phase 25).
+    pub trivy: TrivyCaps,
 }
 
 /// The Argo CD custom resources a cluster serves (`argoproj.io`). Argo Workflows, Rollouts and
@@ -268,6 +270,32 @@ impl FluxCaps {
             || self.sources
             || self.image_automation
             || self.notifications
+    }
+}
+
+/// The Trivy Operator report kinds a cluster serves (`aquasecurity.github.io`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TrivyCaps {
+    /// `vulnerabilityreports`: image vulnerabilities.
+    pub vulnerabilities: bool,
+    /// `configauditreports`: misconfigurations of workloads.
+    pub config_audit: bool,
+    /// `exposedsecretreports`: secrets baked into images.
+    pub exposed_secrets: bool,
+    /// `rbacassessmentreports`: Roles.
+    pub rbac: bool,
+    /// `clusterrbacassessmentreports`: ClusterRoles.
+    pub cluster_rbac: bool,
+}
+
+impl TrivyCaps {
+    /// Any report kind is served: the Security Center has something to read.
+    pub fn any(&self) -> bool {
+        self.vulnerabilities
+            || self.config_audit
+            || self.exposed_secrets
+            || self.rbac
+            || self.cluster_rbac
     }
 }
 

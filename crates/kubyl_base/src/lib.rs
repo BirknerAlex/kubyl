@@ -24,5 +24,5 @@ pub use host::{Flow, Host, HostExt, Pace, Service, TaskHandle};
 pub use notice::{Notice, NotificationLevel};
 pub use types::{
     ArgoCdCaps, ClusterCaps, ClusterId, ContextName, FluxCaps, Gvk, Gvr, ResourceRef, TabContext,
-    TabNamespace, Tone, ViewKind,
+    TabNamespace, Tone, TrivyCaps, ViewKind,
 };

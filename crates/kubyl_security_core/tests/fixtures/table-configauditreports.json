@@ -1,0 +1,156 @@
+{
+ "kind": "Table",
+ "apiVersion": "meta.k8s.io/v1",
+ "metadata": {
+  "resourceVersion": "2858"
+ },
+ "columnDefinitions": [
+  {
+   "name": "Name",
+   "type": "string",
+   "format": "name",
+   "description": "Name must be unique within a namespace. Is required when creating resources, although some resources may allow a client to request the generation of an appropriate name automatically. Name is primarily intended for creation idempotence and configuration definition. Cannot be updated. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names#names",
+   "priority": 0
+  },
+  {
+   "name": "Scanner",
+   "type": "string",
+   "format": "",
+   "description": "The name of the config audit scanner",
+   "priority": 0
+  },
+  {
+   "name": "Age",
+   "type": "date",
+   "format": "",
+   "description": "The age of the report",
+   "priority": 0
+  },
+  {
+   "name": "Critical",
+   "type": "integer",
+   "format": "",
+   "description": "The number of failed checks with critical severity",
+   "priority": 1
+  },
+  {
+   "name": "High",
+   "type": "integer",
+   "format": "",
+   "description": "The number of failed checks with high severity",
+   "priority": 1
+  },
+  {
+   "name": "Medium",
+   "type": "integer",
+   "format": "",
+   "description": "The number of failed checks with medium severity",
+   "priority": 1
+  },
+  {
+   "name": "Low",
+   "type": "integer",
+   "format": "",
+   "description": "The number of failed checks with low severity",
+   "priority": 1
+  }
+ ],
+ "rows": [
+  {
+   "cells": [
+    "pod-privileged",
+    "Trivy",
+    "8m38s",
+    0,
+    4,
+    4,
+    11
+   ],
+   "object": {
+    "kind": "PartialObjectMetadata",
+    "apiVersion": "meta.k8s.io/v1",
+    "metadata": {
+     "name": "pod-privileged",
+     "namespace": "kubyl-trivy",
+     "generation": 1,
+     "creationTimestamp": "2026-10-10T02:24:48Z",
+     "labels": {
+      "app.kubernetes.io/managed-by": "trivy-operator",
+      "plugin-config-hash": "9f85fb657",
+      "resource-spec-hash": "6f979bc7d9",
+      "trivy-operator.resource.kind": "Pod",
+      "trivy-operator.resource.name": "privileged",
+      "trivy-operator.resource.namespace": "kubyl-trivy"
+     },
+     "annotations": {
+      "trivy-operator.aquasecurity.github.io/report-ttl": "24h0m0s"
+     }
+    }
+   }
+  },
+  {
+   "cells": [
+    "replicaset-leaky-7c548cd8cd",
+    "Trivy",
+    "8m38s",
+    0,
+    3,
+    3,
+    10
+   ],
+   "object": {
+    "kind": "PartialObjectMetadata",
+    "apiVersion": "meta.k8s.io/v1",
+    "metadata": {
+     "name": "replicaset-leaky-7c548cd8cd",
+     "namespace": "kubyl-trivy",
+     "generation": 1,
+     "creationTimestamp": "2026-10-10T02:24:48Z",
+     "labels": {
+      "app.kubernetes.io/managed-by": "trivy-operator",
+      "plugin-config-hash": "9f85fb657",
+      "resource-spec-hash": "7b587cb99d",
+      "trivy-operator.resource.kind": "ReplicaSet",
+      "trivy-operator.resource.name": "leaky-7c548cd8cd",
+      "trivy-operator.resource.namespace": "kubyl-trivy"
+     },
+     "annotations": {
+      "trivy-operator.aquasecurity.github.io/report-ttl": "24h0m0s"
+     }
+    }
+   }
+  },
+  {
+   "cells": [
+    "replicaset-old-nginx-9d4bfc68d",
+    "Trivy",
+    "8m38s",
+    0,
+    3,
+    4,
+    10
+   ],
+   "object": {
+    "kind": "PartialObjectMetadata",
+    "apiVersion": "meta.k8s.io/v1",
+    "metadata": {
+     "name": "replicaset-old-nginx-9d4bfc68d",
+     "namespace": "kubyl-trivy",
+     "generation": 1,
+     "creationTimestamp": "2026-10-10T02:24:48Z",
+     "labels": {
+      "app.kubernetes.io/managed-by": "trivy-operator",
+      "plugin-config-hash": "9f85fb657",
+      "resource-spec-hash": "6958548c48",
+      "trivy-operator.resource.kind": "ReplicaSet",
+      "trivy-operator.resource.name": "old-nginx-9d4bfc68d",
+      "trivy-operator.resource.namespace": "kubyl-trivy"
+     },
+     "annotations": {
+      "trivy-operator.aquasecurity.github.io/report-ttl": "24h0m0s"
+     }
+    }
+   }
+  }
+ ]
+}

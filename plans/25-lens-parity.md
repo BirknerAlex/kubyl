@@ -1,6 +1,6 @@
 # Phase 25: Lens parity: CSV export, local terminal, Applications, Ask AI, Security Center, Cost, cloud discovery
 
-**Status:** in progress (branch `phase/25-lens-parity`, one commit per feature; 4 of 7 done)
+**Status:** in progress (branch `phase/25-lens-parity`, one commit per feature; 5 of 7 done)
 **Depends on:** 02 (tables, details), 05 (terminal), 07 (metrics, charts), 11 (kubeconfig, cloud import), 21 (agents), 22 (Helm), 24 (resource views)
 **Owns:** `kubyl_security`, `kubyl_security_core`, `kubyl_cost`, `kubyl_cost_core` (new); `kubyl_apps`, `kubyl_apps_core` (new, if the Applications view doesn't fit an existing crate); shared commits listed under each feature. `script/trivy-dev.sh`, `script/opencost-dev.sh`.
 **Mockups:** board 23 · Lens parity, one or more boards per feature in `design/mockups/generate.py` (`CsvExport.dc.html`, …).
@@ -35,9 +35,12 @@ settings, state, `Debug` output or prompts.
 | 2 Local terminal | `kubyl_terminal_core`, `kubyl_terminal` | (owned by phase 05) `local` module, `SessionMode::Local`, `terminal.local_shell`, `Terminal: Open Local Shell for This Cluster` |
 | 2 Local terminal | root `Cargo.toml` | `portable-pty` 0.9 (MIT) in `[workspace.dependencies]` |
 | 3 Applications | `kubyl_argocd_core`, `kubyl_argocd` | (owned by phase 10) `tracking::{ManagedBy, managed_by}` moved from `kubyl_argocd::dock` into the core crate; `dock` re-exports them, so the old paths work |
+| 5 Security | `kubyl_base`, `kubyl_core` | `ClusterCaps::trivy` (`TrivyCaps`: which report CRDs are served; `any()`) |
+| 5 Security | `kubyl_kube_core` | `cluster_info::trivy_caps` from discovery (listable kinds of `aquasecurity.github.io`), with a test |
+| 5 Security | `kubyl_base`, `kubyl_explorer` | none beyond the above: the sidebar row uses `register_view_row` (after Alerts) with a `RowBadge` |
 | 4 Ask AI | `kubyl_core` | `actions::AskAgentAbout { target, kind, prompt }` (handled by `kubyl_agent`) |
 | 4 Ask AI | `kubyl_agent_core`, `kubyl_agent` | (owned by phase 21) `prompts` module; `ask` module, `AgentPanel::prefill`, one registry action per question |
-| 3 Applications | `kubyl_explorer` | `catalog::workloads_views`: the Applications row inside the Workloads group |
+| 3 Applications | `kubyl_explorer` | `catalog::workloads_views` (the Applications row inside the Workloads group) and `catalog::{register_view_count, view_count}` (a count at the end of a view entry's row) |
 | 3 Applications | root `Cargo.toml`, `crates/kubyl` | workspace entries for `kubyl_apps(_core)`, the `init` line in `main.rs` |
 
 ## Tasks
@@ -84,7 +87,17 @@ settings, state, `Debug` output or prompts.
 - [x] Mockup board `AskAgent.dc.html`
 
 ### 5. Security Center (Trivy Operator)
-- [ ] to be filled in with the commit
+- [x] `kubyl_security_core`: report kinds, `Report` rows (labels from the metadata, counts from the printer columns), aggregation by image / resource / role, filters, totals, CSV records; unit tests and tests on recorded fixtures (`tests/fixtures/`, from `script/trivy-dev.sh` on kind)
+- [x] Full reports parsed on demand (`details`): vulnerabilities worst first with `http(s)` links only, failed checks, exposed secrets; the panel lists at most 300 (the CSV button exports all); **exposed secrets never read the `match` field** (tested with a fake AWS key in the report, `Debug` output and CSV)
+- [x] `ClusterCaps::trivy` from discovery (like `flux`), `kubyl_kube_core::cluster_info::trivy_caps`
+- [x] The tab: sub-tabs Images · Resources · Roles (`1`/`2`/`3`), severity summary chips that filter, namespace menu, filter, table on `DataTable`, details panel, CSV export of the table and of a report's findings
+- [x] Lists are metadata-only watches plus the API server's printer-column Table (refetched at most every 2 s); a report's findings are fetched by name when its row is selected; a refused list or get names the verb and resource
+- [x] Where Trivy Operator isn't served: an empty state that installs `trivy-operator` into `trivy-system` through the Helm install flow (`ChartRef::Url`, so no repository has to be added; hidden on read-only clusters, where the command stays; PROD asks for the cluster's name in the Helm dialog) or copies the command
+- [x] Sidebar: Security under Alerts, with a red badge of the critical findings of all three views together (a once-a-minute table read per cluster that serves Trivy; nothing for clusters without it); the sub-tabs show each view's criticals so the badge (their sum) adds up
+- [x] A Security card on the cluster and namespace overviews: totals per severity and a line per view (`OverviewSection`), from the same read
+- [x] Applications moved into the Workloads group, with its count like the other rows (`catalog::register_view_count`; `kubyl_apps::service::AppsService` counts once a minute with metadata-only lists)
+- [x] `script/trivy-dev.sh` (operator + samples, `--fixtures`, `--delete`), live test `crates/kubyl_security_core/tests/live.rs`, GPUI tests with `debug_bounds`
+- [x] Mockup boards `Security`, `SecurityResources`, `SecurityMissing`, `SecurityInstallProd`
 
 ### 6. Cost monitoring (OpenCost)
 - [ ] to be filled in with the commit
@@ -162,3 +175,22 @@ built (an agent found after the details opened shows on the next selection). The
 lists the five questions flat (gpui-component's submenus need an entity per menu). Not
 clicked through in the app: an installed agent is needed to show the entries; the GPUI tests
 check the composer, the hiding and the section.
+
+**5. Security Center.** Findings are never listed: a list is the reports' metadata (labels name
+the workload and container) plus the server's printer-column Table (repository, tag, scanner and
+the five severity counts), so 10,000 reports cost a Table, not their vulnerability arrays; the
+selected row's report(s) are fetched by name. One scan per image is fetched for the Images
+panel (the same findings), the config-audit report plus the exposed-secret reports for a
+resource. The Images counts are the larger of an image's reports (the same image in several
+workloads is one row listing them); the badge sums critical findings of each image once, plus
+config-audit and RBAC criticals. `ConfigAuditReport`s are per ReplicaSet/Pod (what Trivy
+Operator scans), so the Resources view lists ReplicaSets, like Lens. Trivy Operator only
+stores failed checks. **Not done on purpose** (per the brief): air-gapped database import/export
+and triggering scans. **What the live run showed:** the vulnerability database downloaded fine
+here (mirror.gcr.io images, ghcr.io DB); the operator can't scan an image that was only loaded
+into kind (no registry), so the exposed-secret sample is a hand-made fixture in Trivy's schema
+(`exposedsecretreport-leaky.json`, applied by `script/trivy-dev.sh --fixtures`); the real
+busybox/nginx ExposedSecretReports (empty) are recorded. The Docker disk filling up once stalled
+the first install: `cargo clean` frees the build cache. Screenshot: not taken (the Mac's screen
+was locked, which stalls the screenshot harness); the GPUI tests check the table, summary,
+details, empty and install states.

@@ -1,0 +1,25 @@
+[package]
+name = "kubyl_security_core"
+description = "The Security Center without the UI: Trivy Operator reports (vulnerabilities, config audits, exposed secrets, RBAC), their aggregation by image, resource and role, and the masked details."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+jiff.workspace = true
+kubyl_base.workspace = true
+kubyl_resources_core.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+http.workspace = true
+k8s-openapi.workspace = true
+kube.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
