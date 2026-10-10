@@ -53,6 +53,7 @@ kubyl_files.workspace = true
 kubyl_apps.workspace = true
 kubyl_flux.workspace = true
 kubyl_security.workspace = true
+kubyl_cost.workspace = true
 kubyl_helm.workspace = true
 kubyl_keymap.workspace = true
 kubyl_kube.workspace = true

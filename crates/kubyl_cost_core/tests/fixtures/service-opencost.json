@@ -1,0 +1,26 @@
+{
+ "namespace": "opencost",
+ "name": "opencost",
+ "labels": {
+  "app.kubernetes.io/instance": "opencost",
+  "app.kubernetes.io/managed-by": "Helm",
+  "app.kubernetes.io/name": "opencost",
+  "app.kubernetes.io/part-of": "opencost",
+  "app.kubernetes.io/version": "1.121.3",
+  "helm.sh/chart": "opencost-2.5.32"
+ },
+ "ports": [
+  [
+   "http",
+   9003
+  ],
+  [
+   "mcp-server",
+   8081
+  ],
+  [
+   "http-ui",
+   9090
+  ]
+ ]
+}

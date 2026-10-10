@@ -1,0 +1,37 @@
+[package]
+name = "kubyl_cost"
+description = "Cost monitoring: OpenCost's per-namespace costs, idle and efficiency, with a cost-over-time chart."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+kubyl_cost_core.workspace = true
+gpui.workspace = true
+gpui-component.workspace = true
+jiff.workspace = true
+kube.workspace = true
+k8s-openapi.workspace = true
+kubyl_charts.workspace = true
+kubyl_core.workspace = true
+kubyl_explorer.workspace = true
+kubyl_kube.workspace = true
+kubyl_metrics.workspace = true
+kubyl_palette.workspace = true
+kubyl_resources.workspace = true
+kubyl_resources_core.workspace = true
+kubyl_metrics_core.workspace = true
+kubyl_settings.workspace = true
+kubyl_ui.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+tempfile.workspace = true

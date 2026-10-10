@@ -26,6 +26,8 @@ kubyl_charts_core = { path = "crates/kubyl_charts_core" }
 kubyl_argocd = { path = "crates/kubyl_argocd" }
 kubyl_argocd_core = { path = "crates/kubyl_argocd_core" }
 kubyl_core = { path = "crates/kubyl_core" }
+kubyl_cost = { path = "crates/kubyl_cost" }
+kubyl_cost_core = { path = "crates/kubyl_cost_core" }
 kubyl_explorer = { path = "crates/kubyl_explorer" }
 kubyl_explorer_core = { path = "crates/kubyl_explorer_core" }
 kubyl_files = { path = "crates/kubyl_files" }

@@ -1,0 +1,28 @@
+[package]
+name = "kubyl_cost_core"
+description = "Cost monitoring without the UI: OpenCost's allocation API (queries, lenient parsing, totals, per-namespace rows, cost over time) and finding OpenCost's Service."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+jiff.workspace = true
+kubyl_base.workspace = true
+kubyl_metrics_core.workspace = true
+kubyl_settings_core.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+http.workspace = true
+k8s-openapi.workspace = true
+kube.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util"] }
