@@ -4887,6 +4887,7 @@ dependencies = [
  "kubyl_argocd",
  "kubyl_charts",
  "kubyl_core",
+ "kubyl_cost",
  "kubyl_explorer",
  "kubyl_files",
  "kubyl_flux",
@@ -5198,6 +5199,48 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "kubyl_cost"
+version = "0.6.0"
+dependencies = [
+ "gpui-component",
+ "gpui-pre",
+ "jiff",
+ "k8s-openapi",
+ "kube",
+ "kubyl_charts",
+ "kubyl_core",
+ "kubyl_cost_core",
+ "kubyl_explorer",
+ "kubyl_kube",
+ "kubyl_metrics",
+ "kubyl_metrics_core",
+ "kubyl_palette",
+ "kubyl_resources",
+ "kubyl_resources_core",
+ "kubyl_settings",
+ "kubyl_ui",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "kubyl_cost_core"
+version = "0.6.0"
+dependencies = [
+ "http",
+ "jiff",
+ "k8s-openapi",
+ "kube",
+ "kubyl_base",
+ "kubyl_metrics_core",
+ "kubyl_settings_core",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

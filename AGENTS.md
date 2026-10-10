@@ -137,7 +137,10 @@ cargo run -p kubyl
   `aquasecurity.github.io/helm-charts`, `--repo`, no repository added) into `trivy-system` with
   samples in `kubyl-trivy`; the vulnerability database download can be slow or blocked (see the
   script's header: a GitHub token, or `--fixtures` for recorded reports without an operator);
-  `--delete` removes what it installed. Live tests: `crates/kubyl_apps_core/tests/live.rs`,
+  `--delete` removes what it installed. `script/opencost-dev.sh` (after `prometheus-dev.sh`) installs
+  OpenCost (chart `opencost.github.io/opencost-helm-chart`, `--repo`) into `opencost` with custom
+  on-prem pricing (kind has no prices); its allocations need a few minutes of Prometheus history;
+  `--delete`. Live tests: `crates/kubyl_cost_core/tests/live.rs`, `crates/kubyl_apps_core/tests/live.rs`,
   `crates/kubyl_security_core/tests/live.rs`, `crates/kubyl_terminal/tests/live_local.rs`
   (needs `kubectl`), `crates/kubyl_resources/tests/live_csv.rs`.
 - Live tests against those clusters are ignored by default: see the header of

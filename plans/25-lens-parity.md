@@ -1,6 +1,6 @@
 # Phase 25: Lens parity: CSV export, local terminal, Applications, Ask AI, Security Center, Cost, cloud discovery
 
-**Status:** in progress (branch `phase/25-lens-parity`, one commit per feature; 5 of 7 done)
+**Status:** in progress (branch `phase/25-lens-parity`, one commit per feature; 6 of 7 done)
 **Depends on:** 02 (tables, details), 05 (terminal), 07 (metrics, charts), 11 (kubeconfig, cloud import), 21 (agents), 22 (Helm), 24 (resource views)
 **Owns:** `kubyl_security`, `kubyl_security_core`, `kubyl_cost`, `kubyl_cost_core` (new); `kubyl_apps`, `kubyl_apps_core` (new, if the Applications view doesn't fit an existing crate); shared commits listed under each feature. `script/trivy-dev.sh`, `script/opencost-dev.sh`.
 **Mockups:** board 23 · Lens parity, one or more boards per feature in `design/mockups/generate.py` (`CsvExport.dc.html`, …).
@@ -35,6 +35,7 @@ settings, state, `Debug` output or prompts.
 | 2 Local terminal | `kubyl_terminal_core`, `kubyl_terminal` | (owned by phase 05) `local` module, `SessionMode::Local`, `terminal.local_shell`, `Terminal: Open Local Shell for This Cluster` |
 | 2 Local terminal | root `Cargo.toml` | `portable-pty` 0.9 (MIT) in `[workspace.dependencies]` |
 | 3 Applications | `kubyl_argocd_core`, `kubyl_argocd` | (owned by phase 10) `tracking::{ManagedBy, managed_by}` moved from `kubyl_argocd::dock` into the core crate; `dock` re-exports them, so the old paths work |
+| 6 Cost | root `Cargo.toml`, `crates/kubyl` | workspace entries for `kubyl_cost(_core)`, the `init` line in `main.rs` |
 | 5 Security | `kubyl_base`, `kubyl_core` | `ClusterCaps::trivy` (`TrivyCaps`: which report CRDs are served; `any()`) |
 | 5 Security | `kubyl_kube_core` | `cluster_info::trivy_caps` from discovery (listable kinds of `aquasecurity.github.io`), with a test |
 | 5 Security | `kubyl_base`, `kubyl_explorer` | none beyond the above: the sidebar row uses `register_view_row` (after Alerts) with a `RowBadge` |
@@ -100,7 +101,13 @@ settings, state, `Debug` output or prompts.
 - [x] Mockup boards `Security`, `SecurityResources`, `SecurityMissing`, `SecurityInstallProd`
 
 ### 6. Cost monitoring (OpenCost)
-- [ ] to be filled in with the commit
+- [x] `kubyl_cost_core`: OpenCost's allocation API (`/allocation/compute`, `window`, `aggregate=namespace`, `includeIdle`, `accumulate`, `step`) as `Query`, lenient parsing, totals with cost-weighted CPU/memory efficiency, per-namespace rows (idle and unmounted volumes labelled), the stacked cost-over-time series (top 6 + other + idle, empty steps keep their time), CSV records, detection of OpenCost's Service, error messages that say what to check; unit tests
+- [x] Verified against OpenCost 1.121.3 (chart 2.5.32) on kind: recorded fixtures (`tests/fixtures/`), a local HTTP server standing in for OpenCost checks the request line, and the live test runs every window x idle choice through the service proxy
+- [x] `kubyl_cost::service::CostService`: demand-driven like `MetricsService` (a view says it wants a cluster's costs and keeps saying so; a loop refreshes once a minute, nothing runs for unwatched clusters); detection by label then by name, the address overridable (`cost.clusters.<cluster>.service` as `namespace/service:port`); reached through `Transport::service_proxy`
+- [x] The tab: window 24h/7d/30d, include-idle toggle, Refresh, tiles (total, idle, CPU and memory efficiency), `kubyl_charts` stacked area with `ColorRegistry` colors (the same namespace keeps its color across charts), per-namespace table (CPU, memory, storage, network, total, efficiency), CSV export; window and idle remembered per cluster (state.json `cost`)
+- [x] Empty states: looking, not installed (says OpenCost needs Prometheus, shows the install command and the settings override), refused list of Services, unreachable Service (names the verb/port); an error with numbers on screen keeps them with a banner
+- [x] `script/opencost-dev.sh` (OpenCost on `prometheus-dev.sh`'s Prometheus, custom on-prem pricing so kind has prices; `--delete`), live test `crates/kubyl_cost_core/tests/live.rs`, GPUI tests with `debug_bounds`
+- [x] Mockup boards `Cost`, `CostMissing`
 
 ### 7. Cloud cluster discovery
 - [ ] to be filled in with the commit
@@ -194,3 +201,17 @@ busybox/nginx ExposedSecretReports (empty) are recorded. The Docker disk filling
 the first install: `cargo clean` frees the build cache. Screenshot: not taken (the Mac's screen
 was locked, which stalls the screenshot harness); the GPUI tests check the table, summary,
 details, empty and install states.
+
+**6. Cost monitoring.** The brief said to verify the allocation API against the installed
+version; what 1.121.3 does: `GET /allocation/compute` answers `{"code":200,"data":[{name:
+allocation}…]}` with one set per step (or one for the window with `accumulate=true`); with
+`includeIdle=true` an `__idle__` allocation joins; steps without data are empty objects (so
+the chart takes their time from the neighbours); costs of a young cluster can be tiny negative
+numbers (clamped to zero) and rounded to five decimals; efficiency is usage over request and
+can exceed 1 (kube-system's memory showed 258%): shown as it is. An invalid window is a plain
+400 through the proxy. On kind OpenCost has no prices ("No pricing found", all costs 0) until
+custom pricing is on, which the script does. The `/model/...` paths of older OpenCost
+(`/allocation`) answer the same shape but aren't used. Out of scope per the brief: Kubecost,
+list-price estimates, the AI cost optimizer. Not clicked through in the app (screen locked for
+screenshots); the GPUI tests check tiles, chart, table, the remembered choices and the empty
+and error states.

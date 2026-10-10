@@ -4717,7 +4717,7 @@ def flux_delete_screen():
 # ---------- 22 · Resource views (phase 24) ----------
 RV_CLUSTER = "kind-dev"
 
-def rv_sidebar(active, open_groups, applications=None, security=None):
+def rv_sidebar(active, open_groups, applications=None, security=None, cost=False):
     """kind-dev with the groups phase 24 adds to (only kinds the cluster serves show)."""
     groups = [
         ("Workloads", [("Pods", "box", "21"), ("Deployments", "layers", "4"), ("StatefulSets", "db", "1"), ("Jobs", "play", "2"), ("VerticalPodAutoscalers", "activity", "1")]),
@@ -4742,6 +4742,8 @@ def rv_sidebar(active, open_groups, applications=None, security=None):
         # Phase 25: Security sits under Alerts; its badge is the number of critical findings, in red.
         rows.append(ti("Alerts", 1, "siren", extra=alert_badge("3", C["red"])))
         rows.append(ti("Security", 1, "shield", on=active == "Security", extra=alert_badge(security, C["red"]) if security else ""))
+    if cost:
+        rows.append(ti("Cost", 1, "cloud", on=active == "Cost"))
     rows.append(ti("Events", 1, "bell", "3", color=C["yellow"]))
     for g, kinds in groups:
         is_open = g in open_groups
@@ -4754,10 +4756,10 @@ def rv_sidebar(active, open_groups, applications=None, security=None):
     rows += [root("prod-eu-west-1", "on", color=C["red"], prod=True), root("staging-eu-west-1", "on", color=C["yellow"])]
     return '<aside class="side">' + "\n".join(rows) + '</aside>'
 
-def rv_app(title, active, open_groups, tb, content, ns="kubyl-views", overlay="", applications=None, security=None):
+def rv_app(title, active, open_groups, tb, content, ns="kubyl-views", overlay="", applications=None, security=None, cost=False):
     inner = f'''<div class="app">
 {titlebar(RV_CLUSTER, ns, False, "kind · v1.37.0")}
-<div class="body">{rv_sidebar(active, open_groups, applications, security)}<main class="main">{tb}{content}</main></div>
+<div class="body">{rv_sidebar(active, open_groups, applications, security, cost)}<main class="main">{tb}{content}</main></div>
 {statusbar(cluster=RV_CLUSTER, ns=ns)}{overlay}
 </div>'''
     return page(title, inner)
@@ -5151,6 +5153,49 @@ def security_install_prod_screen():
     return page("Security Center: install on PROD — Kubyl", inner)
 
 
+def cost_screen():
+    cols = "grid-template-columns: minmax(0,1fr) 96px 96px 96px 96px 96px 96px"
+    num = lambda t, col="var(--text)": f'<span class="mono" style="font-size:12px;text-align:right;color:{col}">{t}</span>'
+    data = [("payments", 31.42, 12.10, 5.0, 0.8, 49.32, "62%", C["green"]), ("kube-system", 18.20, 9.60, 0.0, 0.1, 27.90, "41%", C["yellow"]),
+            ("monitoring", 11.05, 14.30, 8.2, 0.0, 33.55, "18%", C["red"]), ("checkout", 6.40, 3.10, 0.0, 0.4, 9.90, "74%", C["green"])]
+    rows = [[m(n, s=12), num(f"${c:,.2f}"), num(f"${r:,.2f}"), num(f"${s_:,.2f}"), num(f"${nw:,.2f}"), num(f"${t:,.2f}"), num(e, col)] for n, c, r, s_, nw, t, e, col in data]
+    rows.append([m("idle", "var(--muted)", s=12), num("$22.40", "var(--muted)"), num("$11.80", "var(--muted)"), num("$0.00", "var(--faint)"), num("$0.00", "var(--faint)"), num("$34.20", "var(--muted)"), ""])
+    th = f'<div class="th" style="{cols}">' + "".join(f"<span>{h}</span>" for h in ["NAMESPACE", "CPU", "MEMORY", "STORAGE", "NETWORK", "TOTAL", "EFFICIENCY"]) + "</div>"
+    body = "".join(f'<div class="tr{" on" if i == 0 else ""}" style="{cols}">{"".join(r)}</div>' for i, r in enumerate(rows))
+    tile = lambda label, value, hint, col="var(--text)": (f'<div style="flex:1;border:1px solid var(--border);border-radius:8px;background:var(--panel);padding:12px;display:flex;flex-direction:column;gap:2px">'
+        f'<span style="font-size:11px;color:var(--dim);text-transform:uppercase">{label}</span><span class="mono" style="font-size:20px;color:{col}">{value}</span><span style="font-size:11.5px;color:var(--dim)">{hint}</span></div>')
+    tiles = f'<div style="display:flex;gap:10px;padding:10px 12px">{tile("Total", "$154.27", "CPU $87.07 · memory $51.00 · storage $13.20 · network $1.30")}{tile("Idle", "$34.20", "22% of the total", "var(--muted)")}{tile("CPU efficiency", "51%", "usage of the requested cores", C["yellow"])}{tile("Memory efficiency", "64%", "usage of the requested memory", C["green"])}</div>'
+    # a stacked area of seven days, drawn as polygons
+    w, h = 1000, 140
+    layers = [("payments", C["accent"], [6, 7, 6.5, 7.5, 8, 7, 7.2]), ("kube-system", C["orange"], [3.5, 3.8, 4, 3.9, 4.1, 4, 4]),
+              ("monitoring", C["purple"], [4, 4.6, 4.8, 5, 4.9, 5.1, 4.7]), ("other", C["cyan"], [1.5, 1.7, 1.6, 1.9, 2.0, 1.8, 1.7]), ("idle", "#6b7280", [4.6, 5, 4.8, 5.2, 5.1, 4.9, 4.8])]
+    base = [0] * 7
+    polys = ""
+    for name, col, vals in layers:
+        top = [b + v for b, v in zip(base, vals)]
+        pts = [f"{i * w / 6:.0f},{h - t * 7:.0f}" for i, t in enumerate(top)] + [f"{i * w / 6:.0f},{h - b * 7:.0f}" for i, b in reversed(list(enumerate(base)))]
+        polys += f'<polygon points="{" ".join(pts)}" fill="{col}" fill-opacity="0.55" stroke="{col}" stroke-width="1.5"/>'
+        base = top
+    legend = "".join(f'<span class="chip">{dot(col)}{name}</span>' for name, col, _ in layers)
+    chart = (f'<div style="margin:0 12px 8px;border:1px solid var(--border);border-radius:8px;background:var(--panel);padding:12px;display:flex;flex-direction:column;gap:6px">'
+             f'<span style="font-size:11px;color:var(--dim);text-transform:uppercase">Cost over time · per day</span>'
+             f'<svg viewBox="0 0 {w} {h}" preserveAspectRatio="none" style="width:100%;height:150px">{polys}</svg>'
+             f'<div style="display:flex;gap:6px;flex-wrap:wrap">{legend}</div></div>')
+    toolbar = f'''<div class="tool"><div class="crumb">{ic("cloud",14,C["accent"])}<b>Cost</b><span>·</span><span>last 7 days</span></div><div style="flex:1"></div>
+<span style="font-size:11.5px;color:var(--dim)">updated 23s ago</span><span class="chip">24h</span><span class="chip on">7d</span><span class="chip">30d</span><span class="chip on">include idle</span>
+<button class="ib" aria-label="Refresh">{ic("refresh",13)}</button><button class="btn g" aria-label="Menu">{ic("sliders",13)}</button></div>'''
+    center = f'<div style="flex:1;display:flex;flex-direction:column;min-width:0">{toolbar}{tiles}{chart}{th}<div style="flex:1;overflow:hidden">{body}</div>{hints([("r", "Refresh"), ("i", "Idle")])}</div>'
+    return rv_app("Cost — Kubyl", "Cost", ("Workloads",), tabs([("cloud", "Cost", True), ("box", "Pods", False)]), center, ns="payments", cost=True)
+
+def cost_missing_screen():
+    cmd = ("helm install opencost opencost \\\\<br>&nbsp;&nbsp;--repo https://opencost.github.io/opencost-helm-chart \\\\<br>&nbsp;&nbsp;--namespace opencost --create-namespace \\\\<br>&nbsp;&nbsp;--set opencost.prometheus.internal.serviceName=&lt;prometheus service&gt; \\\\<br>&nbsp;&nbsp;--set opencost.prometheus.internal.namespaceName=&lt;its namespace&gt; \\\\<br>&nbsp;&nbsp;--set opencost.prometheus.internal.port=9090")
+    body = (f'<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:24px;text-align:center">{ic("cloud",26,C["dim"])}'
+            f'<div style="font-size:14px;font-weight:500">OpenCost isn\'t installed in this cluster</div>'
+            f'<div style="max-width:560px;font-size:12.5px;color:var(--dim);line-height:19px">The Cost view shows what OpenCost computes: costs per namespace, idle capacity and how well requested CPU and memory are used. <b style="font-weight:500;color:var(--text)">OpenCost needs Prometheus</b> (it reads the cluster\'s metrics from it), so install or point it at one first. If it runs under another name, set <span class="mono">cost.clusters.&lt;cluster&gt;.service</span> in settings.json to namespace/service:port.</div>'
+            f'<div class="mono" style="max-width:560px;padding:10px;border-radius:6px;background:var(--elev);border:1px solid var(--bv);font-size:11.5px;text-align:left;line-height:18px">{cmd}</div></div>')
+    return rv_app("Cost: install — Kubyl", "Cost", ("Workloads",), tabs([("cloud", "Cost", True)]), f'<div style="flex:1;display:flex;flex-direction:column">{body}</div>', ns="default", cost=True)
+
+
 def local_term_panel(tabs_html, body):
     return f'''<div style="height:300px;flex-shrink:0;border-top:1px solid var(--border);display:flex;flex-direction:column;background:var(--bg)">
 <div class="tabs" style="height:32px">{tabs_html}<div class="tabtools"><button class="ib" aria-label="New terminal">{ic("plus",14)}</button><button class="ib" aria-label="Maximize">{ic("max",13)}</button></div></div>
@@ -5290,6 +5335,8 @@ SCREENS = [
  ("SecurityResources.dc.html", "23 · Lens parity: Security Center, Resources (config audits) with exposed secrets masked", security_resources_screen),
  ("SecurityMissing.dc.html", "23 · Lens parity: Security Center where Trivy Operator isn't installed (install or the command)", security_missing_screen),
  ("SecurityInstallProd.dc.html", "23 · Lens parity: installing Trivy Operator on PROD asks for the cluster's name", security_install_prod_screen),
+ ("Cost.dc.html", "23 · Lens parity: Cost (OpenCost) with totals, idle, efficiency, cost over time per namespace and the per-namespace table", cost_screen),
+ ("CostMissing.dc.html", "23 · Lens parity: Cost where OpenCost isn't installed (needs Prometheus; the install command)", cost_missing_screen),
  ("ApplicationsEmpty.dc.html", "23 · Lens parity: Applications with nothing labelled yet (the empty state says how objects join one)", apps_states_screen),
 ]
 

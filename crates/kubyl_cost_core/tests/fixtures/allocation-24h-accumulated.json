@@ -1,0 +1,236 @@
+{
+ "code": 200,
+ "data": [
+  {
+   "__idle__": {
+    "name": "__idle__",
+    "properties": {
+     "cluster": "kind-kubyl-dev"
+    },
+    "window": {
+     "start": "2026-10-09T04:00:00Z",
+     "end": "2026-10-10T04:00:00Z"
+    },
+    "start": "2026-10-10T03:00:00Z",
+    "end": "2026-10-10T03:07:28Z",
+    "minutes": 7.46788,
+    "cpuCoreHours": 0,
+    "cpuCost": 0,
+    "cpuEfficiency": 0,
+    "ramByteHours": 0,
+    "ramCost": 0,
+    "ramEfficiency": 0,
+    "pvCost": 0,
+    "networkCost": 0,
+    "gpuCost": 0,
+    "loadBalancerCost": 0,
+    "sharedCost": 0,
+    "externalCost": 0,
+    "totalCost": 0,
+    "totalEfficiency": 0
+   },
+   "kube-system": {
+    "name": "kube-system",
+    "properties": {
+     "cluster": "kind-kubyl-dev",
+     "namespace": "kube-system"
+    },
+    "window": {
+     "start": "2026-10-09T04:00:00Z",
+     "end": "2026-10-10T04:00:00Z"
+    },
+    "start": "2026-10-10T03:00:00Z",
+    "end": "2026-10-10T03:07:28Z",
+    "minutes": 7.4676,
+    "cpuCoreHours": 0.14313,
+    "cpuCost": 0.00452,
+    "cpuEfficiency": 0.00059,
+    "ramByteHours": 70473108.2225,
+    "ramCost": 0.00028,
+    "ramEfficiency": 2.58076,
+    "pvCost": 0,
+    "networkCost": 0,
+    "gpuCost": 0,
+    "loadBalancerCost": 0,
+    "sharedCost": 0,
+    "externalCost": 0,
+    "totalCost": 0.0048,
+    "totalEfficiency": 0.14999
+   },
+   "kubyl-trivy": {
+    "name": "kubyl-trivy",
+    "properties": {
+     "cluster": "kind-kubyl-dev",
+     "node": "kubyl-dev-worker",
+     "namespace": "kubyl-trivy"
+    },
+    "window": {
+     "start": "2026-10-09T04:00:00Z",
+     "end": "2026-10-10T04:00:00Z"
+    },
+    "start": "2026-10-10T03:00:00Z",
+    "end": "2026-10-10T03:07:28Z",
+    "minutes": 7.4676,
+    "cpuCoreHours": 0,
+    "cpuCost": 0,
+    "cpuEfficiency": 0,
+    "ramByteHours": 0,
+    "ramCost": 0,
+    "ramEfficiency": 0,
+    "pvCost": 0,
+    "networkCost": 0,
+    "gpuCost": 0,
+    "loadBalancerCost": 0,
+    "sharedCost": 0,
+    "externalCost": 0,
+    "totalCost": 0,
+    "totalEfficiency": 0
+   },
+   "local-path-storage": {
+    "name": "local-path-storage",
+    "properties": {
+     "cluster": "kind-kubyl-dev",
+     "node": "kubyl-dev-control-plane",
+     "container": "local-path-provisioner",
+     "namespace": "local-path-storage",
+     "pod": "local-path-provisioner-75f7fc7dc5-clkk5"
+    },
+    "window": {
+     "start": "2026-10-09T04:00:00Z",
+     "end": "2026-10-10T04:00:00Z"
+    },
+    "start": "2026-10-10T03:00:00Z",
+    "end": "2026-10-10T03:07:28Z",
+    "minutes": 7.4676,
+    "cpuCoreHours": 0,
+    "cpuCost": 0,
+    "cpuEfficiency": 0,
+    "ramByteHours": 0,
+    "ramCost": 0,
+    "ramEfficiency": 0,
+    "pvCost": 0,
+    "networkCost": 0,
+    "gpuCost": 0,
+    "loadBalancerCost": 0,
+    "sharedCost": 0,
+    "externalCost": 0,
+    "totalCost": 0,
+    "totalEfficiency": 0
+   },
+   "monitoring": {
+    "name": "monitoring",
+    "properties": {
+     "cluster": "kind-kubyl-dev",
+     "namespace": "monitoring"
+    },
+    "window": {
+     "start": "2026-10-09T04:00:00Z",
+     "end": "2026-10-10T04:00:00Z"
+    },
+    "start": "2026-10-10T03:00:00Z",
+    "end": "2026-10-10T03:07:28Z",
+    "minutes": 7.4676,
+    "cpuCoreHours": 0,
+    "cpuCost": 0,
+    "cpuEfficiency": 0,
+    "ramByteHours": 33409473.9343,
+    "ramCost": 0.00013,
+    "ramEfficiency": 1.60302,
+    "pvCost": 0,
+    "networkCost": 0,
+    "gpuCost": 0,
+    "loadBalancerCost": 0,
+    "sharedCost": 0,
+    "externalCost": 0,
+    "totalCost": 0.00013,
+    "totalEfficiency": 1.60302
+   },
+   "opencost": {
+    "name": "opencost",
+    "properties": {
+     "cluster": "kind-kubyl-dev",
+     "node": "kubyl-dev-worker",
+     "namespace": "opencost"
+    },
+    "window": {
+     "start": "2026-10-09T04:00:00Z",
+     "end": "2026-10-10T04:00:00Z"
+    },
+    "start": "2026-10-10T03:00:00Z",
+    "end": "2026-10-10T03:07:28Z",
+    "minutes": 7.4676,
+    "cpuCoreHours": 0.00249,
+    "cpuCost": 8e-05,
+    "cpuEfficiency": 0.00043,
+    "ramByteHours": 14355633.3365,
+    "ramCost": 6e-05,
+    "ramEfficiency": 0.62349,
+    "pvCost": 0,
+    "networkCost": 0,
+    "gpuCost": 0,
+    "loadBalancerCost": 0,
+    "sharedCost": 0,
+    "externalCost": 0,
+    "totalCost": 0.00014,
+    "totalEfficiency": 0.26123
+   },
+   "payments": {
+    "name": "payments",
+    "properties": {
+     "cluster": "kind-kubyl-dev",
+     "namespace": "payments"
+    },
+    "window": {
+     "start": "2026-10-09T04:00:00Z",
+     "end": "2026-10-10T04:00:00Z"
+    },
+    "start": "2026-10-09T04:00:00Z",
+    "end": "2026-10-10T04:00:00Z",
+    "minutes": 1440,
+    "cpuCoreHours": 0.01369,
+    "cpuCost": 0.00043,
+    "cpuEfficiency": 0.00077,
+    "ramByteHours": 19836875.22355,
+    "ramCost": 8e-05,
+    "ramEfficiency": 0.2349,
+    "pvCost": 0,
+    "networkCost": 0,
+    "gpuCost": 0,
+    "loadBalancerCost": 0,
+    "sharedCost": 0,
+    "externalCost": 0,
+    "totalCost": 0.00051,
+    "totalEfficiency": 0.03663
+   },
+   "trivy-system": {
+    "name": "trivy-system",
+    "properties": {
+     "cluster": "kind-kubyl-dev",
+     "node": "kubyl-dev-worker",
+     "namespace": "trivy-system"
+    },
+    "window": {
+     "start": "2026-10-09T04:00:00Z",
+     "end": "2026-10-10T04:00:00Z"
+    },
+    "start": "2026-10-10T03:00:00Z",
+    "end": "2026-10-10T03:07:28Z",
+    "minutes": 7.4676,
+    "cpuCoreHours": 0.01667,
+    "cpuCost": 0.00053,
+    "cpuEfficiency": 0.00019,
+    "ramByteHours": 16666666.66667,
+    "ramCost": 7e-05,
+    "ramEfficiency": 1.5117,
+    "pvCost": 0,
+    "networkCost": 0,
+    "gpuCost": 0,
+    "loadBalancerCost": 0,
+    "sharedCost": 0,
+    "externalCost": 0,
+    "totalCost": 0.00059,
+    "totalEfficiency": 0.16793
+   }
+  }
+ ]
+}
