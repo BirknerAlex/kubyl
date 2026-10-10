@@ -12,6 +12,7 @@
   <a href="https://kubyl.dev">Website</a> ·
   <a href="https://kubyl.dev/docs">Docs</a> ·
   <a href="https://kubyl.dev/download">Download</a> ·
+  <a href="https://kubyl.dev/mobile">Mobile</a> ·
   <a href="CHANGELOG.md">Changelog</a> ·
   <a href="https://github.com/BirknerAlex/kubyl/issues">Issues</a> ·
   <a href="https://github.com/sponsors/BirknerAlex">Sponsor</a>
@@ -64,6 +65,29 @@ do, plus selected OpenShift console features, in a fast, keyboard-first native w
     <td><img src="design/screenshots/phase-16-topology.png" alt="Network flow topology"></td>
   </tr>
 </table>
+
+## Kubyl Mobile
+
+**Your clusters, in your pocket.** Kubyl Mobile is the iOS and Android companion: check pods,
+read and follow logs, watch alerts and Argo CD, browse Helm releases and operators, and make
+careful changes from your phone, without a VPN profile for every cluster. It looks like the
+desktop app.
+
+- **Careful by design.** Every change shows what would happen first. Production clusters ask
+  for the cluster's name, sensitive actions ask for Face ID or your passcode, and read-only
+  clusters stay read-only because the server enforces it.
+- **Live.** Cluster overview with CPU and memory, resource tables, pod details, events, logs,
+  a terminal and read-only PromQL.
+- **Pairs with a QR code.** The app talks to a Kubyl Server that runs on a machine you control
+  next to your clusters, over gRPC with certificate pinning. The desktop app doesn't need it.
+
+The app is free in the stores (Google Play now, App Store coming soon). The Kubyl Server is a
+subscription that covers your paired devices. See [kubyl.dev/mobile](https://kubyl.dev/mobile),
+the [mobile docs](https://kubyl.dev/mobile/docs) and the
+[server install guide](https://kubyl.dev/mobile/server).
+
+The desktop app points to it once, with a dismissible card on the Welcome tab, and under
+**Help → Kubyl Mobile**.
 
 ## Install
 
