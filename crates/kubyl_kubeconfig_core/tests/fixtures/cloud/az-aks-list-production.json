@@ -1,0 +1,22 @@
+[
+  {
+    "id": "/subscriptions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/resourcegroups/rg-prod/providers/Microsoft.ContainerService/managedClusters/aks-prod",
+    "name": "aks-prod",
+    "resourceGroup": "rg-prod",
+    "location": "westeurope",
+    "kubernetesVersion": "1.30.4",
+    "provisioningState": "Succeeded",
+    "powerState": {"code": "Running"},
+    "fqdn": "aks-prod-dns-0123abcd.hcp.westeurope.azmk8s.io"
+  },
+  {
+    "id": "/subscriptions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/resourcegroups/rg-batch/providers/Microsoft.ContainerService/managedClusters/aks-batch",
+    "name": "aks-batch",
+    "resourceGroup": "rg-batch",
+    "location": "northeurope",
+    "kubernetesVersion": "1.29.9",
+    "provisioningState": "Succeeded",
+    "powerState": {"code": "Stopped"},
+    "fqdn": "aks-batch-dns-4567efgh.hcp.northeurope.azmk8s.io"
+  }
+]

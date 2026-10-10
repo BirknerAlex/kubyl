@@ -1,6 +1,6 @@
 # Phase 25: Lens parity: CSV export, local terminal, Applications, Ask AI, Security Center, Cost, cloud discovery
 
-**Status:** in progress (branch `phase/25-lens-parity`, one commit per feature; 6 of 7 done)
+**Status:** done, in review (branch `phase/25-lens-parity`, one commit per feature; all 7 committed; review fixes and the PR follow)
 **Depends on:** 02 (tables, details), 05 (terminal), 07 (metrics, charts), 11 (kubeconfig, cloud import), 21 (agents), 22 (Helm), 24 (resource views)
 **Owns:** `kubyl_security`, `kubyl_security_core`, `kubyl_cost`, `kubyl_cost_core` (new); `kubyl_apps`, `kubyl_apps_core` (new, if the Applications view doesn't fit an existing crate); shared commits listed under each feature. `script/trivy-dev.sh`, `script/opencost-dev.sh`.
 **Mockups:** board 23 · Lens parity, one or more boards per feature in `design/mockups/generate.py` (`CsvExport.dc.html`, …).
@@ -35,6 +35,7 @@ settings, state, `Debug` output or prompts.
 | 2 Local terminal | `kubyl_terminal_core`, `kubyl_terminal` | (owned by phase 05) `local` module, `SessionMode::Local`, `terminal.local_shell`, `Terminal: Open Local Shell for This Cluster` |
 | 2 Local terminal | root `Cargo.toml` | `portable-pty` 0.9 (MIT) in `[workspace.dependencies]` |
 | 3 Applications | `kubyl_argocd_core`, `kubyl_argocd` | (owned by phase 10) `tracking::{ManagedBy, managed_by}` moved from `kubyl_argocd::dock` into the core crate; `dock` re-exports them, so the old paths work |
+| 7 Cloud discovery | `kubyl_kubeconfig_core`, `kubyl_kubeconfig` | (owned by phase 11) `cloud` module (discovery, errors, get-credentials commands), `discover` dialog, the `Kubeconfig: Discover Cloud Clusters…` action and a wizard entry |
 | 6 Cost | root `Cargo.toml`, `crates/kubyl` | workspace entries for `kubyl_cost(_core)`, the `init` line in `main.rs` |
 | 5 Security | `kubyl_base`, `kubyl_core` | `ClusterCaps::trivy` (`TrivyCaps`: which report CRDs are served; `any()`) |
 | 5 Security | `kubyl_kube_core` | `cluster_info::trivy_caps` from discovery (listable kinds of `aquasecurity.github.io`), with a test |
@@ -110,7 +111,14 @@ settings, state, `Debug` output or prompts.
 - [x] Mockup boards `Cost`, `CostMissing`
 
 ### 7. Cloud cluster discovery
-- [ ] to be filled in with the commit
+- [x] `kubyl_kubeconfig_core::cloud`: AWS (`aws configure list-profiles`, `sts get-caller-identity`, `ec2 describe-regions` with the profile's own region as the fallback, `eks list-clusters` per region, `eks describe-cluster` for version and status), Azure (`az account list`, enabled subscriptions, `az aks list`), Google (`gcloud projects list`, active projects, `gcloud container clusters list`); at most 6 commands at once; accounts and regions report as they finish
+- [x] Phase 13's CLI rules: found through the login shell's `PATH`, stdin closed, prompts and pagers off (`CLOUDSDK_CORE_DISABLE_PROMPTS`, `AWS_PAGER=""`, `AZURE_CORE_NO_COLOR`…), a 60 s timeout per command, no console window on Windows, nothing persisted (results live in the dialog)
+- [x] Failures say what to do (`Failure`): a missing CLI (and where to get it), an expired SSO session (`aws sso login --profile X`), no credentials, `az login`, `gcloud auth login`, a missing permission (`eks:ListClusters`, `Microsoft.ContainerService/managedClusters/read`, `container.clusters.list`), the Kubernetes Engine API off in a project (benign, with the enable command), no region for a profile, a timeout
+- [x] The dialog (`kubyl_kubeconfig::discover`): a tab per cloud, Scan, per-account cards with checkboxes (all of an account, or single clusters), problems next to the account or region they are about, "Add N clusters"
+- [x] Added through the get-credentials commands of the existing import (`aws eks update-kubeconfig --profile`, `gcloud container clusters get-credentials`, `az aks get-credentials`; they merge into one file) in a private temp folder, opened as an unsaved Kubyl-owned kubeconfig in the editor (test, save); clusters that failed are listed in a toast
+- [x] Tests: unit tests (error classification, command lines equal to the single-cluster import's), fake `aws`/`az`/`gcloud` shell scripts printing recorded-shape JSON (`tests/fixtures/cloud/`, `tests/cloud_cli.rs`: expired SSO, permissions, API off, not logged in, not installed, timeout, closed stdin, env), GPUI tests of the dialog, and a live test against the installed CLIs (`tests/live_cloud.rs`, counts only)
+- [x] Entry points: palette `Kubeconfig: Discover Cloud Clusters (EKS, AKS, GKE)…`, the new-kubeconfig wizard's "Discover cloud clusters…"
+- [x] Mockup board `CloudDiscovery`
 
 ## Testing
 
@@ -215,3 +223,45 @@ custom pricing is on, which the script does. The `/model/...` paths of older Ope
 list-price estimates, the AI cost optimizer. Not clicked through in the app (screen locked for
 screenshots); the GPUI tests check tiles, chart, table, the remembered choices and the empty
 and error states.
+
+**7. Cloud cluster discovery.** The CLIs' JSON shapes in `tests/fixtures/cloud/` follow their
+documented output and the real `gcloud` here (field names checked against a live `projects list`;
+its real "API not used in project" error text is what the classifier matches). **No AWS or Azure
+account or CLI was available**, so those two are tested against hand-written fixtures and fake
+scripts only, not against the real programs; the error strings are the AWS CLI v2 and az ones
+as documented. Decisions: a profile's regions are the ones `ec2 describe-regions` says are
+enabled (so `ec2:DescribeRegions` is used; without it only the profile's own region is scanned,
+and a profile with neither says how to set a region); a cluster that can't be described is
+still listed (without version and status); stopped AKS clusters show "Stopped", not their
+provisioning state. All three CLIs merge into the kubeconfig they are given, so several
+clusters become one draft; the doc is not saved until the user does. Out of scope per the brief:
+in-app OAuth. The dialog was not clicked through by hand (screen locked); the GPUI tests check
+its results, selections, error placement and the draft it opens.
+
+### Review of `main...HEAD` (fresh reviewer subagent)
+
+Fixed (each folded into its feature commit): Argo CD annotation tracking now works on objects
+without `kind` (lists and metadata-only watches omit it; `managed_by_kind`); the Cost body no
+longer goes blank after a window change (empty state and errors follow the filtered data), and a
+read that finishes for an old window triggers the new one at once; the Security service keeps a
+failed kind's last reports and reads nothing, rather than zeros, when every list fails, and
+retries in 2 s when discovery isn't in (as does the Applications count); the Secret export guard
+is keyed on the resource as well as the kind; the sweep test uses unique names; cloud CLI
+discovery reads the login-shell PATH on the blocking pool, the temp folder is made off the UI
+thread, and "added, but unreadable" no longer says "No cluster was added"; the agent prompt keeps
+spaces and parentheses of a cluster's display name; OpenCost detection prefers the labelled
+Service over one that only has the name.
+
+Declined, with reasons:
+- **`process_alive` on Windows** always says alive, so stale local-shell kubeconfig folders there
+  wait for the 7-day age limit. Needs `OpenProcess` through a Windows API crate this branch
+  doesn't otherwise pull in; left for the Windows pass.
+- **Two AWS profiles of one account** list the same cluster twice. Profiles are the user's
+  accounts; merging them would hide which credentials get used.
+- **`mfa_serial` profiles** may prompt: stdin is null and the 60 s timeout ends it with a
+  "timed out" message; the CLI's `/dev/tty` use couldn't be confirmed without such an account.
+- **Sidebar badge vs. open tab** can differ by up to the 60 s poll; the open tab is live.
+- **`cloud_cli` ETXTBSY flake** (fake scripts written then run from threads) and the `yaml.rs`
+  flake: not touched by this branch; the first didn't recur in the full runs.
+- **Cost service busy-race and Security all-kinds-failing at the service level** are covered by
+  a unit test of `merge` and the view tests, not an end-to-end test (needs a live service proxy).

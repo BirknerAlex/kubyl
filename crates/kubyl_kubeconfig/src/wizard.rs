@@ -931,6 +931,16 @@ impl Wizard {
                                     window.close_dialog(cx);
                                     crate::import::cloud(window, cx);
                                 }),
+                        )
+                        .child(
+                            Button::new("wiz-cloud-discover")
+                                .ghost()
+                                .icon(IconName::Cloud)
+                                .label("Discover cloud clusters…")
+                                .on_click(|_, window, cx| {
+                                    window.close_dialog(cx);
+                                    crate::discover::open(window, cx);
+                                }),
                         ),
                 )
                 .into_any_element(),

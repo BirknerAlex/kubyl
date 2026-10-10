@@ -1,0 +1,4 @@
+[
+  {"name": "analytics", "location": "europe-west4", "locationType": "REGIONAL", "status": "RUNNING", "currentMasterVersion": "1.31.2-gke.1000", "endpoint": "34.90.0.1", "selfLink": "https://container.googleapis.com/v1/projects/acme-analytics/locations/europe-west4/clusters/analytics"},
+  {"name": "dev-zonal", "location": "europe-west4-a", "locationType": "ZONAL", "status": "RECONCILING", "currentMasterVersion": "1.30.5-gke.2000", "endpoint": "34.90.0.2"}
+]

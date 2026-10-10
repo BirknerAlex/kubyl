@@ -156,6 +156,7 @@ cargo run -p kubyl
   `KUBYL_TEST_ROUTE_NAMESPACE`, `crates/kubyl_resources/tests/live_views.rs` for the resource
   views on `views-dev.sh`'s objects, and `crates/kubyl_netflow/tests/live.rs` for the Hubble,
   Whisker and NetObserv backends on the `netflow-dev.sh` clusters, `KUBYL_TEST_KUBECONFIG`).
+- Cloud discovery (phase 25) is tested with fake `aws`/`az`/`gcloud` scripts (`crates/kubyl_kubeconfig_core/tests/cloud_cli.rs`) and, ignored by default, the installed CLIs (`tests/live_cloud.rs`, prints counts only).
 - Cloud update providers (`--features updates-eks,updates-gke,updates-aks`) are tested with
   recorded responses (`crates/kubyl_updates/tests/fixtures/`). For screenshots without an
   account, `KUBYL_UPDATES_{EKS,GKE,AKS}_ENDPOINT=http://127.0.0.1:<port>` points a provider at a

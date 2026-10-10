@@ -1,0 +1,5 @@
+{
+    "UserId": "AROAEXAMPLEEXAMPLE:alice",
+    "Account": "123456789012",
+    "Arn": "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_Admin_0123456789abcdef/alice"
+}

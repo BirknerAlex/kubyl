@@ -1,0 +1,31 @@
+[
+  {
+    "cloudName": "AzureCloud",
+    "homeTenantId": "11111111-2222-3333-4444-555555555555",
+    "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    "isDefault": true,
+    "managedByTenants": [],
+    "name": "Production",
+    "state": "Enabled",
+    "tenantId": "11111111-2222-3333-4444-555555555555",
+    "user": {"name": "alice@example.com", "type": "user"}
+  },
+  {
+    "cloudName": "AzureCloud",
+    "homeTenantId": "11111111-2222-3333-4444-555555555555",
+    "id": "ffffffff-0000-1111-2222-333333333333",
+    "isDefault": false,
+    "name": "Sandbox",
+    "state": "Enabled",
+    "tenantId": "11111111-2222-3333-4444-555555555555",
+    "user": {"name": "alice@example.com", "type": "user"}
+  },
+  {
+    "cloudName": "AzureCloud",
+    "id": "99999999-8888-7777-6666-555555555555",
+    "isDefault": false,
+    "name": "Retired",
+    "state": "Disabled",
+    "tenantId": "11111111-2222-3333-4444-555555555555"
+  }
+]

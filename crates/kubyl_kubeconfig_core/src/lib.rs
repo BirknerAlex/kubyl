@@ -5,10 +5,12 @@
 //! - [`validate`], [`schema`]: problems and hover docs.
 //! - [`certs`], [`tls`]: certificates, and probing a server's TLS.
 //! - [`conntest`]: the connection test.
+//! - [`cloud`]: account-wide cluster discovery through the cloud CLIs (phase 25).
 //!
 //! `kubyl_kubeconfig` re-exports these modules and adds the editor, the wizard and dialogs.
 
 pub mod certs;
+pub mod cloud;
 pub mod conntest;
 pub mod files;
 pub mod model;
