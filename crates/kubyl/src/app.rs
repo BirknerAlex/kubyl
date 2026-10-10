@@ -15,16 +15,18 @@ use crate::workspace::{
     ToggleRightDock, ToggleTheme, ToggleZoom, Workspace, ZoomIn, ZoomOut,
 };
 
-actions!(kubyl_app, [Quit, NewWindow, OpenRepository]);
+actions!(kubyl_app, [Quit, NewWindow, OpenRepository, OpenMobile]);
 
 /// Reverse-DNS app id (Wayland app_id, bundle identifier).
 pub const APP_ID: &str = "io.github.birkneralex.Kubyl";
 const REPOSITORY: &str = "https://github.com/BirknerAlex/kubyl";
+pub const MOBILE_URL: &str = "https://kubyl.dev/mobile";
 
 pub fn init(cx: &mut App) {
     cx.on_action(|_: &Quit, cx| cx.quit());
     cx.on_action(|_: &NewWindow, cx| open_window(cx));
     cx.on_action(|_: &OpenRepository, cx| cx.open_url(REPOSITORY));
+    cx.on_action(|_: &OpenMobile, cx| cx.open_url(MOBILE_URL));
 
     // `secondary` is cmd on macOS and ctrl elsewhere. Actions in the registry are listed by the
     // command palette; the registry also installs their default key binding.
@@ -49,6 +51,7 @@ pub fn init(cx: &mut App) {
             ActionSpec::new("App: Kubyl on GitHub", OpenRepository),
             None,
         ),
+        (ActionSpec::new("App: Kubyl Mobile", OpenMobile), None),
         (
             ActionSpec::new("App: Show Notifications", ShowNotifications),
             None,
@@ -206,7 +209,10 @@ fn menus() -> Vec<Menu> {
             MenuItem::action("Next Tab", ActivateNextTab),
             MenuItem::action("Previous Tab", ActivatePreviousTab),
         ]),
-        Menu::new("Help").items([MenuItem::action("Kubyl on GitHub", OpenRepository)]),
+        Menu::new("Help").items([
+            MenuItem::action("Kubyl Mobile for iOS and Android", OpenMobile),
+            MenuItem::action("Kubyl on GitHub", OpenRepository),
+        ]),
     ]
 }
 
