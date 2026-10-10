@@ -4,18 +4,91 @@ use gpui::{
 };
 use kubyl_core::actions::{AddKubeconfig, OpenSettings};
 use kubyl_core::{TabView, ViewKind, ViewRequest};
-use kubyl_ui::{ActiveColors, Button, IconName, Kbd, h_flex, u, v_flex};
+use kubyl_settings::{State, StateSection};
+use kubyl_ui::{ActiveColors, Button, IconButton, IconName, Kbd, h_flex, u, v_flex};
+use serde::{Deserialize, Serialize};
+
+use crate::app::OpenMobile;
+
+/// What state.json stores under `promo`: notices the user has dismissed for good.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+struct PromoState {
+    mobile_dismissed: bool,
+}
+
+impl StateSection for PromoState {
+    const KEY: &'static str = "promo";
+}
 
 /// The empty state: "Add a kubeconfig". Replaced by a cluster list in phase 01.
 pub struct WelcomeView {
     focus: FocusHandle,
+    show_mobile: bool,
 }
 
 impl WelcomeView {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             focus: cx.focus_handle(),
+            show_mobile: !State::get::<PromoState>(cx).mobile_dismissed,
         }
+    }
+
+    fn dismiss_mobile(&mut self, cx: &mut Context<Self>) {
+        self.show_mobile = false;
+        State::set(
+            cx,
+            &PromoState {
+                mobile_dismissed: true,
+            },
+        );
+        cx.notify();
+    }
+
+    /// A quiet, dismissible hint: one line and a link, shown only here and never as a toast.
+    fn mobile_notice(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = cx.colors().clone();
+        h_flex()
+            .id("mobile-notice")
+            .w(u(440.0))
+            .max_w_full()
+            .items_center()
+            .gap(u(10.0))
+            .px(u(12.0))
+            .py(u(8.0))
+            .rounded(u(6.0))
+            .border_1()
+            .border_color(colors.border_variant)
+            .bg(colors.panel)
+            .text_size(u(12.0))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap(u(2.0))
+                    .child(
+                        div()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(colors.text)
+                            .child("Kubyl Mobile for iOS and Android"),
+                    )
+                    .child(div().text_color(colors.text_dim).child(
+                        "Check pods, logs and alerts from your phone. Needs a Kubyl Server \
+                         next to your clusters; this app doesn't.",
+                    )),
+            )
+            .child(
+                Button::new("mobile-learn-more")
+                    .icon(IconName::ExternalLink)
+                    .label("Learn more")
+                    .on_click(|_, window, cx| window.dispatch_action(Box::new(OpenMobile), cx)),
+            )
+            .child(
+                IconButton::new("mobile-dismiss", IconName::X)
+                    .icon_size(12.0)
+                    .on_click(cx.listener(|this, _, _, cx| this.dismiss_mobile(cx))),
+            )
     }
 }
 
@@ -50,6 +123,7 @@ fn shortcut(keys: &str, label: &'static str, cx: &App) -> impl IntoElement {
 
 impl Render for WelcomeView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let show_mobile = self.show_mobile;
         let colors = cx.colors().clone();
         let secondary = if cfg!(target_os = "macos") {
             "cmd"
@@ -123,5 +197,6 @@ impl Render for WelcomeView {
                     ))
                     .child(shortcut("shift-escape", "Zoom pane", cx)),
             )
+            .when(show_mobile, |this| this.child(self.mobile_notice(cx)))
     }
 }
