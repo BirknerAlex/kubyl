@@ -1,0 +1,35 @@
+[package]
+name = "kubyl_security"
+description = "The Security Center: Trivy Operator's image, resource and role reports with severity summaries, details and CSV export."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+kubyl_security_core.workspace = true
+gpui.workspace = true
+gpui-component.workspace = true
+jiff.workspace = true
+kubyl_core.workspace = true
+kubyl_explorer.workspace = true
+kubyl_helm.workspace = true
+kubyl_helm_core.workspace = true
+kubyl_kube.workspace = true
+kubyl_palette.workspace = true
+kubyl_resources.workspace = true
+kubyl_resources_core.workspace = true
+kubyl_ui.workspace = true
+kube.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+kubyl_settings.workspace = true
+tempfile.workspace = true

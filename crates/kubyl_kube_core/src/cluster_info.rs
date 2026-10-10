@@ -1,7 +1,7 @@
 //! What kind of cluster this is: distribution guess and capabilities (`ClusterCaps`).
 
 use k8s_openapi::apimachinery::pkg::version::Info;
-use kubyl_base::{ArgoCdCaps, ClusterCaps, FluxCaps};
+use kubyl_base::{ArgoCdCaps, ClusterCaps, FluxCaps, TrivyCaps};
 
 use crate::discovery::Discovery;
 use crate::kubeconfig::ContextInfo;
@@ -142,6 +142,27 @@ pub fn caps(
         olm: has("operators.coreos.com") || has("olm.operatorframework.io"),
         argocd: argocd_caps(discovery),
         flux: flux_caps(discovery),
+        trivy: trivy_caps(discovery),
+    }
+}
+
+/// Which Trivy Operator report CRDs are served (`aquasecurity.github.io`).
+fn trivy_caps(discovery: Option<&Discovery>) -> TrivyCaps {
+    let served = |resource: &str| {
+        discovery.is_some_and(|d| {
+            d.resources.iter().any(|r| {
+                r.gvr.group == "aquasecurity.github.io"
+                    && r.gvr.resource == resource
+                    && r.is_listable()
+            })
+        })
+    };
+    TrivyCaps {
+        vulnerabilities: served("vulnerabilityreports"),
+        config_audit: served("configauditreports"),
+        exposed_secrets: served("exposedsecretreports"),
+        rbac: served("rbacassessmentreports"),
+        cluster_rbac: served("clusterrbacassessmentreports"),
     }
 }
 
@@ -252,6 +273,59 @@ mod tests {
         assert!(argocd.any() && argocd.applications);
         assert!(!argocd.application_sets && !argocd.projects);
         assert_eq!(caps(None, None, &settings).argocd, ArgoCdCaps::default());
+    }
+
+    #[test]
+    fn trivy_caps_follow_each_report_kind() {
+        use crate::discovery::ApiResourceInfo;
+        use kubyl_base::{Gvk, Gvr};
+        let resource = |group: &str, plural: &str, kind: &str, verbs: &[&str]| ApiResourceInfo {
+            gvk: Gvk::new(group, "v1alpha1", kind),
+            gvr: Gvr::new(group, "v1alpha1", plural),
+            singular: kind.to_lowercase(),
+            namespaced: true,
+            verbs: verbs.iter().map(|v| v.to_string()).collect(),
+            short_names: vec![],
+            categories: vec![],
+            subresources: vec![],
+            preferred: true,
+        };
+        let settings = ContextSettings::default();
+        assert!(!caps(None, None, &settings).trivy.any());
+        let discovery = Discovery {
+            resources: vec![
+                resource(
+                    "aquasecurity.github.io",
+                    "vulnerabilityreports",
+                    "VulnerabilityReport",
+                    &["list", "watch"],
+                ),
+                resource(
+                    "aquasecurity.github.io",
+                    "configauditreports",
+                    "ConfigAuditReport",
+                    &["list", "watch"],
+                ),
+                // Not listable: not served for Kubyl's purposes.
+                resource(
+                    "aquasecurity.github.io",
+                    "rbacassessmentreports",
+                    "RbacAssessmentReport",
+                    &["get"],
+                ),
+                // Another group's look-alike doesn't count.
+                resource(
+                    "example.com",
+                    "exposedsecretreports",
+                    "ExposedSecretReport",
+                    &["list", "watch"],
+                ),
+            ],
+            ..Default::default()
+        };
+        let trivy = caps(Some(&discovery), None, &settings).trivy;
+        assert!(trivy.any() && trivy.vulnerabilities && trivy.config_audit);
+        assert!(!trivy.rbac && !trivy.exposed_secrets && !trivy.cluster_rbac);
     }
 
     #[test]

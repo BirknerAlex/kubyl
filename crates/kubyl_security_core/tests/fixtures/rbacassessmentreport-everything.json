@@ -1,0 +1,71 @@
+{
+ "apiVersion": "aquasecurity.github.io/v1alpha1",
+ "kind": "RbacAssessmentReport",
+ "metadata": {
+  "annotations": {
+   "trivy-operator.aquasecurity.github.io/report-ttl": "24h0m0s"
+  },
+  "creationTimestamp": "2026-10-10T02:24:48Z",
+  "labels": {
+   "app.kubernetes.io/managed-by": "trivy-operator",
+   "plugin-config-hash": "9f85fb657",
+   "resource-spec-hash": "6cd794ddf",
+   "trivy-operator.resource.kind": "Role",
+   "trivy-operator.resource.name": "everything",
+   "trivy-operator.resource.namespace": "kubyl-trivy"
+  },
+  "name": "role-everything",
+  "namespace": "kubyl-trivy"
+ },
+ "report": {
+  "checks": [
+   {
+    "category": "Kubernetes Security Check",
+    "checkID": "AVD-KSV-0113",
+    "description": "Viewing secrets at the namespace scope can lead to escalation if another service account in that namespace has a higher privileged rolebinding or clusterrolebinding bound.",
+    "messages": [
+     "Role 'everything' shouldn't have access to manage secrets in namespace 'kubyl-trivy'"
+    ],
+    "remediation": "Manage namespace secrets are not allowed. Remove resource 'secrets' from role",
+    "severity": "MEDIUM",
+    "success": false,
+    "title": "Manage namespace secrets"
+   },
+   {
+    "category": "Kubernetes Security Check",
+    "checkID": "AVD-KSV-0112",
+    "description": "Full control of the resources within a namespace.  In some cluster configurations, this is excessive. In others, this is normal (a gitops deployment operator like flux)",
+    "messages": [
+     "Role 'everything' shouldn't manage all resources at the namespace 'kubyl-trivy'"
+    ],
+    "remediation": "Remove '*' from 'rules.resources'. Provide specific list of resources to be managed by role in namespace",
+    "severity": "CRITICAL",
+    "success": false,
+    "title": "Manage all resources at the namespace"
+   },
+   {
+    "category": "Kubernetes Security Check",
+    "checkID": "AVD-KSV-0044",
+    "description": "Check whether role permits wildcard verb on wildcard resource",
+    "messages": [
+     "Role permits wildcard verb on wildcard resource"
+    ],
+    "remediation": "Create a role which does not permit wildcard verb on wildcard resource",
+    "severity": "CRITICAL",
+    "success": false,
+    "title": "No wildcard verb and resource roles"
+   }
+  ],
+  "scanner": {
+   "name": "Trivy",
+   "vendor": "Aqua Security",
+   "version": "0.35.0"
+  },
+  "summary": {
+   "criticalCount": 2,
+   "highCount": 0,
+   "lowCount": 0,
+   "mediumCount": 1
+  }
+ }
+}

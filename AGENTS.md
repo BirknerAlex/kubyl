@@ -132,6 +132,14 @@ cargo run -p kubyl
   script) in namespace `kubyl-views`; `--delete` removes only what it marked. It refuses a
   context other than `kind-*` (`KUBYL_VIEWS_CONTEXT`, default `kind-kubyl-dev`) without
   `--force`, and namespaces it didn't create.
+- Lens parity (phase 25): `script/apps-dev.sh` adds sample applications in `kubyl-apps` (healthy,
+  degraded, suspended; `--delete`). `script/trivy-dev.sh` installs Trivy Operator (chart
+  `aquasecurity.github.io/helm-charts`, `--repo`, no repository added) into `trivy-system` with
+  samples in `kubyl-trivy`; the vulnerability database download can be slow or blocked (see the
+  script's header: a GitHub token, or `--fixtures` for recorded reports without an operator);
+  `--delete` removes what it installed. Live tests: `crates/kubyl_apps_core/tests/live.rs`,
+  `crates/kubyl_security_core/tests/live.rs`, `crates/kubyl_terminal/tests/live_local.rs`
+  (needs `kubectl`), `crates/kubyl_resources/tests/live_csv.rs`.
 - Live tests against those clusters are ignored by default: see the header of
   `crates/kubyl_kube/tests/live.rs` (and of `crates/kubyl_metrics/tests/live.rs`,
   `crates/kubyl_alerts/tests/live.rs`, `crates/kubyl_operators/tests/live.rs`,

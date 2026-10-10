@@ -4903,6 +4903,7 @@ dependencies = [
  "kubyl_portforward",
  "kubyl_prometheus",
  "kubyl_resources",
+ "kubyl_security",
  "kubyl_selfupdate",
  "kubyl_settings",
  "kubyl_terminal",
@@ -5046,6 +5047,7 @@ dependencies = [
  "gpui-component",
  "gpui-pre",
  "jiff",
+ "kube",
  "kubyl_apps_core",
  "kubyl_argocd_core",
  "kubyl_core",
@@ -5993,6 +5995,43 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "kubyl_security"
+version = "0.6.0"
+dependencies = [
+ "gpui-component",
+ "gpui-pre",
+ "jiff",
+ "kube",
+ "kubyl_core",
+ "kubyl_explorer",
+ "kubyl_helm",
+ "kubyl_helm_core",
+ "kubyl_kube",
+ "kubyl_palette",
+ "kubyl_resources",
+ "kubyl_resources_core",
+ "kubyl_security_core",
+ "kubyl_settings",
+ "kubyl_ui",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "kubyl_security_core"
+version = "0.6.0"
+dependencies = [
+ "http",
+ "jiff",
+ "k8s-openapi",
+ "kube",
+ "kubyl_base",
+ "kubyl_resources_core",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

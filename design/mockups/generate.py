@@ -4717,7 +4717,7 @@ def flux_delete_screen():
 # ---------- 22 · Resource views (phase 24) ----------
 RV_CLUSTER = "kind-dev"
 
-def rv_sidebar(active, open_groups, applications=None):
+def rv_sidebar(active, open_groups, applications=None, security=None):
     """kind-dev with the groups phase 24 adds to (only kinds the cluster serves show)."""
     groups = [
         ("Workloads", [("Pods", "box", "21"), ("Deployments", "layers", "4"), ("StatefulSets", "db", "1"), ("Jobs", "play", "2"), ("VerticalPodAutoscalers", "activity", "1")]),
@@ -4737,22 +4737,27 @@ def rv_sidebar(active, open_groups, applications=None):
         f'<div class="sec">{ic("cd",11)}Clusters</div>',
         root(RV_CLUSTER, "on", True, C["green"]),
         ti("Overview", 1, "gauge"),
-        ti("Events", 1, "bell", "3", color=C["yellow"]),
     ]
+    if security is not None:
+        # Phase 25: Security sits under Alerts; its badge is the number of critical findings, in red.
+        rows.append(ti("Alerts", 1, "siren", extra=alert_badge("3", C["red"])))
+        rows.append(ti("Security", 1, "shield", on=active == "Security", extra=alert_badge(security, C["red"]) if security else ""))
+    rows.append(ti("Events", 1, "bell", "3", color=C["yellow"]))
     for g, kinds in groups:
         is_open = g in open_groups
         rows.append(ti(g, 1, open_=is_open))
         if is_open:
             rows += [ti(n, 2, icon, cnt, on=n == active) for n, icon, cnt in kinds]
         if g == "Workloads" and applications:
-            rows.append(ti("Applications", 1, "blocks", applications, on=active == "Applications"))
+            if is_open:
+                rows.insert(len(rows) - len(kinds), ti("Applications", 2, "blocks", applications, on=active == "Applications"))
     rows += [root("prod-eu-west-1", "on", color=C["red"], prod=True), root("staging-eu-west-1", "on", color=C["yellow"])]
     return '<aside class="side">' + "\n".join(rows) + '</aside>'
 
-def rv_app(title, active, open_groups, tb, content, ns="kubyl-views", overlay="", applications=None):
+def rv_app(title, active, open_groups, tb, content, ns="kubyl-views", overlay="", applications=None, security=None):
     inner = f'''<div class="app">
 {titlebar(RV_CLUSTER, ns, False, "kind · v1.37.0")}
-<div class="body">{rv_sidebar(active, open_groups, applications)}<main class="main">{tb}{content}</main></div>
+<div class="body">{rv_sidebar(active, open_groups, applications, security)}<main class="main">{tb}{content}</main></div>
 {statusbar(cluster=RV_CLUSTER, ns=ns)}{overlay}
 </div>'''
     return page(title, inner)
@@ -5063,6 +5068,89 @@ def ask_agent_screen():
     return rv_app("Ask agent — Kubyl", "Pods", ("Workloads",), tb, content, ns="shop", overlay=menu)
 
 
+def sec_sev(label, n, col):
+    return f'<span class="chip">{dot(col)}{label}</span><span class="mono" style="font-size:12px;color:{col}">{n}</span>'
+
+def security_tabs(active):
+    t = lambda name, on: f'<span style="padding:0 10px;height:100%;display:flex;align-items:center;font-size:12.5px;color:{"var(--text)" if on else "var(--dim)"};{"border-bottom:2px solid var(--accent)" if on else ""}">{name}</span>'
+    return f'<div style="height:32px;flex-shrink:0;display:flex;gap:4px;padding:0 12px;border-bottom:1px solid var(--bv)">{t("Images", active == "Images")}{t("Resources", active == "Resources")}{t("Roles", active == "Roles")}</div>'
+
+def security_summary(counts, active=None):
+    chips = "".join(sec_sev(l, n, col) for l, n, col in counts)
+    return f'<div style="height:38px;flex-shrink:0;display:flex;align-items:center;gap:10px;padding:0 12px;border-bottom:1px solid var(--bv)">{chips}</div>'
+
+def security_screen():
+    cols = "grid-template-columns: minmax(0,2fr) 84px 66px 66px 66px 66px 66px 96px 52px"
+    num = lambda n, col: f'<span class="mono" style="font-size:12px;text-align:right;color:{col if n else "var(--faint)"}">{n}</span>'
+    images = [("library/nginx:1.19", 1, 42, 143, 175, 28, 0), ("kindest/kindnetd:v20260820", 1, 2, 13, 6, 17, 0), ("leaky:1", 1, 0, 0, 0, 0, 2),
+              ("coredns/coredns:v1.14.6", 1, 0, 14, 7, 0, 0), ("etcd:3.7.0-0", 1, 0, 9, 3, 3, 0), ("library/busybox:1.37", 6, 0, 0, 0, 0, 0)]
+    rows = [[m(i, s=12), num(w, "var(--muted)"), num(c, C["red"]), num(h, C["orange"]), num(md, C["yellow"]), num(lo, C["accent"]), num(sc, C["red"]), '<span style="font-size:12px;color:var(--muted)">Trivy</span>', m("9m", "var(--muted)")]
+            for i, w, c, h, md, lo, sc in images]
+    head = ["IMAGE", "WORKLOADS", "CRITICAL", "HIGH", "MEDIUM", "LOW", "SECRETS", "SCANNER", "AGE"]
+    toolbar = f'''<div class="tool"><div class="crumb">{ic("shield",14,C["accent"])}<b>Security</b><span>·</span><span>6 images</span></div><div style="flex:1"></div>
+<span style="font-size:12px;color:var(--dim)">All namespaces{ic("cd",11)}</span><div class="inp" style="width:180px">{ic("filter",12)}Filter</div><button class="btn g" aria-label="Menu">{ic("sliders",13)}</button></div>'''
+    th = f'<div class="th" style="{cols}">' + "".join(f"<span>{h}</span>" for h in head) + "</div>"
+    body = "".join(f'<div class="tr{" on" if i == 0 else ""}" style="{cols}">{"".join(r)}</div>' for i, r in enumerate(rows))
+    def vuln(sev, col, vid, pkg, fix, title):
+        return (f'<div style="display:flex;flex-direction:column;gap:2px;padding:6px 0;border-bottom:1px solid #2e333b"><div style="display:flex;align-items:center;gap:8px">{tpill(sev, col)}'
+                f'<a href="#" class="mono" style="font-size:12px;text-decoration:none">{vid}</a><span style="flex:1"></span><span class="mono" style="font-size:11.5px;color:var(--dim)">9.8</span></div>'
+                f'<div class="mono" style="font-size:11.5px;color:var(--muted)">{pkg} {fix}</div><div style="font-size:11.5px;color:var(--dim)">{title}</div></div>')
+    dock = rv_dock("library/nginx:1.19", 380, [
+        f'<div class="dsec"><div class="mono" style="font-size:12.5px;margin-bottom:8px">library/nginx:1.19</div><div style="display:flex;gap:6px;align-items:center">'
+        f'<span class="chip">{dot(C["red"])}42 Critical</span><span class="chip">{dot(C["orange"])}143 High</span><span class="chip">{dot(C["yellow"])}175 Medium</span><span style="flex:1"></span><button class="btn g" style="border:1px solid var(--border)">{ic("download",12)}CSV</button></div></div>',
+        f'<div class="dsec" style="font-size:12px;display:flex;flex-direction:column;gap:4px">{rkv("Scanner", "Trivy", 96)}{rkv("Workloads", "1", 96)}{rkv("", "ReplicaSet kubyl-trivy/old-nginx-9d4bfc68d · nginx", 96)}</div>',
+        f'<div class="dsec" style="border-bottom:0"><div style="font-size:11.5px;color:var(--dim);margin-bottom:4px">library/nginx:1.19 debian 10.13</div>'
+        + vuln("Critical", C["red"], "CVE-2021-3711", "libssl1.1 1.1.1d-0+deb10u6", "→ 1.1.1d-0+deb10u7", "openssl: SM2 Decryption Buffer Overflow")
+        + vuln("Critical", C["red"], "CVE-2019-8457", "libdb5.3 5.3.28+dfsg1-0.5", "(no fix yet)", "sqlite: heap out-of-bound read in function rtreenode()")
+        + vuln("High", C["orange"], "CVE-2022-0778", "libssl1.1 1.1.1d-0+deb10u6", "→ 1.1.1n-0+deb10u2", "openssl: Infinite loop in BN_mod_sqrt() reachable when parsing certificates")
+        + '<div style="font-size:11.5px;color:var(--dim);padding-top:8px">The list shows the first 300; the CSV button exports all 424.</div></div>',
+    ])
+    center = f'<div style="flex:1;display:flex;flex-direction:column;min-width:0">{toolbar}{security_tabs("Images")}' + security_summary([("Critical", 44, C["red"]), ("High", 181, C["orange"]), ("Medium", 191, C["yellow"]), ("Low", 48, C["accent"])]) + f'{th}<div style="flex:1;overflow:hidden">{body}</div>{hints([("1/2/3", "View"), ("/", "Filter")])}</div>'
+    content = f'<div style="flex:1;display:flex;min-height:0">{center}{dock}</div>'
+    tb = tabs([("shield", "Security", True), ("box", "Pods", False)])
+    return rv_app("Security Center — Kubyl", "Security", ("Workloads",), tb, content, ns="kubyl-trivy", security="44")
+
+def security_resources_screen():
+    """Resources: config audits by workload, with the exposed secrets of its images (never their text)."""
+    cols = "grid-template-columns: minmax(0,2fr) 110px 66px 66px 66px 66px 76px 52px"
+    num = lambda n, col: f'<span class="mono" style="font-size:12px;text-align:right;color:{col if n else "var(--faint)"}">{n}</span>'
+    res = [("Pod privileged", "kubyl-trivy", 0, 4, 4, 11, 0), ("ReplicaSet leaky-7c548cd8cd", "kubyl-trivy", 0, 3, 3, 10, 2), ("ReplicaSet old-nginx-9d4bfc68d", "kubyl-trivy", 0, 3, 4, 10, 0)]
+    rows = [[m(r, s=12), f'<span style="color:var(--muted)">{ns}</span>', num(c, C["red"]), num(h, C["orange"]), num(md, C["yellow"]), num(lo, C["accent"]), num(sc, C["red"]), m("9m", "var(--muted)")] for r, ns, c, h, md, lo, sc in res]
+    th = f'<div class="th" style="{cols}">' + "".join(f"<span>{h}</span>" for h in ["RESOURCE", "NAMESPACE", "CRITICAL", "HIGH", "MEDIUM", "LOW", "SECRETS", "AGE"]) + "</div>"
+    body = "".join(f'<div class="tr{" on" if i == 1 else ""}" style="{cols}">{"".join(r)}</div>' for i, r in enumerate(rows))
+    toolbar = f'''<div class="tool"><div class="crumb">{ic("shield",14,C["accent"])}<b>Security</b><span>·</span><span>3 resources</span></div><div style="flex:1"></div><div class="inp" style="width:180px">{ic("filter",12)}Filter</div></div>'''
+    def secret(sev, col, rule, title, target):
+        return (f'<div style="display:flex;flex-direction:column;gap:2px;padding:6px 0;border-bottom:1px solid #2e333b"><div style="display:flex;align-items:center;gap:8px">{tpill(sev, col)}<span class="mono" style="font-size:12px">{rule}</span></div>'
+                f'<div style="font-size:12px">{title}</div><div class="mono" style="font-size:11.5px;color:var(--muted)">{target}</div></div>')
+    dock = rv_dock("ReplicaSet kubyl-trivy/leaky-7c548cd8cd", 380, [
+        f'<div class="dsec"><div class="mono" style="font-size:12.5px;margin-bottom:8px">ReplicaSet kubyl-trivy/leaky-7c548cd8cd</div><div style="display:flex;gap:6px"><span class="chip">{dot(C["orange"])}3 High</span><span class="chip">{dot(C["yellow"])}3 Medium</span><span class="chip">{dot(C["accent"])}10 Low</span></div></div>',
+        rv_sec("Exposed secrets · 2", f'<div style="font-size:11.5px;color:var(--dim);margin-bottom:6px">Exposed secrets: Kubyl shows the rule and the file, never the secret\'s text.</div>'
+               + secret("Critical", C["red"], "aws-access-key-id", "AWS Access Key ID", "/root/.aws-credentials") + secret("Critical", C["red"], "aws-secret-access-key", "AWS Secret Access Key", "/root/.aws-credentials"), last=True),
+    ])
+    center = f'<div style="flex:1;display:flex;flex-direction:column;min-width:0">{toolbar}{security_tabs("Resources")}' + security_summary([("Critical", 0, C["red"]), ("High", 10, C["orange"]), ("Medium", 11, C["yellow"]), ("Low", 31, C["accent"])]) + f'{th}<div style="flex:1;overflow:hidden">{body}</div>{hints([("1/2/3", "View"), ("/", "Filter")])}</div>'
+    content = f'<div style="flex:1;display:flex;min-height:0">{center}{dock}</div>'
+    return rv_app("Security Center: Resources — Kubyl", "Security", ("Workloads",), tabs([("shield", "Security", True)]), content, ns="kubyl-trivy", security="44")
+
+def security_missing_screen():
+    cmd = ("helm repo add aqua https://aquasecurity.github.io/helm-charts/<br>helm repo update<br>helm install trivy-operator aqua/trivy-operator \\<br>&nbsp;&nbsp;--namespace trivy-system --create-namespace")
+    body = (f'<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:24px;text-align:center">{ic("shield",28,C["dim"])}'
+            f'<div style="font-size:14px;font-weight:500">Trivy Operator isn\'t installed in this cluster</div>'
+            f'<div style="max-width:520px;font-size:12.5px;color:var(--dim);line-height:19px">The Security Center shows what Trivy Operator finds: vulnerabilities in images, misconfigurations of workloads, exposed secrets and risky Roles. Its report resources (aquasecurity.github.io) aren\'t served here.</div>'
+            f'<div style="display:flex;gap:8px"><button class="btn p">{ic("download",12,"#1b1e24")}Install into trivy-system…</button><button class="btn">{ic("copy",12)}Copy command</button></div>'
+            f'<div class="mono" style="max-width:560px;padding:10px;border-radius:6px;background:var(--elev);border:1px solid var(--bv);font-size:11.5px;text-align:left;line-height:18px">{cmd}</div></div>')
+    return rv_app("Security Center: install — Kubyl", "Security", ("Workloads",), tabs([("shield", "Security", True)]), f'<div style="flex:1;display:flex;flex-direction:column">{body}</div>', ns="default", security=0)
+
+def security_install_prod_screen():
+    """PROD: the Helm install dialog asks for the cluster's name; read-only clusters only show the command."""
+    body = (f'<div style="font-size:12.5px;line-height:19px;color:var(--muted)">Installs <b style="font-weight:500;color:var(--text)">aqua/trivy-operator</b> into <span class="mono">trivy-system</span> (created) on <b style="font-weight:500;color:var(--text)">prod-eu-west-1</b>. Helm shows the objects it will create next.</div>'
+            f'<div style="font-size:12px;color:var(--dim)">Type the cluster name to continue</div><div class="inp focus" style="height:30px"><span class="mono" style="color:var(--text);font-size:12.5px">prod-eu-west-1</span></div>')
+    dialog = flux_dialog("Install trivy-operator", "download", body, '<button class="btn">Cancel</button><button class="btn p">Preview</button>', 500)
+    inner = f'''<div class="app">{titlebar("prod-eu-west-1", "payments", True, "EKS · v1.30.4")}
+<div class="body">{rv_sidebar("Security", ("Workloads",), None, 0)}<main class="main">{tabs([("shield", "Security", True)])}<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--dim);font-size:12.5px">Trivy Operator isn\'t installed in this cluster</div></main></div>
+{statusbar(cluster="prod-eu-west-1", ns="payments")}{dialog}</div>'''
+    return page("Security Center: install on PROD — Kubyl", inner)
+
+
 def local_term_panel(tabs_html, body):
     return f'''<div style="height:300px;flex-shrink:0;border-top:1px solid var(--border);display:flex;flex-direction:column;background:var(--bg)">
 <div class="tabs" style="height:32px">{tabs_html}<div class="tabtools"><button class="ib" aria-label="New terminal">{ic("plus",14)}</button><button class="ib" aria-label="Maximize">{ic("max",13)}</button></div></div>
@@ -5198,6 +5286,10 @@ SCREENS = [
  ("LocalTerminalProd.dc.html", "23 · Lens parity: a local shell on PROD asks for the cluster's name", local_terminal_prod_screen),
  ("Applications.dc.html", "23 · Lens parity: Applications by app.kubernetes.io labels, managed by Helm/Argo CD/Flux, objects and logs", apps_screen),
  ("AskAgent.dc.html", "23 · Lens parity: Ask agent on any resource (row menu, details section, the question waits in the composer)", ask_agent_screen),
+ ("Security.dc.html", "23 · Lens parity: Security Center, Images (Trivy Operator), severity summary, findings; Security under Alerts with the critical count", security_screen),
+ ("SecurityResources.dc.html", "23 · Lens parity: Security Center, Resources (config audits) with exposed secrets masked", security_resources_screen),
+ ("SecurityMissing.dc.html", "23 · Lens parity: Security Center where Trivy Operator isn't installed (install or the command)", security_missing_screen),
+ ("SecurityInstallProd.dc.html", "23 · Lens parity: installing Trivy Operator on PROD asks for the cluster's name", security_install_prod_screen),
  ("ApplicationsEmpty.dc.html", "23 · Lens parity: Applications with nothing labelled yet (the empty state says how objects join one)", apps_states_screen),
 ]
 
