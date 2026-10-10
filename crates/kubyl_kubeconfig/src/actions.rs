@@ -26,6 +26,9 @@ actions!(
         NewFromServiceAccount,
         /// Creates a kubeconfig from `aws`, `gcloud` or `az`.
         ImportFromCloud,
+        /// Lists every cluster of the cloud accounts the CLIs are signed in to and adds the
+        /// chosen ones (phase 25).
+        DiscoverCloudClusters,
     ]
 );
 
@@ -38,6 +41,7 @@ pub(crate) fn init(cx: &mut App) {
     cx.on_action(|_: &TestCurrentContext, cx| current(true, cx));
     cx.on_action(|_: &NewFromServiceAccount, cx| with_window(cx, crate::import::service_account));
     cx.on_action(|_: &ImportFromCloud, cx| with_window(cx, crate::import::cloud));
+    cx.on_action(|_: &DiscoverCloudClusters, cx| with_window(cx, crate::discover::open));
 
     for spec in [
         ActionSpec::new("Kubeconfig: New…", NewKubeconfig),
@@ -48,6 +52,10 @@ pub(crate) fn init(cx: &mut App) {
             NewFromServiceAccount,
         ),
         ActionSpec::new("Kubeconfig: Import from Cloud CLI…", ImportFromCloud),
+        ActionSpec::new(
+            "Kubeconfig: Discover Cloud Clusters (EKS, AKS, GKE)…",
+            DiscoverCloudClusters,
+        ),
     ] {
         ActionRegistry::register(cx, spec);
     }

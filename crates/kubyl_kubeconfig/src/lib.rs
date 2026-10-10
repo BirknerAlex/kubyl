@@ -13,6 +13,7 @@
 
 pub mod actions;
 mod dialogs;
+pub mod discover;
 pub mod editor;
 #[cfg(test)]
 mod editor_tests;

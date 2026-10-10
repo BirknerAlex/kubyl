@@ -5196,6 +5196,37 @@ def cost_missing_screen():
     return rv_app("Cost: install — Kubyl", "Cost", ("Workloads",), tabs([("cloud", "Cost", True)]), f'<div style="flex:1;display:flex;flex-direction:column">{body}</div>', ns="default", cost=True)
 
 
+def cloud_discover_screen():
+    """Discover cloud clusters: accounts and their clusters, per-account problems that say what to run."""
+    def cb(on): return f'<span style="width:14px;height:14px;border-radius:3px;border:1px solid {"var(--accent)" if on else "var(--border)"};background:{"var(--accent)" if on else "transparent"};display:flex;align-items:center;justify-content:center;flex-shrink:0">{ic("check",10,"#1b1e24",3) if on else ""}</span>'
+    def crow(on, name, region, version, status, col):
+        return (f'<div style="display:flex;align-items:center;gap:10px;padding-left:24px;height:26px">{cb(on)}<span class="mono" style="width:240px;font-size:12px">{name}</span>'
+                f'<span style="width:130px;font-size:12px;color:var(--muted)">{region}</span><span class="mono" style="width:110px;font-size:11.5px;color:var(--dim)">{version}</span><span style="font-size:11.5px;color:{col}">{status}</span></div>')
+    def note(text, col):
+        return f'<div style="margin:2px 0 0 24px;display:flex;gap:8px;padding:8px 10px;border-radius:6px;border:1px solid {col}73;background:{col}14;font-size:12px;line-height:18px">{ic("alert",13,col)}<span>{text}</span></div>'
+    def card(head, rows):
+        return f'<div style="display:flex;flex-direction:column;gap:4px;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--panel)">{head}{rows}</div>'
+    def head(on, label, sub, n):
+        return f'<div style="display:flex;align-items:center;gap:8px">{cb(on)}<span style="font-weight:500">{label}</span><span style="font-size:11.5px;color:var(--dim)">{sub}</span><span style="flex:1"></span><span style="font-size:11.5px;color:var(--dim)">{n}</span></div>'
+    prod = card(head(True, "prod", "123456789012", "2 clusters"),
+                crow(True, "prod-eu", "eu-west-1", "1.31", "ACTIVE", C["green"]) + crow(True, "staging-eu", "eu-west-1", "1.30", "UPDATING", C["yellow"])
+                + note("eu-central-1: Missing permission: eks:ListClusters. Ask for a role that allows it.", C["yellow"]))
+    broken = card(head(False, "broken", "", "0 clusters"), note("The SSO session expired. Run <span class=\"mono\">aws sso login --profile broken</span>, then scan again.", C["yellow"]))
+    default = card(head(False, "default", "123456789012", "0 clusters"), note("Profile default has no default region and may not list regions (ec2:DescribeRegions): set one with <span class=\"mono\">aws configure set region eu-west-1 --profile default</span>.", C["yellow"]))
+    seg = lambda t, on: f'<span style="padding:0 12px;height:26px;display:flex;align-items:center;gap:6px;font-size:12.5px;{"background:#3a4150;color:var(--text)" if on else "color:var(--muted)"}">{ic("cloud",12)}{t}</span>'
+    body = (f'<div style="display:flex;flex-direction:column;gap:12px;padding:16px"><div style="display:flex;align-items:center;gap:10px"><div style="display:flex;border:1px solid var(--border);border-radius:5px;overflow:hidden">{seg("AWS EKS", True)}{seg("Azure AKS", False)}{seg("Google GKE", False)}</div>'
+            f'<button class="btn p">{ic("refresh",12,"#1b1e24")}Scan again</button><span style="font-size:12px;color:var(--dim)">3 clusters in 3 profiles.</span></div>'
+            f'<div style="font-size:11.5px;color:var(--dim)">Uses your installed aws, az and gcloud with their current sign-in (your login shell\'s PATH): nothing is stored, and Kubyl asks nothing of the clouds but the lists and each cluster\'s get-credentials.</div>'
+            f'<div style="display:flex;flex-direction:column;gap:10px;max-height:380px;overflow:hidden">{prod}{broken}{default}</div></div>')
+    footer = (f'<div style="display:flex;align-items:center;gap:8px;padding:12px 16px;border-top:1px solid var(--bv)"><span style="font-size:12px;color:var(--dim)">2 selected</span><span style="flex:1"></span>'
+              f'<button class="btn">Cancel</button><button class="btn p">{ic("plus",12,"#1b1e24")}Add 2 clusters</button></div>')
+    dialog = (f'<div style="position:absolute;inset:0;background:rgba(15,17,21,.55);display:flex;align-items:flex-start;justify-content:center;padding-top:50px">'
+              f'<div role="dialog" aria-label="Discover cloud clusters" style="width:760px;background:#2f343e;border:1px solid var(--border);border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,.5);overflow:hidden">'
+              f'<div style="display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--bv)">{ic("cloud",16,C["accent"])}<b style="font-weight:600">Discover cloud clusters</b></div>{body}{footer}</div></div>')
+    empty = '<div style="flex:1;display:flex;align-items:center;justify-content:center;color:var(--dim);font-size:12.5px">Kubeconfigs</div>'
+    return rv_app("Discover cloud clusters — Kubyl", "Pods", ("Workloads",), tabs([("cloud", "Kubeconfig", True)]), empty, ns="default", overlay=dialog)
+
+
 def local_term_panel(tabs_html, body):
     return f'''<div style="height:300px;flex-shrink:0;border-top:1px solid var(--border);display:flex;flex-direction:column;background:var(--bg)">
 <div class="tabs" style="height:32px">{tabs_html}<div class="tabtools"><button class="ib" aria-label="New terminal">{ic("plus",14)}</button><button class="ib" aria-label="Maximize">{ic("max",13)}</button></div></div>
@@ -5337,6 +5368,7 @@ SCREENS = [
  ("SecurityInstallProd.dc.html", "23 · Lens parity: installing Trivy Operator on PROD asks for the cluster's name", security_install_prod_screen),
  ("Cost.dc.html", "23 · Lens parity: Cost (OpenCost) with totals, idle, efficiency, cost over time per namespace and the per-namespace table", cost_screen),
  ("CostMissing.dc.html", "23 · Lens parity: Cost where OpenCost isn't installed (needs Prometheus; the install command)", cost_missing_screen),
+ ("CloudDiscovery.dc.html", "23 · Lens parity: discover cloud clusters (EKS, AKS, GKE): accounts, clusters, what to run when a session expired or a permission is missing", cloud_discover_screen),
  ("ApplicationsEmpty.dc.html", "23 · Lens parity: Applications with nothing labelled yet (the empty state says how objects join one)", apps_states_screen),
 ]
 

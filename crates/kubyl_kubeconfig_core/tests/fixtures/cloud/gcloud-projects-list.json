@@ -1,0 +1,5 @@
+[
+  {"createTime": "2024-05-01T10:00:00.000Z", "labels": {"env": "prod"}, "lifecycleState": "ACTIVE", "name": "Analytics", "projectId": "acme-analytics", "projectNumber": "100000000001"},
+  {"createTime": "2024-06-01T10:00:00.000Z", "lifecycleState": "ACTIVE", "name": "Sandbox", "projectId": "acme-sandbox", "projectNumber": "100000000002"},
+  {"createTime": "2023-01-01T10:00:00.000Z", "lifecycleState": "DELETE_REQUESTED", "name": "Old", "projectId": "acme-old", "projectNumber": "100000000003"}
+]

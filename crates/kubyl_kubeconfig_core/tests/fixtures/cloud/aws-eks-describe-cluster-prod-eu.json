@@ -1,0 +1,11 @@
+{
+    "cluster": {
+        "name": "prod-eu",
+        "arn": "arn:aws:eks:eu-west-1:123456789012:cluster/prod-eu",
+        "createdAt": "2026-03-02T09:14:27.123000+00:00",
+        "version": "1.31",
+        "endpoint": "https://0123456789ABCDEF.gr7.eu-west-1.eks.amazonaws.com",
+        "status": "ACTIVE",
+        "platformVersion": "eks.12"
+    }
+}

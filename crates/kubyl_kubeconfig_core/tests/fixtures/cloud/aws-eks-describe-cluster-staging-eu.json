@@ -1,0 +1,10 @@
+{
+    "cluster": {
+        "name": "staging-eu",
+        "arn": "arn:aws:eks:eu-west-1:123456789012:cluster/staging-eu",
+        "version": "1.30",
+        "endpoint": "https://FEDCBA9876543210.yl4.eu-west-1.eks.amazonaws.com",
+        "status": "UPDATING",
+        "platformVersion": "eks.20"
+    }
+}
