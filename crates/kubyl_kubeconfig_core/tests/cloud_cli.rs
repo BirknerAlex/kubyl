@@ -347,8 +347,13 @@ async fn not_logged_in_to_azure_says_to_run_az_login() {
 #[tokio::test]
 async fn a_missing_cli_names_where_to_get_it() {
     let dir = tempfile::tempdir().unwrap();
+    // Only the empty folder on the path: CI images ship `az` and `gcloud` in /usr/bin.
+    let runner = SystemRunner {
+        timeout: Duration::from_secs(10),
+        search_path: Some(dir.path().as_os_str().to_owned()),
+    };
     for provider in Provider::ALL {
-        let err = accounts(provider, &runner(dir.path())).await.unwrap_err();
+        let err = accounts(provider, &runner).await.unwrap_err();
         assert_eq!(err, Failure::NotInstalled(provider));
         let message = err.to_string();
         assert!(
