@@ -1,0 +1,26 @@
+[package]
+name = "kubyl_pulses"
+description = "Pulses: live counts of healthy and faulty pods, workloads, jobs, nodes and events, with history."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+gpui.workspace = true
+kubyl_charts.workspace = true
+kubyl_core.workspace = true
+kubyl_explorer.workspace = true
+kubyl_kube.workspace = true
+kubyl_palette.workspace = true
+kubyl_pulses_core.workspace = true
+kubyl_resources.workspace = true
+kubyl_resources_core.workspace = true
+kubyl_ui.workspace = true
+serde_json.workspace = true

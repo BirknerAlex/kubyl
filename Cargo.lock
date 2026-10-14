@@ -4903,6 +4903,7 @@ dependencies = [
  "kubyl_palette",
  "kubyl_portforward",
  "kubyl_prometheus",
+ "kubyl_pulses",
  "kubyl_resources",
  "kubyl_security",
  "kubyl_selfupdate",
@@ -4911,6 +4912,7 @@ dependencies = [
  "kubyl_ui",
  "kubyl_updates",
  "kubyl_webview",
+ "kubyl_xray",
  "kubyl_yaml",
  "libc",
  "objc2 0.6.5",
@@ -5887,6 +5889,7 @@ dependencies = [
  "kubyl_resources",
  "kubyl_settings",
  "kubyl_ui",
+ "kubyl_xray_core",
  "nucleo-matcher",
  "schemars 1.2.2",
  "serde",
@@ -5996,6 +5999,30 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "kubyl_pulses"
+version = "0.8.0"
+dependencies = [
+ "gpui-pre",
+ "kubyl_charts",
+ "kubyl_core",
+ "kubyl_explorer",
+ "kubyl_kube",
+ "kubyl_palette",
+ "kubyl_pulses_core",
+ "kubyl_resources",
+ "kubyl_resources_core",
+ "kubyl_ui",
+ "serde_json",
+]
+
+[[package]]
+name = "kubyl_pulses_core"
+version = "0.8.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]
@@ -6349,6 +6376,28 @@ dependencies = [
  "sha2 0.11.0",
  "url",
  "x509-cert",
+]
+
+[[package]]
+name = "kubyl_xray"
+version = "0.8.0"
+dependencies = [
+ "gpui-component",
+ "gpui-pre",
+ "kubyl_core",
+ "kubyl_kube",
+ "kubyl_resources",
+ "kubyl_ui",
+ "kubyl_xray_core",
+ "serde_json",
+]
+
+[[package]]
+name = "kubyl_xray_core"
+version = "0.8.0"
+dependencies = [
+ "regex",
+ "serde_json",
 ]
 
 [[package]]

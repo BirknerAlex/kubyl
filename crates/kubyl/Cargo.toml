@@ -73,6 +73,8 @@ kubyl_terminal.workspace = true
 kubyl_ui.workspace = true
 kubyl_updates.workspace = true
 kubyl_webview.workspace = true
+kubyl_pulses.workspace = true
+kubyl_xray.workspace = true
 kubyl_yaml.workspace = true
 
 image.workspace = true

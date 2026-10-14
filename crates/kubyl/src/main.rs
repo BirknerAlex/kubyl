@@ -63,6 +63,8 @@ fn main() {
             kubyl_operators::init(cx);
             kubyl_updates::init(cx);
             kubyl_webview::init(cx);
+            kubyl_xray::init(cx);
+            kubyl_pulses::init(cx);
             kubyl_argocd::init(cx);
             kubyl_kubeconfig::init(cx);
             kubyl_alerts::init(cx);
