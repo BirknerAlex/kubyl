@@ -2,6 +2,37 @@
 
 All notable changes to Kubyl are documented here.
 
+## [0.7.0] - 2026-10-14
+
+### Bug Fixes
+
+- Keep the exec status on clusters without the v5 exec protocol (#47) ([6638efb](https://github.com/BirknerAlex/kubyl/commit/6638efbeb58a588efd6967acd9e6e3c220bd5e5c))
+- Join node names through a unique node_uname_info (#51) ([56e95e6](https://github.com/BirknerAlex/kubyl/commit/56e95e6cb63a416e24d226f86b613d49ba6f05af))
+
+### Documentation
+
+- Phase 25 status ([ec67dbf](https://github.com/BirknerAlex/kubyl/commit/ec67dbf71522684982ab06e793081aec704a90e9))
+
+### Features
+
+- Build a Flatpak bundle and publish it to silo (#48) ([9f0be9c](https://github.com/BirknerAlex/kubyl/commit/9f0be9cded22fc707d5dd4e866a78a735031671d))
+- Host hooks for child environments, agent capabilities and agent notices (#50) ([b3f3729](https://github.com/BirknerAlex/kubyl/commit/b3f3729de81e0e6b70399e93370850c3267ccd76))
+- Export any resource table as CSV ([9188a10](https://github.com/BirknerAlex/kubyl/commit/9188a109d6f0547de12ce8eca2d1bfc43a4026a9))
+- A local shell tab with the cluster's context ([b4e7279](https://github.com/BirknerAlex/kubyl/commit/b4e72794ea824c083be95d20ab18421d50aa5c98))
+- An Applications view grouped by app.kubernetes.io labels ([5a5da3a](https://github.com/BirknerAlex/kubyl/commit/5a5da3a9fd490500d9af751c68cf95ec276aef36))
+- Ask the agent about any resource with canned questions ([7d3ce61](https://github.com/BirknerAlex/kubyl/commit/7d3ce619c4d0f033232df446b9f6ee738d27fa74))
+- A Security Center over Trivy Operator reports ([5e00c29](https://github.com/BirknerAlex/kubyl/commit/5e00c29c6de7489ab75f44f7a6eadb24ac6d7a2e))
+- Cost monitoring with OpenCost ([1b9f05c](https://github.com/BirknerAlex/kubyl/commit/1b9f05c96d635ae08740e4c9bb259793b4afcaa2))
+- Discover EKS, AKS and GKE clusters across accounts ([34ea059](https://github.com/BirknerAlex/kubyl/commit/34ea059844f9ab946f5408240937cdba69ea9a54))
+
+### Miscellaneous
+
+- Update all dependencies, GPUI 0.3.8 and gpui-component 0.7.1 (#46) ([54be4f6](https://github.com/BirknerAlex/kubyl/commit/54be4f667c20b790720c78072385f75cacf4306a))
+
+### Testing
+
+- The missing-CLI test must not find the CI image's az and gcloud ([f617e1e](https://github.com/BirknerAlex/kubyl/commit/f617e1e30de8dd1bb8ee4290dbc3e33e8953aeea))
+
 ## [0.6.0] - 2026-10-08
 
 ### Bug Fixes
