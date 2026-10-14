@@ -2,6 +2,20 @@
 
 All notable changes to Kubyl are documented here.
 
+## [0.8.0] - 2026-10-14
+
+### Bug Fixes
+
+- Install elfutils so flatpak-builder can strip the binary ([1f93e2d](https://github.com/BirknerAlex/kubyl/commit/1f93e2dbb5a0b8349a2a6509b415a4aa8368f529))
+
+### Documentation
+
+- Advertise Kubyl Mobile ([8f5a2d9](https://github.com/BirknerAlex/kubyl/commit/8f5a2d9aefb68b48054ab9572c0524083283f24b))
+
+### Features
+
+- A dismissible Kubyl Mobile hint on the Welcome tab ([8ae3e90](https://github.com/BirknerAlex/kubyl/commit/8ae3e90dcb244e92a5fe75938e0f4c0cc10ab235))
+
 ## [0.7.0] - 2026-10-14
 
 ### Bug Fixes
