@@ -1056,15 +1056,25 @@ mod tests {
             return; // No IPv6 here.
         };
         let busy = taken.local_addr().unwrap().port();
-        let free = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
-        let (_, v6, port) = bind_localhost(&[busy, free]).await.unwrap();
-        assert_eq!(port, free, "port {busy} is taken on ::1");
-        assert!(v6.is_some(), "no ::1 listener on port {free}");
+        // The "free" port is only known to be free for a moment: a parallel test can take it on
+        // ::1 before `bind_localhost` does (then the fallback legitimately picks `busy` on
+        // 127.0.0.1 alone). Try again with another port rather than flake.
+        let mut last = String::new();
+        for _ in 0..10 {
+            let free = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .unwrap()
+                .local_addr()
+                .unwrap()
+                .port();
+            let (_, v6, port) = bind_localhost(&[busy, free]).await.unwrap();
+            if port == free && v6.is_some() {
+                drop(taken);
+                return;
+            }
+            last = format!("got port {port} (busy {busy}, free {free}), ::1 listener: {v6:?}");
+        }
+        panic!("a port taken on ::1 was not skipped: {last}");
     }
 
     #[tokio::test]

@@ -4971,6 +4971,7 @@ dependencies = [
  "kubyl_metrics_core",
  "kubyl_resources_core",
  "kubyl_settings_core",
+ "libc",
  "parking_lot",
  "regex",
  "schemars 1.2.2",
