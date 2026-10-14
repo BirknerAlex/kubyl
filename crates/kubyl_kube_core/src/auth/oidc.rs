@@ -710,14 +710,18 @@ async fn bind_localhost(
     ),
     AuthError,
 > {
+    // Whether there is IPv6 at all; then a port that can't be bound on ::1 is skipped, whatever
+    // the error (not every system reports a taken port as `AddrInUse`).
+    let ipv6 = tokio::net::TcpListener::bind(("::1", 0)).await.is_ok();
     for &port in ports {
         let Ok(v4) = tokio::net::TcpListener::bind(("127.0.0.1", port)).await else {
             continue;
         };
-        match tokio::net::TcpListener::bind(("::1", port)).await {
-            Ok(v6) => return Ok((v4, Some(v6), port)),
-            Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => continue,
-            Err(_) => return Ok((v4, None, port)),
+        if !ipv6 {
+            return Ok((v4, None, port));
+        }
+        if let Ok(v6) = tokio::net::TcpListener::bind(("::1", port)).await {
+            return Ok((v4, Some(v6), port));
         }
     }
     let (v4, port) = bind_loopback(ports).await?;
@@ -1059,8 +1063,8 @@ mod tests {
             .unwrap()
             .port();
         let (_, v6, port) = bind_localhost(&[busy, free]).await.unwrap();
-        assert_eq!(port, free);
-        assert!(v6.is_some());
+        assert_eq!(port, free, "port {busy} is taken on ::1");
+        assert!(v6.is_some(), "no ::1 listener on port {free}");
     }
 
     #[tokio::test]
@@ -1092,12 +1096,18 @@ mod tests {
         assert_eq!(server.await.unwrap().unwrap(), "c0de");
         // The browser loads the redirect once more: it must not be refused.
         assert!(get().await.starts_with("HTTP/1.1 200"));
+        // A new sign-in can take the port again (once the test's connections finish closing:
+        // macOS refuses the port while one is still shutting down; the listener alone would
+        // hold it for the whole linger).
         stop_lingering().await;
-        assert!(
-            tokio::net::TcpStream::connect(("127.0.0.1", port))
-                .await
-                .is_err()
-        );
+        let rebind = async {
+            while bind_loopback(&[port]).await.is_err() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(2), rebind)
+            .await
+            .expect("the port stays taken after stop_lingering");
     }
 
     #[tokio::test]
