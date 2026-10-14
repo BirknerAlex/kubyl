@@ -108,12 +108,19 @@ pub enum Scope {
 pub enum Inline {
     /// `pods payments`, `deploy -A`, `po -n kube-system`.
     Kind { kind: String, scope: Scope },
+    /// `pods /fred`, `pods app=fred,env=dev`, `pods kube-system /!fred`: a kind with the list
+    /// filter already set (the explorer's filter language).
+    Filtered {
+        kind: String,
+        scope: Scope,
+        filter: String,
+    },
     /// `ctx` alone lists contexts; `ctx <name>` switches.
     Context(Option<String>),
     /// `ns` alone lists namespaces; `ns <name>` switches.
     Namespace(Option<String>),
-    /// `xray <kind>` (a later phase).
-    Xray(String),
+    /// `xray dp`, `xray svc kube-system`: the tree under a workload or service.
+    Xray { kind: String, scope: Scope },
     /// `q`, `q!`, `quit`.
     Quit,
 }
@@ -130,14 +137,41 @@ pub fn parse_inline(query: &str) -> Option<Inline> {
         "ns" | "namespace" | "namespaces" if rest.len() <= 1 => {
             return Some(Inline::Namespace(arg));
         }
-        "xray" | "x" => return Some(Inline::Xray(arg.unwrap_or_default())),
+        "xray" | "x" => {
+            return Some(Inline::Xray {
+                kind: arg.unwrap_or_default(),
+                scope: parse_scope(rest.get(1..).unwrap_or_default()),
+            });
+        }
         _ => {}
     }
     if rest.is_empty() {
         return None;
     }
+    // `/fred` and `app=fred,env=dev` are filters; the rest picks the namespace.
+    let (filters, others): (Vec<&str>, Vec<&str>) = rest
+        .iter()
+        .partition(|w| w.starts_with('/') || (w.contains('=') && !w.starts_with('-')));
+    let scope = parse_scope(&others);
+    if filters.is_empty() {
+        return Some(Inline::Kind { kind: head, scope });
+    }
+    let filter = filters
+        .iter()
+        .map(|w| w.strip_prefix('/').unwrap_or(w).replace(',', " "))
+        .collect::<Vec<_>>()
+        .join(" ");
+    Some(Inline::Filtered {
+        kind: head,
+        scope,
+        filter,
+    })
+}
+
+/// `-A`, `-n ns`, `--namespace=ns` or a bare namespace.
+fn parse_scope(words: &[&str]) -> Scope {
     let mut scope = Scope::Active;
-    let mut args = rest.iter();
+    let mut args = words.iter();
     while let Some(arg) = args.next() {
         match *arg {
             "-A" | "--all-namespaces" | "all" => scope = Scope::All,
@@ -155,7 +189,7 @@ pub fn parse_inline(query: &str) -> Option<Inline> {
             }
         }
     }
-    Some(Inline::Kind { kind: head, scope })
+    scope
 }
 
 #[cfg(test)]
@@ -209,7 +243,33 @@ mod tests {
         );
         assert_eq!(
             parse_inline("xray deploy"),
-            Some(Inline::Xray("deploy".into()))
+            Some(Inline::Xray {
+                kind: "deploy".into(),
+                scope: Scope::Active
+            })
+        );
+        assert_eq!(
+            parse_inline("xray svc kube-system"),
+            Some(Inline::Xray {
+                kind: "svc".into(),
+                scope: Scope::Named("kube-system".into())
+            })
+        );
+        assert_eq!(
+            parse_inline("po /fred"),
+            Some(Inline::Filtered {
+                kind: "po".into(),
+                scope: Scope::Active,
+                filter: "fred".into()
+            })
+        );
+        assert_eq!(
+            parse_inline("po kube-system app=fred,env=dev"),
+            Some(Inline::Filtered {
+                kind: "po".into(),
+                scope: Scope::Named("kube-system".into()),
+                filter: "app=fred env=dev".into()
+            })
         );
         assert_eq!(parse_inline("q"), Some(Inline::Quit));
         assert_eq!(parse_inline("q!"), Some(Inline::Quit));

@@ -54,7 +54,7 @@ Screenshot: `design/screenshots/phase-03-palette.png` (macOS, `:cert` against ki
     `cluster` for cluster-scoped kinds, aliases, live count (first 8 results: borrows a list's
     store, else a metadata watch held while the palette is open, 150 ms debounce). Next to
     kinds: actions and favorites that contain the query. Inline commands: `:pods payments`,
-    `:po -n ns`, `:deploy -A`, `:ctx [name]`, `:ns [name]`, `:q`, `:xray` (toast: later phase).
+    `:po -n ns`, `:deploy -A`, `:ctx [name]`, `:ns [name]`, `:q`, `:xray` (opens the XRay tab).
     `-A`/`⇥` and a named namespace also set the active namespace, like k9s.
   - `>` every `ActionRegistry` action whose key context matches where the palette was opened
     (the focused element's context stack is captured on open) and that is available for
@@ -115,7 +115,7 @@ the screenshot harness, see below):
 - `ctrl-d` stays Delete in the k9s preset (as in k9s), so vim's half-page `ctrl-d` isn't bound;
   `ctrl-u` pages up, `ctrl-f`/`ctrl-b`, `g g`, `G`, `j`/`k` were already bound by the explorer.
 - Live counts show for the first 8 kinds only; a Favorites result has no count.
-- `:xray` is a placeholder toast.
+- `:xray [po|svc|dp|rs|sts|ds] [ns]` opens the XRay tab (`kubyl_xray`, `kubyl_xray_core`): Namespace → workload (pods found by label selector, as in k9s) → pods → containers (env ConfigMaps/Secrets) plus volume refs and the service account; `/` filters like k9s (regex over path tokens, `!` inverse, `-f` fuzzy, `-l` label selector), Enter opens the object, space toggles a branch; Secrets are watched by metadata only. Also `:po /fred` and `:po app=fred,env=dev` (filtered lists). `:pulses`/`:pu` opens Pulses (`kubyl_pulses`, `kubyl_pulses_core`): k9s's 16 tiles (the first four hidden in a single namespace), total/faulty counts with k9s's pod/node/event/workload health rules, sampled every 10 s while the tab is open; Tab/arrows/hjkl move, Enter or a click opens the kind's list. Cluster CPU and memory tiles (node usage of allocatable) appear when a metrics source reports node usage. Not in k9s parity yet: `:screendump`, `ctrl-a` (aliases), `:pod @ctx`, `/-l`, `/-f`.
 - Bindings added by a crate *after* the first event-loop turn are kept on reload but land
   after the user's layer (none exist today).
 

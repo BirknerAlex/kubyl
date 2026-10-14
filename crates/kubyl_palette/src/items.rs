@@ -242,6 +242,12 @@ pub enum Target {
     /// Switch the palette to another mode.
     Mode(Mode),
     Quit,
+    /// The XRay tree of a workload or service kind.
+    Xray {
+        cluster: ClusterId,
+        root: kubyl_xray_core::Root,
+        namespace: Option<String>,
+    },
     /// Nothing to run; shows a message (e.g. a feature of a later phase).
     Notice(String),
 }
@@ -559,6 +565,36 @@ impl Builder<'_> {
                     }
                 }
             }
+            Some(Inline::Filtered {
+                kind,
+                scope,
+                filter,
+            }) => match (
+                self.resolve_kind(&kind).cloned(),
+                self.snapshot.cluster.clone(),
+            ) {
+                (Some(entry), Some((cluster, _))) => {
+                    let namespace = match (&scope, entry.namespaced) {
+                        (_, false) | (Scope::All, _) => None,
+                        (Scope::Named(ns), true) => Some(ns.clone()),
+                        (Scope::Active, true) => self.snapshot.namespace.clone(),
+                    };
+                    self.command(
+                        format!("Open {} filtered by {filter}", entry.gvr.resource),
+                        IconName::Search,
+                        Target::Filtered {
+                            cluster,
+                            gvr: entry.gvr.clone(),
+                            namespace,
+                            filter,
+                        },
+                    );
+                }
+                _ => {
+                    let mut q = Query::new(&kind);
+                    self.kinds(&mut q, scope);
+                }
+            },
             Some(Inline::Context(name)) => {
                 if name.is_none() {
                     self.command(
@@ -581,11 +617,58 @@ impl Builder<'_> {
                 let mut q = Query::new(name.as_deref().unwrap_or_default());
                 self.namespaces(&mut q, true);
             }
-            Some(Inline::Xray(kind)) => self.command(
-                format!("XRay {kind}").trim().to_string(),
-                IconName::Network,
-                Target::Notice("XRay views arrive with a later phase.".into()),
-            ),
+            Some(Inline::Xray { kind, scope }) => match (
+                kubyl_xray_core::Root::parse(&kind),
+                self.snapshot.cluster.clone(),
+            ) {
+                (Some(root), Some((cluster, _))) => {
+                    let (namespace, where_) = match scope {
+                        Scope::All => (None, "in all namespaces".to_string()),
+                        Scope::Named(ns) => (Some(ns.clone()), format!("in {ns}")),
+                        Scope::Active => (
+                            self.snapshot.namespace.clone(),
+                            self.snapshot
+                                .namespace
+                                .as_ref()
+                                .map_or("in all namespaces".to_string(), |ns| format!("in {ns}")),
+                        ),
+                    };
+                    self.command(
+                        format!("XRay {} {where_}", root.title()),
+                        IconName::Network,
+                        Target::Xray {
+                            cluster,
+                            root,
+                            namespace,
+                        },
+                    );
+                }
+                (None, _) if !kind.is_empty() => self.command(
+                    format!("XRay: unknown kind {kind}"),
+                    IconName::Network,
+                    Target::Notice("XRay shows po, svc, dp, rs, sts or ds.".into()),
+                ),
+                (_, None) => self.command(
+                    "XRay",
+                    IconName::Network,
+                    Target::Notice("Select a cluster first.".into()),
+                ),
+                (None, _) => {
+                    for root in kubyl_xray_core::Root::ALL {
+                        if let Some((cluster, _)) = self.snapshot.cluster.clone() {
+                            self.command(
+                                format!("XRay {}", root.title()),
+                                IconName::Network,
+                                Target::Xray {
+                                    cluster,
+                                    root,
+                                    namespace: self.snapshot.namespace.clone(),
+                                },
+                            );
+                        }
+                    }
+                }
+            },
             Some(Inline::Quit) => self.command("Quit Kubyl", IconName::X, Target::Quit),
         }
     }
@@ -1343,6 +1426,14 @@ mod tests {
         let items = build(Mode::Resources, "q", &s, Options::default());
         assert_eq!(items[0].target, Target::Quit);
         let items = build(Mode::Resources, "xray deploy", &s, Options::default());
+        assert!(matches!(
+            items[0].target,
+            Target::Xray {
+                root: kubyl_xray_core::Root::Deployments,
+                ..
+            }
+        ));
+        let items = build(Mode::Resources, "xray nope", &s, Options::default());
         assert!(matches!(items[0].target, Target::Notice(_)));
     }
 
