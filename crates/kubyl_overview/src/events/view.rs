@@ -303,6 +303,8 @@ impl EventsView {
                     ui::open_object(&row, &self.feed, window, cx);
                 }
             }
+            // Not a tree.
+            DataTableEvent::Toggled(_) => {}
         }
     }
 

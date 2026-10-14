@@ -383,6 +383,8 @@ impl AppsView {
                 cx.notify();
             }
             DataTableEvent::Confirmed(_) => self.open_first(window, cx),
+            // Not a tree.
+            DataTableEvent::Toggled(_) => {}
         }
     }
 
