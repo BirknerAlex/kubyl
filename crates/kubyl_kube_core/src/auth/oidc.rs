@@ -571,7 +571,12 @@ impl OidcAuth {
         scopes: Vec<Scope>,
         events: &mpsc::UnboundedSender<SignInEvent>,
     ) -> Result<(CoreTokenResponse, Option<Timestamp>), AuthError> {
+        stop_lingering().await;
         let (listener, port) = bind_loopback(&self.params.listen_ports).await?;
+        // The redirect goes to `localhost`, which a browser may resolve to ::1 first; without a
+        // listener there it shows "connection refused" (Chrome), even when its IPv4 attempt
+        // delivered the code.
+        let listener_v6 = tokio::net::TcpListener::bind(("::1", port)).await.ok();
         let redirect_uri = format!("http://localhost:{port}");
         let client =
             CoreClient::from_provider_metadata(metadata, self.client_id(), self.client_secret())
@@ -600,9 +605,13 @@ impl OidcAuth {
             tracing::warn!("couldn't open the browser: {err}");
         }
 
-        let code = tokio::time::timeout(SIGN_IN_TIMEOUT, wait_for_code(&listener, csrf.secret()))
-            .await
-            .map_err(|_| AuthError::Failed("timed out waiting for the browser".into()))??;
+        let code = tokio::time::timeout(
+            SIGN_IN_TIMEOUT,
+            wait_for_code_on(&listener, listener_v6.as_ref(), csrf.secret()),
+        )
+        .await
+        .map_err(|_| AuthError::Failed("timed out waiting for the browser".into()))??;
+        linger(listener, listener_v6, csrf.secret().clone());
         let response = client
             .exchange_code(AuthorizationCode::new(code))
             .map_err(|err| fail("the IdP has no token endpoint", err))?
@@ -804,6 +813,65 @@ pub async fn wait_for_code(
     }
 }
 
+/// [`wait_for_code`] on two listeners at once (127.0.0.1 and ::1): whichever address the
+/// browser picks for `localhost` gets served.
+pub async fn wait_for_code_on(
+    v4: &tokio::net::TcpListener,
+    v6: Option<&tokio::net::TcpListener>,
+    state: &str,
+) -> Result<String, AuthError> {
+    let on_v4 = wait_for_code(v4, state);
+    let Some(v6) = v6 else {
+        return on_v4.await;
+    };
+    let on_v6 = wait_for_code(v6, state);
+    futures::pin_mut!(on_v4, on_v6);
+    match futures::future::select(on_v4, on_v6).await {
+        futures::future::Either::Left((code, _)) | futures::future::Either::Right((code, _)) => {
+            code
+        }
+    }
+}
+
+/// How long the loopback server keeps answering after the code arrived.
+const LINGER: Duration = Duration::from_secs(15);
+
+/// The loopback server of the last browser sign-in, still answering.
+static LINGERING: LazyLock<parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>> =
+    LazyLock::new(Default::default);
+
+/// Keeps answering on the loopback listeners for [`LINGER`] after the code arrived. Browsers
+/// may load the redirect once more (Chrome does), and the tab shows that second answer; with
+/// the port closed it would be "connection refused" although the sign-in worked.
+fn linger(v4: tokio::net::TcpListener, v6: Option<tokio::net::TcpListener>, state: String) {
+    let task = tokio::spawn(async move {
+        let serve = |listener: tokio::net::TcpListener, state: String| async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let state = state.clone();
+                tokio::spawn(async move { serve_callback(stream, &state).await });
+            }
+        };
+        let both = futures::future::join(serve(v4, state.clone()), async {
+            if let Some(v6) = v6 {
+                serve(v6, state).await;
+            }
+        });
+        tokio::time::timeout(LINGER, both).await.ok();
+    });
+    if let Some(old) = LINGERING.lock().replace(task) {
+        old.abort();
+    }
+}
+
+/// Frees the ports of a lingering loopback server before a new sign-in binds them.
+async fn stop_lingering() {
+    let task = LINGERING.lock().take();
+    if let Some(task) = task {
+        task.abort();
+        task.await.ok();
+    }
+}
+
 fn callback_params(target: &str) -> HashMap<String, String> {
     url::Url::parse(&format!("http://localhost{target}"))
         .map(|url| url.query_pairs().into_owned().collect())
@@ -951,6 +1019,43 @@ mod tests {
         assert_eq!(
             classify_callback("/?code=c&state=good", "good"),
             Callback::Code("c".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn the_redirect_still_answers_after_the_code_arrived() {
+        let (listener, port) = bind_loopback(&[0]).await.unwrap();
+        let port = if port == 0 {
+            listener.local_addr().unwrap().port()
+        } else {
+            port
+        };
+        let get = || async move {
+            let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .unwrap();
+            stream
+                .write_all(b"GET /?code=c0de&state=good HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                .await
+                .unwrap();
+            let mut response = String::new();
+            stream.read_to_string(&mut response).await.unwrap();
+            response
+        };
+        let server = tokio::spawn(async move {
+            let code = wait_for_code(&listener, "good").await;
+            linger(listener, None, "good".into());
+            code
+        });
+        assert!(get().await.starts_with("HTTP/1.1 200"));
+        assert_eq!(server.await.unwrap().unwrap(), "c0de");
+        // The browser loads the redirect once more: it must not be refused.
+        assert!(get().await.starts_with("HTTP/1.1 200"));
+        stop_lingering().await;
+        assert!(
+            tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .is_err()
         );
     }
 
