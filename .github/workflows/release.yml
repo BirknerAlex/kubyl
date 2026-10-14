@@ -402,7 +402,7 @@ jobs:
       # runtime/SDK from Flathub, installed per-user by the script.
       - name: Build Flatpak
         run: |
-          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder
+          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder elfutils
           ./script/build-flatpak.sh "$VERSION" \
             "$([ '${{ matrix.arch }}' = amd64 ] && echo x86_64 || echo aarch64)" \
             "target/${{ matrix.target }}/release/kubyl"
