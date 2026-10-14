@@ -505,9 +505,17 @@ impl ClustersSection {
                 let text = match state {
                     ConnectionState::Disconnected => "Not connected · click to connect".to_string(),
                     ConnectionState::Connecting => "Connecting…".to_string(),
-                    ConnectionState::AuthRequired { sign_in: true, .. } => {
-                        "Sign-in required · click to sign in".into()
-                    }
+                    ConnectionState::AuthRequired {
+                        sign_in: true,
+                        rejected: false,
+                        ..
+                    } => "Sign-in required · click to sign in".into(),
+                    // The server rejected the token Kubyl has: say so, a sign-in may not help.
+                    ConnectionState::AuthRequired {
+                        sign_in: true,
+                        message,
+                        ..
+                    } => format!("{message} · click to sign in"),
                     other => format!("{} · {}", other.label(), other.error().unwrap_or_default()),
                 };
                 items.push(Item::Status {
@@ -1675,9 +1683,16 @@ pub(crate) fn state_line(state: &ConnectionState) -> String {
         }
         ConnectionState::Connecting => "Connecting…".into(),
         ConnectionState::Disconnected => "Not connected · expand to connect".into(),
-        ConnectionState::AuthRequired { sign_in: true, .. } => {
-            "Sign-in required · click the status row to sign in".into()
-        }
+        ConnectionState::AuthRequired {
+            sign_in: true,
+            rejected: false,
+            ..
+        } => "Sign-in required · click the status row to sign in".into(),
+        ConnectionState::AuthRequired {
+            sign_in: true,
+            message,
+            ..
+        } => format!("Authentication failed: {message} · click the status row to sign in"),
         ConnectionState::AuthRequired { message, .. } => {
             format!("Authentication failed: {message}")
         }
