@@ -61,6 +61,9 @@ pub enum ConnectionState {
         /// Exec plugin stderr.
         detail: Option<String>,
         sign_in: bool,
+        /// A credential was sent and the API server rejected it (as opposed to none being
+        /// available): a fresh sign-in may not help, so the UI says what the server said.
+        rejected: bool,
     },
     Unreachable {
         message: String,
@@ -84,7 +87,11 @@ impl ConnectionState {
             ConnectionState::Connected { latency, .. } => {
                 format!("Connected · {}ms", latency.as_millis().max(1))
             }
-            ConnectionState::AuthRequired { sign_in: true, .. } => "Sign-in required".into(),
+            ConnectionState::AuthRequired {
+                sign_in: true,
+                rejected: false,
+                ..
+            } => "Sign-in required".into(),
             ConnectionState::AuthRequired { .. } => "Auth failed".into(),
             ConnectionState::Unreachable { .. } => "Unreachable".into(),
             ConnectionState::Forbidden(_) => "Forbidden".into(),
@@ -1213,11 +1220,13 @@ impl ManagerCore {
                 message: "Sign in to continue.".into(),
                 detail: None,
                 sign_in: true,
+                rejected: false,
             },
             ConnectError::Auth { message, detail } => ConnectionState::AuthRequired {
                 message: message.clone(),
                 detail: detail.clone(),
                 sign_in,
+                rejected: true,
             },
             ConnectError::Forbidden(message) => ConnectionState::Forbidden(message.clone()),
             ConnectError::Unreachable(message) | ConnectError::Config(message) => {
@@ -1392,11 +1401,13 @@ impl ManagerCore {
                         message: "The session expired. Sign in again.".into(),
                         detail: None,
                         sign_in: true,
+                        rejected: false,
                     },
                     ConnectError::Auth { message, detail } => ConnectionState::AuthRequired {
                         message: message.clone(),
                         detail: detail.clone(),
                         sign_in,
+                        rejected: true,
                     },
                     ConnectError::Forbidden(message) => ConnectionState::Forbidden(message.clone()),
                     ConnectError::Unreachable(message) | ConnectError::Config(message) => {
