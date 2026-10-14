@@ -198,7 +198,13 @@ impl Ctx<'_> {
     ) -> Node {
         let selector = o.pointer("/spec/selector").cloned().unwrap_or(Value::Null);
         let ns = namespace(o);
-        let children = if selector.is_null() {
+        // An empty selector would match every pod of the namespace: treat it as none.
+        let empty = selector
+            .get("matchLabels")
+            .and_then(Value::as_object)
+            .is_none_or(|m| m.is_empty())
+            && list(&selector, "/matchExpressions").is_empty();
+        let children = if empty {
             Vec::new()
         } else {
             self.pods_matching(&ns, |labels| selects(&selector, labels))
@@ -558,6 +564,16 @@ mod tests {
         let names: Vec<_> = tree[0].children.iter().map(|n| n.name.as_str()).collect();
         assert_eq!(names, ["web"]);
         assert_eq!(tree[0].children[0].children.len(), 2);
+    }
+
+    #[test]
+    fn empty_workload_selector_matches_nothing() {
+        let mut i = inputs();
+        i.deployments = vec![arc(json!({
+            "metadata": {"name": "odd", "namespace": "a"},
+            "spec": {"replicas": 1, "selector": {}}
+        }))];
+        assert!(build(Root::Deployments, &i, None).is_empty());
     }
 
     #[test]

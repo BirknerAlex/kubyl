@@ -228,7 +228,7 @@ pub struct XrayView {
     root: Root,
     namespace: Option<String>,
     /// An object to open the tree on (from a row's menu), until it is found.
-    focus_on: Option<String>,
+    focus_on: Option<(Option<String>, String)>,
     stores: HashMap<Slot, StoreHandle>,
     observers: Vec<Subscription>,
     tree: Vec<Node>,
@@ -279,8 +279,8 @@ impl XrayView {
         let mut this = Self {
             cluster: target.cluster,
             root: crate::root_of(&target.gvr).unwrap_or(Root::Deployments),
+            focus_on: target.name.map(|name| (target.namespace.clone(), name)),
             namespace: target.namespace,
-            focus_on: target.name,
             stores: HashMap::new(),
             observers: Vec::new(),
             tree: Vec::new(),
@@ -395,8 +395,11 @@ impl XrayView {
             }
         }
         let mut select = None;
-        if let Some(name) = &self.focus_on {
+        if let Some((namespace, name)) = &self.focus_on {
             let found = self.tree.iter().find_map(|ns| {
+                if namespace.as_ref().is_some_and(|wanted| wanted != &ns.name) {
+                    return None;
+                }
                 let node = ns.children.iter().find(|n| &n.name == name)?;
                 Some(format!("{}>{}", ns.id(), node.id()))
             });

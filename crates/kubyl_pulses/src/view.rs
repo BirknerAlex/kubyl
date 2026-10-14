@@ -143,7 +143,11 @@ impl PulsesView {
             let Some(gvr) = self.resolve(kind, cx) else {
                 continue;
             };
-            let store = ResourceStores::acquire(cx, StoreKey::new(self.cluster.clone(), gvr, None));
+            // Only the namespace being looked at: less to list and watch, and it works where
+            // RBAC allows nothing cluster-wide.
+            let namespace = self.namespace.clone().filter(|_| kind.namespaced());
+            let store =
+                ResourceStores::acquire(cx, StoreKey::new(self.cluster.clone(), gvr, namespace));
             self.tiles.insert(
                 kind,
                 Tile {
@@ -160,12 +164,16 @@ impl PulsesView {
                 cx,
                 StoreKey::new(self.cluster.clone(), gvr, None),
             ));
+            changed = true;
         }
         if changed {
+            // The nodes feed the CPU and memory tiles, also when no tile shows them.
             self.observers = self
                 .tiles
                 .values()
-                .map(|t| cx.observe(t.store.entity(), |_, _, cx| cx.notify()))
+                .map(|t| t.store.entity())
+                .chain(self.nodes.as_ref().map(|n| n.entity()))
+                .map(|store| cx.observe(store, |_, _, cx| cx.notify()))
                 .collect();
             cx.notify();
         }
