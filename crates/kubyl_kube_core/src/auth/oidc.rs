@@ -572,11 +572,7 @@ impl OidcAuth {
         events: &mpsc::UnboundedSender<SignInEvent>,
     ) -> Result<(CoreTokenResponse, Option<Timestamp>), AuthError> {
         stop_lingering().await;
-        let (listener, port) = bind_loopback(&self.params.listen_ports).await?;
-        // The redirect goes to `localhost`, which a browser may resolve to ::1 first; without a
-        // listener there it shows "connection refused" (Chrome), even when its IPv4 attempt
-        // delivered the code.
-        let listener_v6 = tokio::net::TcpListener::bind(("::1", port)).await.ok();
+        let (listener, listener_v6, port) = bind_localhost(&self.params.listen_ports).await?;
         let redirect_uri = format!("http://localhost:{port}");
         let client =
             CoreClient::from_provider_metadata(metadata, self.client_id(), self.client_secret())
@@ -698,6 +694,34 @@ pub async fn bind_loopback(ports: &[u16]) -> Result<(tokio::net::TcpListener, u1
             .join(", "),
         last_err.map(|e| e.to_string()).unwrap_or_default()
     )))
+}
+
+/// Binds the first port of `ports` that is free on 127.0.0.1 and on ::1, for a redirect to
+/// `http://localhost:<port>`: a browser may resolve `localhost` to either, and a port another
+/// process holds on ::1 would get the code instead. Without IPv6 the IPv4 listener is enough;
+/// when every port is taken on ::1, the first one free on 127.0.0.1 is used alone.
+async fn bind_localhost(
+    ports: &[u16],
+) -> Result<
+    (
+        tokio::net::TcpListener,
+        Option<tokio::net::TcpListener>,
+        u16,
+    ),
+    AuthError,
+> {
+    for &port in ports {
+        let Ok(v4) = tokio::net::TcpListener::bind(("127.0.0.1", port)).await else {
+            continue;
+        };
+        match tokio::net::TcpListener::bind(("::1", port)).await {
+            Ok(v6) => return Ok((v4, Some(v6), port)),
+            Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => continue,
+            Err(_) => return Ok((v4, None, port)),
+        }
+    }
+    let (v4, port) = bind_loopback(ports).await?;
+    Ok((v4, None, port))
 }
 
 const SUCCESS_PAGE: &str = "<!doctype html><meta charset=utf-8><title>Kubyl</title>\
@@ -1020,6 +1044,23 @@ mod tests {
             classify_callback("/?code=c&state=good", "good"),
             Callback::Code("c".into())
         );
+    }
+
+    #[tokio::test]
+    async fn localhost_skips_a_port_taken_on_ipv6() {
+        let Ok(taken) = tokio::net::TcpListener::bind(("::1", 0)).await else {
+            return; // No IPv6 here.
+        };
+        let busy = taken.local_addr().unwrap().port();
+        let free = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let (_, v6, port) = bind_localhost(&[busy, free]).await.unwrap();
+        assert_eq!(port, free);
+        assert!(v6.is_some());
     }
 
     #[tokio::test]
