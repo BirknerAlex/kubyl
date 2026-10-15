@@ -367,7 +367,7 @@ impl Ctx<'_> {
             name: name(p),
             health: if completed {
                 Health::Neutral
-            } else if ready == statuses.len() {
+            } else if !statuses.is_empty() && ready == statuses.len() {
                 Health::Ok
             } else {
                 Health::Bad
@@ -564,6 +564,20 @@ mod tests {
         let names: Vec<_> = tree[0].children.iter().map(|n| n.name.as_str()).collect();
         assert_eq!(names, ["web"]);
         assert_eq!(tree[0].children[0].children.len(), 2);
+    }
+
+    #[test]
+    fn a_pod_without_container_statuses_is_not_healthy() {
+        let mut i = inputs();
+        i.pods = vec![arc(json!({
+            "metadata": {"name": "p", "namespace": "a"},
+            "spec": {"containers": [{"name": "app"}]},
+            "status": {"phase": "Pending"}
+        }))];
+        let tree = build(Root::Pods, &i, None);
+        let pod = &tree[0].children[0];
+        assert_eq!(pod.info, "0/0");
+        assert_eq!(pod.health, Health::Bad);
     }
 
     #[test]
