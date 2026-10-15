@@ -2,6 +2,16 @@
 
 All notable changes to Kubyl are documented here.
 
+## [0.9.0] - 2026-10-15
+
+### Bug Fixes
+
+- OIDC browser sign-in shows connection refused; rejected tokens look like sign-in required (#55) ([748303f](https://github.com/BirknerAlex/kubyl/commit/748303f46d6c30bb3507224a69760549b15de1bf))
+
+### Features
+
+- K9s XRay and Pulses views, :po /filter and label commands (#56) ([ff85ccd](https://github.com/BirknerAlex/kubyl/commit/ff85ccd175871a5c4247498b1090cf9a71febde0))
+
 ## [0.8.0] - 2026-10-14
 
 ### Bug Fixes
