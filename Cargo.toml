@@ -57,6 +57,8 @@ kubyl_portforward = { path = "crates/kubyl_portforward" }
 kubyl_portforward_core = { path = "crates/kubyl_portforward_core" }
 kubyl_prometheus = { path = "crates/kubyl_prometheus" }
 kubyl_prometheus_core = { path = "crates/kubyl_prometheus_core" }
+kubyl_pulses = { path = "crates/kubyl_pulses" }
+kubyl_pulses_core = { path = "crates/kubyl_pulses_core" }
 kubyl_resources = { path = "crates/kubyl_resources" }
 kubyl_resources_core = { path = "crates/kubyl_resources_core" }
 kubyl_security = { path = "crates/kubyl_security" }
@@ -72,6 +74,8 @@ kubyl_updates = { path = "crates/kubyl_updates" }
 kubyl_updates_core = { path = "crates/kubyl_updates_core" }
 kubyl_webview = { path = "crates/kubyl_webview" }
 kubyl_webview_core = { path = "crates/kubyl_webview_core" }
+kubyl_xray = { path = "crates/kubyl_xray" }
+kubyl_xray_core = { path = "crates/kubyl_xray_core" }
 kubyl_yaml = { path = "crates/kubyl_yaml" }
 kubyl_yaml_core = { path = "crates/kubyl_yaml_core" }
 

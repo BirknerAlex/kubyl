@@ -151,6 +151,10 @@ impl Terminals {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        // Its own process group, so killing the terminal also kills what the shell started
+        // (a shell that doesn't `exec` its last command leaves it running, holding the pipes).
+        #[cfg(unix)]
+        cmd.process_group(0);
         launch.cli_env.apply(cmd.as_std_mut());
         if let Some(path) = &launch.path {
             cmd.env("PATH", path);
@@ -186,6 +190,11 @@ impl Terminals {
             let status = tokio::select! {
                 status = child.wait() => status.ok(),
                 _ = kill_rx => {
+                    #[cfg(unix)]
+                    if let Some(pid) = child.id().and_then(|pid| i32::try_from(pid).ok()) {
+                        // SAFETY: signals the process group the child leads; no memory is touched.
+                        unsafe { libc::kill(-pid, libc::SIGKILL) };
+                    }
                     child.kill().await.ok();
                     child.wait().await.ok()
                 }

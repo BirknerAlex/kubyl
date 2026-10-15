@@ -288,13 +288,29 @@ impl CliRunner for SystemRunner {
                 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
                 command.creation_flags(CREATE_NO_WINDOW);
             }
-            let output = tokio::time::timeout(self.timeout, command.output())
-                .await
-                .map_err(|_| RunError::Timeout)?
-                .map_err(|e| match e.kind() {
-                    std::io::ErrorKind::NotFound => RunError::NotInstalled,
-                    _ => RunError::Io(e.to_string()),
-                })?;
+            let output = tokio::time::timeout(self.timeout, async {
+                // A program that was just written can be "busy" while another thread's fork
+                // still holds the file open for writing; it is free a moment later.
+                let mut attempts = 0;
+                loop {
+                    match command.output().await {
+                        Err(e)
+                            if e.kind() == std::io::ErrorKind::ExecutableFileBusy
+                                && attempts < 20 =>
+                        {
+                            attempts += 1;
+                            tokio::time::sleep(Duration::from_millis(25)).await;
+                        }
+                        other => break other,
+                    }
+                }
+            })
+            .await
+            .map_err(|_| RunError::Timeout)?
+            .map_err(|e| match e.kind() {
+                std::io::ErrorKind::NotFound => RunError::NotInstalled,
+                _ => RunError::Io(e.to_string()),
+            })?;
             Ok(RunOutput {
                 success: output.status.success(),
                 stdout: String::from_utf8_lossy(&output.stdout).into_owned(),

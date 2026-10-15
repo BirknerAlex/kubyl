@@ -1,0 +1,23 @@
+[package]
+name = "kubyl_xray"
+description = "XRay: the tree from a workload or service down to its pods, containers and the config they use."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+gpui.workspace = true
+gpui-component.workspace = true
+kubyl_core.workspace = true
+kubyl_kube.workspace = true
+kubyl_resources.workspace = true
+kubyl_ui.workspace = true
+kubyl_xray_core.workspace = true
+serde_json.workspace = true

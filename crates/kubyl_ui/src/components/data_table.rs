@@ -14,7 +14,7 @@ use gpui::{
 use gpui_component::{h_flex, v_flex};
 use kubyl_core::{Align, CellValue, ColumnDef, ColumnWidth};
 
-use crate::{ActiveColors, ProgressBar, StatusPill, fonts, sizes, u};
+use crate::{ActiveColors, Icon, IconName, ProgressBar, StatusPill, fonts, sizes, u};
 
 actions!(
     data_table,
@@ -32,6 +32,8 @@ actions!(
 const CONTEXT: &str = "DataTable";
 const PAGE: usize = 20;
 const MIN_COLUMN_WIDTH: f32 = 40.0;
+const TREE_INDENT: f32 = 16.0;
+const TREE_CHEVRON: f32 = 16.0;
 
 pub(crate) fn init(cx: &mut App) {
     cx.bind_keys([
@@ -56,6 +58,20 @@ pub trait TableDelegate: 'static {
     fn columns(&self) -> Vec<ColumnDef>;
     fn row_count(&self, cx: &App) -> usize;
     fn cell(&self, row: usize, column: usize, cx: &App) -> CellValue;
+
+    /// Makes `column` of `row` a tree cell: indented by `depth`, with a chevron that emits
+    /// [`DataTableEvent::Toggled`] when clicked. `None` renders a plain cell.
+    fn tree_node(&self, _row: usize, _column: usize, _cx: &App) -> Option<TreeNode> {
+        None
+    }
+}
+
+/// Where a row sits in a tree column (see [`TableDelegate::tree_node`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TreeNode {
+    pub depth: usize,
+    /// `Some(open)` for a row with children; `None` for a leaf (no chevron, same indent).
+    pub expanded: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -63,6 +79,8 @@ pub enum DataTableEvent {
     SelectionChanged(Option<usize>),
     /// Enter or double-click on a row.
     Confirmed(usize),
+    /// The chevron of a tree row was clicked (the row is selected too).
+    Toggled(usize),
 }
 
 struct Resize {
@@ -228,7 +246,16 @@ impl DataTable {
                     })
                     .children(self.columns.iter().enumerate().map(|(column, def)| {
                         let value = self.delegate.cell(row, column, cx);
-                        column_cell(def).child(render_cell(value, def, &colors))
+                        let content = render_cell(value, def, &colors);
+                        match self.delegate.tree_node(row, column, cx) {
+                            Some(node) => column_cell(def).child(
+                                h_flex()
+                                    .child(div().flex_none().w(u(TREE_INDENT * node.depth as f32)))
+                                    .child(tree_chevron(row, node, &colors, cx))
+                                    .child(div().min_w_0().child(content)),
+                            ),
+                            None => column_cell(def).child(content),
+                        }
                     }))
                     .on_click(
                         cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
@@ -281,6 +308,42 @@ impl DataTable {
                     })
             }))
     }
+}
+
+/// The chevron of a tree row. Clicking it toggles the row without a double-click confirming it.
+fn tree_chevron(
+    row: usize,
+    node: TreeNode,
+    colors: &crate::Colors,
+    cx: &mut Context<DataTable>,
+) -> AnyElement {
+    let slot = div()
+        .flex_none()
+        .w(u(TREE_CHEVRON))
+        .h_full()
+        .flex()
+        .items_center();
+    let Some(open) = node.expanded else {
+        return slot.into_any_element();
+    };
+    slot.id(SharedString::from(format!("toggle-{row}")))
+        .cursor_pointer()
+        .on_click(cx.listener(move |this, _: &gpui::ClickEvent, window, cx| {
+            cx.stop_propagation();
+            this.focus.focus(window, cx);
+            this.select(Some(row), cx);
+            cx.emit(DataTableEvent::Toggled(row));
+        }))
+        .child(
+            Icon::new(if open {
+                IconName::ChevronDown
+            } else {
+                IconName::ChevronRight
+            })
+            .size(11.0)
+            .color(colors.text_dim),
+        )
+        .into_any_element()
 }
 
 /// A cell container sized by its column definition.

@@ -463,6 +463,7 @@ fn run(target: Target, split: bool, window: &mut Window, cx: &mut App) {
         target,
         Target::Kind { .. }
             | Target::View { .. }
+            | Target::Xray { .. }
             | Target::Object(_)
             | Target::FavoritesWorkspace(_)
             | Target::Filtered { .. }
@@ -527,6 +528,21 @@ fn run(target: Target, split: bool, window: &mut Window, cx: &mut App) {
                 ViewRequest::for_resource(
                     kind,
                     ResourceRef::list(cluster, Gvr::new("", "", ""), namespace),
+                ),
+            );
+        }
+        Target::Xray {
+            cluster,
+            root,
+            namespace,
+        } => {
+            let (group, resource) = root.api();
+            open(
+                window,
+                cx,
+                ViewRequest::for_resource(
+                    kubyl_core::ViewKind::Custom("xray".into()),
+                    ResourceRef::list(cluster, Gvr::new(group, "", resource), namespace),
                 ),
             );
         }

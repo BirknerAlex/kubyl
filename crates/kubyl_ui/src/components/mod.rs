@@ -17,7 +17,7 @@ mod toast;
 
 pub use button::{Button, ButtonVariant, IconButton};
 pub use chip::Chip;
-pub use data_table::{DataTable, DataTableEvent, TableDelegate};
+pub use data_table::{DataTable, DataTableEvent, TableDelegate, TreeNode};
 pub use dock::DockHeader;
 pub use keys::{Kbd, KeyHints, format_keystroke};
 pub use modal::Modal;
