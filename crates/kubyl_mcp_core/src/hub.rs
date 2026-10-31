@@ -8,6 +8,7 @@
 //! click in Kubyl's window ([`McpHub::pending`], [`McpHub::answer`]).
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use kubyl_base::host::{Flow, Host, HostExt as _, Pace, Service, TaskHandle};
 use kubyl_kube_core::auth::Credentials;
@@ -70,6 +71,7 @@ pub struct McpHub {
     next_id: u64,
     starting: Option<TaskHandle>,
     listening: Option<TaskHandle>,
+    pruning: Option<TaskHandle>,
 }
 
 impl Service for McpHub {
@@ -94,6 +96,7 @@ impl McpHub {
             next_id: 0,
             starting: None,
             listening: None,
+            pruning: None,
         }
     }
 
@@ -159,7 +162,23 @@ impl McpHub {
                 Flow::Continue
             }));
         }
+        // Changes nobody answered in time are rejected by their tool call; take them off the list.
+        self.pruning = Some(host.every(Duration::from_secs(5), |this, host| {
+            this.prune(host);
+            Flow::Continue
+        }));
         self.restart(host);
+    }
+
+    /// Drops waiting changes whose tool call has given up (the answer timeout).
+    fn prune(&mut self, host: &mut dyn Host<Self>) {
+        let before = self.pending.len();
+        self.pending
+            .retain(|p| p.reply.as_ref().is_some_and(|r| !r.is_closed()));
+        if self.pending.len() != before {
+            host.emit(HubEvent::Changed);
+            host.notify();
+        }
     }
 
     /// The clusters the tools reach. Cheap: only publishes to the running server.
@@ -169,6 +188,7 @@ impl McpHub {
             .into_iter()
             .map(|mut c| {
                 c.max_output = output;
+                c.log_lines = 500;
                 c
             })
             .collect();
@@ -195,7 +215,9 @@ impl McpHub {
         host.notify();
     }
 
-    /// Replaces the token (existing clients stop working until reconfigured).
+    /// Replaces the token (existing clients stop working until reconfigured). If the old one
+    /// can't be removed from the credential store, the server keeps running as it was and the
+    /// state says why, instead of pretending to have a new token.
     pub fn regenerate_token(&mut self, host: &mut dyn Host<Self>) {
         let credentials = self.credentials.clone();
         self.server = None;
@@ -203,13 +225,21 @@ impl McpHub {
         self.state = ServerState::Starting;
         host.notify();
         let work = async move {
-            tokio::task::spawn_blocking(move || {
-                credentials.delete(TOKEN_KEY).ok();
-            })
-            .await
-            .ok();
+            tokio::task::spawn_blocking(move || credentials.delete(TOKEN_KEY))
+                .await
+                .map_err(|e| e.to_string())?
         };
-        self.starting = Some(host.spawn(work, |this, (), host| this.restart(host)));
+        self.starting = Some(host.spawn(work, |this, result: Result<(), String>, host| {
+            match result {
+                Ok(()) => this.restart(host),
+                Err(err) => {
+                    this.state = ServerState::Failed(format!(
+                        "The old MCP token couldn't be removed from the credential store ({err}), so it was not replaced. The server is stopped."
+                    ));
+                    host.notify();
+                }
+            }
+        }));
     }
 
     fn restart(&mut self, host: &mut dyn Host<Self>) {
@@ -265,6 +295,11 @@ impl McpHub {
     }
 
     fn requested(&mut self, request: ApprovalRequest, host: &mut dyn Host<Self>) {
+        if !*self.writes.borrow() {
+            // Changes were switched off while the request was on its way.
+            request.reply.send(Decision::Rejected).ok();
+            return;
+        }
         self.next_id += 1;
         self.pending.push(ExternalApproval {
             id: self.next_id,
@@ -519,5 +554,61 @@ mod tests {
         hub.answer(id, Decision::Approved, &mut host);
         assert_eq!(runtime.block_on(waiting).unwrap(), Decision::Approved);
         assert!(hub.pending().is_empty());
+    }
+
+    #[test]
+    fn answered_late_or_after_writes_went_off_a_change_is_rejected_and_dropped() {
+        let mut hub = McpHub::new(
+            McpSettings {
+                writes: ExternalWrites::Ask,
+                enabled: false,
+                ..McpSettings::default()
+            },
+            scoped("mcp-hub-late-test"),
+        );
+        let mut host = TestHost::new();
+        hub.start(&mut host);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let proposal = || Proposal {
+            cluster: ClusterId::new("kind-dev"),
+            cluster_name: "kind-dev".into(),
+            production: false,
+            title: "t".into(),
+            docs: Vec::new(),
+            warnings: Vec::new(),
+        };
+        // A request whose tool call gave up (the receiver is gone) leaves the list.
+        let (reply, answer) = oneshot::channel();
+        hub.requested(
+            ApprovalRequest {
+                proposal: proposal(),
+                reply,
+            },
+            &mut host,
+        );
+        assert_eq!(hub.pending().len(), 1);
+        drop(answer);
+        hub.prune(&mut host);
+        assert!(hub.pending().is_empty());
+
+        // A request that arrives after writes were switched off is rejected at once.
+        hub.settings_changed(
+            McpSettings {
+                writes: ExternalWrites::Off,
+                enabled: false,
+                ..McpSettings::default()
+            },
+            &mut host,
+        );
+        let (reply, answer) = oneshot::channel();
+        hub.requested(
+            ApprovalRequest {
+                proposal: proposal(),
+                reply,
+            },
+            &mut host,
+        );
+        assert!(hub.pending().is_empty());
+        assert_eq!(runtime.block_on(answer).unwrap(), Decision::Rejected);
     }
 }

@@ -36,6 +36,9 @@ async fn handle(log: Log, request: http::Request<Incoming>) -> http::Response<Fu
     let query = request.uri().query().unwrap_or_default().to_string();
     let body = request.into_body().collect().await.unwrap().to_bytes();
     let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    if method == "DELETE" || method == "PATCH" {
+        log.lock().push(format!("BODY {body}"));
+    }
     log.lock().push(format!(
         "{method} {path}{}",
         if query.is_empty() {
@@ -47,6 +50,11 @@ async fn handle(log: Log, request: http::Request<Incoming>) -> http::Response<Fu
     let base = "/apis/apps/v1/namespaces/shop/deployments/web";
     let (code, answer) = match (method.as_str(), path.as_str()) {
         ("GET", p) if p == base => (200, deployment(2)),
+        ("GET", p) if p == format!("{base}/scale") => (
+            200,
+            json!({"apiVersion": "autoscaling/v1", "kind": "Scale", "metadata": {"name": "web", "namespace": "shop"},
+                   "spec": {"replicas": 2}}),
+        ),
         ("PATCH", p) if p == format!("{base}/scale") => (
             200,
             json!({"apiVersion": "autoscaling/v1", "kind": "Scale", "metadata": {"name": "web", "namespace": "shop"},
@@ -172,10 +180,19 @@ fn approver(decision: Decision) -> (Arc<dyn Approver>, Arc<Mutex<Vec<Proposal>>>
     )
 }
 
+/// The JSON bodies of the PATCH and DELETE requests, in order.
+fn bodies(log: &Log) -> Vec<Value> {
+    log.lock()
+        .iter()
+        .filter_map(|line| line.strip_prefix("BODY "))
+        .map(|body| serde_json::from_str(body).unwrap_or(Value::Null))
+        .collect()
+}
+
 fn writes(log: &Log) -> Vec<String> {
     log.lock()
         .iter()
-        .filter(|line| !line.starts_with("GET"))
+        .filter(|line| !line.starts_with("GET") && !line.starts_with("BODY"))
         .cloned()
         .collect()
 }
@@ -284,6 +301,8 @@ async fn a_patch_is_dry_run_then_shown_as_a_diff_then_applied() {
     assert_eq!(sent.len(), 2, "{sent:?}");
     assert!(sent[0].contains("dryRun=All"));
     assert!(!sent[1].contains("dryRun"));
+    // The real patch carries the reviewed version as a precondition.
+    assert_eq!(bodies(&log)[1]["metadata"]["resourceVersion"], "7");
     let seen = seen.lock();
     let doc = &seen[0].docs[0];
     assert!(doc.old.as_deref().unwrap().contains("replicas: 2"));

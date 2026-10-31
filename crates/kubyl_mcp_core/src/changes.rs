@@ -10,10 +10,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use kube::api::{Api, DynamicObject, Patch, PatchParams};
+use kube::api::{Api, DeleteParams, DynamicObject, Patch, PatchParams, Preconditions};
 use kube::discovery::ApiResource;
 use kubyl_kube_core::discovery::ApiResourceInfo;
-use kubyl_resources_core::ops::{self, DeleteOptions, FIELD_MANAGER};
+use kubyl_resources_core::ops::{self, FIELD_MANAGER};
 use kubyl_resources_core::{format, redact, store};
 use kubyl_yaml_core::apply::{self, DocResult, Options, Outcome, Prepared};
 use kubyl_yaml_core::{parse, render};
@@ -124,11 +124,15 @@ enum Action {
         name: String,
         patch_type: String,
         patch: Value,
+        /// The version the user reviewed: the patch fails with a conflict if the object moved on.
+        resource_version: Option<String>,
     },
     Delete {
         resource: ApiResource,
         namespace: Option<String>,
         name: String,
+        /// The object the user reviewed: a replacement with the same name is left alone.
+        uid: Option<String>,
     },
     Scale {
         resource: ApiResource,
@@ -263,8 +267,8 @@ fn refuse_secret(info: &ApiResourceInfo, what: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// An object as masked, comparable YAML: no server-set fields, no status.
-fn display_yaml(mut object: Value, info_kind: (&str, &str)) -> String {
+/// An object without the fields the server sets and without status: what a diff compares.
+fn comparable(mut object: Value, info_kind: (&str, &str)) -> Value {
     if object.get("kind").is_none() {
         object["kind"] = Value::String(info_kind.1.to_string());
     }
@@ -272,13 +276,21 @@ fn display_yaml(mut object: Value, info_kind: (&str, &str)) -> String {
         object["apiVersion"] = Value::String(info_kind.0.to_string());
     }
     render::strip_server_fields(&mut object);
+    object
+}
+
+/// A comparable object as masked YAML.
+fn masked_yaml(mut object: Value) -> String {
     redact::mask_object(&mut object);
     format::to_yaml(&object)
 }
 
-fn live_object(object: Option<DynamicObject>, api_version: &str, kind: &str) -> Option<String> {
-    let value = store::to_json(&object?)?;
-    Some(display_yaml(value, (api_version, kind)))
+fn display_yaml(object: Value, info_kind: (&str, &str)) -> String {
+    masked_yaml(comparable(object, info_kind))
+}
+
+fn live_json(object: Option<DynamicObject>, api_version: &str, kind: &str) -> Option<Value> {
+    Some(comparable(store::to_json(&object?)?, (api_version, kind)))
 }
 
 fn kind_warnings(kind: &str, action: &str, out: &mut Vec<String>) {
@@ -357,17 +369,18 @@ async fn check_apply(context: &ToolContext, args: &Value) -> Result<Checked, Str
             many => format!("Apply {} objects", many.len()),
         },
     )?;
-    for (doc, result) in docs.iter().zip(dry) {
-        let new = match dry_run_result(doc, result)? {
-            Value::Null => continue,
-            value => value,
-        };
-        let api = doc_api(&client, doc);
-        let live = api.get_opt(&doc.name).await.map_err(kube_error)?;
+    let mut changed = Vec::new();
+    for (doc, result) in docs.into_iter().zip(dry) {
         let api_version = doc.gvk.api_version();
-        let old = live_object(live, &api_version, &doc.gvk.kind);
-        let new = display_yaml(new, (&api_version, &doc.gvk.kind));
-        if old.as_deref() == Some(new.as_str()) {
+        let new = comparable(dry_run_result(&doc, result)?, (&api_version, &doc.gvk.kind));
+        let live = doc_api(&client, &doc)
+            .get_opt(&doc.name)
+            .await
+            .map_err(kube_error)?;
+        let old = live_json(live, &api_version, &doc.gvk.kind);
+        // Compare the real values: a changed password masks to the same text on both sides, and
+        // it still has to be shown (and approved) as a change.
+        if old.as_ref() == Some(&new) {
             continue;
         }
         kind_warnings(
@@ -375,19 +388,30 @@ async fn check_apply(context: &ToolContext, args: &Value) -> Result<Checked, Str
             if old.is_some() { "patch" } else { "apply" },
             &mut proposal.warnings,
         );
+        let (old_text, new_text) = (old.clone().map(masked_yaml), masked_yaml(new));
+        if old_text.as_deref() == Some(new_text.as_str()) {
+            proposal.warnings.push(format!(
+                "A credential-like value of {} changes; it is masked here, so the diff looks the same.",
+                doc_name(&doc)
+            ));
+        }
         proposal.docs.push(ChangeDoc {
-            label: format!("{} {}", doc.gvk.kind.to_lowercase(), doc_name(doc)),
-            old,
-            new,
+            label: format!("{} {}", doc.gvk.kind.to_lowercase(), doc_name(&doc)),
+            old: old_text,
+            new: new_text,
         });
+        changed.push(doc);
     }
-    if proposal.docs.is_empty() {
+    if changed.is_empty() {
         return Ok(Checked::Nothing(
             "Nothing would change: the cluster already matches this YAML.".into(),
         ));
     }
     proposal.warnings.dedup();
-    Ok(Checked::Change(Box::new((proposal, Action::Apply(docs)))))
+    Ok(Checked::Change(Box::new((
+        proposal,
+        Action::Apply(changed),
+    ))))
 }
 
 fn doc_name(doc: &Prepared) -> String {
@@ -445,6 +469,30 @@ fn patch_value(args: &Value) -> Result<Value, String> {
     }
 }
 
+/// The patch with the version the user reviewed as a precondition, so it conflicts instead of
+/// overwriting what changed during the approval.
+fn with_precondition(patch_type: &str, mut patch: Value, resource_version: Option<&str>) -> Value {
+    let Some(version) = resource_version else {
+        return patch;
+    };
+    match (patch_type, &mut patch) {
+        ("json", Value::Array(ops)) => {
+            ops.insert(
+                0,
+                json!({"op": "test", "path": "/metadata/resourceVersion", "value": version}),
+            );
+        }
+        (_, Value::Object(map)) => {
+            let metadata = map.entry("metadata").or_insert_with(|| json!({}));
+            if let Some(metadata) = metadata.as_object_mut() {
+                metadata.insert("resourceVersion".into(), Value::String(version.into()));
+            }
+        }
+        _ => {}
+    }
+    patch
+}
+
 fn build_patch(patch_type: &str, value: Value) -> Result<Patch<Value>, String> {
     match patch_type {
         "merge" => Ok(Patch::Merge(value)),
@@ -479,8 +527,9 @@ async fn check_patch(context: &ToolContext, args: &Value) -> Result<Checked, Str
         .await
         .map_err(|e| format!("The server rejected the patch: {}", kube_error(e)))?;
     let api_version = info.gvk.api_version();
-    let old = live_object(Some(live), &api_version, &info.gvk.kind).unwrap_or_default();
-    let new = live_object(Some(result), &api_version, &info.gvk.kind).unwrap_or_default();
+    let resource_version = live.metadata.resource_version.clone();
+    let old = live_json(Some(live), &api_version, &info.gvk.kind).unwrap_or_default();
+    let new = live_json(Some(result), &api_version, &info.gvk.kind).unwrap_or_default();
     if old == new {
         return Ok(Checked::Nothing(
             "Nothing would change: the object already has these values.".into(),
@@ -489,10 +538,17 @@ async fn check_patch(context: &ToolContext, args: &Value) -> Result<Checked, Str
     let what = label(info, namespace, name);
     let mut proposal = proposal(context, format!("Patch {what}"))?;
     kind_warnings(&info.gvk.kind, "patch", &mut proposal.warnings);
+    let (old_text, new_text) = (masked_yaml(old), masked_yaml(new));
+    if old_text == new_text {
+        proposal.warnings.push(
+            "A credential-like value changes; it is masked here, so the diff looks the same."
+                .into(),
+        );
+    }
     proposal.docs.push(ChangeDoc {
         label: what,
-        old: Some(old),
-        new,
+        old: Some(old_text),
+        new: new_text,
     });
     Ok(Checked::Change(Box::new((
         proposal,
@@ -502,6 +558,7 @@ async fn check_patch(context: &ToolContext, args: &Value) -> Result<Checked, Str
             name: name.to_string(),
             patch_type,
             patch: value,
+            resource_version,
         },
     ))))
 }
@@ -519,7 +576,11 @@ async fn check_delete(context: &ToolContext, args: &Value) -> Result<Checked, St
         refuse_helm_release(info, &value)?;
     }
     let api_version = info.gvk.api_version();
-    let old = live_object(Some(live), &api_version, &info.gvk.kind).unwrap_or_default();
+    let uid = live.metadata.uid.clone();
+    let old = display_yaml(
+        store::to_json(&live).unwrap_or_default(),
+        (&api_version, &info.gvk.kind),
+    );
     let what = label(info, namespace, name);
     let mut proposal = proposal(context, format!("Delete {what}"))?;
     kind_warnings(&info.gvk.kind, "delete", &mut proposal.warnings);
@@ -534,6 +595,7 @@ async fn check_delete(context: &ToolContext, args: &Value) -> Result<Checked, St
             resource: store::api_resource(info),
             namespace: namespace.map(String::from),
             name: name.to_string(),
+            uid,
         },
     ))))
 }
@@ -552,12 +614,16 @@ async fn check_scale(context: &ToolContext, args: &Value) -> Result<Checked, Str
         .filter(|n| (0..=10_000).contains(n))
         .ok_or("`replicas` must be a number from 0 to 10000.")? as u32;
     let api = api_for(client(context)?, info, namespace);
-    let live = api.get(name).await.map_err(kube_error)?;
-    let current = live
-        .data
-        .pointer("/spec/replicas")
-        .and_then(Value::as_u64)
-        .unwrap_or(1) as u32;
+    // The count the scale subresource reports is the one `scale` changes (a custom resource may
+    // keep its replicas elsewhere than `.spec.replicas`).
+    let current = api
+        .get_scale(name)
+        .await
+        .map_err(kube_error)?
+        .spec
+        .and_then(|spec| spec.replicas)
+        .unwrap_or(1)
+        .max(0) as u32;
     let what = label(info, namespace, name);
     if current == replicas {
         return Ok(Checked::Nothing(format!(
@@ -602,9 +668,26 @@ async fn check_restart(context: &ToolContext, args: &Value) -> Result<Checked, S
         return Err("Only Deployments, StatefulSets and DaemonSets can be restarted.".into());
     }
     let api = api_for(client(context)?, info, namespace);
-    api.get(name).await.map_err(kube_error)?;
+    let live = api.get(name).await.map_err(kube_error)?;
+    let current = live
+        .data
+        .pointer("/spec/template/metadata/annotations/kubectl.kubernetes.io~1restartedAt")
+        .and_then(Value::as_str);
     let what = label(info, namespace, name);
     let mut proposal = proposal(context, format!("Restart {what}"))?;
+    let annotation = |value: &str| {
+        format!(
+            "spec:\n  template:\n    metadata:\n      annotations:\n        kubectl.kubernetes.io/restartedAt: {value}\n"
+        )
+    };
+    proposal.docs.push(ChangeDoc {
+        label: what.clone(),
+        old: Some(match current {
+            Some(value) => annotation(value),
+            None => "spec:\n  template:\n    metadata:\n      annotations: {}\n".into(),
+        }),
+        new: annotation("<time of approval>"),
+    });
     proposal.warnings.push(
         "Its pods are replaced one by one (a rolling restart); the workload may be briefly degraded."
             .into(),
@@ -660,6 +743,7 @@ async fn execute(client: kube::Client, action: Action) -> Result<String, String>
             name,
             patch_type,
             patch,
+            resource_version,
         } => {
             let api = match &namespace {
                 Some(ns) => Api::<DynamicObject>::namespaced_with(client, ns, &resource),
@@ -669,6 +753,7 @@ async fn execute(client: kube::Client, action: Action) -> Result<String, String>
                 field_manager: Some(FIELD_MANAGER.into()),
                 ..Default::default()
             };
+            let patch = with_precondition(&patch_type, patch, resource_version.as_deref());
             api.patch(&name, &params, &build_patch(&patch_type, patch)?)
                 .await
                 .map_err(|e| format!("The patch failed: {}", kube_error(e)))?;
@@ -678,16 +763,31 @@ async fn execute(client: kube::Client, action: Action) -> Result<String, String>
             resource,
             namespace,
             name,
+            uid,
         } => {
-            ops::delete(
-                client,
-                resource,
-                namespace,
-                name.clone(),
-                DeleteOptions::default(),
-            )
-            .await?;
-            Ok(format!("Deleted {name}."))
+            let api = match &namespace {
+                Some(ns) => Api::<DynamicObject>::namespaced_with(client, ns, &resource),
+                None => Api::all_with(client, &resource),
+            };
+            let params = DeleteParams {
+                propagation_policy: Some(kube::api::PropagationPolicy::Background),
+                // Only the object the user reviewed: a replacement with the same name stays.
+                preconditions: uid.map(|uid| Preconditions {
+                    uid: Some(uid),
+                    resource_version: None,
+                }),
+                ..Default::default()
+            };
+            match api.delete(&name, &params).await {
+                Ok(_) => Ok(format!("Deleted {name}.")),
+                Err(kube::Error::Api(status)) if status.code == 404 => {
+                    Ok(format!("{name} was already gone."))
+                }
+                Err(kube::Error::Api(status)) if status.code == 409 => Err(format!(
+                    "{name} was replaced after the user reviewed it, so it was not deleted."
+                )),
+                Err(err) => Err(kube_error(err)),
+            }
         }
         Action::Scale {
             resource,

@@ -90,6 +90,11 @@ pub fn init_with(live: bool, cx: &mut App) {
     // Ask about every change an outside client proposes, once.
     let mut asked = HashSet::new();
     cx.observe(&service, move |service, cx| {
+        // Without a window there is nothing to show it in; the service notifies again every few
+        // seconds while a change waits, so it is asked once a window exists.
+        if cx.windows().is_empty() {
+            return;
+        }
         let waiting: Vec<_> = service
             .read(cx)
             .pending()

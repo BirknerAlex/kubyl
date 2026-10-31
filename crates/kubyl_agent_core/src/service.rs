@@ -207,6 +207,9 @@ pub struct Thread {
     grant: Option<ExecuteGrant>,
     mcp: Option<McpServer>,
     tasks: Vec<TaskHandle>,
+    /// Receives the change tools' requests; lives as long as the thread (the per-turn `tasks` are
+    /// cleared when a turn ends).
+    approvals: Option<TaskHandle>,
     /// Shown once in the thread (e.g. why `kubectl` reaches nothing).
     pub notes: Vec<String>,
     /// Whether the agent may propose changes to the cluster (the panel's "Allow changes"
@@ -494,6 +497,14 @@ impl AgentCore {
             return;
         }
         let specs = agents::configured(&settings);
+        if !settings.allow_writes {
+            for thread in &mut self.threads {
+                thread.writes.send_replace(false);
+                thread
+                    .pending
+                    .retain(|p| !matches!(p.kind, PendingKind::Change { .. }));
+            }
+        }
         self.settings = settings;
         self.agents = specs
             .into_iter()
@@ -579,6 +590,7 @@ impl AgentCore {
             grant: None,
             mcp: None,
             tasks: Vec::new(),
+            approvals: None,
             notes: Vec::new(),
             writes: watch::channel(false).0,
             approver,
@@ -594,7 +606,7 @@ impl AgentCore {
             Flow::Continue
         });
         if let Some(thread) = self.thread_mut(id) {
-            thread.tasks.push(task);
+            thread.approvals = Some(task);
         }
         self.ensure_agent(&new.agent, host);
         host.notify();
@@ -827,9 +839,10 @@ impl AgentCore {
             approval: Some(request.reply),
         };
         match self.thread_mut(id) {
-            Some(thread) => thread.pending.push(pending),
-            // The thread is gone: dropping the request rejects it.
-            None => drop(pending),
+            Some(thread) if thread.writes_enabled() => thread.pending.push(pending),
+            // The thread is gone, or changes were switched off while the request was on its
+            // way: dropping the request rejects it.
+            _ => drop(pending),
         }
     }
 
@@ -1820,6 +1833,7 @@ impl AgentCore {
             grant: None,
             mcp: None,
             tasks: Vec::new(),
+            approvals: None,
             notes: Vec::new(),
             writes: watch::channel(false).0,
             approver: ChannelApprover::new().0,
@@ -2289,6 +2303,39 @@ mod tests {
         assert!(h.core.thread(id).unwrap().pending.is_empty());
         assert!(!h.core.thread(id).unwrap().writes_enabled());
         assert_eq!(h._runtime.block_on(third).unwrap(), Decision::Rejected);
+    }
+
+    #[test]
+    fn change_requests_still_arrive_after_turns_and_stop_when_settings_remove_writes() {
+        use kubyl_mcp_core::approval::Approver as _;
+
+        let (mut h, id) = harness(Vec::new());
+        h.core.set_writes(id, true, &mut h.host);
+        // A turn ends (which clears the thread's per-turn tasks); requests must still arrive.
+        h.core.send(id, "go".into(), Vec::new(), &mut h.host);
+        h.host.run_until(&mut h.core, |core, _| {
+            core.thread(id)
+                .is_some_and(|t| t.status == ThreadStatus::Idle && !t.transcript.entries.is_empty())
+        });
+        let approver = h.core.thread(id).unwrap().approver.clone();
+        let waiting = h._runtime.spawn(approver.approve(proposal()));
+        h.host.run_until(&mut h.core, |core, _| {
+            core.thread(id).is_some_and(|t| !t.pending.is_empty())
+        });
+
+        // Settings that remove writes revoke the switch and drop what waits.
+        let mut settings = h.core.settings().clone();
+        settings.allow_writes = false;
+        h.core.settings_changed(settings, &mut h.host);
+        assert!(!h.core.thread(id).unwrap().writes_enabled());
+        assert!(h.core.thread(id).unwrap().pending.is_empty());
+        assert_eq!(h._runtime.block_on(waiting).unwrap(), Decision::Rejected);
+
+        // A request that was already on its way is dropped, not shown.
+        let late = h._runtime.spawn(approver.approve(proposal()));
+        h.host.run_until(&mut h.core, |_, _| late.is_finished());
+        assert_eq!(h._runtime.block_on(late).unwrap(), Decision::Rejected);
+        assert!(h.core.thread(id).unwrap().pending.is_empty());
     }
 
     #[test]

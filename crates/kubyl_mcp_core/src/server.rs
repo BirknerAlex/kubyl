@@ -205,7 +205,11 @@ async fn accept_loop(listener: TcpListener, shared: Arc<Shared>) {
 fn host_is_loopback(host: &str, port: u16) -> bool {
     let (name, given) = match host.rsplit_once(':') {
         Some((name, given)) if !given.is_empty() && given.bytes().all(|b| b.is_ascii_digit()) => {
-            (name, given.parse::<u16>().ok())
+            // A port that doesn't parse (65536) is not ours.
+            match given.parse::<u16>() {
+                Ok(given) => (name, Some(given)),
+                Err(_) => return false,
+            }
         }
         _ => (host, None),
     };
@@ -267,6 +271,14 @@ async fn handle(shared: &Shared, request: Request<Incoming>) -> Response<Full<By
 
 /// One JSON-RPC message in, its answer out (`None` for notifications).
 async fn handle_message(shared: &Shared, text: &str) -> Option<Value> {
+    // A tool call is a request: without an id nobody could receive its result.
+    if let Ok(message) = serde_json::from_str::<Value>(text)
+        && message["method"] == "tools/call"
+        && message.get("id").is_none_or(Value::is_null)
+    {
+        let error = RpcError::new(RpcError::INVALID_REQUEST, "tools/call needs an id");
+        return Some(json!({ "jsonrpc": "2.0", "id": null, "error": error.to_value() }));
+    }
     rpc::handle_single(text, |method, params| async move {
         match method.as_str() {
             "initialize" => Some(Ok(initialize(shared, &params))),
@@ -534,6 +546,11 @@ mod tests {
             serde_json::from_str(&raw_post(&server, Some(&token), false, list).await.1).unwrap();
         assert_eq!(body["result"]["tools"].as_array().unwrap().len(), 11);
 
+        let no_id = r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"cluster_info"}}"#;
+        let body: Value =
+            serde_json::from_str(&raw_post(&server, Some(&token), false, no_id).await.1).unwrap();
+        assert_eq!(body["error"]["code"], RpcError::INVALID_REQUEST);
+
         let call = r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"cluster_info","arguments":{}}}"#;
         let body: Value =
             serde_json::from_str(&raw_post(&server, Some(&token), false, call).await.1).unwrap();
@@ -608,6 +625,7 @@ mod tests {
         assert!(!host_is_loopback("evil.example.com:7421", 7421));
         assert!(!host_is_loopback("127.0.0.1.evil.example.com", 7421));
         assert!(!host_is_loopback("", 7421));
+        assert!(!host_is_loopback("localhost:65536", 7421));
     }
 
     #[tokio::test]

@@ -15,9 +15,6 @@ use kubyl_ui::{
     v_flex,
 };
 
-/// Most diff lines shown per object.
-const MAX_LINES: usize = 400;
-
 fn small(text: impl Into<SharedString>, color: gpui::Hsla) -> impl IntoElement {
     div()
         .text_size(u(11.5))
@@ -25,23 +22,71 @@ fn small(text: impl Into<SharedString>, color: gpui::Hsla) -> impl IntoElement {
         .child(text.into())
 }
 
+/// How many diff lines one object shows (changes with three lines of context).
+const MAX_LINES: usize = 600;
+
+/// The groups of a line diff with three lines of context, and whether `MAX_LINES` cut it.
+fn rendered_lines(old: Option<&str>, new: &str) -> (Vec<(similar::ChangeTag, String)>, usize) {
+    let (old, new) = (old.unwrap_or(""), new);
+    let diff = similar::TextDiff::from_lines(old, new);
+    let mut lines = Vec::new();
+    let mut omitted = 0;
+    for (i, group) in diff.grouped_ops(3).iter().enumerate() {
+        if i > 0 {
+            lines.push((similar::ChangeTag::Equal, "⋯".to_string()));
+        }
+        for op in group {
+            for change in diff.iter_changes(op) {
+                if lines.len() >= MAX_LINES {
+                    omitted += 1;
+                } else {
+                    lines.push((
+                        change.tag(),
+                        change.value().trim_end_matches('\n').to_string(),
+                    ));
+                }
+            }
+        }
+    }
+    (lines, omitted)
+}
+
+/// Whether the diff of any object of `proposal` is cut. Such a change can't be approved: the
+/// user must see all of it.
+pub fn is_truncated(proposal: &Proposal) -> bool {
+    proposal
+        .docs
+        .iter()
+        .any(|doc| rendered_lines(doc.old.as_deref(), &doc.new).1 > 0)
+}
+
 /// A line diff of `old` against `new` under `label`.
 pub fn diff_block(label: &str, old: Option<&str>, new: &str, colors: &Colors) -> AnyElement {
-    let diff = similar::TextDiff::from_lines(old.unwrap_or(""), new);
+    let (shown, omitted) = rendered_lines(old, new);
     let mut lines: Vec<AnyElement> = Vec::new();
-    for change in diff.iter_all_changes().take(MAX_LINES) {
-        let (sign, color, bg) = match change.tag() {
+    for (tag, text) in shown {
+        let (sign, color, bg) = match tag {
             similar::ChangeTag::Delete => ("-", colors.red, Some(colors.red.opacity(0.08))),
             similar::ChangeTag::Insert => ("+", colors.green, Some(colors.green.opacity(0.08))),
             similar::ChangeTag::Equal => (" ", colors.text_dim, None),
         };
-        let text = format!("{sign} {}", change.value().trim_end_matches('\n'));
         lines.push(
             div()
                 .px(u(6.0))
                 .when_some(bg, |this, bg| this.bg(bg))
                 .text_color(color)
-                .child(text)
+                .child(format!("{sign} {text}"))
+                .into_any_element(),
+        );
+    }
+    if omitted > 0 {
+        lines.push(
+            div()
+                .px(u(6.0))
+                .text_color(colors.yellow)
+                .child(format!(
+                    "… {omitted} more lines not shown. This change is too large to review here; reject it and ask for smaller steps."
+                ))
                 .into_any_element(),
         );
     }
@@ -178,8 +223,9 @@ impl AskDialog {
     }
 
     fn approvable(&self, cx: &App) -> bool {
-        !self.proposal.production
-            || self.typed.read(cx).value().trim() == self.proposal.cluster_name
+        !is_truncated(&self.proposal)
+            && (!self.proposal.production
+                || self.typed.read(cx).value().trim() == self.proposal.cluster_name)
     }
 
     fn decide(&mut self, decision: Decision, window: &mut Window, cx: &mut Context<Self>) {
@@ -315,5 +361,53 @@ impl Render for AskDialog {
                         }
                     }),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn doc(old: &str, new: &str) -> ChangeDoc {
+        ChangeDoc {
+            label: "x".into(),
+            old: Some(old.into()),
+            new: new.into(),
+        }
+    }
+
+    fn proposal(docs: Vec<ChangeDoc>) -> Proposal {
+        Proposal {
+            cluster: kubyl_core::ClusterId::new("kind"),
+            cluster_name: "kind".into(),
+            production: false,
+            title: "t".into(),
+            docs,
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_change_late_in_a_long_object_is_shown_with_context() {
+        let lines: Vec<String> = (0..2000).map(|i| format!("k{i}: v")).collect();
+        let old = lines.join("\n");
+        let mut changed = lines.clone();
+        changed[1900] = "k1900: other".into();
+        let new = changed.join("\n");
+        let (shown, omitted) = rendered_lines(Some(&old), &new);
+        assert_eq!(omitted, 0);
+        assert!(shown.len() < 20, "{}", shown.len());
+        assert!(shown.iter().any(|(_, l)| l == "k1900: other"));
+        assert!(!is_truncated(&proposal(vec![doc(&old, &new)])));
+    }
+
+    #[test]
+    fn a_diff_that_is_cut_cannot_be_approved() {
+        let old = String::new();
+        let new: String = (0..2000).map(|i| format!("k{i}: v\n")).collect();
+        let (shown, omitted) = rendered_lines(Some(&old), &new);
+        assert_eq!(shown.len(), MAX_LINES);
+        assert_eq!(omitted, 2000 - MAX_LINES);
+        assert!(is_truncated(&proposal(vec![doc(&old, &new)])));
     }
 }

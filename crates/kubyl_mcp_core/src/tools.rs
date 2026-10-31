@@ -756,7 +756,13 @@ async fn logs(context: &ToolContext, args: &Value) -> Result<String, String> {
     };
     let tail = int_arg(args, "tail_lines")
         .map(|t| t.clamp(1, 5000))
-        .unwrap_or(context.log_lines.max(1) as i64);
+        .unwrap_or(
+            (if context.log_lines == 0 {
+                500
+            } else {
+                context.log_lines
+            }) as i64,
+        );
     let params = LogParams {
         container,
         previous: bool_arg(args, "previous"),

@@ -1684,6 +1684,7 @@ fn pending_card(thread: ThreadId, pending: u64, kind: &PendingKind, colors: &Col
         PendingKind::Form { .. } => card.into_any_element(),
         PendingKind::Change { proposal } => {
             let production = proposal.production;
+            let too_large = kubyl_mcp::view::is_truncated(proposal);
             let for_dialog = proposal.clone();
             card.child(header(IconName::Diff, proposal.title.clone()))
                 .child(kubyl_mcp::view::proposal_body(proposal, colors))
@@ -1697,6 +1698,7 @@ fn pending_card(thread: ThreadId, pending: u64, kind: &PendingKind, colors: &Col
                                 } else {
                                     "Apply"
                                 })
+                                .disabled(too_large)
                                 .on_click(move |event, window, cx| {
                                     if production {
                                         // A production cluster needs its name typed.

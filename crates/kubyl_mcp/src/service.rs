@@ -105,6 +105,10 @@ impl McpService {
 
     /// Hands the server the current state of every cluster (only while it is on).
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        if !self.core.pending().is_empty() {
+            // Lets the approval observer retry when no window was open before.
+            cx.notify();
+        }
         if self.core.settings().enabled {
             let contexts = all_tool_contexts(cx);
             self.core.set_clusters(contexts);
