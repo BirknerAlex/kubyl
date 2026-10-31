@@ -1,0 +1,29 @@
+[package]
+name = "kubyl_mcp"
+description = "Kubyl's MCP server in the app: the service that keeps it running, the approval dialog for changes, the status bar item and the actions that copy a client's setup."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+gpui.workspace = true
+gpui-component.workspace = true
+kubyl_alerts.workspace = true
+kubyl_core.workspace = true
+kubyl_kube.workspace = true
+kubyl_mcp_core.workspace = true
+kubyl_metrics.workspace = true
+kubyl_resources.workspace = true
+kubyl_settings.workspace = true
+kubyl_ui.workspace = true
+similar.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }

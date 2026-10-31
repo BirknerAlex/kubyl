@@ -19,15 +19,14 @@ dirs.workspace = true
 gpui.workspace = true
 gpui-component.workspace = true
 jiff.workspace = true
-kubyl_alerts.workspace = true
 kubyl_core.workspace = true
 kubyl_kube.workspace = true
-kubyl_metrics.workspace = true
+kubyl_mcp.workspace = true
+kubyl_mcp_core.workspace = true
 kubyl_resources.workspace = true
 kubyl_settings.workspace = true
 kubyl_ui.workspace = true
 serde_json.workspace = true
-similar.workspace = true
 
 [dev-dependencies]
 kubyl_agent_core = { workspace = true, features = ["test-support"] }

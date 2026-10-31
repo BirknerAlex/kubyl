@@ -70,6 +70,7 @@ fn main() {
             kubyl_alerts::init(cx);
             kubyl_netflow::init(cx);
             kubyl_prometheus::init(cx);
+            kubyl_mcp::init(cx);
             kubyl_agent::init(cx);
             kubyl_selfupdate::init(cx);
             kubyl_flux::init(cx);
