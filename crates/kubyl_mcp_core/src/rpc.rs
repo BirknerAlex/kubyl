@@ -86,8 +86,18 @@ where
         let error = RpcError::new(RpcError::PARSE_ERROR, "Parse error").to_value();
         return Some(json!({ "jsonrpc": "2.0", "id": null, "error": error }));
     };
-    let method = value.get("method").and_then(Value::as_str)?;
     let id = value.get("id").filter(|id| !id.is_null()).cloned();
+    let Some(method) = value.get("method").and_then(Value::as_str) else {
+        // An answer to something we sent gets no reply; a request without a usable method does.
+        let is_response = value.get("result").is_some() || value.get("error").is_some();
+        return match id {
+            Some(id) if !is_response => {
+                let error = RpcError::new(RpcError::INVALID_REQUEST, "Invalid Request");
+                Some(json!({ "jsonrpc": "2.0", "id": id, "error": error.to_value() }))
+            }
+            _ => None,
+        };
+    };
     let params = value.get("params").cloned().unwrap_or(Value::Null);
     let result = handler(method.to_string(), params).await;
     let id = id?;
@@ -126,6 +136,19 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(unknown["error"]["code"], RpcError::METHOD_NOT_FOUND);
+        // A request with an id but no method is an error; a response is ignored.
+        let no_method = handle_single(r#"{"jsonrpc":"2.0","id":3}"#, |_, _| async { None })
+            .await
+            .unwrap();
+        assert_eq!(no_method["error"]["code"], RpcError::INVALID_REQUEST);
+        assert_eq!(no_method["id"], 3);
+        assert!(
+            handle_single(r#"{"jsonrpc":"2.0","id":4,"result":{}}"#, |_, _| async {
+                None
+            })
+            .await
+            .is_none()
+        );
         let broken = handle_single("{", |_, _| async { None }).await.unwrap();
         assert_eq!(broken["error"]["code"], RpcError::PARSE_ERROR);
     }

@@ -215,6 +215,8 @@ async fn an_approved_scale_is_sent_once_and_shows_the_before_and_after() {
         writes(&log),
         ["PATCH /apis/apps/v1/namespaces/shop/deployments/web/scale?&fieldManager=kubyl"]
     );
+    // The scale endpoint got exactly the count that was approved.
+    assert_eq!(bodies(&log), [json!({"spec": {"replicas": 5}})]);
     let seen = seen.lock();
     assert_eq!(seen.len(), 1);
     assert_eq!(seen[0].title, "Scale deployment shop/web from 2 to 5");
