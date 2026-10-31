@@ -43,6 +43,8 @@ kubyl_kubeconfig = { path = "crates/kubyl_kubeconfig" }
 kubyl_kubeconfig_core = { path = "crates/kubyl_kubeconfig_core" }
 kubyl_logs = { path = "crates/kubyl_logs" }
 kubyl_logs_core = { path = "crates/kubyl_logs_core" }
+kubyl_mcp = { path = "crates/kubyl_mcp" }
+kubyl_mcp_core = { path = "crates/kubyl_mcp_core" }
 kubyl_metrics = { path = "crates/kubyl_metrics" }
 kubyl_metrics_core = { path = "crates/kubyl_metrics_core" }
 kubyl_netflow = { path = "crates/kubyl_netflow" }

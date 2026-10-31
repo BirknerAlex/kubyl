@@ -1,16 +1,23 @@
-//! Kubyl's MCP server: the cluster tools of one thread, for its agent.
+//! Kubyl's MCP server over loopback HTTP.
 //!
-//! One server per thread listens on `127.0.0.1` (a random port) and speaks MCP's streamable
-//! HTTP transport in its simplest form: every `POST /mcp` carries one JSON-RPC message and gets
-//! a JSON answer (no event streams, no sessions). Each request needs the thread's random bearer
-//! token (memory only, compared in constant time); requests from browsers (an `Origin` header)
-//! are refused. Dropping [`McpServer`] stops it.
+//! A server speaks MCP's streamable HTTP transport in its simplest form: every `POST /mcp`
+//! carries one JSON-RPC message and gets a JSON answer (no event streams, no sessions). What it
+//! offers comes from a [`Handler`]: the tools of one cluster for one agent thread, or those of
+//! every connected cluster for outside clients (Claude Code and the like, see
+//! [`crate::hub`]).
+//!
+//! Safety rules, for both: it listens on `127.0.0.1` (and `::1` when the port is fixed) only;
+//! every request needs the bearer token (compared in constant time); requests that carry an
+//! `Origin` header (browsers) or a `Host` other than loopback (DNS rebinding) are refused.
+//! Dropping [`McpServer`] stops it.
 //!
 //! Agents that can't reach an HTTP MCP server get [`bridge`]: the Kubyl binary started as
 //! `kubyl mcp-bridge`, which relays stdio to the same endpoint.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+
+use futures::future::BoxFuture;
 
 use base64::Engine as _;
 use http::{Method, Request, Response, StatusCode, header};
@@ -19,10 +26,10 @@ use hyper::body::{Bytes, Incoming};
 use hyper_util::rt::TokioIo;
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 
-use crate::jsonrpc::{self, RpcError};
-use crate::tools::{self, ToolContext};
+use crate::rpc::{self, RpcError};
+use crate::tools::ToolOutput;
 
 /// The MCP server's name in the agent's tool list (`mcp__kubyl__…`).
 pub const SERVER_NAME: &str = "kubyl";
@@ -37,10 +44,15 @@ const PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "
 /// Largest request body.
 const MAX_BODY: usize = 1024 * 1024;
 
-const INSTRUCTIONS: &str = "Kubyl's read-only view of one Kubernetes cluster, through the user's own account. \
-Start with cluster_info. Secret values, private keys and token-like strings are masked; \
-Kubyl never reveals them, so don't try to work around the masking. \
-These tools can't change the cluster; when a change would help, show the user the manifest or command.";
+/// What a server offers.
+pub trait Handler: Send + Sync + 'static {
+    /// The `instructions` of the MCP `initialize` answer.
+    fn instructions(&self) -> String;
+    /// The tools for `tools/list`.
+    fn tools(&self) -> Vec<Value>;
+    /// Runs a tool. Failures are answers (`is_error`), never panics.
+    fn call<'a>(&'a self, name: &'a str, arguments: Value) -> BoxFuture<'a, ToolOutput>;
+}
 
 /// A tool call, for the thread's transcript.
 #[derive(Clone, Debug, PartialEq)]
@@ -54,7 +66,7 @@ pub struct ToolActivity {
 pub struct McpServer {
     pub addr: SocketAddr,
     token: String,
-    task: tokio::task::JoinHandle<()>,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl std::fmt::Debug for McpServer {
@@ -67,7 +79,9 @@ impl std::fmt::Debug for McpServer {
 
 impl Drop for McpServer {
     fn drop(&mut self) {
-        self.task.abort();
+        for task in &self.tasks {
+            task.abort();
+        }
     }
 }
 
@@ -121,47 +135,81 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 
 struct Shared {
     token: String,
-    context: watch::Receiver<ToolContext>,
+    port: u16,
+    handler: Arc<dyn Handler>,
     activity: Option<mpsc::UnboundedSender<ToolActivity>>,
 }
 
-/// Starts a server for one thread. Must run inside a Tokio runtime.
-pub async fn serve(
-    context: watch::Receiver<ToolContext>,
-    activity: Option<mpsc::UnboundedSender<ToolActivity>>,
-) -> std::io::Result<McpServer> {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+/// How a server starts.
+#[derive(Debug, Default)]
+pub struct ServeOptions {
+    /// The TCP port; 0 picks a free one (agent threads), anything else is fixed (the outside
+    /// server, which clients are configured with).
+    pub port: u16,
+    /// The bearer token; `None` makes a random one.
+    pub token: Option<String>,
+    /// Told about every tool call.
+    pub activity: Option<mpsc::UnboundedSender<ToolActivity>>,
+}
+
+/// Starts a server. Must run inside a Tokio runtime.
+pub async fn serve(handler: Arc<dyn Handler>, options: ServeOptions) -> std::io::Result<McpServer> {
+    let listener = TcpListener::bind(("127.0.0.1", options.port)).await?;
     let addr = listener.local_addr()?;
-    let token = new_token()?;
+    let token = match options.token {
+        Some(token) => token,
+        None => new_token()?,
+    };
     let shared = Arc::new(Shared {
         token: token.clone(),
-        context,
-        activity,
+        port: addr.port(),
+        handler,
+        activity: options.activity,
     });
-    let task = tokio::spawn(async move {
-        let mut connections = tokio::task::JoinSet::new();
-        loop {
-            let Ok((stream, _)) = listener.accept().await else {
-                // A lasting error (out of file descriptors) mustn't spin the runtime.
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                continue;
-            };
-            let shared = shared.clone();
-            connections.spawn(async move {
-                let service = hyper::service::service_fn(move |request| {
-                    let shared = shared.clone();
-                    async move { Ok::<_, std::convert::Infallible>(handle(&shared, request).await) }
-                });
-                hyper::server::conn::http1::Builder::new()
-                    .serve_connection(TokioIo::new(stream), service)
-                    .await
-                    .ok();
-            });
-            // Reap finished connections so the set doesn't grow.
-            while connections.try_join_next().is_some() {}
+    let mut tasks = vec![tokio::spawn(accept_loop(listener, shared.clone()))];
+    if options.port != 0 {
+        // Clients that resolve `localhost` to ::1 first. Best effort: not every host has IPv6.
+        if let Ok(listener) = TcpListener::bind(("::1", addr.port())).await {
+            tasks.push(tokio::spawn(accept_loop(listener, shared)));
         }
-    });
-    Ok(McpServer { addr, token, task })
+    }
+    Ok(McpServer { addr, token, tasks })
+}
+
+async fn accept_loop(listener: TcpListener, shared: Arc<Shared>) {
+    let mut connections = tokio::task::JoinSet::new();
+    loop {
+        let Ok((stream, _)) = listener.accept().await else {
+            // A lasting error (out of file descriptors) mustn't spin the runtime.
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            continue;
+        };
+        let shared = shared.clone();
+        connections.spawn(async move {
+            let service = hyper::service::service_fn(move |request| {
+                let shared = shared.clone();
+                async move { Ok::<_, std::convert::Infallible>(handle(&shared, request).await) }
+            });
+            hyper::server::conn::http1::Builder::new()
+                .serve_connection(TokioIo::new(stream), service)
+                .await
+                .ok();
+        });
+        // Reap finished connections so the set doesn't grow.
+        while connections.try_join_next().is_some() {}
+    }
+}
+
+/// Whether a `Host` header names this machine's loopback address and our port. A page on
+/// another site that resolves its own name to 127.0.0.1 (DNS rebinding) sends its own name.
+fn host_is_loopback(host: &str, port: u16) -> bool {
+    let (name, given) = match host.rsplit_once(':') {
+        Some((name, given)) if !given.is_empty() && given.bytes().all(|b| b.is_ascii_digit()) => {
+            (name, given.parse::<u16>().ok())
+        }
+        _ => (host, None),
+    };
+    matches!(name, "127.0.0.1" | "localhost" | "[::1]") && given.is_none_or(|p| p == port)
 }
 
 fn reply(status: StatusCode, body: impl Into<Bytes>, json: bool) -> Response<Full<Bytes>> {
@@ -180,6 +228,14 @@ async fn handle(shared: &Shared, request: Request<Incoming>) -> Response<Full<By
     }
     // Browsers send an Origin; agents don't. A page must never reach these tools.
     if request.headers().contains_key(header::ORIGIN) {
+        return reply(StatusCode::FORBIDDEN, "", false);
+    }
+    if let Some(host) = request
+        .headers()
+        .get(header::HOST)
+        .map(|h| h.to_str().unwrap_or_default().to_ascii_lowercase())
+        && !host_is_loopback(&host, shared.port)
+    {
         return reply(StatusCode::FORBIDDEN, "", false);
     }
     let authorized = request
@@ -211,11 +267,11 @@ async fn handle(shared: &Shared, request: Request<Incoming>) -> Response<Full<By
 
 /// One JSON-RPC message in, its answer out (`None` for notifications).
 async fn handle_message(shared: &Shared, text: &str) -> Option<Value> {
-    jsonrpc::handle_single(text, |method, params| async move {
+    rpc::handle_single(text, |method, params| async move {
         match method.as_str() {
-            "initialize" => Some(Ok(initialize(&params))),
+            "initialize" => Some(Ok(initialize(shared, &params))),
             "ping" => Some(Ok(json!({}))),
-            "tools/list" => Some(Ok(json!({ "tools": tools::definitions() }))),
+            "tools/list" => Some(Ok(json!({ "tools": shared.handler.tools() }))),
             "tools/call" => Some(call_tool(shared, &params).await),
             m if m.starts_with("notifications/") => Some(Ok(Value::Null)),
             _ => None,
@@ -224,7 +280,7 @@ async fn handle_message(shared: &Shared, text: &str) -> Option<Value> {
     .await
 }
 
-fn initialize(params: &Value) -> Value {
+fn initialize(shared: &Shared, params: &Value) -> Value {
     let requested = params["protocolVersion"].as_str().unwrap_or_default();
     let version = PROTOCOL_VERSIONS
         .iter()
@@ -234,7 +290,7 @@ fn initialize(params: &Value) -> Value {
         "protocolVersion": version,
         "capabilities": { "tools": { "listChanged": false } },
         "serverInfo": { "name": SERVER_NAME, "title": "Kubyl", "version": env!("CARGO_PKG_VERSION") },
-        "instructions": INSTRUCTIONS,
+        "instructions": shared.handler.instructions(),
     })
 }
 
@@ -247,8 +303,7 @@ async fn call_tool(shared: &Shared, params: &Value) -> Result<Value, RpcError> {
         .cloned()
         .filter(|a| !a.is_null())
         .unwrap_or_else(|| json!({}));
-    let context = shared.context.borrow().clone();
-    let output = tools::call(&context, name, &arguments).await;
+    let output = shared.handler.call(name, arguments.clone()).await;
     if let Some(activity) = &shared.activity {
         activity
             .send(ToolActivity {
@@ -385,6 +440,20 @@ async fn post(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::handler::{Scope, ToolsHandler};
+    use crate::tools::ToolContext;
+    use tokio::sync::watch;
+
+    fn thread_handler(rx: watch::Receiver<ToolContext>) -> Arc<dyn Handler> {
+        Arc::new(ToolsHandler::new(Scope::Cluster(rx), None))
+    }
+
+    fn options(activity: Option<mpsc::UnboundedSender<ToolActivity>>) -> ServeOptions {
+        ServeOptions {
+            activity,
+            ..ServeOptions::default()
+        }
+    }
 
     fn context() -> ToolContext {
         ToolContext {
@@ -429,7 +498,9 @@ mod tests {
     async fn speaks_mcp_with_the_token_only() {
         let (_tx, rx) = watch::channel(context());
         let (activity_tx, mut activity) = mpsc::unbounded_channel();
-        let server = serve(rx, Some(activity_tx)).await.unwrap();
+        let server = serve(thread_handler(rx), options(Some(activity_tx)))
+            .await
+            .unwrap();
         let token = server.token().to_string();
 
         let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}"#;
@@ -478,7 +549,7 @@ mod tests {
     #[tokio::test]
     async fn the_bridge_relays_stdio() {
         let (_tx, rx) = watch::channel(context());
-        let server = serve(rx, None).await.unwrap();
+        let server = serve(thread_handler(rx), options(None)).await.unwrap();
         let input = concat!(
             r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#,
             "\n",
@@ -525,6 +596,41 @@ mod tests {
                 .unwrap()
                 .contains("Kubyl isn't reachable")
         );
+    }
+
+    #[test]
+    fn only_loopback_hosts_on_our_port_pass() {
+        assert!(host_is_loopback("127.0.0.1:7421", 7421));
+        assert!(host_is_loopback("localhost:7421", 7421));
+        assert!(host_is_loopback("[::1]:7421", 7421));
+        assert!(host_is_loopback("localhost", 7421));
+        assert!(!host_is_loopback("127.0.0.1:80", 7421));
+        assert!(!host_is_loopback("evil.example.com:7421", 7421));
+        assert!(!host_is_loopback("127.0.0.1.evil.example.com", 7421));
+        assert!(!host_is_loopback("", 7421));
+    }
+
+    #[tokio::test]
+    async fn a_rebound_host_name_is_refused() {
+        let (_tx, rx) = watch::channel(context());
+        let server = serve(thread_handler(rx), options(None)).await.unwrap();
+        let stream = tokio::net::TcpStream::connect(server.addr).await.unwrap();
+        let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+            .await
+            .unwrap();
+        tokio::spawn(connection);
+        let request = Request::post("/mcp")
+            .header(
+                header::HOST,
+                format!("evil.example.com:{}", server.addr.port()),
+            )
+            .header(header::AUTHORIZATION, format!("Bearer {}", server.token()))
+            .body(Full::new(Bytes::from(
+                r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#,
+            )))
+            .unwrap();
+        let response = sender.send_request(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     #[test]

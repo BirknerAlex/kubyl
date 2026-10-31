@@ -1,4 +1,5 @@
-//! Kubyl's cluster tools for agents (the `kubyl` MCP server's tools), read-only.
+//! Kubyl's cluster tools (the `kubyl` MCP server's tools): the read tools here, the change
+//! tools in [`crate::changes`].
 //!
 //! Every tool works on the thread's cluster through the user's own client from
 //! `ConnectionManager` (the API server applies their RBAC), masks Secret values and Route keys
@@ -58,6 +59,10 @@ pub struct ToolContext {
     pub alerts: Option<Arc<Vec<AlertSummary>>>,
     pub max_output: usize,
     pub log_lines: usize,
+    /// The cluster Kubyl shows in its window (picks the cluster when a client doesn't say).
+    pub active: bool,
+    /// `connected`, `connecting`, `not connected`, … for `list_clusters`.
+    pub status: String,
 }
 
 impl std::fmt::Debug for ToolContext {
@@ -77,14 +82,14 @@ pub struct ToolOutput {
 }
 
 impl ToolOutput {
-    fn ok(text: String) -> Self {
+    pub fn ok(text: String) -> Self {
         Self {
             text,
             is_error: false,
         }
     }
 
-    fn error(text: impl Into<String>) -> Self {
+    pub fn error(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
             is_error: true,
@@ -92,7 +97,7 @@ impl ToolOutput {
     }
 }
 
-/// The tools for `tools/list`: name, description and JSON schema of the arguments.
+/// The read tools for `tools/list`: name, description and JSON schema of the arguments.
 pub fn definitions() -> Vec<Value> {
     let tool = |name: &str, description: &str, properties: Value, required: &[&str]| {
         json!({
@@ -224,7 +229,12 @@ pub async fn call(context: &ToolContext, name: &str, args: &Value) -> ToolOutput
             TIMEOUT.as_secs()
         )),
     };
-    let tail = name == "logs";
+    finish(context, name == "logs", output)
+}
+
+/// What leaves Kubyl for the client: token shapes scrubbed, cut to the size limit (the end of
+/// `tail` output, the start of the rest).
+pub fn finish(context: &ToolContext, tail: bool, output: ToolOutput) -> ToolOutput {
     ToolOutput {
         text: cap(
             &redact::scrub_text(&output.text),
@@ -253,7 +263,7 @@ async fn dispatch(context: &ToolContext, name: &str, args: &Value) -> Result<Str
 }
 
 /// `text` cut to `max` bytes: the end of it (`tail`) or the start, with a note.
-fn cap(text: &str, max: usize, tail: bool) -> String {
+pub(crate) fn cap(text: &str, max: usize, tail: bool) -> String {
     if text.len() <= max {
         return text.to_string();
     }
@@ -279,31 +289,31 @@ fn cap(text: &str, max: usize, tail: bool) -> String {
     }
 }
 
-fn str_arg<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
+pub(crate) fn str_arg<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
     args.get(key)
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
 }
 
-fn required<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
+pub(crate) fn required<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
     str_arg(args, key).ok_or_else(|| format!("`{key}` is required."))
 }
 
-fn int_arg(args: &Value, key: &str) -> Option<i64> {
+pub(crate) fn int_arg(args: &Value, key: &str) -> Option<i64> {
     args.get(key).and_then(|v| {
         v.as_i64()
             .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
     })
 }
 
-fn bool_arg(args: &Value, key: &str) -> bool {
+pub(crate) fn bool_arg(args: &Value, key: &str) -> bool {
     args.get(key)
         .and_then(|v| v.as_bool().or_else(|| v.as_str().map(|s| s == "true")))
         .unwrap_or(false)
 }
 
-fn client(context: &ToolContext) -> Result<kube::Client, String> {
+pub(crate) fn client(context: &ToolContext) -> Result<kube::Client, String> {
     context.client.clone().ok_or_else(|| {
         format!(
             "{} isn't connected in Kubyl. Ask the user to connect it.",
@@ -312,7 +322,10 @@ fn client(context: &ToolContext) -> Result<kube::Client, String> {
     })
 }
 
-fn resolve<'a>(context: &'a ToolContext, kind: &str) -> Result<&'a ApiResourceInfo, String> {
+pub(crate) fn resolve<'a>(
+    context: &'a ToolContext,
+    kind: &str,
+) -> Result<&'a ApiResourceInfo, String> {
     let discovery = context
         .discovery
         .as_ref()
@@ -322,7 +335,7 @@ fn resolve<'a>(context: &'a ToolContext, kind: &str) -> Result<&'a ApiResourceIn
     })
 }
 
-fn api_for(
+pub(crate) fn api_for(
     client: kube::Client,
     info: &ApiResourceInfo,
     namespace: Option<&str>,
@@ -334,7 +347,7 @@ fn api_for(
     }
 }
 
-fn kube_error(err: kube::Error) -> String {
+pub(crate) fn kube_error(err: kube::Error) -> String {
     match err {
         kube::Error::Api(status) if status.code == 403 => format!(
             "Forbidden: the user's account may not do this ({}).",
@@ -347,14 +360,14 @@ fn kube_error(err: kube::Error) -> String {
 }
 
 /// An object as JSON with its `apiVersion` and `kind` (list items come without them).
-fn typed_json(object: &DynamicObject, info: &ApiResourceInfo) -> Option<Value> {
+pub(crate) fn typed_json(object: &DynamicObject, info: &ApiResourceInfo) -> Option<Value> {
     let mut value = store::to_json(object)?;
     value["apiVersion"] = Value::String(info.gvk.api_version());
     value["kind"] = Value::String(info.gvk.kind.clone());
     Some(value)
 }
 
-fn refuse_helm_release(info: &ApiResourceInfo, object: &Value) -> Result<(), String> {
+pub(crate) fn refuse_helm_release(info: &ApiResourceInfo, object: &Value) -> Result<(), String> {
     if info.gvk.group.is_empty() && redact::is_helm_release(object) {
         return Err(format!(
             "{} holds a Helm release (its values and manifest), which Kubyl doesn't give to agents. Use list_resources on the release's objects instead.",

@@ -59,6 +59,9 @@ pub struct AgentSettings {
     pub max_tool_output_kib: usize,
     /// Lines a `logs` tool call returns when the agent doesn't say (10–5000).
     pub default_log_lines: usize,
+    /// Offer the "Allow changes" switch in agent threads (default). With `false` the change
+    /// tools never work and the switch is hidden. Each change is approved by you either way.
+    pub allow_writes: bool,
 }
 
 impl Default for AgentSettings {
@@ -70,6 +73,7 @@ impl Default for AgentSettings {
             cwd: None,
             max_tool_output_kib: 64,
             default_log_lines: 500,
+            allow_writes: true,
         }
     }
 }
@@ -148,6 +152,7 @@ mod tests {
         assert_eq!(settings.kubectl, KubectlAccess::Context);
         assert_eq!(settings.max_tool_output(), 8 * 1024);
         assert_eq!(AgentSettings::default().log_lines(), 500);
+        assert!(AgentSettings::default().allow_writes);
     }
 
     #[test]

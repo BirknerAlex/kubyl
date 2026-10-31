@@ -24,6 +24,12 @@ pub const KUBYL_TOOLS: &[&str] = &[
     "alerts",
     "can_i",
     "api_resources",
+    // The change tools: Kubyl asks the user itself, so the agent's own prompt would only repeat it.
+    "apply_manifest",
+    "patch_resource",
+    "delete_resource",
+    "scale_resource",
+    "restart_resource",
 ];
 
 /// Whether `name` is exactly one of Kubyl's own tools as an agent names it:
@@ -251,6 +257,10 @@ impl KubylCall {
             "query_prometheus" => arg("query"),
             "can_i" => format!("{} {}", arg("verb"), arg("kind")),
             "top" => arg("kind"),
+            "patch_resource" | "delete_resource" | "scale_resource" | "restart_resource" => {
+                object()
+            }
+            "apply_manifest" => "from YAML".into(),
             _ => String::new(),
         }
     }

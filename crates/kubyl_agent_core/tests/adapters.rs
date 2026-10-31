@@ -18,7 +18,6 @@ use std::path::PathBuf;
 use kubyl_agent_core::acp::{self, SessionScope};
 use kubyl_agent_core::agents;
 use kubyl_agent_core::jsonrpc::RpcError;
-use kubyl_agent_core::mcp;
 use kubyl_agent_core::thread::{ConfigValue, config_options};
 use kubyl_agent_core::tools::ToolContext;
 use tokio::sync::watch;
@@ -92,7 +91,7 @@ async fn check(
 
     // Kubyl's MCP server as the agent would get it, over HTTP or the stdio bridge.
     let (_tx, rx) = watch::channel(ToolContext::default());
-    let server = mcp::serve(rx, None).await.unwrap();
+    let server = kubyl_mcp_core::handler::serve_cluster(rx).await.unwrap();
     // No Kubyl binary in this crate's tests: agents without HTTP MCP get a bridge that doesn't
     // exist, and must still start the session (they report the server as failed).
     let bridge = PathBuf::from("/nonexistent/kubyl");
