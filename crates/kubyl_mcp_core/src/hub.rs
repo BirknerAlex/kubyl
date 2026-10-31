@@ -229,6 +229,8 @@ impl McpHub {
 
     fn restart(&mut self, host: &mut dyn Host<Self>) {
         self.server = None;
+        // Nothing may show a token the running server no longer uses.
+        self.token = None;
         self.starting = None;
         if !self.settings.enabled {
             self.state = ServerState::Off;
@@ -261,16 +263,28 @@ impl McpHub {
             })
             .await
             .map_err(|e| e.to_string())??;
-            let server = server::serve(
-                handler,
-                ServeOptions {
-                    port,
-                    token: Some(token.expose_secret().to_string()),
-                    activity: None,
-                },
-            )
-            .await
-            .map_err(|err| start_error(port, &err))?;
+            // A server we just stopped may still hold the port for a moment (its listener is
+            // closed when the aborted task is dropped), most visibly on Windows: wait for it
+            // before calling the port taken.
+            let mut tries = 0;
+            let server = loop {
+                let started = server::serve(
+                    handler.clone(),
+                    ServeOptions {
+                        port,
+                        token: Some(token.expose_secret().to_string()),
+                        activity: None,
+                    },
+                )
+                .await;
+                match started {
+                    Err(err) if err.kind() == std::io::ErrorKind::AddrInUse && tries < 20 => {
+                        tries += 1;
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                    other => break other.map_err(|err| start_error(port, &err))?,
+                }
+            };
             Ok::<_, String>((server, token))
         };
         self.starting = Some(host.spawn(work, |this, result, host| {
@@ -487,6 +501,11 @@ mod tests {
 
         again.regenerate_token(&mut host2);
         run_started(&mut again, &mut host2);
+        assert!(
+            matches!(again.state(), ServerState::Running { .. }),
+            "{:?}",
+            again.state()
+        );
         assert_ne!(again.token().unwrap(), first);
         again.credentials.delete(TOKEN_KEY).ok();
     }
