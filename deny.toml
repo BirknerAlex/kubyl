@@ -65,4 +65,9 @@ ignore = [
     # through openidconnect, which only verifies ID token signatures with the IdP's public keys;
     # Kubyl never decrypts or signs with an RSA private key.
     { id = "RUSTSEC-2023-0071", reason = "rsa is only used for public-key signature verification (openidconnect)" },
+    # Timing variability in crypto-bigint 0.5 (no fixed 0.5 release; the fix is 0.7.6). It comes
+    # in through p256/p384 0.13 (openidconnect), which only verify ID token signatures with the
+    # IdP's public keys: no secret integers are processed. Remove when openidconnect moves to
+    # RustCrypto's 0.14 curves.
+    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5 via p256/p384 0.13 (openidconnect): public-key verification only" },
 ]
