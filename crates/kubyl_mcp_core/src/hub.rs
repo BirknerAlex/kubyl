@@ -72,6 +72,8 @@ pub struct McpHub {
     starting: Option<TaskHandle>,
     listening: Option<TaskHandle>,
     pruning: Option<TaskHandle>,
+    /// The next start deletes the stored token first (until one start succeeds).
+    replace_token: bool,
 }
 
 impl Service for McpHub {
@@ -97,6 +99,7 @@ impl McpHub {
             starting: None,
             listening: None,
             pruning: None,
+            replace_token: false,
         }
     }
 
@@ -215,31 +218,13 @@ impl McpHub {
         host.notify();
     }
 
-    /// Replaces the token (existing clients stop working until reconfigured). If the old one
-    /// can't be removed from the credential store, the server keeps running as it was and the
-    /// state says why, instead of pretending to have a new token.
+    /// Replaces the token (existing clients stop working until reconfigured). The old one is
+    /// deleted in the same step that reads the new one, so a settings change during the
+    /// replacement can't read the old token first; if it can't be deleted the server stays
+    /// stopped and the state says why, instead of pretending to have a new token.
     pub fn regenerate_token(&mut self, host: &mut dyn Host<Self>) {
-        let credentials = self.credentials.clone();
-        self.server = None;
-        self.token = None;
-        self.state = ServerState::Starting;
-        host.notify();
-        let work = async move {
-            tokio::task::spawn_blocking(move || credentials.delete(TOKEN_KEY))
-                .await
-                .map_err(|e| e.to_string())?
-        };
-        self.starting = Some(host.spawn(work, |this, result: Result<(), String>, host| {
-            match result {
-                Ok(()) => this.restart(host),
-                Err(err) => {
-                    this.state = ServerState::Failed(format!(
-                        "The old MCP token couldn't be removed from the credential store ({err}), so it was not replaced. The server is stopped."
-                    ));
-                    host.notify();
-                }
-            }
-        }));
+        self.replace_token = true;
+        self.restart(host);
     }
 
     fn restart(&mut self, host: &mut dyn Host<Self>) {
@@ -254,6 +239,7 @@ impl McpHub {
         host.notify();
         let port = self.settings.port();
         let credentials = self.credentials.clone();
+        let replace = self.replace_token;
         let handler = Arc::new(ToolsHandler::new(
             Scope::Clusters(self.clusters.subscribe()),
             Some(Writes {
@@ -263,9 +249,18 @@ impl McpHub {
             }),
         ));
         let work = async move {
-            let token = tokio::task::spawn_blocking(move || token(&credentials))
-                .await
-                .map_err(|e| e.to_string())??;
+            let token = tokio::task::spawn_blocking(move || {
+                if replace {
+                    credentials.delete(TOKEN_KEY).map_err(|err| {
+                        format!(
+                            "The old MCP token couldn't be removed from the credential store ({err}), so it was not replaced. The server is stopped."
+                        )
+                    })?;
+                }
+                token(&credentials)
+            })
+            .await
+            .map_err(|e| e.to_string())??;
             let server = server::serve(
                 handler,
                 ServeOptions {
@@ -286,6 +281,7 @@ impl McpHub {
                     };
                     this.server = Some(server);
                     this.token = Some(token);
+                    this.replace_token = false;
                 }
                 Err(message) => this.state = ServerState::Failed(message),
             }
@@ -591,7 +587,36 @@ mod tests {
         hub.prune(&mut host);
         assert!(hub.pending().is_empty());
 
-        // A request that arrives after writes were switched off is rejected at once.
+        // A change that waits when writes go off is dropped (and so rejected).
+        let (reply, waiting) = oneshot::channel();
+        hub.requested(
+            ApprovalRequest {
+                proposal: proposal(),
+                reply,
+            },
+            &mut host,
+        );
+        assert_eq!(hub.pending().len(), 1);
+        hub.settings_changed(
+            McpSettings {
+                writes: ExternalWrites::Off,
+                enabled: false,
+                ..McpSettings::default()
+            },
+            &mut host,
+        );
+        assert!(hub.pending().is_empty());
+        assert!(runtime.block_on(waiting).is_err(), "dropped, not answered");
+
+        // Back on, then a request that arrives after writes were switched off again.
+        hub.settings_changed(
+            McpSettings {
+                writes: ExternalWrites::Ask,
+                enabled: false,
+                ..McpSettings::default()
+            },
+            &mut host,
+        );
         hub.settings_changed(
             McpSettings {
                 writes: ExternalWrites::Off,

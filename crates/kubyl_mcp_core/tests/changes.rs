@@ -53,7 +53,7 @@ async fn handle(log: Log, request: http::Request<Incoming>) -> http::Response<Fu
         ("GET", p) if p == format!("{base}/scale") => (
             200,
             json!({"apiVersion": "autoscaling/v1", "kind": "Scale", "metadata": {"name": "web", "namespace": "shop"},
-                   "spec": {"replicas": 2}}),
+                   "spec": {"replicas": 3}}),
         ),
         ("PATCH", p) if p == format!("{base}/scale") => (
             200,
@@ -219,14 +219,14 @@ async fn an_approved_scale_is_sent_once_and_shows_the_before_and_after() {
     assert_eq!(bodies(&log), [json!({"spec": {"replicas": 5}})]);
     let seen = seen.lock();
     assert_eq!(seen.len(), 1);
-    assert_eq!(seen[0].title, "Scale deployment shop/web from 2 to 5");
+    assert_eq!(seen[0].title, "Scale deployment shop/web from 3 to 5");
     assert_eq!(seen[0].cluster, ClusterId::new("kind-dev"));
     assert!(
         seen[0].docs[0]
             .old
             .as_deref()
             .unwrap()
-            .contains("replicas: 2")
+            .contains("replicas: 3")
     );
     assert!(seen[0].docs[0].new.contains("replicas: 5"));
 }
@@ -277,7 +277,7 @@ async fn nothing_to_change_never_asks() {
         &context,
         &approver,
         "scale_resource",
-        &json!({"kind": "deploy", "name": "web", "namespace": "shop", "replicas": 2}),
+        &json!({"kind": "deploy", "name": "web", "namespace": "shop", "replicas": 3}),
     )
     .await;
     assert!(!output.is_error);

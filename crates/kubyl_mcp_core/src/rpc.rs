@@ -90,7 +90,8 @@ where
     let Some(method) = value.get("method").and_then(Value::as_str) else {
         // An answer to something we sent gets no reply; a request without a usable method does.
         let is_response = value.get("result").is_some() || value.get("error").is_some();
-        return match id {
+        // `"id": null` is a request too (only an absent id makes a notification).
+        return match value.get("id").cloned() {
             Some(id) if !is_response => {
                 let error = RpcError::new(RpcError::INVALID_REQUEST, "Invalid Request");
                 Some(json!({ "jsonrpc": "2.0", "id": id, "error": error.to_value() }))
@@ -142,6 +143,18 @@ mod tests {
             .unwrap();
         assert_eq!(no_method["error"]["code"], RpcError::INVALID_REQUEST);
         assert_eq!(no_method["id"], 3);
+        let null_id = handle_single(r#"{"jsonrpc":"2.0","id":null,"method":42}"#, |_, _| async {
+            None
+        })
+        .await
+        .unwrap();
+        assert_eq!(null_id["error"]["code"], RpcError::INVALID_REQUEST);
+        assert!(null_id["id"].is_null());
+        assert!(
+            handle_single(r#"{"jsonrpc":"2.0","method":42}"#, |_, _| async { None })
+                .await
+                .is_none()
+        );
         assert!(
             handle_single(r#"{"jsonrpc":"2.0","id":4,"result":{}}"#, |_, _| async {
                 None

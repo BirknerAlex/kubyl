@@ -827,6 +827,35 @@ mod tests {
     }
 
     #[test]
+    fn patches_carry_the_reviewed_version_as_a_precondition() {
+        // A merge or strategic patch names the version; the server answers 409 if it moved.
+        let merge = with_precondition("merge", json!({"spec": {"replicas": 4}}), Some("7"));
+        assert_eq!(merge["metadata"]["resourceVersion"], "7");
+        assert_eq!(merge["spec"]["replicas"], 4);
+        let strategic = with_precondition(
+            "strategic",
+            json!({"metadata": {"labels": {"a": "b"}}}),
+            Some("7"),
+        );
+        assert_eq!(strategic["metadata"]["resourceVersion"], "7");
+        assert_eq!(strategic["metadata"]["labels"]["a"], "b");
+        // A JSON patch starts with a `test` on it, so a stale target fails the whole patch.
+        let ops = with_precondition("json", json!([{"op": "remove", "path": "/a"}]), Some("7"));
+        assert_eq!(
+            ops,
+            json!([
+                {"op": "test", "path": "/metadata/resourceVersion", "value": "7"},
+                {"op": "remove", "path": "/a"},
+            ])
+        );
+        // Without a version nothing is added.
+        assert_eq!(
+            with_precondition("merge", json!({"a": 1}), None),
+            json!({"a": 1})
+        );
+    }
+
+    #[test]
     fn patches_come_as_text_or_json() {
         assert_eq!(
             patch_value(&json!({"patch": "{\"spec\":{\"replicas\":2}}"})).unwrap(),

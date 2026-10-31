@@ -615,6 +615,47 @@ mod tests {
         );
     }
 
+    /// Remembers whether a tool was ever called.
+    struct Recording(Arc<std::sync::atomic::AtomicBool>);
+
+    impl Handler for Recording {
+        fn instructions(&self) -> String {
+            String::new()
+        }
+
+        fn tools(&self) -> Vec<Value> {
+            Vec::new()
+        }
+
+        fn call<'a>(&'a self, _: &'a str, _: Value) -> BoxFuture<'a, ToolOutput> {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async { ToolOutput::ok(String::new()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_tool_call_without_an_id_is_refused_before_the_handler_runs() {
+        let called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let shared = Shared {
+            token: String::new(),
+            port: 0,
+            handler: Arc::new(Recording(called.clone())),
+            activity: None,
+        };
+        for text in [
+            r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"x"}}"#,
+            r#"{"jsonrpc":"2.0","id":null,"method":"tools/call","params":{"name":"x"}}"#,
+        ] {
+            let answer = handle_message(&shared, text).await.unwrap();
+            assert_eq!(answer["error"]["code"], RpcError::INVALID_REQUEST);
+        }
+        assert!(!called.load(std::sync::atomic::Ordering::SeqCst));
+        // With an id the same call runs.
+        let text = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"x"}}"#;
+        assert!(handle_message(&shared, text).await.unwrap()["result"].is_object());
+        assert!(called.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
     #[test]
     fn only_loopback_hosts_on_our_port_pass() {
         assert!(host_is_loopback("127.0.0.1:7421", 7421));

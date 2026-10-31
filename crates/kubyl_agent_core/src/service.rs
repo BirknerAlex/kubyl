@@ -1035,10 +1035,12 @@ impl AgentCore {
         let resume = thread.resume.as_ref().map(|s| s.session.clone());
         let bridge = self.env.bridge.clone();
         let path = self.path.clone();
-        let writes = self.settings.allow_writes.then(|| Writes {
+        // Always attached: `set_writes` only turns the gate on while settings allow writes, so a
+        // setting changed after the thread opened needs no new server.
+        let writes = Some(Writes {
             enabled: thread.writes.subscribe(),
             approver: thread.approver.clone(),
-            off_message: "Changes are off for this conversation. Tell the user that you would need them to switch on \"Allow changes\" in Kubyl's agent panel (it warns them first), or show them the manifest or command instead.".into(),
+            off_message: "Changes are off for this conversation. Tell the user that you would need them to allow changes in Kubyl's agent panel (it warns them first; their settings can also disable this), or show them the manifest or command instead.".into(),
         });
         let handler = Arc::new(ToolsHandler::new(Scope::Cluster(context), writes));
         let work = async move {
