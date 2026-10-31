@@ -52,7 +52,7 @@ async fn handle(log: Log, request: http::Request<Incoming>) -> http::Response<Fu
         ("GET", p) if p == base => (200, deployment(2)),
         ("GET", p) if p == format!("{base}/scale") => (
             200,
-            json!({"apiVersion": "autoscaling/v1", "kind": "Scale", "metadata": {"name": "web", "namespace": "shop"},
+            json!({"apiVersion": "autoscaling/v1", "kind": "Scale", "metadata": {"name": "web", "namespace": "shop", "resourceVersion": "9"},
                    "spec": {"replicas": 3}}),
         ),
         ("PATCH", p) if p == format!("{base}/scale") => (
@@ -216,7 +216,10 @@ async fn an_approved_scale_is_sent_once_and_shows_the_before_and_after() {
         ["PATCH /apis/apps/v1/namespaces/shop/deployments/web/scale?&fieldManager=kubyl"]
     );
     // The scale endpoint got exactly the count that was approved.
-    assert_eq!(bodies(&log), [json!({"spec": {"replicas": 5}})]);
+    assert_eq!(
+        bodies(&log),
+        [json!({"metadata": {"resourceVersion": "9"}, "spec": {"replicas": 5}})]
+    );
     let seen = seen.lock();
     assert_eq!(seen.len(), 1);
     assert_eq!(seen[0].title, "Scale deployment shop/web from 3 to 5");

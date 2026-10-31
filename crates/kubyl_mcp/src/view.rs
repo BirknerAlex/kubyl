@@ -147,6 +147,14 @@ pub fn proposal_body(proposal: &Proposal, colors: &Colors) -> AnyElement {
         .into_any_element()
 }
 
+/// Whether the cluster is flagged PROD now. A cluster can be flagged while a change waits, and
+/// the typed confirmation is owed then too.
+pub fn is_production(proposal: &Proposal, cx: &App) -> bool {
+    proposal.production
+        || kubyl_kube::ConnectionManager::try_global(cx)
+            .is_some_and(|manager| manager.read(cx).caps(&proposal.cluster).production)
+}
+
 type OnDecision = Rc<dyn Fn(Decision, &mut Window, &mut App)>;
 
 /// Opens the dialog that asks whether `proposal` may happen. `on_decision` runs once, with

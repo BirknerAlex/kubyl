@@ -296,6 +296,10 @@ impl McpHub {
             request.reply.send(Decision::Rejected).ok();
             return;
         }
+        if request.reply.is_closed() {
+            // The tool call stopped waiting before the request arrived.
+            return;
+        }
         self.next_id += 1;
         self.pending.push(ExternalApproval {
             id: self.next_id,
@@ -617,6 +621,17 @@ mod tests {
             },
             &mut host,
         );
+        // With writes on, a request whose tool call already gave up is not shown.
+        let (reply, gone) = oneshot::channel();
+        drop(gone);
+        hub.requested(
+            ApprovalRequest {
+                proposal: proposal(),
+                reply,
+            },
+            &mut host,
+        );
+        assert!(hub.pending().is_empty());
         hub.settings_changed(
             McpSettings {
                 writes: ExternalWrites::Off,

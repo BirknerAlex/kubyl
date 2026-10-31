@@ -81,7 +81,7 @@ pub fn init_with(live: bool, cx: &mut App) {
             NotificationCenter::push(
                 cx,
                 Notification::info(
-                    "New MCP token made. Clients need the new one: copy the command again.",
+                    "Replacing the MCP token. When it is done, copy the command again; if it fails, MCP: Show Server says why.",
                 ),
             );
         }

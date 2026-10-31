@@ -13,7 +13,7 @@ use std::time::Duration;
 use kube::api::{Api, DeleteParams, DynamicObject, Patch, PatchParams, Preconditions};
 use kube::discovery::ApiResource;
 use kubyl_kube_core::discovery::ApiResourceInfo;
-use kubyl_resources_core::ops::{self, FIELD_MANAGER};
+use kubyl_resources_core::ops::FIELD_MANAGER;
 use kubyl_resources_core::{format, redact, store};
 use kubyl_yaml_core::apply::{self, DocResult, Options, Outcome, Prepared};
 use kubyl_yaml_core::{parse, render};
@@ -139,11 +139,15 @@ enum Action {
         namespace: Option<String>,
         name: String,
         replicas: u32,
+        /// The version the user reviewed (a conflict if the object moved on).
+        resource_version: Option<String>,
     },
     Restart {
         resource: ApiResource,
         namespace: Option<String>,
         name: String,
+        /// The version the user reviewed (a conflict if the object moved on).
+        resource_version: Option<String>,
     },
 }
 
@@ -377,6 +381,15 @@ async fn check_apply(context: &ToolContext, args: &Value) -> Result<Checked, Str
             .get_opt(&doc.name)
             .await
             .map_err(kube_error)?;
+        // The manifest may not say it is Helm's storage, but the object it replaces can be.
+        if let Some(value) = live.as_ref().and_then(store::to_json)
+            && redact::is_helm_release(&value)
+        {
+            return Err(format!(
+                "{} is Helm's release storage; use Helm to change a release.",
+                doc.label()
+            ));
+        }
         let old = live_json(live, &api_version, &doc.gvk.kind);
         // Compare the real values: a changed password masks to the same text on both sides, and
         // it still has to be shown (and approved) as a change.
@@ -616,10 +629,9 @@ async fn check_scale(context: &ToolContext, args: &Value) -> Result<Checked, Str
     let api = api_for(client(context)?, info, namespace);
     // The count the scale subresource reports is the one `scale` changes (a custom resource may
     // keep its replicas elsewhere than `.spec.replicas`).
-    let current = api
-        .get_scale(name)
-        .await
-        .map_err(kube_error)?
+    let scale = api.get_scale(name).await.map_err(kube_error)?;
+    let resource_version = scale.metadata.resource_version.clone();
+    let current = scale
         .spec
         .and_then(|spec| spec.replicas)
         .unwrap_or(1)
@@ -651,6 +663,7 @@ async fn check_scale(context: &ToolContext, args: &Value) -> Result<Checked, Str
             namespace: namespace.map(String::from),
             name: name.to_string(),
             replicas,
+            resource_version,
         },
     ))))
 }
@@ -669,6 +682,7 @@ async fn check_restart(context: &ToolContext, args: &Value) -> Result<Checked, S
     }
     let api = api_for(client(context)?, info, namespace);
     let live = api.get(name).await.map_err(kube_error)?;
+    let resource_version = live.metadata.resource_version.clone();
     let current = live
         .data
         .pointer("/spec/template/metadata/annotations/kubectl.kubernetes.io~1restartedAt")
@@ -698,6 +712,7 @@ async fn check_restart(context: &ToolContext, args: &Value) -> Result<Checked, S
             resource: store::api_resource(info),
             namespace: namespace.map(String::from),
             name: name.to_string(),
+            resource_version,
         },
     ))))
 }
@@ -794,20 +809,62 @@ async fn execute(client: kube::Client, action: Action) -> Result<String, String>
             namespace,
             name,
             replicas,
+            resource_version,
         } => {
-            ops::scale(client, resource, namespace, name.clone(), replicas).await?;
+            let api = match &namespace {
+                Some(ns) => Api::<DynamicObject>::namespaced_with(client, ns, &resource),
+                None => Api::all_with(client, &resource),
+            };
+            let mut patch = json!({"spec": {"replicas": replicas}});
+            if let Some(version) = resource_version {
+                patch["metadata"] = json!({"resourceVersion": version});
+            }
+            api.patch_scale(&name, &write_params(), &Patch::Merge(patch))
+                .await
+                .map_err(|err| changed_since_review(&name, err))?;
             Ok(format!("Scaled {name} to {replicas} replicas."))
         }
         Action::Restart {
             resource,
             namespace,
             name,
+            resource_version,
         } => {
-            ops::rollout_restart(client, resource, namespace, name.clone()).await?;
+            let api = match &namespace {
+                Some(ns) => Api::<DynamicObject>::namespaced_with(client, ns, &resource),
+                None => Api::all_with(client, &resource),
+            };
+            let now = jiff::Timestamp::now().to_string();
+            let mut patch = json!({"spec": {"template": {"metadata": {"annotations": {
+                "kubectl.kubernetes.io/restartedAt": now
+            }}}}});
+            if let Some(version) = resource_version {
+                patch["metadata"] = json!({"resourceVersion": version});
+            }
+            api.patch(&name, &write_params(), &Patch::Merge(patch))
+                .await
+                .map_err(|err| changed_since_review(&name, err))?;
             Ok(format!(
                 "Restarting {name}: its pods are replaced one by one."
             ))
         }
+    }
+}
+
+fn write_params() -> PatchParams {
+    PatchParams {
+        field_manager: Some(FIELD_MANAGER.into()),
+        ..Default::default()
+    }
+}
+
+/// A 409 means the object moved on after the user reviewed it: say so instead of the raw error.
+fn changed_since_review(name: &str, err: kube::Error) -> String {
+    match err {
+        kube::Error::Api(status) if status.code == 409 => format!(
+            "{name} changed after the user reviewed it, so nothing was changed. Look at it again and propose the change again."
+        ),
+        other => kube_error(other),
     }
 }
 

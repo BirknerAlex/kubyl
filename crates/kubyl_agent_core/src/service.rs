@@ -299,6 +299,8 @@ pub struct AgentCore {
     next_pending: u64,
     _lookup: Option<TaskHandle>,
     ticker: Option<TaskHandle>,
+    /// Drops change cards whose tool call stopped waiting (the answer timeout).
+    pruner: Option<TaskHandle>,
 }
 
 impl Service for AgentCore {
@@ -336,6 +338,7 @@ impl AgentCore {
             next_pending: 0,
             _lookup: None,
             ticker: None,
+            pruner: None,
         }
     }
 
@@ -608,6 +611,12 @@ impl AgentCore {
         if let Some(thread) = self.thread_mut(id) {
             thread.approvals = Some(task);
         }
+        if self.pruner.is_none() {
+            self.pruner = Some(host.every(Duration::from_secs(5), |this, host| {
+                this.prune_changes(host);
+                Flow::Continue
+            }));
+        }
         self.ensure_agent(&new.agent, host);
         host.notify();
         id
@@ -824,6 +833,23 @@ impl AgentCore {
                 .retain(|p| !matches!(p.kind, PendingKind::Change { .. }));
         }
         host.notify();
+    }
+
+    /// Removes change cards whose tool call has given up, so nobody applies a change that can no
+    /// longer happen.
+    fn prune_changes(&mut self, host: &mut dyn Host<Self>) {
+        let mut changed = false;
+        for thread in &mut self.threads {
+            let before = thread.pending.len();
+            thread.pending.retain(|p| {
+                !matches!(p.kind, PendingKind::Change { .. })
+                    || p.approval.as_ref().is_some_and(|a| !a.is_closed())
+            });
+            changed |= thread.pending.len() != before;
+        }
+        if changed {
+            host.notify();
+        }
     }
 
     /// A change tool of thread `id` waits for the user.
@@ -2337,6 +2363,27 @@ mod tests {
         let late = h._runtime.spawn(approver.approve(proposal()));
         h.host.run_until(&mut h.core, |_, _| late.is_finished());
         assert_eq!(h._runtime.block_on(late).unwrap(), Decision::Rejected);
+        assert!(h.core.thread(id).unwrap().pending.is_empty());
+    }
+
+    #[test]
+    fn a_change_card_goes_away_when_its_tool_call_gives_up() {
+        use kubyl_mcp_core::approval::Approver as _;
+
+        let (mut h, id) = harness(Vec::new());
+        h.core.set_writes(id, true, &mut h.host);
+        let approver = h.core.thread(id).unwrap().approver.clone();
+        let waiting = h._runtime.spawn(approver.approve(proposal()));
+        h.host.run_until(&mut h.core, |core, _| {
+            core.thread(id).is_some_and(|t| !t.pending.is_empty())
+        });
+        // Still waiting: the card stays.
+        h.core.prune_changes(&mut h.host);
+        assert_eq!(h.core.thread(id).unwrap().pending.len(), 1);
+        // The tool call stops waiting (the answer timeout): the card can no longer be applied.
+        waiting.abort();
+        let _ = h._runtime.block_on(waiting);
+        h.core.prune_changes(&mut h.host);
         assert!(h.core.thread(id).unwrap().pending.is_empty());
     }
 

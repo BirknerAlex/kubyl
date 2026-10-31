@@ -1700,7 +1700,9 @@ fn pending_card(thread: ThreadId, pending: u64, kind: &PendingKind, colors: &Col
                                 })
                                 .disabled(too_large)
                                 .on_click(move |event, window, cx| {
-                                    if production {
+                                    // Read the flag now: the cluster may have been marked PROD
+                                    // while the change waited.
+                                    if production || kubyl_mcp::view::is_production(&for_dialog, cx) {
                                         // A production cluster needs its name typed.
                                         let for_dialog = for_dialog.clone();
                                         kubyl_mcp::view::ask(
