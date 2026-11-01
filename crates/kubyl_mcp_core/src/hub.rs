@@ -74,6 +74,10 @@ pub struct McpHub {
     pruning: Option<TaskHandle>,
     /// The next start deletes the stored token first (until one start succeeds).
     replace_token: bool,
+    /// Counts starts. The blocking credential step runs under `credential_lock` and does nothing
+    /// when a newer start has begun, so an abandoned start can't overwrite the newer token.
+    generation: Arc<std::sync::atomic::AtomicU64>,
+    credential_lock: Arc<parking_lot::Mutex<()>>,
 }
 
 impl Service for McpHub {
@@ -100,6 +104,8 @@ impl McpHub {
             listening: None,
             pruning: None,
             replace_token: false,
+            generation: Arc::default(),
+            credential_lock: Arc::default(),
         }
     }
 
@@ -242,6 +248,12 @@ impl McpHub {
         let port = self.settings.port();
         let credentials = self.credentials.clone();
         let replace = self.replace_token;
+        let mine = self
+            .generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        let latest = self.generation.clone();
+        let lock = self.credential_lock.clone();
         let handler = Arc::new(ToolsHandler::new(
             Scope::Clusters(self.clusters.subscribe()),
             Some(Writes {
@@ -252,6 +264,11 @@ impl McpHub {
         ));
         let work = async move {
             let token = tokio::task::spawn_blocking(move || {
+                let _serialized = lock.lock();
+                if latest.load(std::sync::atomic::Ordering::SeqCst) != mine {
+                    // A newer start owns the credential now.
+                    return Err("superseded by a newer start".to_string());
+                }
                 if replace {
                     credentials.delete(TOKEN_KEY).map_err(|err| {
                         format!(

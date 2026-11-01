@@ -381,3 +381,23 @@ async fn only_workloads_restart_and_only_scalable_kinds_scale() {
     assert!(scale.is_error && scale.text.contains("no scale subresource"));
     assert!(seen.lock().is_empty());
 }
+
+#[tokio::test]
+async fn an_approved_change_is_dropped_when_the_cluster_went_read_only_meanwhile() {
+    let (client, log) = fake_api().await;
+    let context = context(client);
+    let (approver, seen) = approver(Decision::Approved);
+    let output = changes::run_with(
+        &context,
+        &approver,
+        "scale_resource",
+        &json!({"kind": "deploy", "name": "web", "namespace": "shop", "replicas": 5}),
+        &|| Err("kind-dev became read-only in Kubyl while the change waited.".into()),
+    )
+    .await;
+    // The user was asked (the cluster was writable then), but nothing was sent afterwards.
+    assert_eq!(seen.lock().len(), 1);
+    assert!(output.is_error);
+    assert!(output.text.contains("became read-only"), "{}", output.text);
+    assert!(writes(&log).is_empty(), "{:?}", writes(&log));
+}

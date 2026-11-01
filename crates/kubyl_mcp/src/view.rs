@@ -230,9 +230,14 @@ impl AskDialog {
         }
     }
 
+    /// PROD now, not only when the change was queued.
+    fn production(&self, cx: &App) -> bool {
+        is_production(&self.proposal, cx)
+    }
+
     fn approvable(&self, cx: &App) -> bool {
         !is_truncated(&self.proposal)
-            && (!self.proposal.production
+            && (!self.production(cx)
                 || self.typed.read(cx).value().trim() == self.proposal.cluster_name)
     }
 
@@ -254,7 +259,7 @@ impl Focusable for AskDialog {
 impl Render for AskDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors().clone();
-        let production = self.proposal.production;
+        let production = self.production(cx);
         let approvable = self.approvable(cx);
         let name = self.proposal.cluster_name.clone();
         v_flex()

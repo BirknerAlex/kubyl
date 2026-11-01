@@ -157,6 +157,10 @@ enum Checked {
     Change(Box<(Proposal, Action)>),
 }
 
+/// Asked right before an approved change is carried out: whether it may still happen (the
+/// cluster may have become read-only, or changes may have been switched off, while it waited).
+pub type Recheck<'a> = &'a (dyn Fn() -> Result<(), String> + Send + Sync);
+
 /// Runs change tool `name`: checks, asks `approver`, acts. Never panics on bad input.
 pub async fn run(
     context: &ToolContext,
@@ -164,7 +168,18 @@ pub async fn run(
     name: &str,
     args: &Value,
 ) -> ToolOutput {
-    let output = match change(context, approver, name, args).await {
+    run_with(context, approver, name, args, &|| Ok(())).await
+}
+
+/// Like [`run`], with a last check after the user approved.
+pub async fn run_with(
+    context: &ToolContext,
+    approver: &Arc<dyn Approver>,
+    name: &str,
+    args: &Value,
+    recheck: Recheck<'_>,
+) -> ToolOutput {
+    let output = match change(context, approver, name, args, recheck).await {
         Ok(text) => ToolOutput::ok(text),
         Err(message) => ToolOutput::error(message),
     };
@@ -176,6 +191,7 @@ async fn change(
     approver: &Arc<dyn Approver>,
     name: &str,
     args: &Value,
+    recheck: Recheck<'_>,
 ) -> Result<String, String> {
     let checked = tokio::time::timeout(STEP_TIMEOUT, check(context, name, args))
         .await
@@ -198,6 +214,7 @@ async fn change(
             ));
         }
     }
+    recheck()?;
     let client = client(context)?;
     tokio::time::timeout(STEP_TIMEOUT, execute(client, action))
         .await

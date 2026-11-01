@@ -858,6 +858,10 @@ impl AgentCore {
 
     /// A change tool of thread `id` waits for the user.
     fn change_requested(&mut self, id: ThreadId, request: ApprovalRequest) {
+        if request.reply.is_closed() {
+            // The tool call stopped waiting before the request arrived.
+            return;
+        }
         self.next_pending += 1;
         let pending = Pending {
             id: self.next_pending,

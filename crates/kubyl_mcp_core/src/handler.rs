@@ -69,7 +69,37 @@ impl ToolsHandler {
                 context.cluster_name
             ));
         }
-        changes::run(context, &writes.approver, name, args).await
+        let cluster = context.cluster.clone();
+        let name_of = context.cluster_name.clone();
+        let recheck = move || self.still_allowed(&cluster, &name_of, writes);
+        changes::run_with(context, &writes.approver, name, args, &recheck).await
+    }
+
+    /// Right before an approved change is made: changes are still on and the cluster still
+    /// isn't read-only (either may have changed while the user decided).
+    fn still_allowed(
+        &self,
+        cluster: &Option<kubyl_base::ClusterId>,
+        name: &str,
+        writes: &Writes,
+    ) -> Result<(), String> {
+        if !*writes.enabled.borrow() {
+            return Err(writes.off_message.clone());
+        }
+        let read_only = match &self.scope {
+            Scope::Cluster(context) => context.borrow().caps.read_only,
+            Scope::Clusters(clusters) => clusters
+                .borrow()
+                .iter()
+                .find(|c| &c.cluster == cluster)
+                .is_some_and(|c| c.caps.read_only),
+        };
+        if read_only {
+            return Err(format!(
+                "{name} became read-only in Kubyl while the change waited, so nothing was changed."
+            ));
+        }
+        Ok(())
     }
 }
 
