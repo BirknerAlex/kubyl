@@ -499,6 +499,18 @@ fn patch_value(args: &Value) -> Result<Value, String> {
     }
 }
 
+/// A merge or strategic patch that sets `metadata` to something other than an object can't carry
+/// the reviewed version; refuse it up front instead of sending it without the precondition.
+fn reject_unversionable(patch: &Value) -> Result<(), String> {
+    match patch.get("metadata") {
+        Some(metadata) if !metadata.is_object() => Err(
+            "`patch` sets `metadata` to a non-object value, so the reviewed version can't be applied. Leave `metadata` out or make it an object."
+                .into(),
+        ),
+        _ => Ok(()),
+    }
+}
+
 /// The patch with the version the user reviewed as a precondition, so it conflicts instead of
 /// overwriting what changed during the approval.
 fn with_precondition(patch_type: &str, mut patch: Value, resource_version: Option<&str>) -> Value {
@@ -540,6 +552,7 @@ async fn check_patch(context: &ToolContext, args: &Value) -> Result<Checked, Str
     let (info, namespace, name) = target(context, args)?;
     refuse_secret(info, "patch")?;
     let value = patch_value(args)?;
+    reject_unversionable(&value)?;
     let patch_type = str_arg(args, "patch_type").unwrap_or("merge").to_string();
     let patch = build_patch(&patch_type, value.clone())?;
     let api = api_for(client(context)?, info, namespace);
@@ -927,6 +940,16 @@ mod tests {
             with_precondition("merge", json!({"a": 1}), None),
             json!({"a": 1})
         );
+    }
+
+    #[test]
+    fn a_patch_that_cannot_carry_the_reviewed_version_is_refused() {
+        assert!(reject_unversionable(&json!({"metadata": null})).is_err());
+        assert!(reject_unversionable(&json!({"metadata": "x"})).is_err());
+        assert!(reject_unversionable(&json!({"metadata": {"labels": {"a": "b"}}})).is_ok());
+        assert!(reject_unversionable(&json!({"spec": {"replicas": 2}})).is_ok());
+        // A JSON patch is an array: no metadata member to check.
+        assert!(reject_unversionable(&json!([{"op": "remove", "path": "/a"}])).is_ok());
     }
 
     #[test]
