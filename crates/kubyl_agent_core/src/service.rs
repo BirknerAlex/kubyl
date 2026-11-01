@@ -662,6 +662,10 @@ impl AgentCore {
         if !self.threads.iter().any(|t| t.cluster == thread.cluster) {
             self.contexts.remove(&thread.cluster);
         }
+        if self.threads.is_empty() {
+            // Nothing left to prune (and nothing may keep ticking with no thread to serve).
+            self.pruner = None;
+        }
         drop(thread);
         host.notify();
     }
