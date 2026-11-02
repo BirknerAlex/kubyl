@@ -71,8 +71,9 @@ pub fn init_with(live: bool, cx: &mut App) {
         ActionSpec::new("MCP: Regenerate Token", RegenerateToken),
     );
 
+    // The server's dialog even while a change waits (the status bar item shows that first).
     cx.on_action(|_: &ShowServer, cx| {
-        with_window(cx, open_status);
+        with_window(cx, dialog::open);
     });
     cx.on_action(|_: &CopyClaudeCodeCommand, cx| copy(cx, McpService::claude_code_command));
     cx.on_action(|_: &CopyClientConfig, cx| copy(cx, McpService::json_config));
@@ -88,12 +89,16 @@ pub fn init_with(live: bool, cx: &mut App) {
                 );
                 return;
             }
+            let off = matches!(service.read(cx).state(), hub::ServerState::Off);
+            // While off this only marks the token for replacement at the next start.
             service.update(cx, |service, cx| service.regenerate_token(cx));
             NotificationCenter::push(
                 cx,
-                Notification::info(
-                    "Replacing the MCP token. When it is done, copy the command again; if it fails, MCP: Show Server says why.",
-                ),
+                Notification::info(if off {
+                    "The MCP server is off, so the token stays the same for now. It is replaced when the server is turned on."
+                } else {
+                    "Replacing the MCP token. When it is done, copy the command again; if it fails, MCP: Show Server says why."
+                }),
             );
         }
     });

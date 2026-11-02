@@ -77,8 +77,9 @@ impl ServerDialog {
                     // settings.json edited by hand: show its port unless the user is typing one.
                     let port = service.read(cx).settings().port();
                     if port != this.saved_port {
+                        let untouched = this.typed_port(cx) == this.saved_port.to_string();
                         this.saved_port = port;
-                        if !this.port.focus_handle(cx).is_focused(window) {
+                        if untouched || !this.port.focus_handle(cx).is_focused(window) {
                             this.port.update(cx, |state, cx| {
                                 state.set_value(port.to_string(), window, cx)
                             });

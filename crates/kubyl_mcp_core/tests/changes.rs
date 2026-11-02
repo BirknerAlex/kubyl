@@ -26,8 +26,14 @@ fn deployment(replicas: u64) -> Value {
     })
 }
 
+fn body_named(name: &str, mut object: Value) -> Value {
+    object["metadata"]["name"] = json!(name);
+    object
+}
+
 fn status(code: u16, message: &str) -> Value {
-    json!({"kind": "Status", "apiVersion": "v1", "status": "Failure", "message": message, "reason": "x", "code": code})
+    let reason = if code == 404 { "NotFound" } else { "x" };
+    json!({"kind": "Status", "apiVersion": "v1", "status": "Failure", "message": message, "reason": reason, "code": code})
 }
 
 async fn handle(log: Log, request: http::Request<Incoming>) -> http::Response<Full<Bytes>> {
@@ -36,7 +42,7 @@ async fn handle(log: Log, request: http::Request<Incoming>) -> http::Response<Fu
     let query = request.uri().query().unwrap_or_default().to_string();
     let body = request.into_body().collect().await.unwrap().to_bytes();
     let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
-    if method == "DELETE" || method == "PATCH" {
+    if method == "DELETE" || method == "PATCH" || method == "POST" {
         log.lock().push(format!("BODY {body}"));
     }
     log.lock().push(format!(
@@ -48,7 +54,22 @@ async fn handle(log: Log, request: http::Request<Incoming>) -> http::Response<Fu
         }
     ));
     let base = "/apis/apps/v1/namespaces/shop/deployments/web";
+    // `api` doesn't exist until a test logs "CREATED api" (someone else created it).
+    let new = "/apis/apps/v1/namespaces/shop/deployments/api";
+    let created = log.lock().iter().any(|line| line == "CREATED api");
     let (code, answer) = match (method.as_str(), path.as_str()) {
+        ("GET", p) if p == new && created => (200, body_named("api", deployment(1))),
+        // Creating `api`: refused once someone else created it.
+        ("POST", "/apis/apps/v1/namespaces/shop/deployments") if created => {
+            (409, status(409, "deployments.apps \"api\" already exists"))
+        }
+        ("POST", "/apis/apps/v1/namespaces/shop/deployments") => (201, body.clone()),
+        ("PATCH", p) if p == new => {
+            let mut object = body.clone();
+            object["metadata"]["uid"] = json!("u-2");
+            object["metadata"]["resourceVersion"] = json!("1");
+            (200, object)
+        }
         ("GET", p) if p == base => (200, deployment(2)),
         ("GET", p) if p == format!("{base}/scale") => (
             200,
@@ -400,4 +421,117 @@ async fn an_approved_change_is_dropped_when_the_cluster_went_read_only_meanwhile
     assert!(output.is_error);
     assert!(output.text.contains("became read-only"), "{}", output.text);
     assert!(writes(&log).is_empty(), "{:?}", writes(&log));
+}
+
+/// Approves, after running `meanwhile` (what happens while the user decides).
+struct ApproveAfter<F: Fn() + Send + Sync>(F);
+
+impl<F: Fn() + Send + Sync> Approver for ApproveAfter<F> {
+    fn approve(&self, _: Proposal) -> BoxFuture<'static, Decision> {
+        (self.0)();
+        Box::pin(async { Decision::Approved })
+    }
+}
+
+const WEB: &str = "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: web\n  namespace: shop\nspec:\n  replicas: 4\n";
+const API: &str = "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: api\n  namespace: shop\nspec:\n  replicas: 1\n";
+
+#[tokio::test]
+async fn an_existing_object_is_applied_and_a_new_one_created_after_a_dry_run() {
+    for (yaml, last) in [
+        (WEB, "PATCH /apis/apps/v1/namespaces/shop/deployments/web"),
+        (API, "POST /apis/apps/v1/namespaces/shop/deployments"),
+    ] {
+        let (client, log) = fake_api().await;
+        let context = context(client);
+        let (approver, seen) = approver(Decision::Approved);
+        let output = changes::run(
+            &context,
+            &approver,
+            "apply_manifest",
+            &json!({"yaml": yaml}),
+        )
+        .await;
+        assert!(!output.is_error, "{}", output.text);
+        assert_eq!(seen.lock().len(), 1);
+        let sent = writes(&log);
+        assert_eq!(sent.len(), 2, "{sent:?}");
+        assert!(sent[0].contains("dryRun=All"));
+        assert!(
+            sent[1].starts_with(last) && !sent[1].contains("dryRun"),
+            "{sent:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_object_created_by_someone_else_meanwhile_is_not_merged_into() {
+    let (client, log) = fake_api().await;
+    let context = context(client);
+    let created = log.clone();
+    let approver: Arc<dyn Approver> = Arc::new(ApproveAfter(move || {
+        created.lock().push("CREATED api".into());
+    }));
+    let output = changes::run(&context, &approver, "apply_manifest", &json!({"yaml": API})).await;
+    assert!(output.is_error);
+    assert!(
+        output.text.contains("created by someone else"),
+        "{}",
+        output.text
+    );
+    // The dry run, then a create the server refused: no apply that would merge into it.
+    let sent: Vec<_> = writes(&log)
+        .into_iter()
+        .filter(|l| l != "CREATED api")
+        .collect();
+    assert_eq!(sent.len(), 2, "{sent:?}");
+    assert!(sent[0].contains("dryRun=All"));
+    assert!(sent[1].starts_with("POST "), "{sent:?}");
+}
+
+/// The handler's own last check, not just `run_with`'s plumbing: the cluster turns read-only,
+/// or disappears, while the user decides.
+#[tokio::test]
+async fn the_handler_drops_a_change_when_its_cluster_went_read_only_or_away_meanwhile() {
+    use kubyl_mcp_core::handler::{Scope, ToolsHandler, Writes};
+    use kubyl_mcp_core::server::Handler as _;
+
+    for vanish in [false, true] {
+        let (client, log) = fake_api().await;
+        let (clusters, receiver) = tokio::sync::watch::channel(Arc::new(vec![context(client)]));
+        let (_enabled, enabled) = tokio::sync::watch::channel(true);
+        let approver: Arc<dyn Approver> = Arc::new(ApproveAfter(move || {
+            clusters.send_modify(|list| {
+                let mut next = (**list).clone();
+                if vanish {
+                    next.clear();
+                } else {
+                    next[0].caps.read_only = true;
+                }
+                *list = Arc::new(next);
+            });
+        }));
+        let handler = ToolsHandler::new(
+            Scope::Clusters(receiver),
+            Some(Writes {
+                enabled,
+                approver,
+                off_message: "off".into(),
+            }),
+        );
+        let output = handler
+            .call(
+                "scale_resource",
+                json!({"cluster": "kind-dev", "kind": "deploy", "name": "web", "namespace": "shop", "replicas": 5}),
+            )
+            .await;
+        assert!(output.is_error, "{}", output.text);
+        let expected = if vanish {
+            "no longer in"
+        } else {
+            "became read-only"
+        };
+        assert!(output.text.contains(expected), "{}", output.text);
+        assert!(writes(&log).is_empty(), "{:?}", writes(&log));
+    }
 }

@@ -126,6 +126,23 @@ pub fn new_token() -> std::io::Result<String> {
     Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes))
 }
 
+/// A request header with a random challenge: any Kubyl server answers it, even without the
+/// token, with [`PROOF_HEADER`], so another Kubyl instance can tell that the port is held by
+/// a Kubyl with the same token without sending the token to whatever holds the port.
+const CHALLENGE_HEADER: &str = "x-kubyl-challenge";
+const PROOF_HEADER: &str = "x-kubyl-proof";
+
+/// HMAC-SHA256 of the challenge, keyed with the token (base64url). Reveals nothing about the
+/// token and can't be used as one.
+fn proof(token: &str, challenge: &str) -> String {
+    use hmac::{KeyInit as _, Mac as _};
+    let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(token.as_bytes())
+        .expect("HMAC takes keys of any size");
+    mac.update(b"kubyl-mcp-standby\n");
+    mac.update(challenge.as_bytes());
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
+}
+
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
@@ -241,6 +258,18 @@ async fn handle(shared: &Shared, request: Request<Incoming>) -> Response<Full<By
         && !host_is_loopback(&host, shared.port)
     {
         return reply(StatusCode::FORBIDDEN, "", false);
+    }
+    if let Some(challenge) = request
+        .headers()
+        .get(CHALLENGE_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .filter(|c| (16..=64).contains(&c.len()))
+    {
+        let mut response = reply(StatusCode::UNAUTHORIZED, "", false);
+        if let Ok(value) = http::HeaderValue::from_str(&proof(&shared.token, challenge)) {
+            response.headers_mut().insert(PROOF_HEADER, value);
+        }
+        return response;
     }
     let authorized = request
         .headers()
@@ -406,17 +435,49 @@ async fn relay(
     0
 }
 
-/// Whether a Kubyl MCP server that accepts `token` answers on `127.0.0.1:port` (another Kubyl
-/// instance), as opposed to some other program holding the port. Gives up after a second.
+/// Whether `127.0.0.1:port` is held by a Kubyl MCP server with this `token` (another Kubyl
+/// instance), as opposed to some other program. The token isn't sent: the server proves it
+/// knows it by answering a random challenge. Gives up after a second.
 pub async fn serves_kubyl(port: u16, token: &str) -> bool {
-    let ping = json!({ "jsonrpc": "2.0", "id": 0, "method": "ping" }).to_string();
+    let mut nonce = [0u8; 18];
+    if getrandom::fill(&mut nonce).is_err() {
+        return false;
+    }
+    let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(nonce);
     let answer = tokio::time::timeout(
         std::time::Duration::from_secs(1),
-        post(&format!("127.0.0.1:{port}"), "/mcp", token, ping),
+        challenge_proof(&format!("127.0.0.1:{port}"), &challenge),
     )
     .await;
-    matches!(answer, Ok(Ok(Some(body)))
-        if serde_json::from_str::<Value>(&body).is_ok_and(|v| v.get("result").is_some()))
+    matches!(answer, Ok(Ok(Some(given)))
+        if constant_time_eq(given.as_bytes(), proof(token, &challenge).as_bytes()))
+}
+
+/// Sends `challenge` without a token; the proof header of the answer, if any.
+async fn challenge_proof(authority: &str, challenge: &str) -> Result<Option<String>, String> {
+    let stream = tokio::net::TcpStream::connect(authority)
+        .await
+        .map_err(|e| e.to_string())?;
+    let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+        .await
+        .map_err(|e| e.to_string())?;
+    tokio::spawn(async move {
+        connection.await.ok();
+    });
+    let request = Request::post("/mcp")
+        .header(header::HOST, authority)
+        .header(CHALLENGE_HEADER, challenge)
+        .body(Full::new(Bytes::new()))
+        .map_err(|e| e.to_string())?;
+    let response = sender
+        .send_request(request)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(response
+        .headers()
+        .get(PROOF_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string))
 }
 
 /// One POST; the answer body for 200, `None` for 202.
@@ -703,6 +764,47 @@ mod tests {
             .unwrap();
         let response = sender.send_request(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn the_standby_probe_proves_kubyl_without_sending_the_token() {
+        let (_tx, rx) = watch::channel(context());
+        let server = serve(thread_handler(rx), options(None)).await.unwrap();
+        let port = server.addr.port();
+        assert!(serves_kubyl(port, server.token()).await);
+        assert!(!serves_kubyl(port, "another-token").await);
+
+        // Any other program on the port: answers everything like an MCP server would, and
+        // records what it was sent.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen: Arc<parking_lot::Mutex<Vec<String>>> = Arc::default();
+        let recorded = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let recorded = recorded.clone();
+                let service = hyper::service::service_fn(move |request: Request<Incoming>| {
+                    recorded
+                        .lock()
+                        .extend(request.headers().keys().map(|k| k.to_string()));
+                    async {
+                        Ok::<_, std::convert::Infallible>(reply(
+                            StatusCode::OK,
+                            r#"{"jsonrpc":"2.0","id":0,"result":{}}"#,
+                            true,
+                        ))
+                    }
+                });
+                tokio::spawn(
+                    hyper::server::conn::http1::Builder::new()
+                        .serve_connection(TokioIo::new(stream), service),
+                );
+            }
+        });
+        assert!(!serves_kubyl(port, "the-real-token").await);
+        let seen = seen.lock();
+        assert!(seen.iter().any(|h| h == CHALLENGE_HEADER), "{seen:?}");
+        assert!(!seen.iter().any(|h| h == "authorization"), "{seen:?}");
     }
 
     #[test]

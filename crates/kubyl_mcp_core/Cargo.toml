@@ -17,6 +17,7 @@ anyhow.workspace = true
 base64.workspace = true
 futures.workspace = true
 getrandom.workspace = true
+hmac.workspace = true
 http.workspace = true
 http-body-util.workspace = true
 hyper = { workspace = true, features = ["client", "server", "http1"] }
@@ -35,6 +36,7 @@ schemars.workspace = true
 secrecy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tokio = { workspace = true, features = ["io-std", "sync", "time", "net", "rt"] }
 tracing.workspace = true
 

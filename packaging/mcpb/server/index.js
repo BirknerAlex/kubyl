@@ -18,6 +18,8 @@ if (!token) {
 // Kubyl doesn't use sessions today; pass one through if it ever hands one out.
 let session = null;
 
+const DEADLINE_MS = 13 * 60 * 1000;
+
 function write(message) {
   process.stdout.write(JSON.stringify(message) + "\n");
 }
@@ -77,8 +79,9 @@ function relay(line) {
   };
   if (session) headers["Mcp-Session-Id"] = session;
 
-  // No timeout: a change tool waits until the user answers Kubyl's approval dialog. No agent:
-  // an idle keep-alive socket would keep the process alive after stdin closes.
+  // A change can take 12 minutes (a 1 minute check, up to 10 minutes for the user to answer
+  // Kubyl's approval dialog, a 1 minute run): give up a minute after that. No agent: an idle
+  // keep-alive socket would keep the process alive after stdin closes.
   const request = http.request(
     { host: "127.0.0.1", port, path: "/mcp", method: "POST", headers, agent: false },
     (response) => {
@@ -105,11 +108,17 @@ function relay(line) {
       });
     },
   );
+  const deadline = setTimeout(() => {
+    request.destroy(Object.assign(new Error("no answer"), { code: "ETIMEDOUT" }));
+  }, DEADLINE_MS);
+  request.on("close", () => clearTimeout(deadline));
   request.on("error", (err) => {
     const text =
       err.code === "ECONNREFUSED"
         ? `Kubyl isn't reachable on 127.0.0.1:${port}. Start Kubyl and check that its MCP server is on ("MCP: Show Server").`
-        : `Kubyl isn't reachable: ${err.message}`;
+        : err.code === "ETIMEDOUT"
+          ? "Kubyl didn't answer within 13 minutes."
+          : `Kubyl isn't reachable: ${err.message}`;
     fail(message, text);
   });
   request.end(body);

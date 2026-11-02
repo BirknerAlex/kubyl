@@ -92,6 +92,8 @@ pub struct McpHub {
     /// when a newer start has begun, so an abandoned start can't overwrite the newer token.
     generation: Arc<std::sync::atomic::AtomicU64>,
     credential_lock: Arc<parking_lot::Mutex<()>>,
+    /// Where the start lock shared by all Kubyl instances lives ([`start_lock`]).
+    lock_dir: std::path::PathBuf,
 }
 
 impl Service for McpHub {
@@ -121,6 +123,7 @@ impl McpHub {
             replace_token: false,
             generation: Arc::default(),
             credential_lock: Arc::default(),
+            lock_dir: kubyl_settings_core::config_dir(),
         }
     }
 
@@ -261,7 +264,9 @@ impl McpHub {
     /// Starts the server. `takeover` is a standby's retry: it keeps the standby state (and
     /// token) on screen instead of flashing "Starting" every few seconds.
     fn start_server(&mut self, takeover: bool, host: &mut dyn Host<Self>) {
-        self.server = None;
+        // Stopped under the instances' start lock (below), so no other instance can take the
+        // port between this listener closing and the new one opening with a replaced token.
+        let old = self.server.take();
         self.starting = None;
         self.standby = None;
         if !takeover {
@@ -269,6 +274,7 @@ impl McpHub {
             self.token = None;
         }
         if !self.settings.enabled {
+            drop(old);
             self.state = ServerState::Off;
             self.token = None;
             host.notify();
@@ -287,16 +293,19 @@ impl McpHub {
             + 1;
         let latest = self.generation.clone();
         let lock = self.credential_lock.clone();
+        let lock_dir = self.lock_dir.clone();
         let handler = Arc::new(ToolsHandler::new(
             Scope::Clusters(self.clusters.subscribe()),
             Some(Writes {
                 enabled: self.writes.subscribe(),
                 approver: self.approver.clone() as Arc<dyn Approver>,
-                off_message: "Kubyl's MCP server is read-only. The user can allow changes (each one approved in Kubyl) with \"writes\": \"ask\" under \"mcp\" in Kubyl's settings.json.".into(),
+                off_message: "Kubyl's MCP server is read-only. The user can allow changes (each one approved in Kubyl) with \"Allow changes\" under View → MCP Server in Kubyl, or \"writes\": \"ask\" under \"mcp\" in Kubyl's settings.json.".into(),
             }),
         ));
         let work = async move {
-            let token = tokio::task::spawn_blocking(move || {
+            let (token, _instances) = tokio::task::spawn_blocking(move || {
+                let instances = start_lock(&lock_dir, port);
+                drop(old);
                 let _serialized = lock.lock();
                 if latest.load(std::sync::atomic::Ordering::SeqCst) != mine {
                     // A newer start owns the credential now.
@@ -309,7 +318,7 @@ impl McpHub {
                         )
                     })?;
                 }
-                token(&credentials)
+                Ok((token(&credentials)?, instances))
             })
             .await
             .map_err(|e| e.to_string())??;
@@ -414,6 +423,22 @@ impl McpHub {
     }
 }
 
+/// Serializes starts across Kubyl instances (and hubs): held from stopping the old listener,
+/// through reading or replacing the token, until the new listener is bound, so a standby
+/// instance can't take the port over with a token that is being replaced. Released when the
+/// file is dropped. Best effort: without it a start goes ahead unlocked.
+fn start_lock(dir: &std::path::Path, port: u16) -> Option<std::fs::File> {
+    std::fs::create_dir_all(dir).ok()?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join(format!("mcp-{port}.lock")))
+        .ok()?;
+    file.lock().ok()?;
+    Some(file)
+}
+
 /// What a start ended with.
 enum Started {
     Serving(McpServer, SecretString),
@@ -461,6 +486,13 @@ mod tests {
             unsafe { std::env::set_var("KUBYL_CREDENTIAL_STORE", "memory") };
         });
         Credentials::scoped(scope)
+    }
+
+    /// A hub whose start lock lives in the temp dir, not in the user's config dir.
+    fn test_hub(settings: McpSettings, credentials: Credentials) -> McpHub {
+        let mut hub = McpHub::new(settings, credentials);
+        hub.lock_dir = std::env::temp_dir().join("kubyl-mcp-hub-tests");
+        hub
     }
 
     fn credentials() -> Credentials {
@@ -512,7 +544,7 @@ mod tests {
             port,
             ..McpSettings::default()
         };
-        let mut hub = McpHub::new(settings, credentials());
+        let mut hub = test_hub(settings, credentials());
         let mut host = TestHost::new();
         hub.set_clusters(vec![ToolContext {
             cluster: Some(ClusterId::new("kind-dev")),
@@ -564,13 +596,13 @@ mod tests {
             port: free_port(),
             ..McpSettings::default()
         };
-        let mut hub = McpHub::new(settings.clone(), credentials.clone());
+        let mut hub = test_hub(settings.clone(), credentials.clone());
         let mut host = TestHost::new();
         hub.start(&mut host);
         run_started(&mut hub, &mut host);
         let first = hub.token().unwrap().to_string();
 
-        let mut again = McpHub::new(
+        let mut again = test_hub(
             McpSettings {
                 port: free_port(),
                 ..settings
@@ -601,13 +633,13 @@ mod tests {
             ..McpSettings::default()
         };
         let port = settings.port;
-        let mut first = McpHub::new(settings.clone(), credentials.clone());
+        let mut first = test_hub(settings.clone(), credentials.clone());
         let mut host1 = TestHost::new();
         first.start(&mut host1);
         run_started(&mut first, &mut host1);
         assert_eq!(first.state(), &ServerState::Running { port });
 
-        let mut second = McpHub::new(settings, credentials);
+        let mut second = test_hub(settings, credentials);
         let mut host2 = TestHost::new();
         second.start(&mut host2);
         run_started(&mut second, &mut host2);
@@ -617,6 +649,15 @@ mod tests {
         assert_eq!(second.token(), first.token());
         // The serving instance would keep the old token: standby doesn't replace it.
         second.regenerate_token(&mut host2);
+        assert_eq!(second.state(), &ServerState::Standby { port });
+
+        // The serving instance replaces the token: the standby picks the new one up on its next
+        // try and keeps waiting (it never serves the old one).
+        first.regenerate_token(&mut host1);
+        run_started(&mut first, &mut host1);
+        assert_eq!(first.state(), &ServerState::Running { port });
+        let replaced = first.token().unwrap().to_string();
+        host2.run_until(&mut second, |hub, _| hub.token() == Some(replaced.as_str()));
         assert_eq!(second.state(), &ServerState::Standby { port });
 
         drop(first);
@@ -631,7 +672,7 @@ mod tests {
     fn a_taken_port_is_reported_and_a_disabled_server_is_off() {
         let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = taken.local_addr().unwrap().port();
-        let mut hub = McpHub::new(
+        let mut hub = test_hub(
             McpSettings {
                 port,
                 ..McpSettings::default()
@@ -663,7 +704,7 @@ mod tests {
 
     #[test]
     fn outside_changes_wait_for_the_user_and_only_exist_when_enabled() {
-        let mut hub = McpHub::new(
+        let mut hub = test_hub(
             McpSettings {
                 writes: ExternalWrites::Ask,
                 enabled: false,
@@ -694,7 +735,7 @@ mod tests {
 
     #[test]
     fn answered_late_or_after_writes_went_off_a_change_is_rejected_and_dropped() {
-        let mut hub = McpHub::new(
+        let mut hub = test_hub(
             McpSettings {
                 writes: ExternalWrites::Ask,
                 enabled: false,

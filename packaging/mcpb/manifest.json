@@ -43,7 +43,7 @@
       "title": "Port",
       "description": "\"port\" under \"mcp\" in Kubyl's settings.json.",
       "default": 7421,
-      "min": 1,
+      "min": 1024,
       "max": 65535,
       "required": false
     }
