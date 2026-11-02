@@ -4,23 +4,18 @@
 
 use std::ops::Deref;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{App, AppContext as _, Context, Entity, EventEmitter, Global, Subscription, Task};
-use kubyl_alerts::AlertsService;
-use kubyl_alerts::model::Alert;
 use kubyl_core::host::{Hosts, hosted};
 use kubyl_core::{ActiveContext, ClusterId, Notification, NotificationCenter};
 use kubyl_kube::{ConnectionEvent, ConnectionManager};
-use kubyl_metrics::MetricsService;
 use kubyl_resources::ResourceSelection;
 use kubyl_settings::{Settings, State};
 
 pub use kubyl_agent_core::service::*;
 use kubyl_agent_core::settings::{AgentSettings, AgentState, SavedThread};
 use kubyl_agent_core::thread::ContextChip;
-use kubyl_agent_core::tools::{AlertSummary, ToolContext};
 
 /// How often the tool contexts pick up new alerts and a found Prometheus.
 const REFRESH: Duration = Duration::from_secs(5);
@@ -236,6 +231,14 @@ impl AgentService {
         hosted(self, cx, |core, host| core.send(thread, text, chips, host));
     }
 
+    /// Lets the thread's agent propose changes to its cluster (each one still needs a click), or
+    /// stops it.
+    pub fn set_writes(&mut self, thread: ThreadId, enabled: bool, cx: &mut Context<Self>) {
+        hosted(self, cx, |core, host| {
+            core.set_writes(thread, enabled, host)
+        });
+    }
+
     pub fn cancel(&mut self, thread: ThreadId, cx: &mut Context<Self>) {
         hosted(self, cx, |core, host| core.cancel(thread, host));
     }
@@ -298,50 +301,4 @@ pub(crate) fn notify_turn(title: &str, cx: &mut App) {
     }
 }
 
-fn alert_summary(alert: &Alert) -> AlertSummary {
-    AlertSummary {
-        name: alert.name.clone(),
-        severity: alert.severity.label().to_string(),
-        state: alert.state.label().to_string(),
-        since: alert.since(),
-        summary: alert.summary().to_string(),
-        labels: alert.labels.clone(),
-    }
-}
-
-/// What `cluster`'s tools can reach right now.
-pub fn tool_context(cluster: &ClusterId, cx: &App) -> ToolContext {
-    let Some(manager) = ConnectionManager::try_global(cx) else {
-        return ToolContext::default();
-    };
-    let manager = manager.read(cx);
-    let selection = ResourceSelection::global(cx)
-        .primary()
-        .filter(|s| &s.target.cluster == cluster);
-    let active = ActiveContext::global(cx);
-    let namespace = active
-        .cluster
-        .as_ref()
-        .filter(|c| &c.id == cluster)
-        .and_then(|_| active.namespace.as_ref().map(|n| n.to_string()));
-    let prometheus = MetricsService::global(cx).and_then(|m| m.read(cx).prometheus(cluster));
-    let alerts = AlertsService::global(cx).and_then(|service| {
-        let service = service.read(cx);
-        let state = service.cluster(cluster, kubyl_alerts::service::Pace::Background)?;
-        Some(Arc::new(state.alerts.iter().map(alert_summary).collect()))
-    });
-    ToolContext {
-        cluster: Some(cluster.clone()),
-        cluster_name: manager.display_name(cluster).to_string(),
-        client: manager.client(cluster),
-        discovery: manager.discovery(cluster),
-        caps: manager.caps(cluster),
-        namespace,
-        selection: selection.map(|s| s.target.clone()),
-        selection_kind: selection.map(|s| s.kind.clone()),
-        prometheus,
-        alerts,
-        max_output: 0,
-        log_lines: 0,
-    }
-}
+pub use kubyl_mcp::context::tool_context;

@@ -43,6 +43,8 @@ kubyl_kubeconfig = { path = "crates/kubyl_kubeconfig" }
 kubyl_kubeconfig_core = { path = "crates/kubyl_kubeconfig_core" }
 kubyl_logs = { path = "crates/kubyl_logs" }
 kubyl_logs_core = { path = "crates/kubyl_logs_core" }
+kubyl_mcp = { path = "crates/kubyl_mcp" }
+kubyl_mcp_core = { path = "crates/kubyl_mcp_core" }
 kubyl_metrics = { path = "crates/kubyl_metrics" }
 kubyl_metrics_core = { path = "crates/kubyl_metrics_core" }
 kubyl_netflow = { path = "crates/kubyl_netflow" }
@@ -200,7 +202,7 @@ tracing = "0.1.44"
 url = "2.5.8"
 winresource = "0.1.31"
 # Reads the downloaded Windows .zip update artifact (phase 09); deflate only, no encryption.
-zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+zip = { version = "9.0.0", default-features = false, features = ["deflate"] }
 tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 

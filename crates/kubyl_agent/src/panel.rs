@@ -1201,7 +1201,7 @@ fn first_run_note(colors: &Colors) -> AnyElement {
                 .child(div().text_size(u(12.5)).child("What the agent sees")),
         )
         .child(small(
-            "Your own agent (Claude, Codex, Gemini…) runs on this machine with its own sign-in. It reads one cluster through Kubyl's read-only tools, with your access. Kubyl masks Secret values, private keys and token-like text, and asks before every command and file change.",
+            "Your own agent (Claude, Codex, Gemini…) runs on this machine with its own sign-in. It reads one cluster through Kubyl's tools, with your access, and can only change it if you allow that in the thread; you approve every change. Kubyl masks Secret values, private keys and token-like text, and asks before every command and file change.",
             colors.text_muted,
         ))
         .child(small(
@@ -1475,39 +1475,7 @@ fn plan(thread: &Thread, colors: &Colors) -> AnyElement {
 }
 
 fn diff_block(path: &str, old: Option<&str>, new: &str, colors: &Colors) -> AnyElement {
-    let diff = similar::TextDiff::from_lines(old.unwrap_or(""), new);
-    let mut lines: Vec<AnyElement> = Vec::new();
-    for change in diff.iter_all_changes().take(400) {
-        let (sign, color, bg) = match change.tag() {
-            similar::ChangeTag::Delete => ("-", colors.red, Some(colors.red.opacity(0.08))),
-            similar::ChangeTag::Insert => ("+", colors.green, Some(colors.green.opacity(0.08))),
-            similar::ChangeTag::Equal => (" ", colors.text_dim, None),
-        };
-        let text = format!("{sign} {}", change.value().trim_end_matches('\n'));
-        lines.push(
-            div()
-                .px(u(6.0))
-                .when_some(bg, |this, bg| this.bg(bg))
-                .text_color(color)
-                .child(text)
-                .into_any_element(),
-        );
-    }
-    v_flex()
-        .gap(u(2.0))
-        .child(small(path.to_string(), colors.text_dim))
-        .child(
-            v_flex()
-                .rounded(u(4.0))
-                .border_1()
-                .border_color(colors.border_variant)
-                .bg(colors.background)
-                .py(u(4.0))
-                .font_family(kubyl_ui::fonts::MONO)
-                .text_size(u(11.5))
-                .children(lines),
-        )
-        .into_any_element()
+    kubyl_mcp::view::diff_block(path, old, new, colors)
 }
 
 fn terminal_block(thread: ThreadId, terminal: &str, key: (usize, usize), cx: &App) -> AnyElement {
@@ -1714,6 +1682,59 @@ fn pending_card(thread: ThreadId, pending: u64, kind: &PendingKind, colors: &Col
             .into_any_element(),
         // Forms render through `form_card`, which keeps their inputs.
         PendingKind::Form { .. } => card.into_any_element(),
+        PendingKind::Change { proposal } => {
+            let production = proposal.production;
+            let too_large = kubyl_mcp::view::is_truncated(proposal);
+            let for_dialog = proposal.clone();
+            card.child(header(IconName::Diff, proposal.title.clone()))
+                .child(kubyl_mcp::view::proposal_body(proposal, colors))
+                .child(
+                    h_flex()
+                        .gap(u(6.0))
+                        .child({
+                            let button = Button::new(("agent-apply-change", pending as usize))
+                                .label(if production {
+                                    "Apply to production…"
+                                } else {
+                                    "Apply"
+                                })
+                                .disabled(too_large)
+                                .on_click(move |event, window, cx| {
+                                    // Read the flag now: the cluster may have been marked PROD
+                                    // while the change waited.
+                                    if production || kubyl_mcp::view::is_production(&for_dialog, cx) {
+                                        // A production cluster needs its name typed.
+                                        let for_dialog = for_dialog.clone();
+                                        kubyl_mcp::view::ask(
+                                            for_dialog,
+                                            "The agent",
+                                            move |decision, _, cx| {
+                                                let answer = match decision {
+                                                    kubyl_mcp_core::approval::Decision::Approved => Answer::Allow,
+                                                    kubyl_mcp_core::approval::Decision::Rejected => Answer::Deny,
+                                                };
+                                                if let Some(service) = AgentService::global(cx) {
+                                                    service.update(cx, |s, cx| s.answer(thread, pending, answer, cx));
+                                                }
+                                            },
+                                            window,
+                                            cx,
+                                        );
+                                    } else {
+                                        answer(Answer::Allow)(event, window, cx);
+                                    }
+                                });
+                            if production { button.danger() } else { button.primary() }
+                        })
+                        .child(
+                            Button::new(("agent-reject-change", pending as usize))
+                                .label("Reject")
+                                .ghost()
+                                .on_click(answer(Answer::Deny)),
+                        ),
+                )
+                .into_any_element()
+        }
         PendingKind::Write { path, old, new } => card
             .child(header(
                 IconName::Diff,
@@ -1790,6 +1811,12 @@ impl AgentPanel {
         };
         let weak2 = weak.clone();
         let thread_id = thread.map(|t| t.id);
+        // The thread being composed for: the open one, else the one prepared for a new thread.
+        let effective = thread.or_else(|| {
+            AgentService::global(cx)
+                .zip(self.draft)
+                .and_then(|(s, id)| s.read(cx).thread(id))
+        });
         let label = match thread {
             Some(thread) => format!("{} · {}", thread.agent_name, thread.cluster_name),
             None => String::new(),
@@ -1819,6 +1846,7 @@ impl AgentPanel {
             .child(
                 h_flex()
                     .gap(u(6.0))
+                    .children(changes_toggle(effective.map(|t| t.id), cx))
                     .child(
                         div()
                             .flex_1()
@@ -1938,6 +1966,14 @@ fn thread_header(thread: &Thread, colors: &Colors, cx: &App) -> AnyElement {
                 .child(thread.title()),
         )
         .when(production, |this| this.child(kubyl_ui::ProdBadge))
+        .when(thread.writes_enabled(), |this| {
+            this.child(
+                div()
+                    .text_size(u(11.0))
+                    .text_color(colors.yellow)
+                    .child("Changes on"),
+            )
+        })
         .children(context_use(thread, colors))
         .child(small(status_label(&thread.status), colors.text_faint))
         .into_any_element()
@@ -2700,6 +2736,60 @@ mod gpui_tests {
     }
 
     #[gpui::test]
+    fn changes_are_off_until_allowed_and_a_proposal_waits_for_a_click(cx: &mut TestAppContext) {
+        use kubyl_mcp_core::approval::{ChangeDoc, Proposal};
+
+        let (_dir, panel, cx) = open(cx);
+        let thread = start_thread(&panel, cx, "scale it");
+        let service = service(cx);
+
+        // The switch is there, off.
+        let has_toggle = cx.update(|_, cx| changes_toggle(Some(thread), cx).is_some());
+        assert!(has_toggle);
+        assert!(!service.read_with(cx, |s, _| s.thread(thread).unwrap().writes_enabled()));
+
+        // Allowing changes is a per-thread decision.
+        service.update(cx, |service, cx| service.set_writes(thread, true, cx));
+        assert!(service.read_with(cx, |s, _| s.thread(thread).unwrap().writes_enabled()));
+
+        // A proposal shows as a card with a diff and waits; rejecting removes it.
+        let pending = service.update(cx, |service, cx| {
+            let id = service.core_mut().push_pending_for_tests(
+                thread,
+                PendingKind::Change {
+                    proposal: Proposal {
+                        cluster: ClusterId::new("kind-dev"),
+                        cluster_name: "kind-dev".into(),
+                        production: false,
+                        title: "Scale deployment shop/web from 2 to 3".into(),
+                        docs: vec![ChangeDoc {
+                            label: "deployment shop/web".into(),
+                            old: Some("spec:\n  replicas: 2\n".into()),
+                            new: "spec:\n  replicas: 3\n".into(),
+                        }],
+                        warnings: vec!["The workload is briefly degraded.".into()],
+                    },
+                },
+            );
+            cx.notify();
+            id
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            service.read_with(cx, |s, _| s.thread(thread).unwrap().pending.len()),
+            1
+        );
+        service.update(cx, |service, cx| {
+            service.answer(thread, pending, Answer::Deny, cx)
+        });
+        assert!(service.read_with(cx, |s, _| s.thread(thread).unwrap().pending.is_empty()));
+
+        // Turning it off again is immediate.
+        service.update(cx, |service, cx| service.set_writes(thread, false, cx));
+        assert!(!service.read_with(cx, |s, _| s.thread(thread).unwrap().writes_enabled()));
+    }
+
+    #[gpui::test]
     fn commands_and_questions_wait_for_answers(cx: &mut TestAppContext) {
         let (_dir, panel, cx) = open(cx);
         let thread = start_thread(&panel, cx, "go");
@@ -3090,4 +3180,178 @@ fn permission_title(title: &str, command: Option<&str>) -> String {
         }
         _ => format!("The agent asks: {title}"),
     }
+}
+
+/// The composer's "Allow changes" switch: off by default; turning it on asks first, because
+/// an agent that may change a cluster can break it.
+fn changes_toggle(thread: Option<ThreadId>, cx: &App) -> Option<AnyElement> {
+    let colors = cx.colors().clone();
+    let service = AgentService::global(cx)?;
+    let service = service.read(cx);
+    if !service.settings().allow_writes {
+        return None;
+    }
+    let thread = service.thread(thread?)?;
+    let id = thread.id;
+    let cluster = thread.cluster.clone();
+    let cluster_name = thread.cluster_name.clone();
+    let on = thread.writes_enabled();
+    let (read_only, production) = ConnectionManager::try_global(cx)
+        .map(|m| {
+            let caps = m.read(cx).caps(&cluster);
+            (caps.read_only, caps.production)
+        })
+        .unwrap_or_default();
+    let (color, label) = if on {
+        (colors.yellow, "Changes on")
+    } else {
+        (colors.text_dim, "Allow changes")
+    };
+    Some(
+        h_flex()
+            .id(("agent-changes", id.0 as usize))
+            .gap(u(4.0))
+            .px(u(6.0))
+            .h(u(22.0))
+            .rounded(u(4.0))
+            .border_1()
+            .border_color(if on {
+                colors.yellow
+            } else {
+                colors.border_variant
+            })
+            .when(on, |this| this.bg(colors.yellow.opacity(0.1)))
+            .when(read_only, |this| this.opacity(0.5))
+            .when(!read_only, |this| {
+                this.cursor_pointer().hover(|this| this.bg(colors.hover))
+            })
+            .tooltip(move |window, cx| {
+                gpui_component::tooltip::Tooltip::new(if read_only {
+                    "This cluster is read-only in Kubyl"
+                } else if on {
+                    "The agent may propose changes; you approve each. Click to turn off."
+                } else {
+                    "Let the agent propose changes to this cluster (you approve each)"
+                })
+                .build(window, cx)
+            })
+            .on_click(move |_, window, cx| {
+                if read_only {
+                    return;
+                }
+                if on {
+                    if let Some(service) = AgentService::global(cx) {
+                        service.update(cx, |s, cx| s.set_writes(id, false, cx));
+                    }
+                } else {
+                    confirm_changes(id, cluster_name.clone(), production, window, cx);
+                }
+            })
+            .child(
+                Icon::new(if on {
+                    IconName::TriangleAlert
+                } else {
+                    IconName::Lock
+                })
+                .size(11.0)
+                .color(color),
+            )
+            .child(div().text_size(u(11.0)).text_color(color).child(label))
+            .into_any_element(),
+    )
+}
+
+/// The warning before changes are allowed.
+fn confirm_changes(
+    thread: ThreadId,
+    cluster: String,
+    production: bool,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    use gpui_component::WindowExt as _;
+    let colors = cx.colors().clone();
+    window.open_dialog(cx, move |dialog, _, _| {
+        let colors = colors.clone();
+        let cluster = cluster.clone();
+        dialog
+            .w(px(520.0))
+            .margin_top(px(90.0))
+            .p_0()
+            .bg(colors.panel)
+            .close_button(false)
+            .on_ok(|_, _, _| false)
+            .content(move |content, _, _| {
+                let line = |text: String| {
+                    h_flex()
+                        .gap(u(8.0))
+                        .items_start()
+                        .child(div().text_color(colors.text_dim).child("•"))
+                        .child(div().flex_1().min_w_0().child(text))
+                };
+                content.child(
+                    v_flex()
+                        .child(
+                            h_flex()
+                                .gap(u(8.0))
+                                .px(u(16.0))
+                                .py(u(14.0))
+                                .border_b_1()
+                                .border_color(colors.border_variant)
+                                .child(Icon::new(IconName::TriangleAlert).size(15.0).color(colors.yellow))
+                                .child(
+                                    div()
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .child(format!("Allow this agent to change {cluster}?")),
+                                ),
+                        )
+                        .child(
+                            v_flex()
+                                .gap(u(8.0))
+                                .p(u(16.0))
+                                .text_size(u(12.5))
+                                .text_color(colors.text_muted)
+                                .child(line(format!("The agent can create, change, scale, restart and delete objects on {cluster} through your account.")))
+                                .child(line("Every change is shown to you as a diff first and happens only after you click Apply.".into()))
+                                .child(line("Enabling this can cause issues: an agent can misread logs, be steered by text it finds in the cluster, or propose a change that causes an outage or loses data. Changes may not be reversible. Read each diff before you apply it.".into()))
+                                .child(line("It applies to this conversation only and turns off when you close it. Secrets can't be written through the agent.".into()))
+                                .when(production, |this| {
+                                    this.child(
+                                        h_flex()
+                                            .gap(u(6.0))
+                                            .text_color(colors.red)
+                                            .child(kubyl_ui::ProdBadge)
+                                            .child("This is a production cluster. Applying will also ask you to type its name."),
+                                    )
+                                }),
+                        )
+                        .child(
+                            h_flex()
+                                .justify_end()
+                                .gap(u(8.0))
+                                .px(u(16.0))
+                                .py(u(12.0))
+                                .border_t_1()
+                                .border_color(colors.border_variant)
+                                .child(
+                                    Button::new("agent-changes-cancel")
+                                        .label("Cancel")
+                                        .ghost()
+                                        .on_click(|_, window, cx| window.close_dialog(cx)),
+                                )
+                                .child(
+                                    Button::new("agent-changes-allow")
+                                        .label("Allow changes")
+                                        .danger()
+                                        .on_click(move |_, window, cx| {
+                                            if let Some(service) = AgentService::global(cx) {
+                                                service.update(cx, |s, cx| s.set_writes(thread, true, cx));
+                                            }
+                                            window.close_dialog(cx);
+                                        }),
+                                ),
+                        ),
+                )
+            })
+    });
 }

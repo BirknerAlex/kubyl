@@ -20,7 +20,7 @@ use k8s_openapi::api::core::v1::{Namespace, Secret};
 use kube::api::{Api, DeleteParams, PostParams};
 use kube::config::{KubeConfigOptions, Kubeconfig};
 use kube::{Client, Config};
-use kubyl_agent_core::mcp::{self, McpServer};
+use kubyl_agent_core::mcp::McpServer;
 use kubyl_agent_core::tools::ToolContext;
 use serde_json::{Value, json};
 use tokio::sync::watch;
@@ -104,7 +104,7 @@ async fn tools_read_the_cluster_and_never_return_secrets() {
         ..ToolContext::default()
     };
     let (_tx, rx) = watch::channel(context);
-    let server = mcp::serve(rx, None).await.unwrap();
+    let server = kubyl_mcp_core::handler::serve_cluster(rx).await.unwrap();
 
     let (info, error) = call(&server, "cluster_info", json!({})).await;
     println!("{info}");
@@ -255,7 +255,7 @@ async fn canned_prompts_name_tools_that_answer_for_a_real_deployment() {
         ..ToolContext::default()
     };
     let (_tx, rx) = watch::channel(context);
-    let server = mcp::serve(rx, None).await.unwrap();
+    let server = kubyl_mcp_core::handler::serve_cluster(rx).await.unwrap();
 
     // CoreDNS is on every kind cluster.
     let subject = Subject {

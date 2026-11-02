@@ -1,6 +1,6 @@
 # Phase 21: Agents over ACP (Claude, Codex, Gemini, Copilot) with cluster tools
 
-**Status:** in progress: part 1 (read tools, ACP client, panel, agent questions) done on branch `phase/21-agents-acp`; part 2 (writes) not started
+**Status:** in progress: part 1 (read tools, ACP client, panel, agent questions) done on branch `phase/21-agents-acp`; part 2 (writes) done in [phase 26](26-mcp-server.md)
 **Depends on:** 02 (`ResourceStores`, actions, details), 04 (diff and apply), 05 (terminal renderer, logs), 07 (events, `MetricsService`); 14 and 18 optional (alerts and PromQL tools, "Ask agent" on an alert)
 **Owns:** `crates/kubyl_agent` (new), `crates/kubyl_agent_core` (new), the `kubyl mcp-bridge` subcommand in `crates/kubyl`
 **Mockups:** board 19 · Agents in `design/mockups/generate.py`: `Agent` (a thread with Kubyl tool calls, a plan, a command to approve with its warning, the "Ask agent" chip, the status bar item), `AgentStates` (new thread: first-run note, cluster, agent picker with install commands; sign-in and stopped states) and `AgentQuestions` (an agent's form, a link to open, a file change as a diff). The proposed apply (part 2) has no board yet.
@@ -226,7 +226,7 @@ sees what was read.
 - [x] First-run note: what the agent can see, that logs go as they are, that the agent's own tools aren't sandboxed
 
 ### Part 2: writes
-- [ ] `propose_*` tools through phase 04's diff and apply and the explorer's actions; hidden on read-only clusters, PROD confirmation
+- [x] Change tools (done in phase 26 as `apply_manifest`, `patch_resource`, `delete_resource`, `scale_resource`, `restart_resource` instead of `propose_*`): behind a per-thread switch, dry-run checked, approved as a diff in the thread, refused on read-only clusters, PROD typed confirmation. They use `kubyl_yaml_core::apply` and `kubyl_resources_core::ops`, not the editor's view
 - [x] `fs/write_text_file` diffs in the panel (part 1 needed them for every write)
 
 ### Settings (`"agent"` section of settings.json)

@@ -15,10 +15,8 @@ workspace = true
 [dependencies]
 agent-client-protocol-schema.workspace = true
 anyhow.workspace = true
-base64.workspace = true
 dirs.workspace = true
 futures.workspace = true
-getrandom.workspace = true
 http.workspace = true
 http-body-util.workspace = true
 hyper = { workspace = true, features = ["client", "server", "http1"] }
@@ -28,6 +26,7 @@ k8s-openapi.workspace = true
 kube.workspace = true
 kubyl_base.workspace = true
 kubyl_kube_core.workspace = true
+kubyl_mcp_core.workspace = true
 kubyl_metrics_core.workspace = true
 kubyl_resources_core.workspace = true
 kubyl_settings_core.workspace = true
@@ -36,7 +35,6 @@ regex.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-serde-saphyr.workspace = true
 tokio = { workspace = true, features = ["io-std"] }
 tracing.workspace = true
 

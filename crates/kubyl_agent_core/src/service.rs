@@ -25,19 +25,21 @@ use kubyl_base::host::{Flow, Host, HostExt as _, Pace, Service, TaskHandle};
 use kubyl_base::{ClusterId, Notice};
 use kubyl_kube_core::cli::CliEnv;
 use serde_json::{Value, json};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::acp::{self, AgentConnection, ClientCall, SessionScope};
 use crate::agents::{self, AgentSpec};
 use crate::elicitation::{self, Field};
 use crate::jsonrpc::{Responder, RpcError};
 use crate::kubeconfig;
-use crate::mcp::{self, McpServer};
+use crate::mcp::{self, McpServer, ServeOptions};
 use crate::policy::{self, ExecuteGrant};
 use crate::settings::{AgentSettings, KubectlAccess, SavedThread};
 use crate::terminal::{Exit, Launch};
 use crate::thread::{ContextChip, Entry, Transcript};
 use crate::tools::ToolContext;
+use kubyl_mcp_core::approval::{ApprovalRequest, ChannelApprover, Decision, Proposal};
+use kubyl_mcp_core::handler::{Scope, ToolsHandler, Writes};
 
 /// Identifies a thread in this run of Kubyl.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -119,6 +121,9 @@ pub enum PendingKind {
         old: Option<String>,
         new: String,
     },
+    /// A change to the cluster the agent proposes through Kubyl's change tools. Nothing has
+    /// happened yet; the answer decides.
+    Change { proposal: Proposal },
     /// The agent asks the user to fill in a form (`elicitation/create`).
     Form {
         message: String,
@@ -141,6 +146,8 @@ pub struct Pending {
     responder: Option<Responder>,
     /// For commands: what to run once allowed.
     launch: Option<Launch>,
+    /// For changes proposed through Kubyl's change tools: the way back to the waiting tool call.
+    approval: Option<oneshot::Sender<Decision>>,
 }
 
 impl std::fmt::Debug for Pending {
@@ -200,8 +207,15 @@ pub struct Thread {
     grant: Option<ExecuteGrant>,
     mcp: Option<McpServer>,
     tasks: Vec<TaskHandle>,
+    /// Receives the change tools' requests; lives as long as the thread (the per-turn `tasks` are
+    /// cleared when a turn ends).
+    approvals: Option<TaskHandle>,
     /// Shown once in the thread (e.g. why `kubectl` reaches nothing).
     pub notes: Vec<String>,
+    /// Whether the agent may propose changes to the cluster (the panel's "Allow changes"
+    /// switch). Off for every new and reopened thread.
+    writes: watch::Sender<bool>,
+    approver: Arc<ChannelApprover>,
 }
 
 impl Thread {
@@ -229,6 +243,11 @@ impl Thread {
 
     pub fn is_running(&self) -> bool {
         self.status == ThreadStatus::Running
+    }
+
+    /// The agent may propose changes (each still needs an approval).
+    pub fn writes_enabled(&self) -> bool {
+        *self.writes.borrow()
     }
 
     /// Nothing was asked yet (a thread prepared while the user composes the first message).
@@ -280,6 +299,8 @@ pub struct AgentCore {
     next_pending: u64,
     _lookup: Option<TaskHandle>,
     ticker: Option<TaskHandle>,
+    /// Drops change cards whose tool call stopped waiting (the answer timeout).
+    pruner: Option<TaskHandle>,
 }
 
 impl Service for AgentCore {
@@ -317,6 +338,7 @@ impl AgentCore {
             next_pending: 0,
             _lookup: None,
             ticker: None,
+            pruner: None,
         }
     }
 
@@ -478,6 +500,14 @@ impl AgentCore {
             return;
         }
         let specs = agents::configured(&settings);
+        if !settings.allow_writes {
+            for thread in &mut self.threads {
+                thread.writes.send_replace(false);
+                thread
+                    .pending
+                    .retain(|p| !matches!(p.kind, PendingKind::Change { .. }));
+            }
+        }
         self.settings = settings;
         self.agents = specs
             .into_iter()
@@ -542,6 +572,7 @@ impl AgentCore {
         if let Some(saved) = &new.resume {
             transcript.title = Some(saved.title.clone());
         }
+        let (approver, requests) = ChannelApprover::new();
         self.threads.push(Thread {
             id,
             agent: new.agent.clone(),
@@ -562,8 +593,30 @@ impl AgentCore {
             grant: None,
             mcp: None,
             tasks: Vec::new(),
+            approvals: None,
             notes: Vec::new(),
+            writes: watch::channel(false).0,
+            approver,
         });
+        let stream = futures::stream::unfold(requests, |mut requests| async move {
+            requests.recv().await.map(|request| (request, requests))
+        });
+        let task = host.batches(stream, Pace::IMMEDIATE, move |this, batch, host| {
+            for request in batch {
+                this.change_requested(id, request);
+            }
+            host.notify();
+            Flow::Continue
+        });
+        if let Some(thread) = self.thread_mut(id) {
+            thread.approvals = Some(task);
+        }
+        if self.pruner.is_none() {
+            self.pruner = Some(host.every(Duration::from_secs(5), |this, host| {
+                this.prune_changes(host);
+                Flow::Continue
+            }));
+        }
         self.ensure_agent(&new.agent, host);
         host.notify();
         id
@@ -608,6 +661,10 @@ impl AgentCore {
         }
         if !self.threads.iter().any(|t| t.cluster == thread.cluster) {
             self.contexts.remove(&thread.cluster);
+        }
+        if self.threads.is_empty() {
+            // Nothing left to prune (and nothing may keep ticking with no thread to serve).
+            self.pruner = None;
         }
         drop(thread);
         host.notify();
@@ -763,6 +820,65 @@ impl AgentCore {
     }
 
     // ----- Agents -----
+
+    /// Lets the agent of `id` propose changes to the cluster, or stops it. Each change still
+    /// waits for the user's approval; turning it off also drops the ones waiting. Refused on a
+    /// read-only cluster and when settings switch writes off.
+    pub fn set_writes(&mut self, id: ThreadId, enabled: bool, host: &mut dyn Host<Self>) {
+        let allowed = self.settings.allow_writes;
+        let Some(thread) = self.thread_mut(id) else {
+            return;
+        };
+        let enabled = enabled && allowed;
+        thread.writes.send_replace(enabled);
+        if !enabled {
+            thread
+                .pending
+                .retain(|p| !matches!(p.kind, PendingKind::Change { .. }));
+        }
+        host.notify();
+    }
+
+    /// Removes change cards whose tool call has given up, so nobody applies a change that can no
+    /// longer happen.
+    fn prune_changes(&mut self, host: &mut dyn Host<Self>) {
+        let mut changed = false;
+        for thread in &mut self.threads {
+            let before = thread.pending.len();
+            thread.pending.retain(|p| {
+                !matches!(p.kind, PendingKind::Change { .. })
+                    || p.approval.as_ref().is_some_and(|a| !a.is_closed())
+            });
+            changed |= thread.pending.len() != before;
+        }
+        if changed {
+            host.notify();
+        }
+    }
+
+    /// A change tool of thread `id` waits for the user.
+    fn change_requested(&mut self, id: ThreadId, request: ApprovalRequest) {
+        if request.reply.is_closed() {
+            // The tool call stopped waiting before the request arrived.
+            return;
+        }
+        self.next_pending += 1;
+        let pending = Pending {
+            id: self.next_pending,
+            kind: PendingKind::Change {
+                proposal: request.proposal,
+            },
+            responder: None,
+            launch: None,
+            approval: Some(request.reply),
+        };
+        match self.thread_mut(id) {
+            Some(thread) if thread.writes_enabled() => thread.pending.push(pending),
+            // The thread is gone, or changes were switched off while the request was on its
+            // way: dropping the request rejects it.
+            _ => drop(pending),
+        }
+    }
 
     fn set_running(&mut self, agent: &str, running: bool) {
         if let Some(info) = self.agents.iter_mut().find(|a| a.spec.id == agent) {
@@ -953,6 +1069,14 @@ impl AgentCore {
         let resume = thread.resume.as_ref().map(|s| s.session.clone());
         let bridge = self.env.bridge.clone();
         let path = self.path.clone();
+        // Always attached: `set_writes` only turns the gate on while settings allow writes, so a
+        // setting changed after the thread opened needs no new server.
+        let writes = Some(Writes {
+            enabled: thread.writes.subscribe(),
+            approver: thread.approver.clone(),
+            off_message: "Changes are off for this conversation. Tell the user that you would need them to allow changes in Kubyl's agent panel (it warns them first; their settings can also disable this), or show them the manifest or command instead.".into(),
+        });
+        let handler = Arc::new(ToolsHandler::new(Scope::Cluster(context), writes));
         let work = async move {
             if scratch {
                 tokio::fs::create_dir_all(&cwd)
@@ -981,7 +1105,7 @@ impl AgentCore {
             tokio::fs::write(&kubeconfig_path, content)
                 .await
                 .map_err(|e| format!("{}: {e}", kubeconfig_path.display()))?;
-            let server = mcp::serve(context, None)
+            let server = mcp::serve(handler, ServeOptions::default())
                 .await
                 .map_err(|e| format!("Kubyl's tools didn't start: {e}"))?;
             let entry = server.acp_entry(connection.init.http_mcp(), &bridge);
@@ -1309,6 +1433,7 @@ impl AgentCore {
                         },
                         responder: Some(responder),
                         launch: Some(launch),
+                        approval: None,
                     });
                     self.next_pending = next;
                 }
@@ -1327,6 +1452,7 @@ impl AgentCore {
                     },
                     responder: Some(responder),
                     launch: None,
+                    approval: None,
                 });
                 self.next_pending = next;
             }
@@ -1350,6 +1476,7 @@ impl AgentCore {
                     },
                     responder: Some(responder),
                     launch: None,
+                    approval: None,
                 });
                 self.next_pending = next;
             }
@@ -1478,6 +1605,7 @@ impl AgentCore {
             },
             responder: Some(responder),
             launch: None,
+            approval: None,
         });
         self.next_pending = next;
     }
@@ -1528,6 +1656,7 @@ impl AgentCore {
             kind,
             responder: Some(responder),
             launch: None,
+            approval: None,
         });
         self.next_pending = next;
     }
@@ -1547,6 +1676,17 @@ impl AgentCore {
             return;
         };
         let mut item = thread.pending.remove(index);
+        if let PendingKind::Change { .. } = item.kind {
+            if let Some(reply) = item.approval.take() {
+                let decision = match answer {
+                    Answer::Allow | Answer::Choose(_) => Decision::Approved,
+                    Answer::Deny | Answer::Submit(_) => Decision::Rejected,
+                };
+                reply.send(decision).ok();
+            }
+            host.notify();
+            return;
+        }
         let Some(responder) = item.responder.take() else {
             return;
         };
@@ -1616,6 +1756,8 @@ impl AgentCore {
             (PendingKind::Form { .. } | PendingKind::OpenUrl { .. }, _) => {
                 responder.ok(elicitation::decline());
             }
+            // Answered above: a change has no JSON-RPC responder.
+            (PendingKind::Change { .. }, _) => {}
             (_, Answer::Deny | Answer::Submit(_)) => {
                 responder.err(RpcError::internal("The user declined this."));
             }
@@ -1727,7 +1869,10 @@ impl AgentCore {
             grant: None,
             mcp: None,
             tasks: Vec::new(),
+            approvals: None,
             notes: Vec::new(),
+            writes: watch::channel(false).0,
+            approver: ChannelApprover::new().0,
         });
         id
     }
@@ -1753,6 +1898,7 @@ impl AgentCore {
                 kind,
                 responder: None,
                 launch: None,
+                approval: None,
             });
         }
         id
@@ -1799,7 +1945,7 @@ pub fn prompt_blocks(
     let mut inline = String::new();
     if first {
         let note = format!(
-            "Kubyl context: this conversation is about the Kubernetes cluster \"{cluster}\". Read it with the `kubyl` MCP tools (start with cluster_info); they use the user's own access, are read-only, and mask Secret values and tokens. Don't try to reach the cluster another way, and propose changes as manifests or commands for the user to review."
+            "Kubyl context: this conversation is about the Kubernetes cluster \"{cluster}\". Read it with the `kubyl` MCP tools (start with cluster_info); they use the user's own access and mask Secret values and tokens. The read tools change nothing. Kubyl's change tools (apply_manifest, patch_resource, delete_resource, scale_resource, restart_resource) work only while the user has switched on \"Allow changes\" for this conversation, and the user approves every change in Kubyl before it happens; when they are off, propose changes as manifests or commands for the user to review. Don't try to reach the cluster another way."
         );
         if embedded {
             blocks.push(json!({
@@ -2139,6 +2285,122 @@ mod tests {
         });
         assert!(h.core.thread(id).unwrap().pending.is_empty());
         assert!(last_agent_text(&h.core, id).contains("permission: allow"));
+    }
+
+    fn proposal() -> Proposal {
+        Proposal {
+            cluster: ClusterId::new("kind-dev"),
+            cluster_name: "kind-dev".into(),
+            production: false,
+            title: "Scale deployment shop/web from 2 to 3".into(),
+            docs: Vec::new(),
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn changes_are_off_until_the_user_allows_them_and_each_waits_for_a_click() {
+        use kubyl_mcp_core::approval::Approver as _;
+
+        let (mut h, id) = harness(Vec::new());
+        assert!(!h.core.thread(id).unwrap().writes_enabled());
+
+        // Switching it on changes nothing by itself: a change asks.
+        h.core.set_writes(id, true, &mut h.host);
+        assert!(h.core.thread(id).unwrap().writes_enabled());
+        let approver = h.core.thread(id).unwrap().approver.clone();
+        let first = h._runtime.spawn(approver.approve(proposal()));
+        h.host.run_until(&mut h.core, |core, _| {
+            core.thread(id).is_some_and(|t| !t.pending.is_empty())
+        });
+        let waiting = h.core.thread(id).unwrap().pending[0].id;
+        assert!(matches!(
+            h.core.thread(id).unwrap().pending[0].kind,
+            PendingKind::Change { .. }
+        ));
+        h.core.answer(id, waiting, Answer::Allow, &mut h.host);
+        assert_eq!(h._runtime.block_on(first).unwrap(), Decision::Approved);
+
+        // A rejection reaches the tool call too.
+        let second = h._runtime.spawn(approver.approve(proposal()));
+        h.host.run_until(&mut h.core, |core, _| {
+            core.thread(id).is_some_and(|t| !t.pending.is_empty())
+        });
+        let waiting = h.core.thread(id).unwrap().pending[0].id;
+        h.core.answer(id, waiting, Answer::Deny, &mut h.host);
+        assert_eq!(h._runtime.block_on(second).unwrap(), Decision::Rejected);
+
+        // Switching it off drops what still waits, and rejects it.
+        let third = h._runtime.spawn(approver.approve(proposal()));
+        h.host.run_until(&mut h.core, |core, _| {
+            core.thread(id).is_some_and(|t| !t.pending.is_empty())
+        });
+        h.core.set_writes(id, false, &mut h.host);
+        assert!(h.core.thread(id).unwrap().pending.is_empty());
+        assert!(!h.core.thread(id).unwrap().writes_enabled());
+        assert_eq!(h._runtime.block_on(third).unwrap(), Decision::Rejected);
+    }
+
+    #[test]
+    fn change_requests_still_arrive_after_turns_and_stop_when_settings_remove_writes() {
+        use kubyl_mcp_core::approval::Approver as _;
+
+        let (mut h, id) = harness(Vec::new());
+        h.core.set_writes(id, true, &mut h.host);
+        // A turn ends (which clears the thread's per-turn tasks); requests must still arrive.
+        h.core.send(id, "go".into(), Vec::new(), &mut h.host);
+        h.host.run_until(&mut h.core, |core, _| {
+            core.thread(id)
+                .is_some_and(|t| t.status == ThreadStatus::Idle && !t.transcript.entries.is_empty())
+        });
+        let approver = h.core.thread(id).unwrap().approver.clone();
+        let waiting = h._runtime.spawn(approver.approve(proposal()));
+        h.host.run_until(&mut h.core, |core, _| {
+            core.thread(id).is_some_and(|t| !t.pending.is_empty())
+        });
+
+        // Settings that remove writes revoke the switch and drop what waits.
+        let mut settings = h.core.settings().clone();
+        settings.allow_writes = false;
+        h.core.settings_changed(settings, &mut h.host);
+        assert!(!h.core.thread(id).unwrap().writes_enabled());
+        assert!(h.core.thread(id).unwrap().pending.is_empty());
+        assert_eq!(h._runtime.block_on(waiting).unwrap(), Decision::Rejected);
+
+        // A request that was already on its way is dropped, not shown.
+        let late = h._runtime.spawn(approver.approve(proposal()));
+        h.host.run_until(&mut h.core, |_, _| late.is_finished());
+        assert_eq!(h._runtime.block_on(late).unwrap(), Decision::Rejected);
+        assert!(h.core.thread(id).unwrap().pending.is_empty());
+    }
+
+    #[test]
+    fn a_change_card_goes_away_when_its_tool_call_gives_up() {
+        use kubyl_mcp_core::approval::Approver as _;
+
+        let (mut h, id) = harness(Vec::new());
+        h.core.set_writes(id, true, &mut h.host);
+        let approver = h.core.thread(id).unwrap().approver.clone();
+        let waiting = h._runtime.spawn(approver.approve(proposal()));
+        h.host.run_until(&mut h.core, |core, _| {
+            core.thread(id).is_some_and(|t| !t.pending.is_empty())
+        });
+        // Still waiting: the card stays.
+        h.core.prune_changes(&mut h.host);
+        assert_eq!(h.core.thread(id).unwrap().pending.len(), 1);
+        // The tool call stops waiting (the answer timeout): the card can no longer be applied.
+        waiting.abort();
+        let _ = h._runtime.block_on(waiting);
+        h.core.prune_changes(&mut h.host);
+        assert!(h.core.thread(id).unwrap().pending.is_empty());
+    }
+
+    #[test]
+    fn settings_can_remove_the_ability_to_change_things() {
+        let (mut h, id) = harness(Vec::new());
+        h.core.settings.allow_writes = false;
+        h.core.set_writes(id, true, &mut h.host);
+        assert!(!h.core.thread(id).unwrap().writes_enabled());
     }
 
     #[test]

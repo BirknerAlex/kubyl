@@ -1,16 +1,23 @@
-//! Kubyl's MCP server: the cluster tools of one thread, for its agent.
+//! Kubyl's MCP server over loopback HTTP.
 //!
-//! One server per thread listens on `127.0.0.1` (a random port) and speaks MCP's streamable
-//! HTTP transport in its simplest form: every `POST /mcp` carries one JSON-RPC message and gets
-//! a JSON answer (no event streams, no sessions). Each request needs the thread's random bearer
-//! token (memory only, compared in constant time); requests from browsers (an `Origin` header)
-//! are refused. Dropping [`McpServer`] stops it.
+//! A server speaks MCP's streamable HTTP transport in its simplest form: every `POST /mcp`
+//! carries one JSON-RPC message and gets a JSON answer (no event streams, no sessions). What it
+//! offers comes from a [`Handler`]: the tools of one cluster for one agent thread, or those of
+//! every connected cluster for outside clients (Claude Code and the like, see
+//! [`crate::hub`]).
+//!
+//! Safety rules, for both: it listens on `127.0.0.1` (and `::1` when the port is fixed) only;
+//! every request needs the bearer token (compared in constant time); requests that carry an
+//! `Origin` header (browsers) or a `Host` other than loopback (DNS rebinding) are refused.
+//! Dropping [`McpServer`] stops it.
 //!
 //! Agents that can't reach an HTTP MCP server get [`bridge`]: the Kubyl binary started as
 //! `kubyl mcp-bridge`, which relays stdio to the same endpoint.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+
+use futures::future::BoxFuture;
 
 use base64::Engine as _;
 use http::{Method, Request, Response, StatusCode, header};
@@ -19,10 +26,10 @@ use hyper::body::{Bytes, Incoming};
 use hyper_util::rt::TokioIo;
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 
-use crate::jsonrpc::{self, RpcError};
-use crate::tools::{self, ToolContext};
+use crate::rpc::{self, RpcError};
+use crate::tools::ToolOutput;
 
 /// The MCP server's name in the agent's tool list (`mcp__kubyl__…`).
 pub const SERVER_NAME: &str = "kubyl";
@@ -37,10 +44,15 @@ const PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "
 /// Largest request body.
 const MAX_BODY: usize = 1024 * 1024;
 
-const INSTRUCTIONS: &str = "Kubyl's read-only view of one Kubernetes cluster, through the user's own account. \
-Start with cluster_info. Secret values, private keys and token-like strings are masked; \
-Kubyl never reveals them, so don't try to work around the masking. \
-These tools can't change the cluster; when a change would help, show the user the manifest or command.";
+/// What a server offers.
+pub trait Handler: Send + Sync + 'static {
+    /// The `instructions` of the MCP `initialize` answer.
+    fn instructions(&self) -> String;
+    /// The tools for `tools/list`.
+    fn tools(&self) -> Vec<Value>;
+    /// Runs a tool. Failures are answers (`is_error`), never panics.
+    fn call<'a>(&'a self, name: &'a str, arguments: Value) -> BoxFuture<'a, ToolOutput>;
+}
 
 /// A tool call, for the thread's transcript.
 #[derive(Clone, Debug, PartialEq)]
@@ -54,7 +66,7 @@ pub struct ToolActivity {
 pub struct McpServer {
     pub addr: SocketAddr,
     token: String,
-    task: tokio::task::JoinHandle<()>,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl std::fmt::Debug for McpServer {
@@ -67,7 +79,9 @@ impl std::fmt::Debug for McpServer {
 
 impl Drop for McpServer {
     fn drop(&mut self) {
-        self.task.abort();
+        for task in &self.tasks {
+            task.abort();
+        }
     }
 }
 
@@ -112,6 +126,23 @@ pub fn new_token() -> std::io::Result<String> {
     Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes))
 }
 
+/// A request header with a random challenge: any Kubyl server answers it, even without the
+/// token, with [`PROOF_HEADER`], so another Kubyl instance can tell that the port is held by
+/// a Kubyl with the same token without sending the token to whatever holds the port.
+const CHALLENGE_HEADER: &str = "x-kubyl-challenge";
+const PROOF_HEADER: &str = "x-kubyl-proof";
+
+/// HMAC-SHA256 of the challenge, keyed with the token (base64url). Reveals nothing about the
+/// token and can't be used as one.
+fn proof(token: &str, challenge: &str) -> String {
+    use hmac::{KeyInit as _, Mac as _};
+    let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(token.as_bytes())
+        .expect("HMAC takes keys of any size");
+    mac.update(b"kubyl-mcp-standby\n");
+    mac.update(challenge.as_bytes());
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
+}
+
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
@@ -121,47 +152,85 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 
 struct Shared {
     token: String,
-    context: watch::Receiver<ToolContext>,
+    port: u16,
+    handler: Arc<dyn Handler>,
     activity: Option<mpsc::UnboundedSender<ToolActivity>>,
 }
 
-/// Starts a server for one thread. Must run inside a Tokio runtime.
-pub async fn serve(
-    context: watch::Receiver<ToolContext>,
-    activity: Option<mpsc::UnboundedSender<ToolActivity>>,
-) -> std::io::Result<McpServer> {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+/// How a server starts.
+#[derive(Debug, Default)]
+pub struct ServeOptions {
+    /// The TCP port; 0 picks a free one (agent threads), anything else is fixed (the outside
+    /// server, which clients are configured with).
+    pub port: u16,
+    /// The bearer token; `None` makes a random one.
+    pub token: Option<String>,
+    /// Told about every tool call.
+    pub activity: Option<mpsc::UnboundedSender<ToolActivity>>,
+}
+
+/// Starts a server. Must run inside a Tokio runtime.
+pub async fn serve(handler: Arc<dyn Handler>, options: ServeOptions) -> std::io::Result<McpServer> {
+    let listener = TcpListener::bind(("127.0.0.1", options.port)).await?;
     let addr = listener.local_addr()?;
-    let token = new_token()?;
+    let token = match options.token {
+        Some(token) => token,
+        None => new_token()?,
+    };
     let shared = Arc::new(Shared {
         token: token.clone(),
-        context,
-        activity,
+        port: addr.port(),
+        handler,
+        activity: options.activity,
     });
-    let task = tokio::spawn(async move {
-        let mut connections = tokio::task::JoinSet::new();
-        loop {
-            let Ok((stream, _)) = listener.accept().await else {
-                // A lasting error (out of file descriptors) mustn't spin the runtime.
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                continue;
-            };
-            let shared = shared.clone();
-            connections.spawn(async move {
-                let service = hyper::service::service_fn(move |request| {
-                    let shared = shared.clone();
-                    async move { Ok::<_, std::convert::Infallible>(handle(&shared, request).await) }
-                });
-                hyper::server::conn::http1::Builder::new()
-                    .serve_connection(TokioIo::new(stream), service)
-                    .await
-                    .ok();
-            });
-            // Reap finished connections so the set doesn't grow.
-            while connections.try_join_next().is_some() {}
+    let mut tasks = vec![tokio::spawn(accept_loop(listener, shared.clone()))];
+    if options.port != 0 {
+        // Clients that resolve `localhost` to ::1 first. Best effort: not every host has IPv6.
+        if let Ok(listener) = TcpListener::bind(("::1", addr.port())).await {
+            tasks.push(tokio::spawn(accept_loop(listener, shared)));
         }
-    });
-    Ok(McpServer { addr, token, task })
+    }
+    Ok(McpServer { addr, token, tasks })
+}
+
+async fn accept_loop(listener: TcpListener, shared: Arc<Shared>) {
+    let mut connections = tokio::task::JoinSet::new();
+    loop {
+        let Ok((stream, _)) = listener.accept().await else {
+            // A lasting error (out of file descriptors) mustn't spin the runtime.
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            continue;
+        };
+        let shared = shared.clone();
+        connections.spawn(async move {
+            let service = hyper::service::service_fn(move |request| {
+                let shared = shared.clone();
+                async move { Ok::<_, std::convert::Infallible>(handle(&shared, request).await) }
+            });
+            hyper::server::conn::http1::Builder::new()
+                .serve_connection(TokioIo::new(stream), service)
+                .await
+                .ok();
+        });
+        // Reap finished connections so the set doesn't grow.
+        while connections.try_join_next().is_some() {}
+    }
+}
+
+/// Whether a `Host` header names this machine's loopback address and our port. A page on
+/// another site that resolves its own name to 127.0.0.1 (DNS rebinding) sends its own name.
+fn host_is_loopback(host: &str, port: u16) -> bool {
+    let (name, given) = match host.rsplit_once(':') {
+        Some((name, given)) if !given.is_empty() && given.bytes().all(|b| b.is_ascii_digit()) => {
+            // A port that doesn't parse (65536) is not ours.
+            match given.parse::<u16>() {
+                Ok(given) => (name, Some(given)),
+                Err(_) => return false,
+            }
+        }
+        _ => (host, None),
+    };
+    matches!(name, "127.0.0.1" | "localhost" | "[::1]") && given.is_none_or(|p| p == port)
 }
 
 fn reply(status: StatusCode, body: impl Into<Bytes>, json: bool) -> Response<Full<Bytes>> {
@@ -181,6 +250,26 @@ async fn handle(shared: &Shared, request: Request<Incoming>) -> Response<Full<By
     // Browsers send an Origin; agents don't. A page must never reach these tools.
     if request.headers().contains_key(header::ORIGIN) {
         return reply(StatusCode::FORBIDDEN, "", false);
+    }
+    if let Some(host) = request
+        .headers()
+        .get(header::HOST)
+        .map(|h| h.to_str().unwrap_or_default().to_ascii_lowercase())
+        && !host_is_loopback(&host, shared.port)
+    {
+        return reply(StatusCode::FORBIDDEN, "", false);
+    }
+    if let Some(challenge) = request
+        .headers()
+        .get(CHALLENGE_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .filter(|c| (16..=64).contains(&c.len()))
+    {
+        let mut response = reply(StatusCode::UNAUTHORIZED, "", false);
+        if let Ok(value) = http::HeaderValue::from_str(&proof(&shared.token, challenge)) {
+            response.headers_mut().insert(PROOF_HEADER, value);
+        }
+        return response;
     }
     let authorized = request
         .headers()
@@ -211,11 +300,19 @@ async fn handle(shared: &Shared, request: Request<Incoming>) -> Response<Full<By
 
 /// One JSON-RPC message in, its answer out (`None` for notifications).
 async fn handle_message(shared: &Shared, text: &str) -> Option<Value> {
-    jsonrpc::handle_single(text, |method, params| async move {
+    // A tool call is a request: without an id nobody could receive its result.
+    if let Ok(message) = serde_json::from_str::<Value>(text)
+        && message["method"] == "tools/call"
+        && message.get("id").is_none_or(Value::is_null)
+    {
+        let error = RpcError::new(RpcError::INVALID_REQUEST, "tools/call needs an id");
+        return Some(json!({ "jsonrpc": "2.0", "id": null, "error": error.to_value() }));
+    }
+    rpc::handle_single(text, |method, params| async move {
         match method.as_str() {
-            "initialize" => Some(Ok(initialize(&params))),
+            "initialize" => Some(Ok(initialize(shared, &params))),
             "ping" => Some(Ok(json!({}))),
-            "tools/list" => Some(Ok(json!({ "tools": tools::definitions() }))),
+            "tools/list" => Some(Ok(json!({ "tools": shared.handler.tools() }))),
             "tools/call" => Some(call_tool(shared, &params).await),
             m if m.starts_with("notifications/") => Some(Ok(Value::Null)),
             _ => None,
@@ -224,7 +321,7 @@ async fn handle_message(shared: &Shared, text: &str) -> Option<Value> {
     .await
 }
 
-fn initialize(params: &Value) -> Value {
+fn initialize(shared: &Shared, params: &Value) -> Value {
     let requested = params["protocolVersion"].as_str().unwrap_or_default();
     let version = PROTOCOL_VERSIONS
         .iter()
@@ -234,7 +331,7 @@ fn initialize(params: &Value) -> Value {
         "protocolVersion": version,
         "capabilities": { "tools": { "listChanged": false } },
         "serverInfo": { "name": SERVER_NAME, "title": "Kubyl", "version": env!("CARGO_PKG_VERSION") },
-        "instructions": INSTRUCTIONS,
+        "instructions": shared.handler.instructions(),
     })
 }
 
@@ -247,8 +344,7 @@ async fn call_tool(shared: &Shared, params: &Value) -> Result<Value, RpcError> {
         .cloned()
         .filter(|a| !a.is_null())
         .unwrap_or_else(|| json!({}));
-    let context = shared.context.borrow().clone();
-    let output = tools::call(&context, name, &arguments).await;
+    let output = shared.handler.call(name, arguments.clone()).await;
     if let Some(activity) = &shared.activity {
         activity
             .send(ToolActivity {
@@ -339,6 +435,51 @@ async fn relay(
     0
 }
 
+/// Whether `127.0.0.1:port` is held by a Kubyl MCP server with this `token` (another Kubyl
+/// instance), as opposed to some other program. The token isn't sent: the server proves it
+/// knows it by answering a random challenge. Gives up after a second.
+pub async fn serves_kubyl(port: u16, token: &str) -> bool {
+    let mut nonce = [0u8; 18];
+    if getrandom::fill(&mut nonce).is_err() {
+        return false;
+    }
+    let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(nonce);
+    let answer = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        challenge_proof(&format!("127.0.0.1:{port}"), &challenge),
+    )
+    .await;
+    matches!(answer, Ok(Ok(Some(given)))
+        if constant_time_eq(given.as_bytes(), proof(token, &challenge).as_bytes()))
+}
+
+/// Sends `challenge` without a token; the proof header of the answer, if any.
+async fn challenge_proof(authority: &str, challenge: &str) -> Result<Option<String>, String> {
+    let stream = tokio::net::TcpStream::connect(authority)
+        .await
+        .map_err(|e| e.to_string())?;
+    let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+        .await
+        .map_err(|e| e.to_string())?;
+    tokio::spawn(async move {
+        connection.await.ok();
+    });
+    let request = Request::post("/mcp")
+        .header(header::HOST, authority)
+        .header(CHALLENGE_HEADER, challenge)
+        .body(Full::new(Bytes::new()))
+        .map_err(|e| e.to_string())?;
+    let response = sender
+        .send_request(request)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(response
+        .headers()
+        .get(PROOF_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string))
+}
+
 /// One POST; the answer body for 200, `None` for 202.
 async fn post(
     authority: &str,
@@ -385,6 +526,20 @@ async fn post(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::handler::{Scope, ToolsHandler};
+    use crate::tools::ToolContext;
+    use tokio::sync::watch;
+
+    fn thread_handler(rx: watch::Receiver<ToolContext>) -> Arc<dyn Handler> {
+        Arc::new(ToolsHandler::new(Scope::Cluster(rx), None))
+    }
+
+    fn options(activity: Option<mpsc::UnboundedSender<ToolActivity>>) -> ServeOptions {
+        ServeOptions {
+            activity,
+            ..ServeOptions::default()
+        }
+    }
 
     fn context() -> ToolContext {
         ToolContext {
@@ -429,7 +584,9 @@ mod tests {
     async fn speaks_mcp_with_the_token_only() {
         let (_tx, rx) = watch::channel(context());
         let (activity_tx, mut activity) = mpsc::unbounded_channel();
-        let server = serve(rx, Some(activity_tx)).await.unwrap();
+        let server = serve(thread_handler(rx), options(Some(activity_tx)))
+            .await
+            .unwrap();
         let token = server.token().to_string();
 
         let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}"#;
@@ -463,6 +620,11 @@ mod tests {
             serde_json::from_str(&raw_post(&server, Some(&token), false, list).await.1).unwrap();
         assert_eq!(body["result"]["tools"].as_array().unwrap().len(), 11);
 
+        let no_id = r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"cluster_info"}}"#;
+        let body: Value =
+            serde_json::from_str(&raw_post(&server, Some(&token), false, no_id).await.1).unwrap();
+        assert_eq!(body["error"]["code"], RpcError::INVALID_REQUEST);
+
         let call = r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"cluster_info","arguments":{}}}"#;
         let body: Value =
             serde_json::from_str(&raw_post(&server, Some(&token), false, call).await.1).unwrap();
@@ -478,7 +640,7 @@ mod tests {
     #[tokio::test]
     async fn the_bridge_relays_stdio() {
         let (_tx, rx) = watch::channel(context());
-        let server = serve(rx, None).await.unwrap();
+        let server = serve(thread_handler(rx), options(None)).await.unwrap();
         let input = concat!(
             r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#,
             "\n",
@@ -525,6 +687,124 @@ mod tests {
                 .unwrap()
                 .contains("Kubyl isn't reachable")
         );
+    }
+
+    /// Remembers whether a tool was ever called.
+    struct Recording(Arc<std::sync::atomic::AtomicBool>);
+
+    impl Handler for Recording {
+        fn instructions(&self) -> String {
+            String::new()
+        }
+
+        fn tools(&self) -> Vec<Value> {
+            Vec::new()
+        }
+
+        fn call<'a>(&'a self, _: &'a str, _: Value) -> BoxFuture<'a, ToolOutput> {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async { ToolOutput::ok(String::new()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_tool_call_without_an_id_is_refused_before_the_handler_runs() {
+        let called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let shared = Shared {
+            token: String::new(),
+            port: 0,
+            handler: Arc::new(Recording(called.clone())),
+            activity: None,
+        };
+        for text in [
+            r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"x"}}"#,
+            r#"{"jsonrpc":"2.0","id":null,"method":"tools/call","params":{"name":"x"}}"#,
+        ] {
+            let answer = handle_message(&shared, text).await.unwrap();
+            assert_eq!(answer["error"]["code"], RpcError::INVALID_REQUEST);
+        }
+        assert!(!called.load(std::sync::atomic::Ordering::SeqCst));
+        // With an id the same call runs.
+        let text = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"x"}}"#;
+        assert!(handle_message(&shared, text).await.unwrap()["result"].is_object());
+        assert!(called.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn only_loopback_hosts_on_our_port_pass() {
+        assert!(host_is_loopback("127.0.0.1:7421", 7421));
+        assert!(host_is_loopback("localhost:7421", 7421));
+        assert!(host_is_loopback("[::1]:7421", 7421));
+        assert!(host_is_loopback("localhost", 7421));
+        assert!(!host_is_loopback("127.0.0.1:80", 7421));
+        assert!(!host_is_loopback("evil.example.com:7421", 7421));
+        assert!(!host_is_loopback("127.0.0.1.evil.example.com", 7421));
+        assert!(!host_is_loopback("", 7421));
+        assert!(!host_is_loopback("localhost:65536", 7421));
+    }
+
+    #[tokio::test]
+    async fn a_rebound_host_name_is_refused() {
+        let (_tx, rx) = watch::channel(context());
+        let server = serve(thread_handler(rx), options(None)).await.unwrap();
+        let stream = tokio::net::TcpStream::connect(server.addr).await.unwrap();
+        let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+            .await
+            .unwrap();
+        tokio::spawn(connection);
+        let request = Request::post("/mcp")
+            .header(
+                header::HOST,
+                format!("evil.example.com:{}", server.addr.port()),
+            )
+            .header(header::AUTHORIZATION, format!("Bearer {}", server.token()))
+            .body(Full::new(Bytes::from(
+                r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#,
+            )))
+            .unwrap();
+        let response = sender.send_request(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn the_standby_probe_proves_kubyl_without_sending_the_token() {
+        let (_tx, rx) = watch::channel(context());
+        let server = serve(thread_handler(rx), options(None)).await.unwrap();
+        let port = server.addr.port();
+        assert!(serves_kubyl(port, server.token()).await);
+        assert!(!serves_kubyl(port, "another-token").await);
+
+        // Any other program on the port: answers everything like an MCP server would, and
+        // records what it was sent.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen: Arc<parking_lot::Mutex<Vec<String>>> = Arc::default();
+        let recorded = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let recorded = recorded.clone();
+                let service = hyper::service::service_fn(move |request: Request<Incoming>| {
+                    recorded
+                        .lock()
+                        .extend(request.headers().keys().map(|k| k.to_string()));
+                    async {
+                        Ok::<_, std::convert::Infallible>(reply(
+                            StatusCode::OK,
+                            r#"{"jsonrpc":"2.0","id":0,"result":{}}"#,
+                            true,
+                        ))
+                    }
+                });
+                tokio::spawn(
+                    hyper::server::conn::http1::Builder::new()
+                        .serve_connection(TokioIo::new(stream), service),
+                );
+            }
+        });
+        assert!(!serves_kubyl(port, "the-real-token").await);
+        let seen = seen.lock();
+        assert!(seen.iter().any(|h| h == CHALLENGE_HEADER), "{seen:?}");
+        assert!(!seen.iter().any(|h| h == "authorization"), "{seen:?}");
     }
 
     #[test]

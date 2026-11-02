@@ -82,7 +82,7 @@ fn extract_binary(archive_bytes: &[u8], staging: &Path) -> Result<PathBuf, Apply
         let mut file = archive
             .by_index(i)
             .map_err(|err| ApplyError::Archive(err.to_string()))?;
-        if file.name() == "kubyl.exe" {
+        if matches!(file.name(), Ok(name) if name == "kubyl.exe") {
             let dest = staging.join("kubyl.exe");
             let mut out = std::fs::File::create(&dest)?;
             std::io::copy(&mut file, &mut out)?;

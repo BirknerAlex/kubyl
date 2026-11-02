@@ -1,0 +1,44 @@
+[package]
+name = "kubyl_mcp_core"
+description = "Kubyl's MCP server without the UI: the cluster tools (read and write), the loopback HTTP server, its settings and the approval flow for changes."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+base64.workspace = true
+futures.workspace = true
+getrandom.workspace = true
+hmac.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+hyper = { workspace = true, features = ["client", "server", "http1"] }
+hyper-util.workspace = true
+jiff.workspace = true
+k8s-openapi.workspace = true
+kube.workspace = true
+kubyl_base.workspace = true
+kubyl_kube_core.workspace = true
+kubyl_metrics_core.workspace = true
+kubyl_resources_core.workspace = true
+kubyl_settings_core.workspace = true
+kubyl_yaml_core.workspace = true
+parking_lot.workspace = true
+schemars.workspace = true
+secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = ["io-std", "sync", "time", "net", "rt"] }
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
