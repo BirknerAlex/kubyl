@@ -88,11 +88,17 @@ impl ToolsHandler {
         }
         let read_only = match &self.scope {
             Scope::Cluster(context) => context.borrow().caps.read_only,
-            Scope::Clusters(clusters) => clusters
-                .borrow()
-                .iter()
-                .find(|c| &c.cluster == cluster)
-                .is_some_and(|c| c.caps.read_only),
+            Scope::Clusters(clusters) => {
+                match clusters.borrow().iter().find(|c| &c.cluster == cluster) {
+                    Some(found) => found.caps.read_only,
+                    // Gone from the list (removed or hidden meanwhile): don't guess.
+                    None => {
+                        return Err(format!(
+                            "{name} is no longer in Kubyl's list of clusters, so nothing was changed."
+                        ));
+                    }
+                }
+            }
         };
         if read_only {
             return Err(format!(

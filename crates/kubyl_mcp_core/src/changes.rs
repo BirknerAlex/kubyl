@@ -117,7 +117,9 @@ pub fn definitions() -> Vec<Value> {
 /// What a checked change will do once approved.
 #[derive(Debug)]
 enum Action {
-    Apply(Vec<Prepared>),
+    /// Each document, and whether the object existed when the user reviewed it. One that did
+    /// not is created (and fails if someone created it meanwhile) instead of merged into.
+    Apply(Vec<(Prepared, bool)>),
     Patch {
         resource: ApiResource,
         namespace: Option<String>,
@@ -430,7 +432,7 @@ async fn check_apply(context: &ToolContext, args: &Value) -> Result<Checked, Str
             old: old_text,
             new: new_text,
         });
-        changed.push(doc);
+        changed.push((doc, old.is_some()));
     }
     if changed.is_empty() {
         return Ok(Checked::Nothing(
@@ -752,30 +754,43 @@ async fn check_restart(context: &ToolContext, args: &Value) -> Result<Checked, S
 async fn execute(client: kube::Client, action: Action) -> Result<String, String> {
     match action {
         Action::Apply(docs) => {
-            let results = apply::apply_all(
-                client,
-                docs,
-                Options {
-                    dry_run: false,
-                    force: false,
-                },
-            )
-            .await;
             let mut lines = Vec::new();
             let mut failed = false;
-            for result in results {
-                match result.outcome {
-                    Outcome::Applied(_) => lines.push(format!("applied {}", result.label)),
-                    Outcome::Conflicts(_) => {
-                        failed = true;
-                        lines.push(format!(
-                            "{}: another tool manages fields of it; not forced",
-                            result.label
-                        ));
+            for (doc, existed) in docs {
+                let label = doc.label();
+                if existed {
+                    let results = apply::apply_all(
+                        client.clone(),
+                        vec![doc],
+                        Options {
+                            dry_run: false,
+                            force: false,
+                        },
+                    )
+                    .await;
+                    for result in results {
+                        match result.outcome {
+                            Outcome::Applied(_) => lines.push(format!("applied {}", result.label)),
+                            Outcome::Conflicts(_) => {
+                                failed = true;
+                                lines.push(format!(
+                                    "{}: another tool manages fields of it; not forced",
+                                    result.label
+                                ));
+                            }
+                            Outcome::Failed { message, .. } => {
+                                failed = true;
+                                lines.push(format!("{}: failed: {message}", result.label));
+                            }
+                        }
                     }
-                    Outcome::Failed { message, .. } => {
-                        failed = true;
-                        lines.push(format!("{}: failed: {message}", result.label));
+                } else {
+                    match create_absent(&client, &doc).await {
+                        Ok(()) => lines.push(format!("created {label}")),
+                        Err(message) => {
+                            failed = true;
+                            lines.push(format!("{label}: {message}"));
+                        }
                     }
                 }
             }
@@ -878,6 +893,25 @@ async fn execute(client: kube::Client, action: Action) -> Result<String, String>
                 "Restarting {name}: its pods are replaced one by one."
             ))
         }
+    }
+}
+
+/// Creates an object that did not exist when the user reviewed it. Unlike an apply this fails
+/// when someone created the name meanwhile, instead of merging into what the user never saw.
+async fn create_absent(client: &kube::Client, doc: &Prepared) -> Result<(), String> {
+    let object: DynamicObject = serde_json::from_value(doc.object.clone())
+        .map_err(|err| format!("failed: the object can't be created: {err}"))?;
+    let params = kube::api::PostParams {
+        field_manager: Some(FIELD_MANAGER.into()),
+        ..Default::default()
+    };
+    match doc_api(client, doc).create(&params, &object).await {
+        Ok(_) => Ok(()),
+        Err(kube::Error::Api(status)) if status.code == 409 => Err(
+            "it was created by someone else after the user reviewed this, so nothing was applied. Look at it again and propose the change again."
+                .into(),
+        ),
+        Err(err) => Err(format!("failed: {}", kube_error(err))),
     }
 }
 
