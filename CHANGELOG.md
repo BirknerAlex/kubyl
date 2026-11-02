@@ -2,6 +2,12 @@
 
 All notable changes to Kubyl are documented here.
 
+## [0.10.0] - 2026-11-02
+
+### Features
+
+- Agent write actions and Kubyl as a localhost MCP server (#57) ([b16b0c3](https://github.com/BirknerAlex/kubyl/commit/b16b0c3dd19e880ab306541a2e7fd4d4038f4b1c))
+
 ## [0.9.0] - 2026-10-15
 
 ### Bug Fixes
