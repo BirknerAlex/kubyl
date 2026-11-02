@@ -1,0 +1,57 @@
+{
+  "manifest_version": "0.3",
+  "name": "kubyl",
+  "display_name": "Kubyl",
+  "version": "0.9.0",
+  "description": "Use the running Kubyl and the Kubernetes clusters it is connected to.",
+  "long_description": "Connects Claude Desktop to Kubyl's local MCP server over HTTP (127.0.0.1 only). Kubyl must be running with the MCP server on. Reads follow your RBAC and mask Secrets; every change is approved in Kubyl.",
+  "author": {
+    "name": "Kubyl contributors",
+    "url": "https://github.com/BirknerAlex/kubyl"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/BirknerAlex/kubyl"
+  },
+  "homepage": "https://github.com/BirknerAlex/kubyl",
+  "license": "MIT OR Apache-2.0",
+  "icon": "icon.png",
+  "keywords": ["kubernetes", "kubectl", "helm", "devops"],
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server/index.js"],
+      "env": {
+        "KUBYL_MCP_PORT": "${user_config.port}",
+        "KUBYL_MCP_TOKEN": "${user_config.token}"
+      }
+    }
+  },
+  "tools_generated": true,
+  "user_config": {
+    "token": {
+      "type": "string",
+      "title": "Access token",
+      "description": "Kubyl's MCP access token: \"Copy token\" in \"MCP: Show Server\", or the \"MCP: Copy Token\" action.",
+      "sensitive": true,
+      "required": true
+    },
+    "port": {
+      "type": "number",
+      "title": "Port",
+      "description": "\"port\" under \"mcp\" in Kubyl's settings.json.",
+      "default": 7421,
+      "min": 1,
+      "max": 65535,
+      "required": false
+    }
+  },
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": {
+      "node": ">=18.0.0"
+    }
+  }
+}

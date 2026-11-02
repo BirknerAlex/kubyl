@@ -6,6 +6,10 @@
 //! (clients are configured with it, so it must survive restarts); "Regenerate" replaces it.
 //! Change tools are off unless `mcp.writes` is `ask`, and then every change waits for the user's
 //! click in Kubyl's window ([`McpHub::pending`], [`McpHub::answer`]).
+//!
+//! Several Kubyl instances share the port: the first one serves it, and the others find a Kubyl
+//! answering with the same token there and wait on [`ServerState::Standby`], trying to take
+//! the port over every few seconds, so one of them carries on when the serving one quits.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -24,12 +28,20 @@ use crate::tools::ToolContext;
 /// Where the token lives in the credential store.
 const TOKEN_KEY: &str = "mcp/server-token";
 
+/// How often an instance on standby tries to take the port over.
+const STANDBY_RETRY: Duration = Duration::from_secs(3);
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ServerState {
     /// Turned off in settings.
     Off,
     Starting,
     Running {
+        port: u16,
+    },
+    /// Another Kubyl instance serves the port (with the same token); this one takes over when
+    /// it quits.
+    Standby {
         port: u16,
     },
     /// It couldn't start; the text says why and what to do.
@@ -72,6 +84,8 @@ pub struct McpHub {
     starting: Option<TaskHandle>,
     listening: Option<TaskHandle>,
     pruning: Option<TaskHandle>,
+    /// The next takeover attempt while on standby.
+    standby: Option<TaskHandle>,
     /// The next start deletes the stored token first (until one start succeeds).
     replace_token: bool,
     /// Counts starts. The blocking credential step runs under `credential_lock` and does nothing
@@ -103,6 +117,7 @@ impl McpHub {
             starting: None,
             listening: None,
             pruning: None,
+            standby: None,
             replace_token: false,
             generation: Arc::default(),
             credential_lock: Arc::default(),
@@ -117,10 +132,12 @@ impl McpHub {
         &self.state
     }
 
-    /// `http://127.0.0.1:<port>/mcp` while the server runs.
+    /// `http://127.0.0.1:<port>/mcp` while this instance or another one serves it.
     pub fn url(&self) -> Option<String> {
         match self.state {
-            ServerState::Running { port } => Some(format!("http://127.0.0.1:{port}/mcp")),
+            ServerState::Running { port } | ServerState::Standby { port } => {
+                Some(format!("http://127.0.0.1:{port}/mcp"))
+            }
             _ => None,
         }
     }
@@ -229,22 +246,38 @@ impl McpHub {
     /// replacement can't read the old token first; if it can't be deleted the server stays
     /// stopped and the state says why, instead of pretending to have a new token.
     pub fn regenerate_token(&mut self, host: &mut dyn Host<Self>) {
+        if matches!(self.state, ServerState::Standby { .. }) {
+            // The serving instance keeps the old token until it restarts; replace it there.
+            return;
+        }
         self.replace_token = true;
         self.restart(host);
     }
 
     fn restart(&mut self, host: &mut dyn Host<Self>) {
+        self.start_server(false, host);
+    }
+
+    /// Starts the server. `takeover` is a standby's retry: it keeps the standby state (and
+    /// token) on screen instead of flashing "Starting" every few seconds.
+    fn start_server(&mut self, takeover: bool, host: &mut dyn Host<Self>) {
         self.server = None;
-        // Nothing may show a token the running server no longer uses.
-        self.token = None;
         self.starting = None;
+        self.standby = None;
+        if !takeover {
+            // Nothing may show a token the running server no longer uses.
+            self.token = None;
+        }
         if !self.settings.enabled {
             self.state = ServerState::Off;
+            self.token = None;
             host.notify();
             return;
         }
-        self.state = ServerState::Starting;
-        host.notify();
+        if !takeover {
+            self.state = ServerState::Starting;
+            host.notify();
+        }
         let port = self.settings.port();
         let credentials = self.credentials.clone();
         let replace = self.replace_token;
@@ -295,18 +328,30 @@ impl McpHub {
                 )
                 .await;
                 match started {
-                    Err(err) if err.kind() == std::io::ErrorKind::AddrInUse && tries < 20 => {
+                    // A takeover only checks once: the other instance is still there or not.
+                    Err(err)
+                        if err.kind() == std::io::ErrorKind::AddrInUse
+                            && tries < 20
+                            && !takeover =>
+                    {
                         tries += 1;
                         tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => {
+                        if server::serves_kubyl(port, token.expose_secret()).await {
+                            return Ok(Started::Standby(token));
+                        }
+                        return Err(start_error(port, &err));
                     }
                     other => break other.map_err(|err| start_error(port, &err))?,
                 }
             };
-            Ok::<_, String>((server, token))
+            Ok::<_, String>(Started::Serving(server, token))
         };
-        self.starting = Some(host.spawn(work, |this, result, host| {
+        self.starting = Some(host.spawn(work, move |this, result, host| {
+            let before = this.state.clone();
             match result {
-                Ok((server, token)) => {
+                Ok(Started::Serving(server, token)) => {
                     this.state = ServerState::Running {
                         port: server.addr.port(),
                     };
@@ -314,10 +359,24 @@ impl McpHub {
                     this.token = Some(token);
                     this.replace_token = false;
                 }
-                Err(message) => this.state = ServerState::Failed(message),
+                Ok(Started::Standby(token)) => {
+                    this.state = ServerState::Standby { port };
+                    this.token = Some(token);
+                    this.standby = Some(host.after(STANDBY_RETRY, |this, host| {
+                        if matches!(this.state, ServerState::Standby { .. }) {
+                            this.start_server(true, host);
+                        }
+                    }));
+                }
+                Err(message) => {
+                    this.state = ServerState::Failed(message);
+                    this.token = None;
+                }
             }
-            host.emit(HubEvent::Changed);
-            host.notify();
+            if this.state != before || !takeover {
+                host.emit(HubEvent::Changed);
+                host.notify();
+            }
         }));
     }
 
@@ -353,6 +412,13 @@ impl McpHub {
         host.emit(HubEvent::Changed);
         host.notify();
     }
+}
+
+/// What a start ended with.
+enum Started {
+    Serving(McpServer, SecretString),
+    /// The port is held by another Kubyl that knows the token.
+    Standby(SecretString),
 }
 
 /// The saved token, or a new one saved now.
@@ -525,6 +591,40 @@ mod tests {
         );
         assert_ne!(again.token().unwrap(), first);
         again.credentials.delete(TOKEN_KEY).ok();
+    }
+
+    #[test]
+    fn a_second_instance_waits_on_standby_and_takes_over() {
+        let credentials = scoped("mcp-hub-standby-test");
+        let settings = McpSettings {
+            port: free_port(),
+            ..McpSettings::default()
+        };
+        let port = settings.port;
+        let mut first = McpHub::new(settings.clone(), credentials.clone());
+        let mut host1 = TestHost::new();
+        first.start(&mut host1);
+        run_started(&mut first, &mut host1);
+        assert_eq!(first.state(), &ServerState::Running { port });
+
+        let mut second = McpHub::new(settings, credentials);
+        let mut host2 = TestHost::new();
+        second.start(&mut host2);
+        run_started(&mut second, &mut host2);
+        assert_eq!(second.state(), &ServerState::Standby { port });
+        // Clients can be configured from either instance.
+        assert_eq!(second.url(), first.url());
+        assert_eq!(second.token(), first.token());
+        // The serving instance would keep the old token: standby doesn't replace it.
+        second.regenerate_token(&mut host2);
+        assert_eq!(second.state(), &ServerState::Standby { port });
+
+        drop(first);
+        host2.run_until(&mut second, |hub, _| {
+            matches!(hub.state(), ServerState::Running { .. })
+        });
+        assert_eq!(second.state(), &ServerState::Running { port });
+        second.credentials.delete(TOKEN_KEY).ok();
     }
 
     #[test]

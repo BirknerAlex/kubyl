@@ -406,6 +406,19 @@ async fn relay(
     0
 }
 
+/// Whether a Kubyl MCP server that accepts `token` answers on `127.0.0.1:port` (another Kubyl
+/// instance), as opposed to some other program holding the port. Gives up after a second.
+pub async fn serves_kubyl(port: u16, token: &str) -> bool {
+    let ping = json!({ "jsonrpc": "2.0", "id": 0, "method": "ping" }).to_string();
+    let answer = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        post(&format!("127.0.0.1:{port}"), "/mcp", token, ping),
+    )
+    .await;
+    matches!(answer, Ok(Ok(Some(body)))
+        if serde_json::from_str::<Value>(&body).is_ok_and(|v| v.get("result").is_some()))
+}
+
 /// One POST; the answer body for 200, `None` for 202.
 async fn post(
     authority: &str,

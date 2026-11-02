@@ -198,6 +198,8 @@ fn menus() -> Vec<Menu> {
             MenuItem::action("Reset Zoom", ResetZoom),
             MenuItem::separator(),
             MenuItem::action("Toggle Light/Dark Theme", ToggleTheme),
+            MenuItem::separator(),
+            MenuItem::action("MCP Server", kubyl_mcp::ShowServer),
         ]),
         Menu::new("Go").items([
             MenuItem::action("Command Palette…", ToggleCommandPalette),

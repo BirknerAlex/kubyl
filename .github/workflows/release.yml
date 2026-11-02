@@ -419,6 +419,35 @@ jobs:
             *.flatpak
           retention-days: 7
 
+  # Claude Desktop extension: a Node relay to the running Kubyl's MCP server (packaging/mcpb),
+  # the same file for every platform.
+  build-mcpb:
+    name: Pack Claude Desktop extension
+    needs: version
+    if: needs.version.outputs.proceed == 'true'
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.version.outputs.tag }}
+
+      - name: Pack
+        run: |
+          set -euo pipefail
+          BUNDLE="$RUNNER_TEMP/mcpb"
+          cp -R packaging/mcpb "$BUNDLE"
+          jq --arg v "$VERSION" '.version = $v' packaging/mcpb/manifest.json > "$BUNDLE/manifest.json"
+          npx -y @anthropic-ai/mcpb@2.1.2 validate "$BUNDLE/manifest.json"
+          npx -y @anthropic-ai/mcpb@2.1.2 pack "$BUNDLE" "kubyl-$VERSION.mcpb"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kubyl-mcpb
+          path: kubyl-*.mcpb
+          retention-days: 7
+
   build-update-manifest:
     name: Build and sign self-update manifest
     needs: [version, build-macos, build-windows, build-linux]
@@ -471,7 +500,7 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: [version, build-macos, build-windows, build-linux, build-update-manifest]
+    needs: [version, build-macos, build-windows, build-linux, build-mcpb, build-update-manifest]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v5

@@ -1,9 +1,10 @@
-//! The status bar item: the MCP server is running, failed, or a change waits for the user.
+//! The status bar item: the MCP server is running (green dot), served by another Kubyl
+//! instance (grey), failed (red), or a change waits for the user (yellow).
 
 use gpui::{AnyView, App, AppContext as _, Context, IntoElement, Render, Window, div, prelude::*};
 use kubyl_core::{StatusBarItem, StatusBarPosition};
 use kubyl_mcp_core::hub::ServerState;
-use kubyl_ui::{ActiveColors as _, Icon, IconName, h_flex, u};
+use kubyl_ui::{ActiveColors as _, Icon, IconName, StatusDot, h_flex, u};
 
 use crate::service::McpService;
 
@@ -45,13 +46,22 @@ impl Render for McpStatusView {
             return div().into_any_element();
         };
         let service = service.read(cx);
-        let (label, color) = if !service.pending().is_empty() {
-            ("MCP: change waiting".to_string(), colors.yellow)
+        let (label, color, dot) = if !service.pending().is_empty() {
+            (
+                "MCP: change waiting".to_string(),
+                colors.yellow,
+                colors.yellow,
+            )
         } else {
             match service.state() {
                 ServerState::Off | ServerState::Starting => return div().into_any_element(),
-                ServerState::Running { port } => (format!("MCP :{port}"), colors.text_muted),
-                ServerState::Failed(_) => ("MCP failed".to_string(), colors.red),
+                ServerState::Running { port } => {
+                    (format!("MCP :{port}"), colors.text_muted, colors.green)
+                }
+                ServerState::Standby { port } => {
+                    (format!("MCP :{port}"), colors.text_dim, colors.text_dim)
+                }
+                ServerState::Failed(_) => ("MCP failed".to_string(), colors.red, colors.red),
             }
         };
         h_flex()
@@ -63,6 +73,7 @@ impl Render for McpStatusView {
             .on_click(|_, window, cx| crate::open_status(window, cx))
             .child(Icon::new(IconName::Server).size(12.0).color(color))
             .child(div().text_size(u(11.5)).text_color(color).child(label))
+            .child(StatusDot::new(dot))
             .into_any_element()
     }
 }
