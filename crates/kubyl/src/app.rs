@@ -15,7 +15,17 @@ use crate::workspace::{
     ToggleRightDock, ToggleTheme, ToggleZoom, Workspace, ZoomIn, ZoomOut,
 };
 
-actions!(kubyl_app, [Quit, NewWindow, OpenRepository, OpenMobile]);
+actions!(
+    kubyl_app,
+    [
+        Quit,
+        NewWindow,
+        OpenRepository,
+        OpenMobile,
+        /// Opens settings.json in the system's editor.
+        OpenSettingsJson,
+    ]
+);
 
 /// Reverse-DNS app id (Wayland app_id, bundle identifier).
 pub const APP_ID: &str = "io.github.birkneralex.Kubyl";
@@ -45,6 +55,10 @@ pub fn init(cx: &mut App) {
         (
             ActionSpec::new("App: Open Settings", OpenSettings),
             Some(("secondary-,", None)),
+        ),
+        (
+            ActionSpec::new("App: Open settings.json", OpenSettingsJson),
+            None,
         ),
         (ActionSpec::new("App: About Kubyl", About), None),
         (
@@ -169,7 +183,7 @@ fn menus() -> Vec<Menu> {
         Menu::new("Kubyl").items([
             MenuItem::action("About Kubyl", About),
             MenuItem::separator(),
-            MenuItem::action("Settings…", OpenSettings),
+            MenuItem::action("Settings", OpenSettings),
             MenuItem::separator(),
             MenuItem::os_submenu("Services", SystemMenuType::Services),
             MenuItem::separator(),

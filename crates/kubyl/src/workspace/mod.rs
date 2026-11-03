@@ -648,9 +648,16 @@ impl Render for Workspace {
                     };
                 });
             })
-            .on_action(|_: &OpenSettings, _, cx| {
-                let path = Settings::path(cx).to_path_buf();
-                cx.open_with_system(&path);
+            .on_action(|_: &OpenSettings, window, cx| {
+                window.dispatch_action(
+                    Box::new(OpenView(ViewRequest::new(
+                        crate::views::settings_view_kind(),
+                    ))),
+                    cx,
+                );
+            })
+            .on_action(|_: &crate::app::OpenSettingsJson, _, cx| {
+                crate::views::open_settings_json(cx)
             })
             // Kubeconfig files dropped anywhere on the window become sources.
             .on_drop(|paths: &ExternalPaths, _, cx| {
