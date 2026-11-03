@@ -10,6 +10,10 @@
 //! - Selector sources watch their pods (`kube::runtime::watcher`): new pods join as soon as
 //!   their containers start, deleted pods leave.
 //! - A container whose pod finished (or was deleted) ends its stream instead of reconnecting.
+//!   A single-pod source waits for a pod recreated under the same name (a StatefulSet's) and
+//!   follows the new instance from its start.
+//! - A quiet stream checks every [`IDLE_CHECK`] that its pod instance is still the one it
+//!   follows, so a connection that hangs after its pod was replaced doesn't freeze the view.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -313,6 +317,8 @@ pub async fn run(
                     Some(backlog),
                     merge.flushed(),
                     tx.clone(),
+                    // One pod by name: follow a pod recreated under it (a StatefulSet's).
+                    true,
                 ));
             }
             merge.run().await;
@@ -435,6 +441,8 @@ impl PodStreams {
                     backlog,
                     flushed,
                     self.tx.clone(),
+                    // The pod watch starts streams for a recreated pod.
+                    false,
                 ),
             );
         }
@@ -561,6 +569,7 @@ impl Drop for TaskGuard {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_container(
     api: Api<Pod>,
     pod: String,
@@ -569,9 +578,17 @@ fn spawn_container(
     backlog: Option<oneshot::Sender<Vec<RawLine>>>,
     flushed: watch::Receiver<bool>,
     tx: mpsc::UnboundedSender<StreamEvent>,
+    follow_name: bool,
 ) -> TaskGuard {
     TaskGuard(tokio::spawn(container_task(
-        api, pod, container, options, backlog, flushed, tx,
+        api,
+        pod,
+        container,
+        options,
+        backlog,
+        flushed,
+        tx,
+        follow_name,
     )))
 }
 
@@ -704,6 +721,7 @@ async fn fetch(
 
 /// One container: the initial backlog (merged by the caller when `backlog` is set), then the
 /// live stream with reconnects.
+#[allow(clippy::too_many_arguments)]
 async fn container_task(
     api: Api<Pod>,
     pod: String,
@@ -712,6 +730,7 @@ async fn container_task(
     backlog: Option<oneshot::Sender<Vec<RawLine>>>,
     mut flushed: watch::Receiver<bool>,
     tx: mpsc::UnboundedSender<StreamEvent>,
+    follow_name: bool,
 ) {
     let mut resume = Resume::default();
     let mut first = true;
@@ -758,7 +777,102 @@ async fn container_task(
     }
 
     let mut backoff = BACKOFF_START;
+    // The pod instance being followed (its uid) and how often its container had restarted.
+    let mut instance: Option<(String, i32)> = None;
+    // A connection ended (or failed): the next one is a reconnect.
+    let mut retry = false;
+    let mut gone = false;
+    let mut ended = false;
     loop {
+        // Where is the container now? A pod recreated under the same name (a StatefulSet's)
+        // is a new instance: its log starts over.
+        let mut restarts = 0;
+        match api.get_opt(&pod).await {
+            Ok(None) => {
+                if !gone {
+                    gone = true;
+                    if tx
+                        .unbounded_send(StreamEvent::PodGone(pod.clone()))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                if !follow_name {
+                    return;
+                }
+                tokio::time::sleep(POLL).await;
+                continue;
+            }
+            Ok(Some(object)) => {
+                let uid = object.metadata.uid.clone().unwrap_or_default();
+                restarts = restart_count(&object, &container);
+                let replaced = instance.as_ref().is_some_and(|(old, _)| *old != uid);
+                if replaced || gone {
+                    if !follow_name {
+                        return;
+                    }
+                    if !PodContainers::of(&object).all().contains(&container) {
+                        tx.unbounded_send(StreamEvent::Ended {
+                            pod: pod.clone(),
+                            container: container.clone(),
+                            reason: "is not in the new pod".into(),
+                        })
+                        .ok();
+                        return;
+                    }
+                    resume = Resume::default();
+                    first = true;
+                    retry = false;
+                    backoff = BACKOFF_START;
+                    if tx
+                        .unbounded_send(StreamEvent::PodJoined {
+                            pod: pod.clone(),
+                            containers: vec![container.clone()],
+                            initial: false,
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
+                    gone = false;
+                    ended = false;
+                }
+                instance = Some((uid, restarts));
+                if let Some(reason) = finished_reason(&object, &container) {
+                    // Nothing more comes from this instance; a replacement may.
+                    if !ended && (retry || !first) {
+                        ended = true;
+                        tx.unbounded_send(StreamEvent::Ended {
+                            pod: pod.clone(),
+                            container: container.clone(),
+                            reason,
+                        })
+                        .ok();
+                    }
+                    if ended {
+                        if !follow_name {
+                            return;
+                        }
+                        tokio::time::sleep(POLL_FINISHED).await;
+                        continue;
+                    }
+                }
+                if !has_started(&object, &container) {
+                    // Still being created: wait without growing the backoff.
+                    tokio::time::sleep(POLL).await;
+                    if tx.is_closed() {
+                        return;
+                    }
+                    continue;
+                }
+            }
+            Err(_) => {}
+        }
+        if retry {
+            tokio::time::sleep(backoff).await;
+        }
+
         let mut request = params(&container, &options, true);
         if !first {
             request.tail_lines = None;
@@ -782,12 +896,30 @@ async fn container_task(
                 let mut stream = std::pin::pin!(stream);
                 let mut buf = Vec::new();
                 let mut seen_at_last = 0;
+                let mut silent = Duration::ZERO;
                 loop {
-                    buf.clear();
-                    match read_line_capped(&mut stream, &mut buf, MAX_LINE_BYTES + 64).await {
-                        Ok(0) => break,
-                        Ok(_) => {
+                    // A partial line stays in `buf` across a timeout.
+                    let read = tokio::time::timeout(
+                        IDLE_CHECK,
+                        read_line_capped(&mut stream, &mut buf, MAX_LINE_BYTES + 64),
+                    )
+                    .await;
+                    match read {
+                        Err(_) => {
+                            // Quiet: a hung connection to a replaced pod (or a dead node)
+                            // never ends by itself.
+                            silent += IDLE_CHECK;
+                            if silent >= IDLE_RECONNECT
+                                || !same_instance(&api, &pod, &container, instance.as_ref()).await
+                            {
+                                break;
+                            }
+                        }
+                        Ok(Ok(0)) => break,
+                        Ok(Ok(_)) => {
+                            silent = Duration::ZERO;
                             let line = parse_line(&pod, &container, &buf);
+                            buf.clear();
                             if resume.is_duplicate(line.timestamp, &mut seen_at_last) {
                                 continue;
                             }
@@ -797,7 +929,7 @@ async fn container_task(
                                 return;
                             }
                         }
-                        Err(err) => {
+                        Ok(Err(err)) => {
                             error = Some(err.to_string());
                             break;
                         }
@@ -806,44 +938,87 @@ async fn container_task(
             }
             Err(err) => error = Some(err.to_string()),
         }
-
-        // Did the stream end because the pod finished or went away?
-        match api.get_opt(&pod).await {
-            Ok(None) => {
-                tx.unbounded_send(StreamEvent::PodGone(pod.clone())).ok();
-                return;
-            }
-            Ok(Some(object)) => {
-                if let Some(reason) = finished_reason(&object, &container) {
-                    tx.unbounded_send(StreamEvent::Ended {
-                        pod: pod.clone(),
-                        container: container.clone(),
-                        reason,
-                    })
-                    .ok();
-                    return;
-                }
-            }
-            Err(_) => {}
+        if tx.is_closed() {
+            return;
         }
-        if tx
-            .unbounded_send(StreamEvent::Reconnecting {
-                pod: pod.clone(),
-                container: container.clone(),
-                error,
-            })
-            .is_err()
+
+        // Did the stream end because the pod finished, restarted or went away? The next
+        // round looks; only a plain outage is announced as reconnecting.
+        let reconnecting = match api.get_opt(&pod).await {
+            Ok(Some(object)) => {
+                let uid = object.metadata.uid.clone().unwrap_or_default();
+                instance.as_ref().is_some_and(|(old, _)| *old == uid)
+                    && finished_reason(&object, &container).is_none()
+                    && restart_count(&object, &container) == restarts
+            }
+            Ok(None) => false,
+            Err(_) => true,
+        };
+        if reconnecting
+            && tx
+                .unbounded_send(StreamEvent::Reconnecting {
+                    pod: pod.clone(),
+                    container: container.clone(),
+                    error,
+                })
+                .is_err()
         {
             return;
         }
         // Only reset the backoff after a connection delivered data: one that opens and ends
         // right away (a restarting container) keeps backing off.
-        backoff = if received {
+        backoff = if received || !reconnecting {
             BACKOFF_START
         } else {
             (backoff * 2).min(BACKOFF_MAX)
         };
-        tokio::time::sleep(backoff).await;
+        retry = true;
+    }
+}
+
+/// How often a followed pod that is gone or still starting is looked up.
+const POLL: Duration = Duration::from_secs(2);
+/// How often a finished pod is looked up for a replacement under its name.
+const POLL_FINISHED: Duration = Duration::from_secs(5);
+/// A stream quiet this long checks that its pod instance is still the one it follows.
+const IDLE_CHECK: Duration = Duration::from_secs(30);
+/// A stream quiet this long reconnects anyway (lines already shown are skipped).
+const IDLE_RECONNECT: Duration = Duration::from_secs(300);
+
+/// Restarts of `container` (0 when unknown).
+fn restart_count(pod: &Pod, container: &str) -> i32 {
+    pod.status
+        .as_ref()
+        .into_iter()
+        .flat_map(|s| {
+            s.container_statuses
+                .iter()
+                .flatten()
+                .chain(s.init_container_statuses.iter().flatten())
+                .chain(s.ephemeral_container_statuses.iter().flatten())
+        })
+        .find(|s| s.name == container)
+        .map_or(0, |s| s.restart_count)
+}
+
+/// The pod still exists as the instance a stream follows and its container hasn't restarted.
+/// A failed lookup counts as the same (don't drop a working stream over an API hiccup).
+async fn same_instance(
+    api: &Api<Pod>,
+    pod: &str,
+    container: &str,
+    instance: Option<&(String, i32)>,
+) -> bool {
+    let Some((uid, restarts)) = instance else {
+        return true;
+    };
+    match api.get_opt(pod).await {
+        Ok(Some(object)) => {
+            object.metadata.uid.as_deref() == Some(uid.as_str())
+                && restart_count(&object, container) == *restarts
+        }
+        Ok(None) => false,
+        Err(_) => true,
     }
 }
 
