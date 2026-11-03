@@ -48,24 +48,26 @@ impl Settings {
     /// Changes `T` and writes the fields that differ from their defaults back to settings.json.
     pub fn update<T: SettingsSection>(cx: &mut App, f: impl FnOnce(&mut T)) {
         let write = cx.update_global::<Self, _>(|settings, _| settings.store.update::<T>(f));
-        let (path, contents) = match write {
-            Write::File { path, contents } => (path, contents),
-            Write::Unreadable(path) => {
-                tracing::warn!(
-                    "not saving to {}: it has errors; fix or delete it first",
-                    path.display()
-                );
-                return;
-            }
-        };
-        let ticket = WriteTicket::new();
-        cx.background_executor()
-            .spawn(async move {
-                if let Err(err) = ticket.write(&path, &contents) {
-                    tracing::error!("failed to write {}: {err}", path.display());
-                }
-            })
-            .detach();
+        save(cx, write);
+    }
+
+    /// Every setting with its current value, for the settings view.
+    pub fn catalog(cx: &App) -> Vec<kubyl_settings_core::catalog::Page> {
+        let store = &cx.global::<Self>().store;
+        kubyl_settings_core::catalog::catalog(&store.schema().1, store.raw())
+    }
+
+    /// Sets the value at `path` (JSON keys from the root), or resets it with `None`, and writes
+    /// settings.json. A value its section can't parse is refused with the reason.
+    pub fn set_value(
+        cx: &mut App,
+        path: &[String],
+        value: Option<serde_json::Value>,
+    ) -> Result<(), String> {
+        let write =
+            cx.update_global::<Self, _>(|settings, _| settings.store.set_value(path, value))?;
+        save(cx, write);
+        Ok(())
     }
 
     /// Path of `settings.json`.
@@ -96,6 +98,28 @@ impl Settings {
             report(cx, err);
         }
     }
+}
+
+/// Writes what the store wants written, off the UI thread.
+fn save(cx: &App, write: Write) {
+    let (path, contents) = match write {
+        Write::File { path, contents } => (path, contents),
+        Write::Unreadable(path) => {
+            tracing::warn!(
+                "not saving to {}: it has errors; fix or delete it first",
+                path.display()
+            );
+            return;
+        }
+    };
+    let ticket = WriteTicket::new();
+    cx.background_executor()
+        .spawn(async move {
+            if let Err(err) = ticket.write(&path, &contents) {
+                tracing::error!("failed to write {}: {err}", path.display());
+            }
+        })
+        .detach();
 }
 
 fn report(cx: &mut App, message: String) {
