@@ -149,8 +149,15 @@ async fn workload_logs_interleave_in_order_and_follow_pod_changes() {
         timestamps.windows(2).all(|w| w[0] <= w[1]),
         "the backlog is interleaved in timestamp order"
     );
-    // The timestamp prefix is split off: the text is the raw JSON line.
-    assert!(backlog[0].text.starts_with('{'), "{}", backlog[0].text);
+    // The timestamp prefix is split off: the text is the raw line (JSON, or the ticker's
+    // `WARN` line every tenth tick).
+    for line in &backlog {
+        assert!(
+            line.text.starts_with('{') || line.text.starts_with("WARN"),
+            "{}",
+            line.text
+        );
+    }
 
     // Live lines keep arriving, from every pod.
     let mut live_pods = HashSet::new();

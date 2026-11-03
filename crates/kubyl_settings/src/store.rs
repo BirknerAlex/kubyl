@@ -100,7 +100,7 @@ impl Settings {
     }
 }
 
-/// Writes what the store wants written, off the UI thread.
+/// Writes what the store wants written, off the UI thread, and tells the user when it fails.
 fn save(cx: &App, write: Write) {
     let (path, contents) = match write {
         Write::File { path, contents } => (path, contents),
@@ -113,13 +113,17 @@ fn save(cx: &App, write: Write) {
         }
     };
     let ticket = WriteTicket::new();
-    cx.background_executor()
-        .spawn(async move {
-            if let Err(err) = ticket.write(&path, &contents) {
-                tracing::error!("failed to write {}: {err}", path.display());
-            }
-        })
-        .detach();
+    let write = cx.background_executor().spawn(async move {
+        ticket
+            .write(&path, &contents)
+            .map_err(|err| format!("Couldn't save {}: {err}", path.display()))
+    });
+    cx.spawn(async move |cx| {
+        if let Err(message) = write.await {
+            cx.update(|cx| report(cx, message));
+        }
+    })
+    .detach();
 }
 
 fn report(cx: &mut App, message: String) {
