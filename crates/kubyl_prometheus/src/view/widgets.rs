@@ -179,6 +179,9 @@ pub fn row(
         .relative()
         .w_full()
         .h(u(height))
+        // A fixed-height row in a scrolling list must not shrink to fit: with more rows than
+        // the viewport holds, flexbox would squeeze them and `overflow_hidden` clip their text.
+        .flex_none()
         .px(u(12.0))
         .border_b_1()
         .border_color(colors.row_border)

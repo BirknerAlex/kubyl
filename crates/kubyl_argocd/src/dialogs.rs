@@ -547,6 +547,7 @@ impl Render for SyncDialog {
                     .id(("sync-resource", index))
                     .gap(u(8.0))
                     .h(u(26.0))
+                    .flex_none()
                     .px(u(10.0))
                     .border_t_1()
                     .border_color(colors.border_variant)

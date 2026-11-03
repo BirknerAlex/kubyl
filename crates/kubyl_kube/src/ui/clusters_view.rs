@@ -1,15 +1,18 @@
 //! The Clusters & kubeconfigs tab (mockup board 5): kubeconfig sources on the left, the merged
 //! context table, safety settings and connection details on the right.
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, ClickEvent, Context, Entity, ExternalPaths, FocusHandle, Focusable,
-    FontWeight, Hsla, IntoElement, Render, SharedString, Styled, Subscription, Window, div,
-    prelude::*, px, relative,
+    AnyElement, App, Bounds, ClickEvent, Context, Entity, ExternalPaths, FocusHandle, Focusable,
+    FontWeight, Hsla, IntoElement, KeyBinding, Pixels, Render, ScrollHandle, SharedString, Styled,
+    Subscription, Window, actions, div, point, prelude::*, px, relative,
 };
 use gpui_component::WindowExt as _;
 use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::switch::Switch;
 use kubyl_core::actions::{EditKubeconfig, NewKubeconfig};
 use kubyl_core::{ClusterId, Notification, NotificationCenter, TabView, ViewRequest};
@@ -24,13 +27,42 @@ use crate::kubeconfig::{CaSource, ContextInfo, Source, SourceKind};
 use crate::settings::{ColorTag, ColorTagExt as _, display_path};
 use crate::{ConnectionEvent, ConnectionManager, ConnectionState};
 
+actions!(
+    clusters_view,
+    [SelectNext, SelectPrevious, SelectFirst, SelectLast, Confirm]
+);
+
+/// Key context of the context table (it has its own focus; the inputs stay outside of it).
+const TABLE_CONTEXT: &str = "ClustersTable";
+
+pub(crate) fn bind_keys(cx: &mut App) {
+    let table = Some(TABLE_CONTEXT);
+    cx.bind_keys([
+        KeyBinding::new("down", SelectNext, table),
+        KeyBinding::new("j", SelectNext, table),
+        KeyBinding::new("up", SelectPrevious, table),
+        KeyBinding::new("k", SelectPrevious, table),
+        KeyBinding::new("home", SelectFirst, table),
+        KeyBinding::new("end", SelectLast, table),
+        KeyBinding::new("enter", Confirm, table),
+    ]);
+}
+
 pub struct ClustersView {
+    /// Focus of the context table: arrow keys move the selection.
     focus: FocusHandle,
     filter: Entity<InputState>,
     default_namespace: Entity<InputState>,
     selected: Option<ClusterId>,
     /// Groups whose contexts are listed.
     expanded: std::collections::HashSet<ClusterId>,
+    /// Scroll of the contexts column and of the sources column.
+    scroll: ScrollHandle,
+    sources_scroll: ScrollHandle,
+    /// The rows the keyboard moves through, in order, with their child index in the table.
+    nav: Vec<(ClusterId, usize)>,
+    /// Bounds of the table's children at the last paint (the header is child 0).
+    row_bounds: Rc<RefCell<Vec<Bounds<Pixels>>>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -65,6 +97,10 @@ impl ClustersView {
             default_namespace,
             selected: manager.read(cx).active().cloned(),
             expanded: std::collections::HashSet::new(),
+            scroll: ScrollHandle::new(),
+            sources_scroll: ScrollHandle::new(),
+            nav: Vec::new(),
+            row_bounds: Rc::default(),
             _subscriptions: subscriptions,
         };
         this.ensure_selection(cx);
@@ -96,6 +132,52 @@ impl ClustersView {
             self.sync_inputs(window, cx);
             cx.notify();
         }
+    }
+
+    /// Moves the selection through the listed contexts and scrolls it into view.
+    fn move_selection(&mut self, movement: Move, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(last) = self.nav.len().checked_sub(1) else {
+            return;
+        };
+        let current = self
+            .selected
+            .as_ref()
+            .and_then(|id| self.nav.iter().position(|(n, _)| n == id));
+        let next = match (current, movement) {
+            (_, Move::First) | (None, Move::Next) => 0,
+            (_, Move::Last) | (None, Move::Previous) => last,
+            (Some(i), Move::Next) => (i + 1).min(last),
+            (Some(i), Move::Previous) => i.saturating_sub(1),
+        };
+        let (id, child) = self.nav[next].clone();
+        self.select(id, window, cx);
+        self.reveal(child);
+    }
+
+    /// Scrolls the least amount that shows the table's child `ix` whole.
+    fn reveal(&self, ix: usize) {
+        let Some(row) = self.row_bounds.borrow().get(ix).copied() else {
+            return;
+        };
+        let view = self.scroll.bounds();
+        let margin = px(8.);
+        let offset = self.scroll.offset();
+        let y = if row.top() < view.top() {
+            offset.y + (view.top() - row.top()) + margin
+        } else if row.bottom() > view.bottom() {
+            offset.y - (row.bottom() - view.bottom()) - margin
+        } else {
+            return;
+        };
+        let min = -self.scroll.max_offset().y;
+        let y = if y > px(0.) {
+            px(0.)
+        } else if y < min {
+            min
+        } else {
+            y
+        };
+        self.scroll.set_offset(point(offset.x, y));
     }
 
     fn sync_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -206,13 +288,10 @@ impl ClustersView {
                     )))
             };
 
-        v_flex()
+        let column = v_flex()
             .id("kubeconfig-sources")
-            .w(u(330.0))
-            .flex_none()
-            .h_full()
-            .border_r_1()
-            .border_color(colors.border_variant)
+            .track_scroll(&self.sources_scroll)
+            .size_full()
             .px(u(12.0))
             .py(u(16.0))
             .gap(u(4.0))
@@ -309,10 +388,19 @@ impl ClustersView {
                          loading it. Contexts from every source are merged; name collisions get \
                          the file name as suffix.",
                     ),
-            )
+            );
+        div()
+            .relative()
+            .w(u(330.0))
+            .flex_none()
+            .h_full()
+            .border_r_1()
+            .border_color(colors.border_variant)
+            .child(column)
+            .vertical_scrollbar(&self.sources_scroll)
     }
 
-    fn render_contexts(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_contexts(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.colors().clone();
         let query = self.filter.read(cx).value().to_lowercase();
         let manager_entity = ConnectionManager::global(cx);
@@ -396,7 +484,10 @@ impl ClustersView {
             .child(div().w(u(150.0)).flex_none().child(th("STATUS")));
 
         let mut rows: Vec<AnyElement> = Vec::new();
+        let mut nav = Vec::with_capacity(entries.len());
         for (info, state, color, name, hidden) in entries {
+            // Child 0 of the table is its header.
+            nav.push((info.id.clone(), rows.len() + 1));
             let selected = self.selected.as_ref() == Some(&info.id);
             let id = info.id.clone();
             let state_color = state.color(&colors);
@@ -421,6 +512,7 @@ impl ClustersView {
                     })
                     .when(hidden, |this| this.opacity(0.55))
                     .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                        this.focus.focus(window, cx);
                         this.select(id.clone(), window, cx);
                         if event.click_count() >= 2 {
                             switch_to(&id, window, cx);
@@ -564,7 +656,31 @@ impl ClustersView {
         }
 
         let empty = rows.is_empty();
+        let row_bounds = self.row_bounds.clone();
         let table = v_flex()
+            .on_children_prepainted(move |bounds, _, _| *row_bounds.borrow_mut() = bounds)
+            .key_context(TABLE_CONTEXT)
+            .track_focus(&self.focus)
+            .on_action(cx.listener(|this, _: &SelectNext, window, cx| {
+                this.move_selection(Move::Next, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SelectPrevious, window, cx| {
+                this.move_selection(Move::Previous, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SelectFirst, window, cx| {
+                this.move_selection(Move::First, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SelectLast, window, cx| {
+                this.move_selection(Move::Last, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &Confirm, window, cx| {
+                if let Some(id) = this.selected.clone() {
+                    switch_to(&id, window, cx);
+                }
+            }))
+            // In a scrolling column: without it the clipped table shrinks to the viewport
+            // and cuts off its last rows instead of scrolling.
+            .flex_none()
             .bg(colors.panel)
             .border_1()
             .border_color(colors.border)
@@ -591,24 +707,33 @@ impl ClustersView {
             .and_then(|id| Some((manager.context(&id)?.clone(), id)));
         let cards = selected.map(|(info, id)| {
             h_flex()
+                .flex_none()
                 .items_start()
                 .gap(u(12.0))
                 .child(self.render_safety(&id, &info, cx))
                 .child(render_connection(&id, &info, cx))
         });
 
-        v_flex()
-            .id("contexts")
+        self.nav = nav;
+        div()
+            .relative()
             .flex_1()
             .min_w_0()
             .h_full()
-            .overflow_y_scroll()
-            .px(u(18.0))
-            .py(u(16.0))
-            .gap(u(12.0))
-            .child(header)
-            .child(table)
-            .children(cards)
+            .child(
+                v_flex()
+                    .id("contexts")
+                    .track_scroll(&self.scroll)
+                    .size_full()
+                    .overflow_y_scroll()
+                    .px(u(18.0))
+                    .py(u(16.0))
+                    .gap(u(12.0))
+                    .child(header.flex_none())
+                    .child(table)
+                    .children(cards),
+            )
+            .vertical_scrollbar(&self.scroll)
     }
 
     fn render_safety(
@@ -941,6 +1066,15 @@ fn render_connection(
         }))
         .child(buttons)
         .into_any_element()
+}
+
+/// A keyboard move in the context table.
+#[derive(Clone, Copy)]
+enum Move {
+    Next,
+    Previous,
+    First,
+    Last,
 }
 
 fn expiry_label(at: jiff::Timestamp) -> String {
@@ -1412,7 +1546,6 @@ impl Render for ClustersView {
         h_flex()
             .id("clusters-view")
             .key_context("ClustersView")
-            .track_focus(&self.focus)
             .size_full()
             .items_start()
             .bg(colors.background)

@@ -71,6 +71,7 @@ pub(crate) fn init(cx: &mut App) {
     }
 
     switcher::bind_keys(cx);
+    clusters_view::bind_keys(cx);
     exec_prompt::init(cx);
 
     // When the user asks for an OIDC cluster that needs a sign-in, show the modal.
