@@ -9,6 +9,7 @@
 //! `kubyl_settings` keeps both in GPUI globals, debounces saves and notifies observers.
 //! Never store tokens, credentials or Secret data in either file.
 
+pub mod catalog;
 mod paths;
 mod settings;
 mod state;

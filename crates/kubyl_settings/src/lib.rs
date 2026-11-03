@@ -29,6 +29,7 @@
 mod state;
 mod store;
 
+pub use kubyl_settings_core::catalog;
 pub use kubyl_settings_core::config_dir;
 pub use state::{State, StateSection};
 pub use store::{Settings, SettingsSection};

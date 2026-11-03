@@ -158,6 +158,54 @@ impl SettingsStore {
         }
     }
 
+    /// The file's contents as last loaded or written.
+    pub fn raw(&self) -> &Value {
+        &self.raw
+    }
+
+    /// Sets the value at `path` (JSON keys from the root), or removes it with `None` (empty
+    /// parent objects go too), and re-parses every section. A value a section can't parse is
+    /// refused and nothing changes.
+    pub fn set_value(&mut self, path: &[String], value: Option<Value>) -> Result<Write, String> {
+        let Some((last, parents)) = path.split_last() else {
+            return Err("empty settings path".into());
+        };
+        let mut raw = self.raw.clone();
+        match value {
+            Some(value) => {
+                let mut target = raw.as_object_mut().expect("settings root is an object");
+                for key in parents {
+                    let entry = target
+                        .entry(key.clone())
+                        .or_insert_with(|| Value::Object(Map::new()));
+                    if !entry.is_object() {
+                        *entry = Value::Object(Map::new());
+                    }
+                    target = entry.as_object_mut().expect("just made an object");
+                }
+                target.insert(last.clone(), value);
+            }
+            None => remove_path(&mut raw, path),
+        }
+        let mut parsed = Vec::with_capacity(self.entries.len());
+        for (id, entry) in &self.entries {
+            parsed.push((*id, (entry.parse)(&raw)?));
+        }
+        for (id, value) in parsed {
+            if let Some(entry) = self.entries.get_mut(&id) {
+                entry.value = value;
+            }
+        }
+        self.raw = raw;
+        if self.unreadable {
+            return Ok(Write::Unreadable(self.path.clone()));
+        }
+        Ok(Write::File {
+            path: self.path.clone(),
+            contents: serde_json::to_vec_pretty(&self.raw).expect("settings serialize"),
+        })
+    }
+
     /// Path of `settings.json`.
     pub fn path(&self) -> &Path {
         &self.path
@@ -199,6 +247,26 @@ impl SettingsStore {
         }
         self.raw = raw;
         errors
+    }
+}
+
+/// Removes the key at `path` and the objects it leaves empty.
+fn remove_path(value: &mut Value, path: &[String]) {
+    let Some((first, rest)) = path.split_first() else {
+        return;
+    };
+    let Some(obj) = value.as_object_mut() else {
+        return;
+    };
+    if rest.is_empty() {
+        obj.remove(first);
+        return;
+    }
+    if let Some(child) = obj.get_mut(first) {
+        remove_path(child, rest);
+        if child.as_object().is_some_and(Map::is_empty) {
+            obj.remove(first);
+        }
     }
 }
 
@@ -377,6 +445,40 @@ mod tests {
             store.update::<Logs>(|logs| logs.wrap_lines = true),
             Write::Unreadable(_)
         ));
+    }
+
+    fn path(keys: &[&str]) -> Vec<String> {
+        keys.iter().map(|k| k.to_string()).collect()
+    }
+
+    #[test]
+    fn set_value_writes_and_resets_one_key() {
+        let (_dir, mut store) = store(r#"{ "$schema": "./settings.schema.json" }"#);
+        assert!(
+            store
+                .set_value(&path(&["logs", "wrap_lines"]), Some(Value::Bool(true)))
+                .is_ok()
+        );
+        assert!(store.get::<Logs>().wrap_lines);
+        assert_eq!(store.raw()["logs"]["wrap_lines"], Value::Bool(true));
+
+        store
+            .set_value(&path(&["logs", "wrap_lines"]), None)
+            .unwrap();
+        assert!(!store.get::<Logs>().wrap_lines);
+        assert_eq!(
+            store.raw(),
+            &serde_json::json!({ "$schema": "./settings.schema.json" })
+        );
+    }
+
+    #[test]
+    fn set_value_refuses_what_a_section_cannot_parse() {
+        let (_dir, mut store) = store(r#"{ "theme": "light" }"#);
+        let err = store.set_value(&path(&["font_size"]), Some(Value::String("big".into())));
+        assert!(err.is_err());
+        assert_eq!(store.raw(), &serde_json::json!({ "theme": "light" }));
+        assert_eq!(store.get::<Flat>().font_size, 0.0);
     }
 
     #[test]
