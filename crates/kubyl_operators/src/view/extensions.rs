@@ -219,7 +219,9 @@ impl OperatorsView {
         self.focus_area()
             .child(
                 v_flex()
+                    .id("olm-v1-extensions")
                     .size_full()
+                    .overflow_y_scroll()
                     .child(
                         h_flex()
                             .flex_none()

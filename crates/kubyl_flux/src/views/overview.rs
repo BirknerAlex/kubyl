@@ -812,6 +812,9 @@ impl OverviewView {
         let colors = cx.colors().clone();
         let install = Flux::try_global(cx).and_then(|f| f.read(cx).install(&self.cluster));
         let mut section = v_flex()
+            // In the scrolling body: clipped (rounded corners), it would otherwise shrink to the
+            // viewport and cut off its last rows.
+            .flex_none()
             .mx(u(16.0))
             .mb(u(16.0))
             .rounded(u(8.0))
