@@ -674,7 +674,12 @@ impl ClustersView {
                 this.move_selection(Move::Last, window, cx)
             }))
             .on_action(cx.listener(|this, _: &Confirm, window, cx| {
-                if let Some(id) = this.selected.clone() {
+                // Only a row the table shows: the filter may hide the selected context.
+                if let Some(id) = this
+                    .selected
+                    .clone()
+                    .filter(|id| this.nav.iter().any(|(n, _)| n == id))
+                {
                     switch_to(&id, window, cx);
                 }
             }))

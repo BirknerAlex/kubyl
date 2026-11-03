@@ -283,11 +283,26 @@ pub async fn run(
     let api: Api<Pod> = Api::namespaced(client, &namespace);
     match source {
         LogSource::Pod { pod } => {
-            let object = match api.get(&pod).await {
-                Ok(object) => object,
-                Err(err) => {
-                    tx.unbounded_send(StreamEvent::Error(err.to_string())).ok();
-                    return;
+            // Following a pod that isn't there (yet, or between a delete and its StatefulSet
+            // recreating it): wait for it.
+            let object = loop {
+                match api.get_opt(&pod).await {
+                    Ok(Some(object)) => break object,
+                    Ok(None) if options.follows() => {
+                        tokio::time::sleep(POLL).await;
+                        if tx.is_closed() {
+                            return;
+                        }
+                    }
+                    Ok(None) => {
+                        tx.unbounded_send(StreamEvent::Error(format!("pod {pod} not found")))
+                            .ok();
+                        return;
+                    }
+                    Err(err) => {
+                        tx.unbounded_send(StreamEvent::Error(err.to_string())).ok();
+                        return;
+                    }
                 }
             };
             let names = PodContainers::of(&object).select(&containers);
@@ -307,7 +322,7 @@ pub async fn run(
             .ok();
             let mut merge = Merge::new(tx.clone());
             let mut guards = Vec::new();
-            for container in names {
+            for (ix, container) in names.into_iter().enumerate() {
                 let backlog = merge.add();
                 guards.push(spawn_container(
                     api.clone(),
@@ -318,7 +333,7 @@ pub async fn run(
                     merge.flushed(),
                     tx.clone(),
                     // One pod by name: follow a pod recreated under it (a StatefulSet's).
-                    true,
+                    Role::Pod { lead: ix == 0 },
                 ));
             }
             merge.run().await;
@@ -353,6 +368,7 @@ async fn selector_loop(
         options,
         tx: tx.clone(),
         streams: HashMap::new(),
+        uids: HashMap::new(),
     };
     // The initial listing merges its backlogs; pods that join later stream directly.
     let mut initial = Some(Merge::new(tx.clone()));
@@ -410,6 +426,9 @@ struct PodStreams {
     options: LogOptions,
     tx: mpsc::UnboundedSender<StreamEvent>,
     streams: HashMap<String, HashMap<String, TaskGuard>>,
+    /// The uid of the pod instance each name streams: a pod recreated under its name while
+    /// the watch was relisting (no `Delete` seen) gets new streams.
+    uids: HashMap<String, String>,
 }
 
 impl PodStreams {
@@ -419,11 +438,20 @@ impl PodStreams {
         let Some(name) = pod.metadata.name.clone() else {
             return;
         };
+        let uid = pod.metadata.uid.clone().unwrap_or_default();
+        if self
+            .uids
+            .get(&name)
+            .is_some_and(|known| *known != uid && !uid.is_empty())
+        {
+            self.remove(&name);
+        }
         if pod.metadata.deletion_timestamp.is_some() && !self.streams.contains_key(&name) {
             return;
         }
         let wanted = PodContainers::of(pod).select(&self.filter);
         let joined = !self.streams.contains_key(&name);
+        self.uids.insert(name.clone(), uid);
         let running = self.streams.entry(name.clone()).or_default();
         for container in &wanted {
             if running.contains_key(container) || !has_started(pod, container) {
@@ -442,7 +470,7 @@ impl PodStreams {
                     flushed,
                     self.tx.clone(),
                     // The pod watch starts streams for a recreated pod.
-                    false,
+                    Role::Selector,
                 ),
             );
         }
@@ -458,6 +486,7 @@ impl PodStreams {
     }
 
     fn remove(&mut self, name: &str) {
+        self.uids.remove(name);
         if self.streams.remove(name).is_some() {
             self.tx
                 .unbounded_send(StreamEvent::PodGone(name.to_string()))
@@ -560,6 +589,28 @@ pub fn merge_by_time(lists: Vec<Vec<RawLine>>) -> Vec<RawLine> {
     out
 }
 
+/// What a container task does when its pod goes away or is recreated.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Role {
+    /// Part of a selector source: the pod watch announces pods and starts streams for a
+    /// recreated one, so the task just ends.
+    Selector,
+    /// Part of a single-pod source: follow a pod recreated under the name. `lead`: this
+    /// container announces the pod leaving and rejoining (one marker per pod, not per
+    /// container).
+    Pod { lead: bool },
+}
+
+impl Role {
+    fn follows_name(self) -> bool {
+        matches!(self, Role::Pod { .. })
+    }
+
+    fn announces(self) -> bool {
+        self == Role::Pod { lead: true }
+    }
+}
+
 /// Aborts its task when dropped.
 struct TaskGuard(tokio::task::JoinHandle<()>);
 
@@ -578,17 +629,10 @@ fn spawn_container(
     backlog: Option<oneshot::Sender<Vec<RawLine>>>,
     flushed: watch::Receiver<bool>,
     tx: mpsc::UnboundedSender<StreamEvent>,
-    follow_name: bool,
+    role: Role,
 ) -> TaskGuard {
     TaskGuard(tokio::spawn(container_task(
-        api,
-        pod,
-        container,
-        options,
-        backlog,
-        flushed,
-        tx,
-        follow_name,
+        api, pod, container, options, backlog, flushed, tx, role,
     )))
 }
 
@@ -730,8 +774,9 @@ async fn container_task(
     backlog: Option<oneshot::Sender<Vec<RawLine>>>,
     mut flushed: watch::Receiver<bool>,
     tx: mpsc::UnboundedSender<StreamEvent>,
-    follow_name: bool,
+    role: Role,
 ) {
+    let follow_name = role.follows_name();
     let mut resume = Resume::default();
     let mut first = true;
     if let Some(backlog) = backlog {
@@ -791,9 +836,10 @@ async fn container_task(
             Ok(None) => {
                 if !gone {
                     gone = true;
-                    if tx
-                        .unbounded_send(StreamEvent::PodGone(pod.clone()))
-                        .is_err()
+                    if role.announces()
+                        && tx
+                            .unbounded_send(StreamEvent::PodGone(pod.clone()))
+                            .is_err()
                     {
                         return;
                     }
@@ -825,13 +871,14 @@ async fn container_task(
                     first = true;
                     retry = false;
                     backoff = BACKOFF_START;
-                    if tx
-                        .unbounded_send(StreamEvent::PodJoined {
-                            pod: pod.clone(),
-                            containers: vec![container.clone()],
-                            initial: false,
-                        })
-                        .is_err()
+                    if role.announces()
+                        && tx
+                            .unbounded_send(StreamEvent::PodJoined {
+                                pod: pod.clone(),
+                                containers: vec![container.clone()],
+                                initial: false,
+                            })
+                            .is_err()
                     {
                         return;
                     }
@@ -909,9 +956,14 @@ async fn container_task(
                             // Quiet: a hung connection to a replaced pod (or a dead node)
                             // never ends by itself.
                             silent += IDLE_CHECK;
-                            if silent >= IDLE_RECONNECT
-                                || !same_instance(&api, &pod, &container, instance.as_ref()).await
-                            {
+                            // A lookup that hangs counts as the same instance, like a failed one.
+                            let same = tokio::time::timeout(
+                                IDLE_CHECK,
+                                same_instance(&api, &pod, &container, instance.as_ref()),
+                            )
+                            .await
+                            .unwrap_or(true);
+                            if silent >= IDLE_RECONNECT || !same {
                                 break;
                             }
                         }

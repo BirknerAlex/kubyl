@@ -138,6 +138,13 @@ impl SettingsView {
             return;
         };
         let key = item.key();
+        // Untouched text (Enter or leaving the field): nothing to save. Parsing it again could
+        // change a value, e.g. split a list entry that contains a comma.
+        if text.trim() == input_text(&item.value).trim() {
+            self.errors.remove(&key);
+            cx.notify();
+            return;
+        }
         match parse_input(&item.control, text.trim()) {
             Ok(value) => {
                 let unchanged = match &value {

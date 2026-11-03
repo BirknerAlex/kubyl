@@ -170,6 +170,13 @@ impl SettingsStore {
         let Some((last, parents)) = path.split_last() else {
             return Err("empty settings path".into());
         };
+        if self.unreadable {
+            // Changing it in memory only would look saved and be lost on restart.
+            return Err(format!(
+                "Not saved: {} has errors. Fix or delete it first.",
+                self.path.display()
+            ));
+        }
         let mut raw = self.raw.clone();
         match value {
             Some(value) => {
@@ -197,9 +204,6 @@ impl SettingsStore {
             }
         }
         self.raw = raw;
-        if self.unreadable {
-            return Ok(Write::Unreadable(self.path.clone()));
-        }
         Ok(Write::File {
             path: self.path.clone(),
             contents: serde_json::to_vec_pretty(&self.raw).expect("settings serialize"),
@@ -479,6 +483,18 @@ mod tests {
         assert!(err.is_err());
         assert_eq!(store.raw(), &serde_json::json!({ "theme": "light" }));
         assert_eq!(store.get::<Flat>().font_size, 0.0);
+    }
+
+    #[test]
+    fn set_value_refuses_while_the_file_has_errors() {
+        let (_dir, mut store) = store(r#"{ "theme": "light" }"#);
+        store.reload_from_str(r#"{ "theme": "#);
+        assert!(
+            store
+                .set_value(&path(&["logs", "wrap_lines"]), Some(Value::Bool(true)))
+                .is_err()
+        );
+        assert!(!store.get::<Logs>().wrap_lines);
     }
 
     #[test]
