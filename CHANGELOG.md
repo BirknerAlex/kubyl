@@ -2,6 +2,19 @@
 
 All notable changes to Kubyl are documented here.
 
+## [0.11.0] - 2026-11-03
+
+### Bug Fixes
+
+- Scroll long lists instead of clipping them ([c4744ce](https://github.com/BirknerAlex/kubyl/commit/c4744ce673ac058f64a77ca2bf22932d457a57ba))
+- Keep following a pod that is recreated under its name ([ec8d556](https://github.com/BirknerAlex/kubyl/commit/ec8d55655bd8bcbfbf381e42930a2381f6446023))
+- Address CodeRabbit findings on PR 58 (review) ([5bafc5b](https://github.com/BirknerAlex/kubyl/commit/5bafc5b697a9d5f85498bf75aee9101ecd4ec92e))
+
+### Features
+
+- A catalog of every setting and single-key writes ([0a175c5](https://github.com/BirknerAlex/kubyl/commit/0a175c5dea1ac52b3e154249c620a2918d0a918d))
+- A Settings tab for every setting ([0f4e378](https://github.com/BirknerAlex/kubyl/commit/0f4e3785fd25a92ce3412b9d8862e81b22047605))
+
 ## [0.10.0] - 2026-11-02
 
 ### Features
