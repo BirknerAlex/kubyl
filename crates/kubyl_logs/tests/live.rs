@@ -190,3 +190,172 @@ async fn workload_logs_interleave_in_order_and_follow_pod_changes() {
     assert!(gone, "the deleted pod leaves");
     assert!(replacement.is_some(), "the replacement joins");
 }
+
+/// A log view of one pod keeps going when a StatefulSet recreates the pod under its name.
+#[tokio::test]
+#[ignore = "needs a cluster (script/dev-cluster.sh)"]
+async fn single_pod_logs_follow_a_recreated_statefulset_pod() {
+    use k8s_openapi::api::apps::v1::StatefulSet;
+    const NS: &str = "kubyl-live-logs-sts";
+    let client = client().await;
+    let namespaces: Api<Namespace> = Api::all(client.clone());
+    let ns: Namespace =
+        serde_json::from_value(serde_json::json!({"metadata": {"name": NS}})).unwrap();
+    namespaces.create(&PostParams::default(), &ns).await.ok();
+    let sets: Api<StatefulSet> = Api::namespaced(client.clone(), NS);
+    let set: StatefulSet = serde_json::from_value(serde_json::json!({
+        "metadata": {"name": "ticker"},
+        "spec": {
+            "replicas": 1,
+            "serviceName": "ticker",
+            "selector": {"matchLabels": {"app": "ticker"}},
+            "template": {
+                "metadata": {"labels": {"app": "ticker"}},
+                "spec": {
+                    "terminationGracePeriodSeconds": 1,
+                    "containers": [{
+                        "name": "ticker",
+                        "image": "busybox:1.37",
+                        "command": ["sh", "-c",
+                            "i=0; while true; do i=$((i+1)); echo \"$HOSTNAME $i\"; sleep 0.2; done"]
+                    }]
+                }
+            }
+        }
+    }))
+    .unwrap();
+    sets.create(&PostParams::default(), &set).await.ok();
+    let pods: Api<Pod> = Api::namespaced(client.clone(), NS);
+    let uid_of_running = |pod: Option<Pod>| {
+        pod.filter(|p| {
+            p.metadata.deletion_timestamp.is_none()
+                && p.status.as_ref().and_then(|s| s.phase.as_deref()) == Some("Running")
+        })
+        .and_then(|p| p.metadata.uid)
+    };
+    let mut first_uid = None;
+    for _ in 0..120 {
+        first_uid = uid_of_running(pods.get_opt("ticker-0").await.unwrap());
+        if first_uid.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    let first_uid = first_uid.expect("ticker-0 runs");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let (tx, mut rx) = mpsc::unbounded();
+    let task = tokio::spawn(stream::run(
+        client.clone(),
+        NS.into(),
+        LogSource::Pod {
+            pod: "ticker-0".into(),
+        },
+        ContainerFilter::default(),
+        LogOptions::default(),
+        tx,
+    ));
+    // Lines arrive from the first instance.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let mut before = 0;
+    while tokio::time::Instant::now() < deadline && before < 10 {
+        if let Ok(Some(StreamEvent::Lines(lines))) =
+            tokio::time::timeout(Duration::from_secs(1), rx.next()).await
+        {
+            before += lines.len();
+        }
+    }
+    assert!(before >= 10, "lines before the delete: {before}");
+
+    pods.delete("ticker-0", &DeleteParams::default().grace_period(0))
+        .await
+        .unwrap();
+    // Lines written after this are the new pod's (the old one dies at once).
+    let deleted_at = jiff::Timestamp::now() + Duration::from_secs(2);
+    // Lines after the rejoin come from the new pod.
+    let mut events = Vec::new();
+    let mut rejoined = false;
+    let mut after = 0;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+    while tokio::time::Instant::now() < deadline && after < 10 {
+        match tokio::time::timeout(Duration::from_secs(5), rx.next()).await {
+            Ok(Some(StreamEvent::PodJoined { initial, .. })) => {
+                assert!(!initial);
+                rejoined = true;
+                events.push("joined".to_string());
+            }
+            Ok(Some(StreamEvent::Lines(lines))) => {
+                after += lines
+                    .iter()
+                    .filter(|l| l.timestamp.is_some_and(|t| t > deleted_at))
+                    .count();
+            }
+            Ok(Some(other)) => events.push(format!("{other:?}")),
+            Ok(None) => {
+                events.push("stream ended".into());
+                break;
+            }
+            Err(_) => {}
+        }
+    }
+    let second_uid = uid_of_running(pods.get_opt("ticker-0").await.unwrap());
+    println!("recreated at once: {events:?}; lines after: {after}");
+    let recreated = (rejoined, after);
+
+    // The pod is gone for a while (scaled to 0 and back): the view waits for it.
+    let scale = |replicas: i32| {
+        let sets = sets.clone();
+        async move {
+            sets.patch(
+                "ticker",
+                &kube::api::PatchParams::default(),
+                &kube::api::Patch::Merge(serde_json::json!({"spec": {"replicas": replicas}})),
+            )
+            .await
+            .unwrap();
+        }
+    };
+    scale(0).await;
+    for _ in 0..60 {
+        if pods.get_opt("ticker-0").await.unwrap().is_none() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    scale(1).await;
+    let back_at = jiff::Timestamp::now() + Duration::from_secs(1);
+    let mut events = Vec::new();
+    let mut back = 0;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+    while tokio::time::Instant::now() < deadline && back < 10 {
+        match tokio::time::timeout(Duration::from_secs(5), rx.next()).await {
+            Ok(Some(StreamEvent::Lines(lines))) => {
+                back += lines
+                    .iter()
+                    .filter(|l| l.timestamp.is_some_and(|t| t > back_at))
+                    .count();
+            }
+            Ok(Some(other)) => events.push(format!("{other:?}")),
+            Ok(None) => {
+                events.push("stream ended".into());
+                break;
+            }
+            Err(_) => {}
+        }
+    }
+    println!("gone for a while: {events:?}; lines after: {back}");
+    task.abort();
+    namespaces.delete(NS, &DeleteParams::default()).await.ok();
+    assert_ne!(second_uid.as_deref(), Some(first_uid.as_str()), "a new pod");
+    assert!(
+        recreated.1 >= 10,
+        "lines from the recreated pod: {}",
+        recreated.1
+    );
+    assert!(recreated.0, "the recreated pod joins the view");
+    assert!(
+        back >= 10,
+        "lines after the pod was gone for a while: {back}"
+    );
+}
